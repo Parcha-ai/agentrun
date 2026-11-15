@@ -76,8 +76,8 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 const RUN_DELETED = "its run was deleted";
 
 /** What a source's sender keeps of a trigger, set up from here (composio-triggers.ts: Composio's trigger instance): made
- *  before the trigger is kept and undone when it is not, kept in step as the owner turns the trigger on and off, removed
- *  after it. What it could not do there is answered beside the change (`said`, by its source's name: `{composio: {done:
+ *  before the trigger is kept and undone when it is not, kept in step as the owner turns the trigger on and off (and as
+ *  the server turns it off itself: offThere), removed after it. What it could not do there is answered beside the change (`said`, by its source's name: `{composio: {done:
  *  false, note}}`), and the change here holds. */
 export type TriggerUpstream = {
   /** A trigger `id` of `source` being made (on or not): what it needs there made, the source to keep (with what was made
@@ -410,6 +410,7 @@ export class Triggers {
       this.deps.say({ condition: "trigger_connection_lost", trigger: t.id, detail });
     }
     if (on.length) await this.arm();
+    await this.offThere(on);
     return on.length;
   }
 
@@ -421,6 +422,7 @@ export class Triggers {
     const off = await this.store.agents.archive(agentId, true, { at: iso(this.clock.now()), reason: "agent_archived", detail: archivedDetail(name) });
     for (const t of off) this.deps.say({ condition: "trigger_agent_archived", trigger: t.id, agent: agentId });
     if (off.length) await this.arm();
+    await this.offThere((await Promise.all(off.map((t) => this.find(t.id)))).filter((t): t is Trigger => t !== undefined));
     return off;
   }
 
@@ -615,6 +617,7 @@ export class Triggers {
       await this.store.triggers.update(t.id, { enabled: false, nextAt: null, disabled: { at: iso(now), reason: "source_unreadable", detail } });
       this.deps.say({ condition: "trigger_source_unreadable", trigger: t.id, error: detail });
     }
+    await this.offThere(triggers);
   }
 
   /** Records `trigger`'s firings up to now and moves its next time on from the last nominal one, in one write. Of the
@@ -720,6 +723,7 @@ export class Triggers {
       await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
       await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
       this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
+      await this.offThere([trigger]);
       return;
     }
     const bound = adapterIn(this.adapters, firing.by)?.delivery === "clock" ? { max: 1, reason: "A message from this trigger is already waiting." } : { max: DUE_KEPT, reason: `${DUE_KEPT} messages from this trigger are already waiting for its run.` };
@@ -779,7 +783,10 @@ export class Triggers {
       if (attempts <= BACKOFF_MS.length) {
         const wait = Math.max(BACKOFF_MS[attempts - 1]!, error instanceof ApiError ? (error.extra.retry_after_ms ?? 0) : 0);
         const settled = await this.store.triggers.settle(triggerId, key, { attempts, retryAt: this.clock.now() + wait, error: errorOf(error), reason: errorOf(error).message, waitsOn: null }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
-        if (settled?.paused) this.deps.say({ condition: "trigger_auto_paused", trigger: triggerId, firing: key });
+        if (settled?.paused) {
+          this.deps.say({ condition: "trigger_auto_paused", trigger: triggerId, firing: key });
+          await this.pausedThere(triggerId);
+        }
         return;
       }
       await this.failed(triggerId, key, errorOf(error));
@@ -805,8 +812,34 @@ export class Triggers {
   /** A failed firing: one more in its trigger's streak, the trigger turned off at FAILURES_TO_PAUSE, and trigger.failed
    *  queued (after the firing is written: a start finds one not yet queued and queues it, under the same webhook-id). */
   private async failed(triggerId: string, key: string, error: { code: string; message: string }, runId?: string, reason?: string): Promise<void> {
-    await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}) }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
+    const settled = await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}) }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
     await this.notifyFailed(triggerId, key);
+    if (settled?.paused) await this.pausedThere(triggerId);
+  }
+
+  /** Trigger `triggerId`, turned off by its failure streak: off at its sender too (offThere). */
+  private async pausedThere(triggerId: string): Promise<void> {
+    const trigger = await this.find(triggerId);
+    if (trigger && !trigger.enabled) await this.offThere([trigger]);
+  }
+
+  /** Triggers the server turned off itself (their agent archived, a failure streak, a connection or a run gone, a source
+   *  that no longer reads): off at their sender too, as an owner's pause is, by its own rule (Composio's instance only
+   *  once no trigger holding it is on). What could not be done there is said, with what to do by hand; the change here
+   *  holds either way. */
+  private async offThere(triggers: readonly { id: string; source: Source }[]): Promise<void> {
+    for (const t of triggers) {
+      const upstream = this.deps.upstream?.(t.source.kind);
+      if (!upstream) continue;
+      try {
+        const said = await upstream.turned(t.source, t.id, false);
+        for (const [where, what] of Object.entries(isObject(said) ? said : {})) {
+          if (isObject(what) && typeof what.note === "string") this.deps.say({ condition: "trigger_off_upstream_failed", trigger: t.id, upstream: where, note: what.note });
+        }
+      } catch (error) {
+        this.deps.say({ condition: "trigger_off_upstream_failed", trigger: t.id, upstream: t.source.kind, note: String((error as Error)?.message ?? error) });
+      }
+    }
   }
 
   private async notifyFailed(triggerId: string, key: string): Promise<void> {

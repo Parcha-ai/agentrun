@@ -6,11 +6,11 @@
 //   reused after; every answer of Composio's carries the secret, so a reuse keeps the one it reads. One at someone else's
 //   address is refused, naming it, unless the create asks to move it here.
 // - A trigger's instance is Composio's, made by upsert for the account the server is connected as (none: refused with
-//   the link to connect it). Triggers with the same server, event and config share Composio's one instance (its upsert
+//   the link to connect it; several: refused, naming each, never one picked). Triggers with the same server, event and config share Composio's one instance (its upsert
 //   answers the same id): it is turned off only when every trigger holding it is off, and deleted with the last.
 // - Making a trigger goes in order, subscription, instance, save, and a failure undoes what came before it. Pausing,
-//   resuming and deleting follow on Composio once the change holds here; what Composio could not do is said, with what
-//   to do by hand.
+//   resuming and deleting follow on Composio once the change holds here, and so does the server turning a trigger off
+//   itself (triggers.ts); what Composio could not do is said, with what to do by hand.
 // No public address (AGENTRUN_PUBLIC_URL): Composio can't reach this server, so making one is refused before Composio is
 // asked anything.
 import { randomBytes } from "node:crypto";
@@ -325,11 +325,17 @@ export class ComposioTriggers implements TriggerUpstream {
     return hook;
   }
 
-  /** The id of the ACTIVE account the server's user has for its toolkit; none: refused, with the link to connect it. */
+  /** The id of the one ACTIVE account the server's user has for its toolkit; none: refused, with the link to connect it;
+   *  several: refused, naming each with when it was connected, so the owner disconnects the ones it shouldn't run as. */
   private async accountOf(ask: Ask, credential: ComposioCredential, server: string): Promise<string> {
     const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(credential.user)}&toolkit_slugs=${enc(credential.toolkit)}&statuses=ACTIVE`);
-    const found = (Array.isArray(accounts.items) ? accounts.items : []).find((a) => isObject(a) && a.status === "ACTIVE" && text(a.id));
-    if (isObject(found)) return text(found.id);
+    const active = (Array.isArray(accounts.items) ? accounts.items : []).filter((a): a is Json => isObject(a) && a.status === "ACTIVE" && !!text(a.id));
+    if (active.length === 1) return text(active[0]!.id);
+    // Several: never one picked, which would run the trigger as an account the owner didn't choose, unseen.
+    if (active.length > 1) {
+      const listed = active.map((a) => ({ id: text(a.id), created_at: text(a.created_at) })).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+      throw new ApiError("composio_account_ambiguous", `${server}'s Composio user ${credential.user} has ${listed.length} connected ${credential.toolkit} accounts: ${listed.map((a) => `${a.id} (connected ${a.created_at || "at an unknown time"})`).join(", ")}. A trigger runs as one account: disconnect the ones it shouldn't run as in Composio, then make the trigger again.`, { details: { server, user_id: credential.user, accounts: listed } });
+    }
     // The link is under the toolkit's Composio-managed auth config, the one the server's save made or found.
     const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${enc(credential.toolkit)}`);
     const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
