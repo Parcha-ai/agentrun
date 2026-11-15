@@ -30,6 +30,7 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { fakeFetch, fakeSearch, type WebFake } from "./web-fake.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -153,6 +154,9 @@ export type ToolHost = {
   /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
    *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
   search?: SearchOn;
+  /** A template eval's web fake for this run (web-fake.ts): its web_search and web_fetch answer from it, never the
+   *  network. Only the eval's own runner sets it (runner/beside.ts webFakes). Absent: the plane's providers. */
+  web?: WebFake;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -209,7 +213,8 @@ const webFetchEntry = (name: string): ToolEntry => ({
   needs: [],
   nodes: true,
   bind: async (host) => {
-    const tool = booking(webFetchTool(host.env, name)) as unknown as ToolRegistration;
+    const web = host.web;
+    const tool = booking(webFetchTool(host.env, name, web && ((url, part) => fakeFetch(web, url, part)))) as unknown as ToolRegistration;
     const extension = defineExtension({ name: name.replaceAll("_", "-"), tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };
@@ -672,7 +677,8 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     needs: [],
     nodes: true,
     // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.
-    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search)) as unknown as ToolRegistration),
+    // A template eval's web fake (host.web) answers in the provider's place.
+    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
   // The email tools (email/tools.ts) on the server's one email account (the email account setting, /v2/settings/email), every harness's as web_fetch is;

@@ -111,6 +111,7 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
+import { ComposioTriggers } from "./composio-triggers.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
@@ -137,7 +138,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, choiceUnrunnable, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
 import { templateInstallLink, templateLink } from "./console-links.js";
 import { GITHUB_HOSTS } from "./template-source.js";
@@ -530,6 +531,12 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio$/, name: "saveComposioServer" },
+  // A saved Composio server's triggers (composio-triggers.ts): its toolkit's events, its triggers and their state on
+  // Composio, and the project's webhook subscription (its secret rotated, or the subscription deleted: secret writes).
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/events$/, name: "listComposioEvents" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/triggers$/, name: "listComposioTriggers" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/rotate-secret$/, name: "rotateComposioSecret" },
+  { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/subscription$/, name: "deleteComposioSubscription" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
@@ -560,7 +567,8 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
-  { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
+  // A source that keeps its key per scope (Composio's projects) is served at /hooks/{source}/{scope}.
+  { method: "POST", pattern: /^\/hooks\/([^/]+)(?:\/([^/]+))?$/, name: "receiveHook" },
   { method: "GET", pattern: /^\/integrations\/github$/, name: "getGitHubConnection" },
   { method: "DELETE", pattern: /^\/integrations\/github$/, name: "disconnectGitHub" },
   { method: "POST", pattern: /^\/integrations\/github\/connect$/, name: "connectGitHub" },
@@ -1634,6 +1642,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...targets,
     settings: (adapterId) => triggerSettings.get(adapterId),
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
+    // A Composio trigger's instance, and the project's subscription, are made and kept on Composio with its server's key.
+    upstream: (kind) => (kind === "composio" ? composioTriggers : undefined),
+  });
+  const composioTriggers = new ComposioTriggers({
+    control: options.composioControl ?? {},
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
+    sealed: triggerSettings.get("composio")!,
+    credential: (name, refusal) => mcpServers.composioOf(name, refusal),
+    holders: () => triggers.ofKind("composio"),
+    signal: stopping.signal,
+    say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
   // A repair of the GitHub installations (below) stops before the triggers close, in a start that fails as in close.
   stops.push(() => githubConnect.close());
@@ -2155,8 +2174,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(template: Package, body: Json) {
-    const { parameters, grants: asked, servers: picks, model: override, approvals } = applyBodyOf(template, body);
-    const missing = template.secrets.filter((name) => !secret(name, storedKeys));
+    const { parameters, grants: asked, servers: picks, model: override, choice, approvals } = applyBodyOf(template, body);
+    // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
+    const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
     // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
@@ -2181,8 +2201,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
-    const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
-    const picked = override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
+    // A model choice the owner picked is its model on its harness, or a refusal naming the model: never the tier's model
+    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway.
+    const unrunnable = choice && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
+    if (choice && unrunnable) {
+      const message = `The ${pkg.name} template's choice ${choice.label} runs ${choice.model} on ${choice.harness}, which this server can't run: ${unrunnable.replace(/\.$/, "")}. Nothing was created.`;
+      throw new ApiError("agent_not_runnable", message, { fields: [{ field: "overrides.choice", reason: NOT_SET_UP, message, fix: "Apply with the default or another choice, or, where the model only wants a key, add it in Settings → Model keys." }] });
+    }
+    const harness = choice ? choice.harness : pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+    const picked = choice ? { model: choice.model } : override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
+    if ("refused" in picked && picked.refused) {
+      const message = `The ${pkg.name} template prefers ${pkg.model?.prefer}, which this server can't run on ${harness ?? DEFAULT_HARNESS}: ${picked.refused.why}. Nothing was created.`;
+      throw new ApiError("agent_not_runnable", message, { fields: [{ field: "model", reason: NOT_SET_UP, message, fix: picked.refused.fix }] });
+    }
     const model = picked.model;
     // Which model the agent got, where it is not the package's: a note, never a lack. The agent runs; only the package's
     // choice was not an option here (not_set_up_here would read as a run refused until the host has something).
@@ -2893,7 +2924,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, ...((([, segment, sub]) => [segment!, sub] as const)(/^\/hooks\/([^/]+)(?:\/([^/]+))?$/.exec(path)!)));
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
@@ -3593,6 +3624,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await refreshMcpMeta();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      case "listComposioEvents":
+        return send(res, 200, await composioTriggers.events(id), { "cache-control": "no-store" });
+      case "listComposioTriggers":
+        return send(res, 200, await composioTriggers.triggersOf(id), { "cache-control": "no-store" });
+      case "rotateComposioSecret":
+        return send(res, 200, await composioTriggers.rotate(id), { "cache-control": "no-store" });
+      case "deleteComposioSubscription":
+        return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
         const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
@@ -3639,8 +3678,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Our row goes first, by the checked removal (a 412 sends Composio nothing), and answers what it removed: a Composio
         // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key.
         // Composio refusing or not answering, or a key that does not open, never keeps our row: the answer says what to
-        // remove there by hand.
-        const { composio: made } = await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
+        // remove there by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
+        // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting).
+        const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
         await refreshMcpMeta();
         const forgotten = !made ? undefined : "unusable" in made ? composioNote(id) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal);
         if (forgotten && !forgotten.removed) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
@@ -3908,9 +3948,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "updateTrigger":
         // Its secret's metadata as a read answers it, so a page showing the changed trigger keeps saying it is set.
         return send(res, 200, withSecretOf(await triggers.update(id, await bodyOf(req))));
-      case "deleteTrigger":
-        await triggers.remove(id);
+      case "deleteTrigger": {
+        // Deleted here whatever its sender says; what could not be removed there is answered (Composio's instance).
+        const said = await triggers.remove(id);
+        if (said) return send(res, 200, { deleted: true, ...(said as Record<string, unknown>) });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
         if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Running a trigger now takes an Idempotency-Key of 1 to 255 characters: a retry with the same key fires it once.");

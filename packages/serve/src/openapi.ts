@@ -369,6 +369,12 @@ const MCP_URL = { type: "string", format: "uri", maxLength: 2048, description: "
 const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` is reserved for AgentRun's own tools: a PUT under it is 422 input_invalid, field `name`, reason `reserved`.", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
 const COMPOSIO_KEY = { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true, description: "The Composio API key, sent only to Composio." };
 const COMPOSIO_TOOLKIT = { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", description: "The toolkit's slug as Composio names it (`github`, `slack`, `gmail`...)." };
+/** The mark of what a composio trigger adds (composio-triggers.ts). */
+const COMPOSIO_TRIGGERS_MARK = { "x-agentrun-serve": "composiotriggers/1" };
+/** A composio trigger's create, in the words its refusals use. */
+const COMPOSIO_CREATE = "A `composio` source names a saved Composio server, one of its toolkit's events (GET /settings/mcp-servers/{name}/composio/events) and its config: the create makes, with the server's key, the Composio project's webhook subscription at this server's address (/hooks/composio/{hook}) when there is none, then the event's trigger instance for the account the server is connected as, then the trigger, and undoes what it made when a later step fails; the answer's `source` names them (`instance_id`, `hook`). Triggers with the same server, event and config share one instance. 409 composio_no_public_url (\"Composio can't reach this server\") with no public URL (AGENTRUN_PUBLIC_URL), before Composio is asked anything; 409 composio_subscription_elsewhere (`details.webhook_url`) when the project's subscription is at another address, unless `source.move_subscription` is true; 409 composio_not_connected (`details.connect_url`, Composio's page to connect it) when the server's Composio user has no connected account; 409 composio_account_ambiguous (`details.accounts`, each with when it was connected) when it has several: a trigger runs as one, so the owner disconnects the others in Composio; 422 for an event or config Composio refuses, under `source.event` or `source.config`; 424 when Composio fails.";
+/** What Composio could not do for a composio trigger turned on or off, or deleted: the change here holds. */
+const COMPOSIO_UNDONE = closed({ done: { type: "boolean", enum: [false] }, note: { type: "string", description: "What to do on Composio by hand: the instance's id and the dashboard's address." } });
 const COMPOSIO_NOTE = "The Composio preset: Composio is an MCP server like any other, and this makes one for the owner's key, toolkit and chosen actions. The key goes to Composio (backend.composio.dev) and into the sealed header, and is never logged or answered.";
 const MCP_FAILED = {
   "424": { description: "`upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one.", content: { "application/json": { schema: ref("schemas/Error") } } },
@@ -1047,7 +1053,27 @@ const TEMPLATE = closed({
   repository: NULLABLE_STRING,
   output: { type: ["object", "null"], additionalProperties: false, required: ["schema", "json_schema"], properties: { schema: { type: "string", description: "The schema's file in the package; it ships beside each SKILL.md." }, json_schema: { type: ["object", "null"], description: "The JSON Schema the agent's answer meets (its last fenced json block)." } }, description: "The shape of the agent's answer; null when the package names none." },
   harness: { type: ["array", "null"], items: { type: "string" }, description: "The harnesses it runs on, in the order it prefers them: apply takes the first this server runs. Null: any, the server's default." },
-  model: { type: ["object", "null"], additionalProperties: false, required: ["tier"], properties: { tier: { enum: Object.keys(MODEL_TIERS) }, prefer: { type: "string" } }, description: "The model it wants: `prefer` when this server runs it, else this server's model for the tier (fast: AGENT_MODEL_FAST, balanced: AGENT_MODEL, strong: AGENT_MODEL_STRONG, each else the default). Null: the server's default." },
+  model: {
+    type: ["object", "null"], additionalProperties: false, required: ["tier"],
+    properties: {
+      tier: { enum: Object.keys(MODEL_TIERS) }, prefer: { type: "string" }, fast: { type: "string" }, strong: { type: "string" },
+      choices: {
+        type: "array", minItems: 1, maxItems: 3,
+        items: closed({
+          id: { type: "string", description: "What apply's `overrides.choice` names." },
+          label: { type: "string", maxLength: 40, description: "Its name on the install form." },
+          model: { type: "string", description: "The model the agent runs on, \"provider/model-id\"." },
+          harness: { type: "string", description: "The harness it runs on, one of the package's `harness`." },
+          warning: { type: ["string", "null"], maxLength: 300, description: "Shown word for word beside the choice on the install form, never reworded. Null: none." },
+          note: { type: ["string", "null"], maxLength: 300, description: "A setup line shown beside the choice. Null: none." },
+          secrets: { type: "array", items: { type: "string" }, description: "Keys only this choice needs, by variable name: apply with the choice refuses (409) when one is missing, as the package's `secrets`." },
+        }),
+        description: "Named models an owner may pick one of at install (apply's `overrides.choice`), each on its own harness. Apply runs the agent on exactly the choice's model and harness, or refuses (409) where this server can't run it: never the tier's model in its place. Absent: the package offers none.",
+        "x-agentrun-serve": "template-model-choices/1",
+      },
+    },
+    description: "The model it wants: `prefer`, which apply refuses (409) where this server can't run it, never taking the tier's model in its place (a server behind a gateway skips it, with a warning); with no `prefer`, this server's model for the tier (fast: AGENT_MODEL_FAST, balanced: AGENT_MODEL, strong: AGENT_MODEL_STRONG, each else the default); `fast` and `strong`, the models its subagents of those tiers prefer. `choices`, the models an owner may pick instead at install. Null: the server's default.",
+  },
   effort: { type: ["string", "null"], description: "Its thinking level, the definition's `thinking`." },
   tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
   checkout: { enum: ["pull_request", null], description: "What the server checks out in each run's folder before its first turn, set as the agent definition's `checkout` at apply: `pull_request`, the pull request the run's GitHub event names, at its head, in `repo/`, fetched with a read-only token the agent never holds. Null: none." },
@@ -1111,7 +1137,7 @@ const TEMPLATE_APPLY = {
     parameters: { type: "object", description: "The package's parameters (GET /templates), by name, each of its type." },
     servers: { type: "object", additionalProperties: { type: "string" }, description: "The owner's pick of a saved MCP server, by the package's toolkit, where several saved servers match its source and toolkit; one that does not match is 422. Absent for a toolkit: its one match; where several match, the apply is 422 under `servers.<toolkit>`, naming them (a server is never picked for the owner)." },
     grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by the package's own names (`mcp:<toolkit>/<tool>`, GET /templates `mcp[].tools[].tool`; apply grants each as the tool of the server it maps the toolkit to), the agent is granted: the only MCP tools the agent gets. Any other is 422. A grant writes no permission: each call follows this server's tool settings, so under approvals `ask` a write asks the owner unless the owner allowed it there (PUT /settings/tools), and a read runs unasked only where the owner turned on Allow reads for its server; approvals `never` lifts those asks. One the owner denies on this server stays denied, with a warning; a deny set on this server, before or after the apply, still refuses the tool there, as a server deny is absolute (edit the agent's `definition.tools` to take a grant back). Absent, none: the agent gets no tool of the package's MCP servers." },
-    overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: the package's `approvals_default` (`ask` only when it names none).", "x-agentrun-serve": "unattended/1" } } },
+    overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\". Not with `choice` (422)." }, choice: { type: "string", description: "One of the package's model choices (GET /templates `model.choices[].id`): the agent runs on its model and harness. An id the package does not offer is 422; `choice` with `model` is 422, as they say different things. The choice's `secrets` missing is 409 `agent_not_runnable`, as the package's are; a model this server can't run on that harness (not in its catalog, no key for it, or behind a gateway that never said it serves it) is 409 naming the model, never a fallback.", "x-agentrun-serve": "template-model-choices/1" }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: the package's `approvals_default` (`ask` only when it names none).", "x-agentrun-serve": "unattended/1" } } },
   },
 };
 const TEMPLATE_APPLIED = closedWith({
@@ -2210,7 +2236,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteMcpServer", tags: ["local"], summary: "Forget a saved MCP server and its credential",
-      description: "A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, after the row is removed: the row is already gone while that delete waits on Composio. Composio's 404 means it is already gone; when Composio refuses or does not answer, or the saved key does not open, the answer is 200 with `composio.removed: false` and a note to remove it there. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed, and nothing is sent to Composio.",
+      description: "409 composio_in_use, naming them in `details.triggers`, for a Composio server that Composio triggers still use: delete them first. A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, after the row is removed: the row is already gone while that delete waits on Composio. Composio's 404 means it is already gone; when Composio refuses or does not answer, or the saved key does not open, the answer is 200 with `composio.removed: false` and a note to remove it there. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed, and nothing is sent to Composio.",
       parameters: [MCP_NAME],
       responses: {
         "204": { description: "Forgotten (and, for a Composio preset server, its Composio MCP server deleted, or already gone there)." },
@@ -2246,6 +2272,42 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: closedWith({ api_key: COMPOSIO_KEY, toolkit: COMPOSIO_TOOLKIT, tools: { type: "array", minItems: 1, maxItems: 500, items: { type: "string", minLength: 1 }, description: "The slugs of the actions to grant, from the listing." } }, { user_id: { type: "string", pattern: "^[A-Za-z0-9._@-]{1,128}$", description: "The Composio user the actions run as; default `agentrun`." } }) } } },
       responses: { "200": json(closedWith({ server: MCP_SERVER_VIEW }, { connect_url: { type: "string", format: "uri", description: "Present when the toolkit needs an account and the user has no active one: Composio's page to connect it." }, not_served: { type: "array", items: { type: "string" }, description: "Present when Composio's server leaves out some of `tools` (it can, for an action it was allowed): the slugs it doesn't list, which a run can't call." } }), "The server as saved, and where to connect the account when it must be."), ...errors(400, 401, 403, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/{name}/composio/events": {
+    get: {
+      operationId: "listComposioEvents", tags: ["local"], summary: "List a saved Composio server's toolkit's events, for a composio trigger",
+      description: "Every page of Composio's trigger types for the server's toolkit, asked with its saved key: each event's slug (a composio trigger's `event`), name, description, the JSON schema of its config (a trigger's `config`, its `required` fields marked) and whether Composio polls for it rather than being sent it. 404 for a name that is no saved server, or one not saved with the Composio preset; 422 when Composio refuses the key; 424 `upstream_failed` when Composio fails.",
+      parameters: [MCP_NAME],
+      responses: { "200": json(closed({ server: { type: "string" }, toolkit: { type: "string" }, events: { type: "array", items: closedWith({ slug: { type: "string" }, name: { type: "string" }, description: { type: "string" }, config: { type: "object", description: "The event's config, as a JSON schema (`properties`, `required`)." }, polled: { type: "boolean", description: "Composio polls for it (every few minutes) rather than being sent it." } }, { instructions: { type: "string" } }) } }), "The toolkit's events."), ...errors(401, 404, 422, 429, 500), ...MCP_FAILED },
+      ...COMPOSIO_TRIGGERS_MARK,
+    },
+  },
+  "/settings/mcp-servers/{name}/composio/triggers": {
+    get: {
+      operationId: "listComposioTriggers", tags: ["local"], summary: "A saved Composio server's triggers, each with its instance's state on Composio",
+      description: "The composio triggers that name the server, each with `on_composio`: `on` or `off` as Composio has its instance, `missing` when Composio has it no more, `unknown` when Composio did not answer (and `composio_error` says why). `subscription`: the Composio project's webhook subscription, `ours` when it is at this server's address (null when there is none). Its secret is never answered. 404 for a name that is no saved Composio server.",
+      parameters: [MCP_NAME],
+      responses: { "200": json(closedWith({ triggers: { type: "array", items: closed({ id: { type: "string" }, name: { type: "string" }, enabled: { type: "boolean" }, event: { type: "string" }, instance_id: { type: "string" }, on_composio: { enum: ["on", "off", "missing", "unknown"] } }) }, subscription: { oneOf: [closed({ ours: { type: "boolean" }, webhook_url: { type: "string" } }), { type: "null" }] } }, { composio_error: { type: "string" } }), "Its triggers, and the project's subscription."), ...errors(401, 404, 422, 429, 500) },
+      ...COMPOSIO_TRIGGERS_MARK,
+    },
+  },
+  "/settings/mcp-servers/{name}/composio/rotate-secret": {
+    post: {
+      operationId: "rotateComposioSecret", tags: ["local"], summary: "Rotate the Composio project's webhook subscription's secret, and keep the new one",
+      description: "Composio makes the subscription a new secret, which is sealed here: deliveries signed with the old one are the one 401 from then on. The secret is never answered. 404 when the project has no subscription; 409 composio_subscription_elsewhere when it is at another address than this server's. The owner's signed-in session alone: 403 forbidden to the API token.",
+      parameters: [MCP_NAME],
+      responses: { "200": json(closed({ rotated: { type: "boolean", enum: [true] } }), "Rotated, and kept."), ...errors(401, 403, 404, 409, 422, 429, 500), ...MCP_FAILED },
+      ...COMPOSIO_TRIGGERS_MARK,
+    },
+  },
+  "/settings/mcp-servers/{name}/composio/subscription": {
+    delete: {
+      operationId: "deleteComposioSubscription", tags: ["local"], summary: "Delete the Composio project's webhook subscription, once no trigger uses it",
+      description: "Deletes the subscription on Composio, and its secret here. 409 composio_in_use, naming them, while a composio trigger uses it; 409 composio_subscription_elsewhere when it is at another address than this server's (it is not this server's to delete); 404 when there is none. The owner's signed-in session alone: 403 forbidden to the API token.",
+      parameters: [MCP_NAME],
+      responses: { "200": json(closed({ deleted: { type: "boolean", enum: [true] } }), "Deleted."), ...errors(401, 403, 404, 409, 422, 429, 500), ...MCP_FAILED },
+      ...COMPOSIO_TRIGGERS_MARK,
     },
   },
   "/settings/mcp-servers/{name}/oauth/start": {
@@ -2464,7 +2526,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     post: {
       operationId: "createTrigger", tags: ["local"], summary: "Make a trigger: a schedule or a signed webhook that starts a capped run of an agent, or messages a run",
-      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped; a webhook trigger with \`accept\` starts a run for each event it takes instead (the server's run limit still holds: a start it refuses is tried again). The last ${HISTORY_KEPT} firings are kept. A \`webhook\` source fires on each request to /hooks/{trigger_id} signed by its secret, which this answer holds (\`secret\`) this once: a retry under the same Idempotency-Key answers the same trigger with a \`note\` in its place, as the key's record never keeps a secret. A \`message_run\` target sends each firing's input to one run, under the firing's key, which the run's store takes once. 422 for another source kind, a start_run target with no max_cost_usd whose agent has no default one, an agent that is a workflow or does not take the input, or a run that is a workflow's.`,
+      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped; a webhook trigger with \`accept\` starts a run for each event it takes instead (the server's run limit still holds: a start it refuses is tried again). The last ${HISTORY_KEPT} firings are kept. A \`webhook\` source fires on each request to /hooks/{trigger_id} signed by its secret, which this answer holds (\`secret\`) this once: a retry under the same Idempotency-Key answers the same trigger with a \`note\` in its place, as the key's record never keeps a secret. A \`message_run\` target sends each firing's input to one run, under the firing's key, which the run's store takes once. 422 for another source kind, a start_run target with no max_cost_usd whose agent has no default one, an agent that is a workflow or does not take the input, or a run that is a workflow's. ${COMPOSIO_CREATE}`,
       parameters: [ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["source", "target"], properties: TRIGGER_WRITE } } } },
       responses: { "201": json({ ...TRIGGER, properties: { ...TRIGGER.properties, secret: TRIGGER_SECRET_META, signing_secret: TRIGGER_SECRET, secret_set: { const: true, description: "A webhook trigger's first answer: its secret is made and kept. The secret itself is in the answer to the owner's signed-in session alone (the console's)." }, note: { type: "string", description: "In place of a webhook trigger's secret: to the API token, which is never shown one, the words that send the person to the console to rotate it there; on a retry under the same Idempotency-Key, that it was shown once." } } }, "Made; a webhook trigger's first answer to the owner's signed-in session holds its `signing_secret`, this once."), ...errors(400, 401, 409, 415, 422, 429, 500) },
@@ -2483,13 +2545,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.",
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: TRIGGER_WRITE } } } },
-      responses: { "200": json(TRIGGER_READ, "Changed: the trigger as a read answers it, with its secret's metadata."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      responses: { "200": json({ ...TRIGGER_READ, properties: { ...TRIGGER_READ.properties, composio: COMPOSIO_UNDONE } }, "Changed: the trigger as a read answers it, with its secret's metadata, and for a composio trigger turned on or off whose instance Composio did not turn, `composio`: what to do there by hand."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
     delete: {
       operationId: "deleteTrigger", tags: ["local"], summary: "Delete a trigger and its firings; the runs it started stay",
       parameters: [TRIGGER_ID],
-      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 409, 429, 500) },
+      responses: { "204": { description: "Deleted (a composio trigger's instance deleted on Composio too, already gone there, or kept for another trigger that holds it)." }, "200": json(closed({ deleted: { type: "boolean", enum: [true] }, composio: COMPOSIO_UNDONE }), "Deleted here, but Composio did not delete the composio trigger's instance: what to remove there by hand."), ...errors(401, 404, 409, 429, 500) },
       ...TRIGGER_MARK,
     },
   },
@@ -2561,7 +2623,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/templates/{template}/apply": {
     post: {
       operationId: "applyTemplate", tags: ["local"], summary: "Apply a template package: make its agent, with its skills, then its triggers",
-      description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it that the apply's `grants` name granted, with no permission written (each call follows this server's tool settings). Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`; but a github trigger on a server GitHub is not connected to is skipped, the agent and the rest made, with a warning under `triggers.<i>` (`not_set_up_here`: connect GitHub and apply again), and one made adds a note there saying what it runs on. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
+      description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it that the apply's `grants` name granted, with no permission written (each call follows this server's tool settings). Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins; `overrides.choice` takes one of the package's model choices, its model on its harness, or refuses with 409 where this server can't run it; a `prefer` this server can't run, outside a gateway, refuses with 409 under `model`, naming it and the fix, and makes nothing); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`; but a github trigger on a server GitHub is not connected to is skipped, the agent and the rest made, with a warning under `triggers.<i>` (`not_set_up_here`: connect GitHub and apply again), and one made adds a note there saying what it runs on. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
       parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's id (GET /templates `id`), URL-encoded: a bundled one's name, or an imported one's `github%3A<owner>%2F<repo>…`." }, ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_APPLY } } },
       responses: { "201": json(TEMPLATE_APPLIED, "Applied: the agent and its triggers made."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
@@ -2935,7 +2997,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
           expect: { enum: ["met", "unmet"], description: "A ui.act call's expect: whether it held." },
         },
       },
-      description: "On a tool call's `tool_result` row alone (a codemode script's included): each computer protocol call the tool made, in order, at most 200. Never a typed or set value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
+      description: "On a tool call's `tool_result` row alone (a call a codemode script made included, on its own row): each computer protocol call the tool made, in order, at most 200. Never a typed or set value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
       "x-agentrun-serve": "computercalls/1",
     },
     computer_calls_dropped: {
@@ -2950,7 +3012,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_result_text: {
       type: ["string", "null"],
-      description: `On a \`tool_result\` row of a timeline read with \`calls=whole\` alone: the head of the call's output, to ${CALL_RESULT_CHARS} characters, through the run's redaction, its URLs' query values elided as \`tool_result_preview\`'s are; null for an empty output. Absent otherwise.`,
+      description: `On a \`tool_result\` row of a timeline read with \`calls=whole\` alone: the head of the call's output, to ${CALL_RESULT_CHARS} characters, through the run's redaction, its URLs' query values elided as \`tool_result_preview\`'s are; null for an empty output. A \`web_search\`'s or \`web_fetch\`'s is its JSON whole but for its long texts: every result's \`url\`, \`title\` and \`published\` (a page's \`url\` and \`title\`) as it came, each snippet, the provider's \`text\` and a page's \`text\` cut to fit and ending in "…" where cut, a page's \`links\` past the cut counted in \`links_cut\`; longer than ${CALL_RESULT_CHARS} only when its urls alone pass it. Absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     learning: {
@@ -2987,7 +3049,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         image: { type: "string", minLength: 1, description: "The image the computer starts from: one the provider offers for the kind (GET /computers lists them as the provider's `images`), such as Orgo's `windows` desktop. Absent, the kind's default. One the provider does not offer saves with a warning naming the ones it does, and its runs are refused at their start in the same words. Absent for `none`." },
         gpu: COMPUTER_GPU,
         persistent: { type: "boolean", description: "Whether the agent keeps its own computer between runs: true makes one at its first run, detaches it (not deletes it) at each run's end, and attaches it again at the next, with what was on it; false or absent, a fresh computer for each run. Only where the provider keeps one for the kind and image (GET /computers: the provider's `persistent`), else 422 not_allowed; never one that mounts the run's folder. One run at a time: a run that finds the computer held by another run still going is refused at its start, naming that run. Archiving the agent, turning this off, or a setting on another provider or image deletes the computer (GET /agents/{agent_id}'s `own_computer` shows it)." },
-        surface: { enum: ["code", "tools"], description: "How the agent drives a desktop or a phone. `code`: by scripts alone, its harness's script tool (pi's `codemode`, else `computer_script`) with `computer` bound, and the hand-over (`computer_request_handoff`); no `computer_observe`, `computer_act` or `computer_screenshot`. `tools`: by the step tools alone (`computer_observe`, `computer_act`, `computer_screenshot`) and the hand-over; no `computer_script` and no pi `codemode`. Absent, both. Only a desktop or a phone takes it (422 not_allowed on another kind)." },
+        surface: { enum: ["code", "tools"], description: "How the agent drives a desktop or a phone. `code`: by scripts alone, `computer_script` with `computer` bound, and the hand-over (`computer_request_handoff`); no `computer_observe`, `computer_act` or `computer_screenshot`. `tools`: by the step tools alone (`computer_observe`, `computer_act`, `computer_screenshot`) and the hand-over; no `computer_script`. Absent, both. A `codemode` script calls whichever of them the run has, each a call of its own. Only a desktop or a phone takes it (422 not_allowed on another kind)." },
         exec: { type: "boolean", description: "`false`: the agent gets no shell and starts no program on its desktop or phone. Its computer's `exec` and `processes` groups are taken out of what its tools and scripts see (no `computer.shell`, no `computer.processes`; a script that reaches for one is refused in words), no folder is mounted in the computer, and the run gets no `bash` or background tool, wherever its folder is. The run's own computer channel (`POST /runs/{run_id}/computer/call`, the owner's) keeps every group. `true` or absent: as the computer offers. Only a desktop or a phone takes it (422 not_allowed on another kind)." },
       },
       description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, whether the agent keeps it between runs, and, for a desktop or a phone, how the agent drives it and whether it may run programs on it. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
@@ -3330,10 +3392,13 @@ function serverHooks(adapters: readonly TriggerAdapter[]): Record<string, Json> 
     const handshake = push.handshake ? " A handshake its sender asks for (a URL check) is answered as the source answers it, after the check, never before." : "";
     // Its firings name the sources the server has, its own among them.
     const made = hookFiringsOf(adapters);
-    paths[`/hooks/${adapter.id}`] = {
+    // A source that keeps its key per scope is served under it alone (/hooks/composio/{hook}): its scope's key checks it.
+    const scoped = push.scoped === true;
+    paths[scoped ? `/hooks/${adapter.id}/{hook}` : `/hooks/${adapter.id}`] = {
       post: {
         operationId: `receiveHook_${adapter.id}`, tags: ["local"], summary: `Fire a ${adapter.label}: a request it checks, no token`,
-        description: `A pushed source's own route, with no token: the request is checked by the source's own check against its settings' \`${push.key}\` (the server's, PUT through its settings), on the raw body before anything else. The body is at most ${push.maxBodyBytes} bytes (413 at once past it, the socket closed) and arrives within ${HOOK_BODY_MS / 1000} s (408). Every refusal is the same 401. Each event the request holds fires the one trigger of this source that listens where it happened; an event no trigger takes, and a request with none, is answered 200 with no firing for it, and said in the server's log.${handshake}`,
+        ...(scoped ? { parameters: [{ name: "hook", in: "path", required: true, description: "The id of the route this server made for it (the trigger's `source.hook`): its key is that route's, kept here when the route was made.", schema: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" } }] } : {}),
+        description: `A pushed source's own route, with no token: the request is checked by the source's own check against its settings' \`${push.key}\` (${scoped ? "the one this server keeps for `hook`, never written by a person" : "the server's, PUT through its settings"}), on the raw body before anything else. The body is at most ${push.maxBodyBytes} bytes (413 at once past it, the socket closed) and arrives within ${HOOK_BODY_MS / 1000} s (408). Every refusal is the same 401. Each event the request holds fires the one trigger of this source that listens where it happened; an event no trigger takes, and a request with none, is answered 200 with no firing for it, and said in the server's log.${handshake}`,
         security: [],
         requestBody: { required: true, content: { "*/*": { schema: {} } } },
         // A handshake's answer is any object but a firings one or the ignored answer, so each answer is exactly one of the
@@ -3476,7 +3541,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   timeline.parameters = [
     ...(timeline.parameters as Json[]),
     { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } },
-    { name: "calls", in: "query", required: false, description: `\`whole\`: each \`tool_use\` row carries its call's arguments (\`tool_input\`) and each \`tool_result\` row the head of its output to ${CALL_RESULT_CHARS} characters (\`tool_result_text\`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (\`after\`, \`Last-Event-ID\`) from one read goes with the same \`calls\`.`, schema: { enum: ["whole"] } },
+    { name: "calls", in: "query", required: false, description: `\`whole\`: each \`tool_use\` row carries its call's arguments (\`tool_input\`) and each \`tool_result\` row the head of its output to ${CALL_RESULT_CHARS} characters (\`tool_result_text\`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (\`after\`, \`Last-Event-ID\`) from one read goes with the same \`calls\`.`, schema: { enum: ["whole"] } },
   ];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1", calls: "callswhole/1" };
   changed.push("GET /runs/{run_id}/timeline");
@@ -3650,6 +3715,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     upstream_failed: { type: "object", additionalProperties: false, properties: { status: { type: "integer", description: "The MCP server's HTTP status, when it answered one." } } },
     sign_in_held: { type: "object", additionalProperties: false, minProperties: 1, maxProperties: 1, properties: { held_by: { type: "string", description: "The run that holds the sign-in's save lease." }, handed_to: { type: "string", description: "A run still going that was handed the sign-in (signins/1)." } } },
     wrong_origin: closed({ open: { type: "string", format: "uri", description: "Where to open the console to sign in: the address the authorization server sends the browser back to." } }),
+    composio_subscription_elsewhere: closed({ webhook_url: { type: "string", description: "Where the Composio project's webhook subscription sends its events now." } }),
+    composio_not_connected: closedWith({ server: { type: "string" }, user_id: { type: "string", description: "The Composio user the server runs as." } }, { connect_url: { type: "string", format: "uri", description: "Composio's page to connect the account." } }),
+    composio_account_ambiguous: closed({ server: { type: "string" }, user_id: { type: "string", description: "The Composio user the server runs as." }, accounts: { type: "array", items: closed({ id: { type: "string", description: "Composio's id for the connected account." }, created_at: { type: "string", description: "When it was connected, as Composio says." } }), description: "The user's ACTIVE accounts for the toolkit, oldest first." } }),
+    composio_in_use: closed({ triggers: { type: "array", items: closed({ id: { type: "string" }, name: { type: "string" } }), description: "The composio triggers that use it." } }),
   };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {

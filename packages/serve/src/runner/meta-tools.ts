@@ -14,6 +14,7 @@
 // else of the run: no environment, no key, no file.
 import { randomBytes } from "node:crypto";
 import { CodemodeSandbox, type CodemodeHostCall, type CodemodeOutcome, type CodemodeOutputItem, toCodemodeIdentifier } from "@earendil-works/pi-codemode";
+import { withoutImageData } from "@parcha/agentrun-computer/surface";
 import type { HostTool, JsonValue, NestedCalls, NestedResult, ToolImage } from "@parcha/agentrun-kernel";
 
 import { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "../meta-tool-names.js";
@@ -149,26 +150,58 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
   return [...(options.discovery.search ? [search] : []), ...(options.discovery.call ? [call] : []), ...(options.codemode ? [codemode] : [])];
 }
 
-/** One nested call's line in a script's stopped answer, as Codex's code mode words its recovered calls. */
+/** One nested call's line in a script's stopped answer, as Codex's code mode words its recovered calls. A completed call's
+ *  result is its value as the script read it (scriptValue): JSON as itself where it parsed, so it reads as the object it
+ *  is, never as a string holding it, and an image in it named without its data; else that string, quoted. */
 function lineOf(index: number, name: string, result: NestedResult): string {
-  const said = JSON.stringify(result.text.length > 2_000 ? `${result.text.slice(0, 2_000)}…` : result.text);
+  const quoted = (text: string) => JSON.stringify(text.length > 2_000 ? `${text.slice(0, 2_000)}…` : text);
   const label = `${index}. ${name}`;
-  if (result.refused) return `${label} was refused: ${said}. It did not run.`;
+  if (result.refused) return `${label} was refused: ${quoted(result.text)}. It did not run.`;
   if (result.interrupted) return `${label} was started and did not report a result, so it may have taken effect: check before calling it again. It was not run again.`;
-  if (result.isError) return `${label} failed: ${said}. It was not run again.`;
+  if (result.isError) return `${label} failed: ${quoted(result.text)}. It was not run again.`;
+  const value = scriptValue(result);
+  const json = typeof value === "string" ? undefined : JSON.stringify(withoutImageData(value));
+  const said = json === undefined ? quoted(value as string) : json.length > 2_000 ? `${json.slice(0, 2_000)}…` : json;
   return `${label} completed: ${said}. Its effect is done; it was not run again.`;
 }
 
-/** The script's output and value, as the model reads them, and the images it showed. */
+/** The script's output and value, as the model reads them, and the images: the returned value's own first, then the ones
+ *  it showed with image(...), as computer_script answers them. The text names an image without its data. */
 function shownOf(output: readonly CodemodeOutputItem[], value: unknown): { text: string; images: ToolImage[] } {
   const words: string[] = [];
-  const images: ToolImage[] = [];
+  const shown: ToolImage[] = [];
   for (const item of output) {
     if (item.type === "text") words.push(item.text);
-    else images.push({ data: item.data, mimeType: item.mimeType });
+    else shown.push({ data: item.data, mimeType: item.mimeType });
   }
-  if (value !== undefined) words.push(typeof value === "string" ? value : JSON.stringify(value));
-  return { text: words.join("\n"), images };
+  if (value !== undefined) words.push(typeof value === "string" ? value : JSON.stringify(withoutImageData(value)));
+  return { text: words.join("\n"), images: [...imagesIn(value), ...shown] };
+}
+
+/** Every image in `value` (`{ type: "image", data }`), in order. */
+function imagesIn(value: unknown): ToolImage[] {
+  if (Array.isArray(value)) return value.flatMap(imagesIn);
+  if (value === null || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  if (record.type === "image" && typeof record.data === "string") return [{ data: record.data, mimeType: typeof record.mimeType === "string" ? record.mimeType : "image/png" }];
+  return Object.values(record).flatMap(imagesIn);
+}
+
+/** `value` with each image in it that has no data (`{ type: "image" }`, as a tool's structured value keeps an image whose
+ *  data travels in the answer's images) given the data of the next of `images`, in order. */
+function withImageData(value: unknown, images: readonly ToolImage[]): unknown {
+  let next = 0;
+  const fill = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(fill);
+    if (entry === null || typeof entry !== "object") return entry;
+    const record = entry as Record<string, unknown>;
+    if (record.type === "image" && record.data === undefined && next < images.length) {
+      const image = images[next++]!;
+      return { ...record, mimeType: record.mimeType ?? image.mimeType, data: image.data };
+    }
+    return Object.fromEntries(Object.entries(record).map(([key, inner]) => [key, fill(inner)]));
+  };
+  return fill(value);
 }
 
 /**
@@ -245,17 +278,18 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
       const why = result.error.kind === "timeout" ? `the script ran past ${CODEMODE_MS} ms: ${result.error.message}` : result.error.message;
       return { text: [shown.text, `The script failed: ${why}`].filter(Boolean).join("\n"), isError: true, ...(shown.images.length ? { images: shown.images } : {}) };
     }
-    return { text: shown.text || "(the script returned nothing and showed nothing)", ...(shown.images.length ? { images: shown.images } : {}), ...(result.value !== undefined ? { structured: result.value as JsonValue } : {}) };
+    return { text: shown.text || "(the script returned nothing and showed nothing)", ...(shown.images.length ? { images: shown.images } : {}), ...(result.value !== undefined ? { structured: withoutImageData(result.value) as JsonValue } : {}) };
   } finally {
     await sandbox.close();
   }
 }
 
-/** A nested call's value in a script: its structured value (an MCP result's structuredContent) when it has one; else, when
- *  its answer is one text part (no image beside it) whose text parses as a JSON object or array, that value (a Composio
- *  answer comes as one); else its text. The text the model reads of the call is its text either way. */
+/** A nested call's value in a script: its structured value (an MCP result's structuredContent; a computer tool's value)
+ *  when it has one, each image in it given its data back from the answer's images, so a screenshot is pixels the script
+ *  can show; else, when its answer is one text part (no image beside it) whose text parses as a JSON object or array,
+ *  that value (a Composio answer comes as one); else its text. The text the model reads of the call is its text either way. */
 function scriptValue(result: NestedResult): unknown {
-  if (result.structured !== undefined) return result.structured;
+  if (result.structured !== undefined) return result.images?.length ? withImageData(result.structured, result.images) : result.structured;
   const text = result.text.trim();
   if (result.images?.length || !(text.startsWith("{") || text.startsWith("["))) return result.text;
   try {

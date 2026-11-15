@@ -160,12 +160,23 @@ if (onPostgres) {
   });
 }
 
-/** Drops `schema` and everything in it, ending first any test client of it still holding a transaction open. */
-export async function dropSchema(schema) {
+/** Drops `schema` and everything in it, ending first any test client of it still holding a transaction open. A server
+ *  still connected to the schema (one a test drops it under) keeps its own transactions going, in its own table order: the
+ *  drop takes each table's lock in the order Postgres drops them, so it can meet one of them in a cycle, and Postgres
+ *  ends the drop as the victim ("deadlock detected", 40P01). Nothing was dropped (it is one statement), so it is asked
+ *  again: the other side's transaction has ended by then. `tries` bounds it. */
+export async function dropSchema(schema, tries = 10) {
   const c = await client();
   try {
     await c.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1 AND pid <> pg_backend_pid()", [`agentrun-test:${schema}`]);
-    await c.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await c.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+        return;
+      } catch (error) {
+        if (error?.code !== "40P01" || attempt >= tries) throw error;
+      }
+    }
   } finally {
     await c.end();
   }

@@ -25,7 +25,6 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
 import { computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
@@ -84,9 +83,6 @@ const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot
 const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
   const keys = new Map<string, string[]>();
   for (const def of [...computerToolDefs("desktop", []), ...computerToolDefs("phone", [])]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
-  // pi's code mode, offered only beside a desktop's or a phone's tools (runner/adapters/pi-computer.ts): its scripts
-  // reach the computer as computer_script's do, so it is held to the same keys. Its nested tool calls pass the gate each.
-  keys.set(CODEMODE_TOOL_NAME, keys.get("computer_script") ?? []);
   return keys;
 })();
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
@@ -102,8 +98,7 @@ export function nameMapOf(harness: string): NameMap {
   const names = new Map<string, string>();
   const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
   for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
-  // pi's code mode (`codemode`) is the computer kind's (KIND_TOOLS); the host's own is read by its own key (RunGate.hostMeta).
-  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS.filter((one) => one !== CODEMODE_TOOL_NAME), ...DECISION_PROVIDER_KEYS]) name(own, own);
+  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
   name(READ_SKILL_FILE, "read");
   for (const [own, keys] of KIND_TOOLS) name(own, keys[0]!);
   for (const [own, key] of Object.entries(facts?.nativeTools ?? {})) if (key) name(own, key);
@@ -399,8 +394,8 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.computerCodemode ? { computerCodemode: true } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
@@ -420,7 +415,7 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -437,11 +432,10 @@ export class RunGate {
    *  refusal says whether it took effect is not known, never that nothing was sent. */
   async decide(name: string, args: unknown, options: { readonly replayed?: boolean } = {}): Promise<"allow" | "ask" | { deny: string }> {
     // tools_search, tools_call and the host's codemode (runner/meta-tools.ts) run: each call they make is asked about here
-    // as its own tool, by its own name. pi's code mode on a run with a desktop or a phone is not the host's: its scripts
-    // reach the computer themselves, so it is held to the kind's setting (KIND_TOOLS).
+    // as its own tool, by its own name (a computer's tool by its kind's setting, KIND_TOOLS).
     // Each has a settings key of its own (allow unless an owner sets deny: a denied one is not offered, and a call to it is
     // refused here).
-    if (this.hostMeta(name)) {
+    if (META_TOOLS.has(name)) {
       const setting = this.setting(name);
       return setting.permission === "deny" ? { deny: deniedText(name, name, setting.from, options.replayed ? "unknown" : "no") } : "allow";
     }
@@ -471,13 +465,8 @@ export class RunGate {
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
-  /** Whether `name` is one of the host's three, not pi's own code mode on a desktop or a phone (which is held to the
-   *  kind's keys). */
-  private hostMeta(name: string): boolean {
-    return META_TOOLS.has(name) && !(name === CODEMODE_TOOL_NAME && this.where.computerCodemode);
-  }
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    if (this.hostMeta(tool)) return this.settingOf(tool, tool);
+    if (META_TOOLS.has(tool)) return this.settingOf(tool, tool);
     // A tool the desktop and the phone both have (every computer tool): the gate knows not the run's kind, so it is held to the
     // stricter of both keys' settings, never more permissive than the run's own kind's.
     const shared = KIND_TOOLS.get(tool);

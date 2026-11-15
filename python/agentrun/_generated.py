@@ -107,6 +107,11 @@ __all__ = [
     "CreateTriggerBodySource6AcceptItemWhereItem1",
     "CreateTriggerBodySource6AcceptItemWhereItem2",
     "CreateTriggerBodySource6AcceptItemWhereItem3",
+    "CreateTriggerBodySource7",
+    "CreateTriggerBodySource7AcceptItem",
+    "CreateTriggerBodySource7AcceptItemWhereItem1",
+    "CreateTriggerBodySource7AcceptItemWhereItem2",
+    "CreateTriggerBodySource7AcceptItemWhereItem3",
     "CreateTriggerBodyTarget1",
     "CreateTriggerBodyTarget2",
     "CreateTriggerBodyTarget2Input",
@@ -137,6 +142,11 @@ __all__ = [
     "CreateTriggerResponseSource6AcceptItemWhereItem1",
     "CreateTriggerResponseSource6AcceptItemWhereItem2",
     "CreateTriggerResponseSource6AcceptItemWhereItem3",
+    "CreateTriggerResponseSource7",
+    "CreateTriggerResponseSource7AcceptItem",
+    "CreateTriggerResponseSource7AcceptItemWhereItem1",
+    "CreateTriggerResponseSource7AcceptItemWhereItem2",
+    "CreateTriggerResponseSource7AcceptItemWhereItem3",
     "CreateTriggerResponseTarget1",
     "CreateTriggerResponseTarget2",
     "CreateTriggerResponseTarget2Input",
@@ -207,8 +217,11 @@ __all__ = [
     "DeleteAgentArchilResponse",
     "DeleteAgentArchilResponseArchilDisk",
     "DeleteAgentArchilResponseRemoved",
+    "DeleteComposioSubscriptionResponse",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponseComposio",
+    "DeleteTriggerResponse",
+    "DeleteTriggerResponseComposio",
     "DeleteWorkspaceArchilResponse",
     "DeleteWorkspaceArchilResponseSecret",
     "DisconnectGitHubResponse",
@@ -408,6 +421,11 @@ __all__ = [
     "GetTriggerResponseSource6AcceptItemWhereItem1",
     "GetTriggerResponseSource6AcceptItemWhereItem2",
     "GetTriggerResponseSource6AcceptItemWhereItem3",
+    "GetTriggerResponseSource7",
+    "GetTriggerResponseSource7AcceptItem",
+    "GetTriggerResponseSource7AcceptItemWhereItem1",
+    "GetTriggerResponseSource7AcceptItemWhereItem2",
+    "GetTriggerResponseSource7AcceptItemWhereItem3",
     "GetTriggerResponseTarget1",
     "GetTriggerResponseTarget2",
     "GetTriggerResponseTarget2Input",
@@ -435,6 +453,7 @@ __all__ = [
     "ImportTemplateResponseTemplateMcpItemToolsItem",
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
+    "ImportTemplateResponseTemplateModelChoicesItem",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
     "InputIssue",
@@ -444,9 +463,14 @@ __all__ = [
     "LimitsMaxCostUsd",
     "ListAgentsResponse",
     "ListAllRunsResponse",
+    "ListComposioEventsResponse",
+    "ListComposioEventsResponseEventsItem",
     "ListComposioToolsBody",
     "ListComposioToolsResponse",
     "ListComposioToolsResponseToolsItem",
+    "ListComposioTriggersResponse",
+    "ListComposioTriggersResponseSubscription",
+    "ListComposioTriggersResponseTriggersItem",
     "ListComputerChoicesResponse",
     "ListComputerChoicesResponseChoicesItem1",
     "ListComputerChoicesResponseChoicesItem1OptionsItem",
@@ -516,6 +540,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
+    "ListTemplatesResponseTemplatesItemModelChoicesItem",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
     "ListToolKeysResponse",
@@ -556,6 +581,11 @@ __all__ = [
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3",
+    "ListTriggersResponseTriggersItemSource7",
+    "ListTriggersResponseTriggersItemSource7AcceptItem",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3",
     "ListTriggersResponseTriggersItemTarget1",
     "ListTriggersResponseTriggersItemTarget2",
     "ListTriggersResponseTriggersItemTarget2Input",
@@ -611,6 +641,16 @@ __all__ = [
     "RaiseRunCapBody",
     "RaiseRunCapResponse",
     "ReadLearningFileResponse",
+    "ReceiveHookComposioResponse",
+    "ReceiveHookComposioResponseObject11",
+    "ReceiveHookComposioResponseObject11FiringsItem1",
+    "ReceiveHookComposioResponseObject11FiringsItem1Error",
+    "ReceiveHookComposioResponseObject11FiringsItem2",
+    "ReceiveHookComposioResponseObject12",
+    "ReceiveHookComposioResponseObject2",
+    "ReceiveHookComposioResponseObject2FiringsItem1",
+    "ReceiveHookComposioResponseObject2FiringsItem1Error",
+    "ReceiveHookComposioResponseObject2FiringsItem2",
     "RecordLearningEvalBody",
     "RecordLearningEvalResponse",
     "RedeliverWebhookResponse",
@@ -627,6 +667,7 @@ __all__ = [
     "Resources",
     "ResumeRunResponse",
     "RevisionsResource",
+    "RotateComposioSecretResponse",
     "RotateTriggerSecretBody",
     "RotateTriggerSecretResponse",
     "Run",
@@ -797,10 +838,16 @@ __all__ = [
     "UpdateTriggerBodySource6AcceptItemWhereItem1",
     "UpdateTriggerBodySource6AcceptItemWhereItem2",
     "UpdateTriggerBodySource6AcceptItemWhereItem3",
+    "UpdateTriggerBodySource7",
+    "UpdateTriggerBodySource7AcceptItem",
+    "UpdateTriggerBodySource7AcceptItemWhereItem1",
+    "UpdateTriggerBodySource7AcceptItemWhereItem2",
+    "UpdateTriggerBodySource7AcceptItemWhereItem3",
     "UpdateTriggerBodyTarget1",
     "UpdateTriggerBodyTarget2",
     "UpdateTriggerBodyTarget2Input",
     "UpdateTriggerResponse",
+    "UpdateTriggerResponseComposio",
     "UpdateTriggerResponseDisabled1",
     "UpdateTriggerResponseDisabled2",
     "UpdateTriggerResponseDisabled3",
@@ -827,6 +874,11 @@ __all__ = [
     "UpdateTriggerResponseSource6AcceptItemWhereItem1",
     "UpdateTriggerResponseSource6AcceptItemWhereItem2",
     "UpdateTriggerResponseSource6AcceptItemWhereItem3",
+    "UpdateTriggerResponseSource7",
+    "UpdateTriggerResponseSource7AcceptItem",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem1",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem2",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem3",
     "UpdateTriggerResponseTarget1",
     "UpdateTriggerResponseTarget2",
     "UpdateTriggerResponseTarget2Input",
@@ -3093,6 +3145,10 @@ class CreatePairingResponse(TypedDict):
     expires_at: str
 
 
+class DeleteComposioSubscriptionResponse(TypedDict):
+    deleted: Literal[True]
+
+
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
     on: bool
     secret: DeleteWorkspaceArchilResponseSecret
@@ -3204,6 +3260,24 @@ class GetWorkspaceArchilResponseSecret(TypedDict):
     changed_at: str | None
 
 
+class ListComposioEventsResponse(TypedDict):
+    server: str
+    toolkit: str
+    events: list[ListComposioEventsResponseEventsItem]
+
+
+class _ListComposioEventsResponseEventsItemRequired(TypedDict):
+    slug: str
+    name: str
+    description: str
+    config: dict[str, Any]
+    polled: bool
+
+
+class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItemRequired, total=False):
+    instructions: str
+
+
 class ListComposioToolsBody(TypedDict):
     api_key: str
     toolkit: str
@@ -3219,6 +3293,29 @@ class ListComposioToolsResponseToolsItem(TypedDict):
     slug: str
     name: str
     description: str
+
+
+class _ListComposioTriggersResponseRequired(TypedDict):
+    triggers: list[ListComposioTriggersResponseTriggersItem]
+    subscription: ListComposioTriggersResponseSubscription | None
+
+
+class ListComposioTriggersResponse(_ListComposioTriggersResponseRequired, total=False):
+    composio_error: str
+
+
+class ListComposioTriggersResponseTriggersItem(TypedDict):
+    id: str
+    name: str
+    enabled: bool
+    event: str
+    instance_id: str
+    on_composio: Literal["on", "off", "missing", "unknown"]
+
+
+class ListComposioTriggersResponseSubscription(TypedDict):
+    ours: bool
+    webhook_url: str
 
 
 class ListComputerChoicesResponse(TypedDict):
@@ -3386,6 +3483,79 @@ class PutWorkspaceArchilResponseSecret(TypedDict):
     set: bool
     source: Literal["env", "console", "sign-in"] | None
     changed_at: str | None
+
+
+ReceiveHookComposioResponse: TypeAlias = "ReceiveHookComposioResponseObject11 | ReceiveHookComposioResponseObject12 | ReceiveHookComposioResponseObject2"
+
+
+class ReceiveHookComposioResponseObject11(TypedDict):
+    firings: list[ReceiveHookComposioResponseObject11FiringsItem1 | ReceiveHookComposioResponseObject11FiringsItem2]
+
+
+class _ReceiveHookComposioResponseObject11FiringsItem1Required(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReceiveHookComposioResponseObject11FiringsItem1Error | None
+
+
+class ReceiveHookComposioResponseObject11FiringsItem1(_ReceiveHookComposioResponseObject11FiringsItem1Required, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    catch_up: Literal[True]
+
+
+class ReceiveHookComposioResponseObject11FiringsItem1Error(TypedDict):
+    code: str
+    message: str
+
+
+class ReceiveHookComposioResponseObject11FiringsItem2(TypedDict):
+    ok: Literal["duplicate"]
+
+
+class ReceiveHookComposioResponseObject12(TypedDict):
+    ok: Literal["ignored"]
+
+
+class ReceiveHookComposioResponseObject2(TypedDict):
+    firings: list[ReceiveHookComposioResponseObject2FiringsItem1 | ReceiveHookComposioResponseObject2FiringsItem2]
+
+
+class _ReceiveHookComposioResponseObject2FiringsItem1Required(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReceiveHookComposioResponseObject2FiringsItem1Error | None
+
+
+class ReceiveHookComposioResponseObject2FiringsItem1(_ReceiveHookComposioResponseObject2FiringsItem1Required, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    catch_up: Literal[True]
+
+
+class ReceiveHookComposioResponseObject2FiringsItem1Error(TypedDict):
+    code: str
+    message: str
+
+
+class ReceiveHookComposioResponseObject2FiringsItem2(TypedDict):
+    ok: Literal["duplicate"]
+
+
+class RotateComposioSecretResponse(TypedDict):
+    rotated: Literal[True]
 
 
 class _SaveComposioServerBodyRequired(TypedDict):
@@ -4912,7 +5082,7 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
 
 class _TimelineRowTriggerRequired(TypedDict):
     id: str
-    source: Literal["schedule", "webhook", "slack", "github", "email"]
+    source: Literal["schedule", "webhook", "slack", "github", "composio", "email"]
     owner: bool
 
 
@@ -5142,7 +5312,7 @@ class FeaturesWebhooks(TypedDict):
 
 class FeaturesTriggers(TypedDict):
     routes: bool
-    sources: list[Literal["schedule", "webhook", "github", "email"]]
+    sources: list[Literal["schedule", "webhook", "github", "composio", "email"]]
     targets: list[Literal["start_run", "message_run"]]
     min_every_s: int
     history_kept: int
@@ -5497,6 +5667,7 @@ class ApplyTemplateBody(TypedDict, total=False):
 
 class ApplyTemplateBodyOverrides(TypedDict, total=False):
     model: str
+    choice: str
     approvals: Literal["ask", "never"]
 
 
@@ -5599,6 +5770,19 @@ class _ImportTemplateResponseTemplateModelRequired(TypedDict):
 
 class ImportTemplateResponseTemplateModel(_ImportTemplateResponseTemplateModelRequired, total=False):
     prefer: str
+    fast: str
+    strong: str
+    choices: list[ImportTemplateResponseTemplateModelChoicesItem]
+
+
+class ImportTemplateResponseTemplateModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
 
 
 class ImportTemplateResponseTemplateToolPolicy(TypedDict):
@@ -5707,6 +5891,19 @@ class _ListTemplatesResponseTemplatesItemModelRequired(TypedDict):
 
 class ListTemplatesResponseTemplatesItemModel(_ListTemplatesResponseTemplatesItemModelRequired, total=False):
     prefer: str
+    fast: str
+    strong: str
+    choices: list[ListTemplatesResponseTemplatesItemModelChoicesItem]
+
+
+class ListTemplatesResponseTemplatesItemModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
 
 
 class ListTemplatesResponseTemplatesItemToolPolicy(TypedDict):
@@ -5982,7 +6179,7 @@ class PutToolSettingsResponseBrowser(_PutToolSettingsResponseBrowserRequired, to
 
 
 class _CreateTriggerBodyRequired(TypedDict):
-    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6
+    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6 | CreateTriggerBodySource7
     target: CreateTriggerBodyTarget1 | CreateTriggerBodyTarget2
 
 
@@ -6075,14 +6272,17 @@ class CreateTriggerBodySource5AcceptItemWhereItem3(TypedDict):
 
 
 class _CreateTriggerBodySource6Required(TypedDict):
-    kind: Literal["email"]
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
 
 
 class CreateTriggerBodySource6(_CreateTriggerBodySource6Required, total=False):
-    account: Literal["default"]
-    mailbox: str
-    every_s: int
     accept: list[CreateTriggerBodySource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
 
 
 class _CreateTriggerBodySource6AcceptItemRequired(TypedDict):
@@ -6103,6 +6303,39 @@ class CreateTriggerBodySource6AcceptItemWhereItem2(TypedDict):
 
 
 class CreateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _CreateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class CreateTriggerBodySource7(_CreateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[CreateTriggerBodySource7AcceptItem]
+
+
+class _CreateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerBodySource7AcceptItem(_CreateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerBodySource7AcceptItemWhereItem1 | CreateTriggerBodySource7AcceptItemWhereItem2 | CreateTriggerBodySource7AcceptItemWhereItem3]
+
+
+CreateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("CreateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -6132,7 +6365,7 @@ class _CreateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6
+    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6 | CreateTriggerResponseSource7
     target: CreateTriggerResponseTarget1 | CreateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -6230,14 +6463,17 @@ class CreateTriggerResponseSource5AcceptItemWhereItem3(TypedDict):
 
 
 class _CreateTriggerResponseSource6Required(TypedDict):
-    kind: Literal["email"]
-    account: Literal["default"]
-    mailbox: str
-    every_s: int
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
 
 
 class CreateTriggerResponseSource6(_CreateTriggerResponseSource6Required, total=False):
     accept: list[CreateTriggerResponseSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
 
 
 class _CreateTriggerResponseSource6AcceptItemRequired(TypedDict):
@@ -6258,6 +6494,39 @@ class CreateTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
 
 
 class CreateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _CreateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class CreateTriggerResponseSource7(_CreateTriggerResponseSource7Required, total=False):
+    accept: list[CreateTriggerResponseSource7AcceptItem]
+
+
+class _CreateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerResponseSource7AcceptItem(_CreateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerResponseSource7AcceptItemWhereItem1 | CreateTriggerResponseSource7AcceptItemWhereItem2 | CreateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+CreateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("CreateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -6314,7 +6583,7 @@ class CreateTriggerResponseDisabled5(TypedDict):
 
 class _CreateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6341,9 +6610,19 @@ class CreateTriggerResponseLastCheck(TypedDict):
     message: str
 
 
+class DeleteTriggerResponse(TypedDict):
+    deleted: Literal[True]
+    composio: DeleteTriggerResponseComposio
+
+
+class DeleteTriggerResponseComposio(TypedDict):
+    done: Literal[False]
+    note: str
+
+
 class _FireTriggerResponseRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6370,7 +6649,7 @@ class ListTriggerFiringsResponse(TypedDict):
 
 class _ListTriggerFiringsResponseFiringsItemRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6395,7 +6674,7 @@ class _GetTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6
+    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6 | GetTriggerResponseSource7
     target: GetTriggerResponseTarget1 | GetTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -6491,14 +6770,17 @@ class GetTriggerResponseSource5AcceptItemWhereItem3(TypedDict):
 
 
 class _GetTriggerResponseSource6Required(TypedDict):
-    kind: Literal["email"]
-    account: Literal["default"]
-    mailbox: str
-    every_s: int
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
 
 
 class GetTriggerResponseSource6(_GetTriggerResponseSource6Required, total=False):
     accept: list[GetTriggerResponseSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
 
 
 class _GetTriggerResponseSource6AcceptItemRequired(TypedDict):
@@ -6519,6 +6801,39 @@ class GetTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
 
 
 class GetTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _GetTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class GetTriggerResponseSource7(_GetTriggerResponseSource7Required, total=False):
+    accept: list[GetTriggerResponseSource7AcceptItem]
+
+
+class _GetTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class GetTriggerResponseSource7AcceptItem(_GetTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[GetTriggerResponseSource7AcceptItemWhereItem1 | GetTriggerResponseSource7AcceptItemWhereItem2 | GetTriggerResponseSource7AcceptItemWhereItem3]
+
+
+GetTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("GetTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -6575,7 +6890,7 @@ class GetTriggerResponseDisabled5(TypedDict):
 
 class _GetTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6610,7 +6925,7 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6
+    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6 | ListTriggersResponseTriggersItemSource7
     target: ListTriggersResponseTriggersItemTarget1 | ListTriggersResponseTriggersItemTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -6706,14 +7021,17 @@ class ListTriggersResponseTriggersItemSource5AcceptItemWhereItem3(TypedDict):
 
 
 class _ListTriggersResponseTriggersItemSource6Required(TypedDict):
-    kind: Literal["email"]
-    account: Literal["default"]
-    mailbox: str
-    every_s: int
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
 
 
 class ListTriggersResponseTriggersItemSource6(_ListTriggersResponseTriggersItemSource6Required, total=False):
     accept: list[ListTriggersResponseTriggersItemSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
 
 
 class _ListTriggersResponseTriggersItemSource6AcceptItemRequired(TypedDict):
@@ -6734,6 +7052,39 @@ class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2(TypedDict):
 
 
 class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _ListTriggersResponseTriggersItemSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class ListTriggersResponseTriggersItemSource7(_ListTriggersResponseTriggersItemSource7Required, total=False):
+    accept: list[ListTriggersResponseTriggersItemSource7AcceptItem]
+
+
+class _ListTriggersResponseTriggersItemSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItem(_ListTriggersResponseTriggersItemSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3]
+
+
+ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 = TypedDict("ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -6790,7 +7141,7 @@ class ListTriggersResponseTriggersItemDisabled5(TypedDict):
 
 class _ListTriggersResponseTriggersItemLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6832,7 +7183,7 @@ class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=Fa
 class UpdateTriggerBody(TypedDict, total=False):
     name: str
     enabled: bool
-    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6
+    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6 | UpdateTriggerBodySource7
     target: UpdateTriggerBodyTarget1 | UpdateTriggerBodyTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -6920,14 +7271,17 @@ class UpdateTriggerBodySource5AcceptItemWhereItem3(TypedDict):
 
 
 class _UpdateTriggerBodySource6Required(TypedDict):
-    kind: Literal["email"]
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
 
 
 class UpdateTriggerBodySource6(_UpdateTriggerBodySource6Required, total=False):
-    account: Literal["default"]
-    mailbox: str
-    every_s: int
     accept: list[UpdateTriggerBodySource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
 
 
 class _UpdateTriggerBodySource6AcceptItemRequired(TypedDict):
@@ -6948,6 +7302,39 @@ class UpdateTriggerBodySource6AcceptItemWhereItem2(TypedDict):
 
 
 class UpdateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _UpdateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class UpdateTriggerBodySource7(_UpdateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[UpdateTriggerBodySource7AcceptItem]
+
+
+class _UpdateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerBodySource7AcceptItem(_UpdateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerBodySource7AcceptItemWhereItem1 | UpdateTriggerBodySource7AcceptItemWhereItem2 | UpdateTriggerBodySource7AcceptItemWhereItem3]
+
+
+UpdateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -6977,7 +7364,7 @@ class _UpdateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6
+    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6 | UpdateTriggerResponseSource7
     target: UpdateTriggerResponseTarget1 | UpdateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -6995,6 +7382,7 @@ class UpdateTriggerResponse(_UpdateTriggerResponseRequired, total=False):
     hook_url: str
     secret: SecretMeta
     note: str
+    composio: UpdateTriggerResponseComposio
 
 
 class UpdateTriggerResponseSource1(TypedDict):
@@ -7073,14 +7461,17 @@ class UpdateTriggerResponseSource5AcceptItemWhereItem3(TypedDict):
 
 
 class _UpdateTriggerResponseSource6Required(TypedDict):
-    kind: Literal["email"]
-    account: Literal["default"]
-    mailbox: str
-    every_s: int
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
 
 
 class UpdateTriggerResponseSource6(_UpdateTriggerResponseSource6Required, total=False):
     accept: list[UpdateTriggerResponseSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
 
 
 class _UpdateTriggerResponseSource6AcceptItemRequired(TypedDict):
@@ -7101,6 +7492,39 @@ class UpdateTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
 
 
 class UpdateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _UpdateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class UpdateTriggerResponseSource7(_UpdateTriggerResponseSource7Required, total=False):
+    accept: list[UpdateTriggerResponseSource7AcceptItem]
+
+
+class _UpdateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerResponseSource7AcceptItem(_UpdateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerResponseSource7AcceptItemWhereItem1 | UpdateTriggerResponseSource7AcceptItemWhereItem2 | UpdateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+UpdateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -7157,7 +7581,7 @@ class UpdateTriggerResponseDisabled5(TypedDict):
 
 class _UpdateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7182,6 +7606,11 @@ class UpdateTriggerResponseLastCheck(TypedDict):
     at: str
     ok: bool
     message: str
+
+
+class UpdateTriggerResponseComposio(TypedDict):
+    done: Literal[False]
+    note: str
 
 
 GetUsageResponse: TypeAlias = "Usage"
@@ -7390,6 +7819,7 @@ OPERATIONS: dict[str, Operation] = {
     "writeLearningFile": Operation(method="PUT", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match", "If-None-Match"), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="text", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -7401,10 +7831,14 @@ OPERATIONS: dict[str, Operation] = {
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "listComposioEvents": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/events", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComposioTools": Operation(method="POST", path="/settings/mcp-servers/composio/tools", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit",), tagged=False),
+    "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -7463,7 +7897,7 @@ OPERATIONS: dict[str, Operation] = {
     "getToolSettings": Operation(method="GET", path="/settings/tools", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putToolSettings": Operation(method="PUT", path="/settings/tools", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createTrigger": Operation(method="POST", path="/triggers", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "deleteTrigger": Operation(method="DELETE", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteTrigger": Operation(method="DELETE", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "fireTrigger": Operation(method="POST", path="/triggers/{trigger_id}/fire", path_params=("trigger_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggerFirings": Operation(method="GET", path="/triggers/{trigger_id}/firings", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -7672,6 +8106,10 @@ class LocalResource(Group):
         """A code that pairs a person's own computer with this server (POST /computers/pairings)."""
         return self._call("createPairing", (), None, None, timeout=timeout)
 
+    def delete_composio_subscription(self, name: str, *, timeout: float | None = None) -> DeleteComposioSubscriptionResponse:
+        """Delete the Composio project's webhook subscription, once no trigger uses it (DELETE /settings/mcp-servers/{name}/composio/subscription)."""
+        return self._call("deleteComposioSubscription", (name,), None, None, timeout=timeout)
+
     def delete_computer(self, computer_id: str, *, timeout: float | None = None) -> None:
         """Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id})."""
         return self._call("deleteComputer", (computer_id,), None, None, timeout=timeout)
@@ -7708,9 +8146,17 @@ class LocalResource(Group):
         """Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil)."""
         return self._call("getWorkspaceArchil", (), None, None, timeout=timeout)
 
+    def list_composio_events(self, name: str, *, timeout: float | None = None) -> ListComposioEventsResponse:
+        """List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events)."""
+        return self._call("listComposioEvents", (name,), None, None, timeout=timeout)
+
     def list_composio_tools(self, body: ListComposioToolsBody, *, timeout: float | None = None) -> ListComposioToolsResponse:
         """List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("listComposioTools", (), body, None, timeout=timeout)
+
+    def list_composio_triggers(self, name: str, *, timeout: float | None = None) -> ListComposioTriggersResponse:
+        """A saved Composio server's triggers, each with its instance's state on Composio (GET /settings/mcp-servers/{name}/composio/triggers)."""
+        return self._call("listComposioTriggers", (name,), None, None, timeout=timeout)
 
     def list_computer_choices(self, provider: str, *, timeout: float | None = None) -> ListComputerChoicesResponse:
         """The values a computer provider's picked keys offer, read from the vendor (GET /computers/{provider}/choices)."""
@@ -7723,6 +8169,14 @@ class LocalResource(Group):
     def put_workspace_archil(self, body: PutWorkspaceArchilBody, *, timeout: float | None = None) -> PutWorkspaceArchilResponse:
         """Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil)."""
         return self._call("putWorkspaceArchil", (), body, None, timeout=timeout)
+
+    def receive_hook_composio(self, hook: str, body: RawBody, *, body_type: str | None = None, timeout: float | None = None) -> ReceiveHookComposioResponse:
+        """Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook})."""
+        return self._call("receiveHook_composio", (hook,), body, None, timeout=timeout, body_type=body_type)
+
+    def rotate_composio_secret(self, name: str, *, timeout: float | None = None) -> RotateComposioSecretResponse:
+        """Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret)."""
+        return self._call("rotateComposioSecret", (name,), None, None, timeout=timeout)
 
     def save_composio_server(self, name: str, body: SaveComposioServerBody, *, timeout: float | None = None) -> SaveComposioServerResponse:
         """Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
@@ -7984,7 +8438,7 @@ class TriggersResource(Group):
         """Make a trigger: a schedule or a signed webhook that starts a capped run of an agent, or messages a run (POST /triggers)."""
         return self._call("createTrigger", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
-    def delete(self, trigger_id: str, *, timeout: float | None = None) -> None:
+    def delete(self, trigger_id: str, *, timeout: float | None = None) -> DeleteTriggerResponse | None:
         """Delete a trigger and its firings; the runs it started stay (DELETE /triggers/{trigger_id})."""
         return self._call("deleteTrigger", (trigger_id,), None, None, timeout=timeout)
 
