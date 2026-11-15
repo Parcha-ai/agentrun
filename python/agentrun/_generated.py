@@ -148,6 +148,7 @@ __all__ = [
     "DefinitionInputToolSettingsDesktop",
     "DefinitionInputToolSettingsEdit",
     "DefinitionInputToolSettingsEmailDraft",
+    "DefinitionInputToolSettingsEmailFile",
     "DefinitionInputToolSettingsEmailRead",
     "DefinitionInputToolSettingsEmailSearch",
     "DefinitionInputToolSettingsEmailSend",
@@ -172,6 +173,7 @@ __all__ = [
     "DefinitionToolSettingsDesktop",
     "DefinitionToolSettingsEdit",
     "DefinitionToolSettingsEmailDraft",
+    "DefinitionToolSettingsEmailFile",
     "DefinitionToolSettingsEmailRead",
     "DefinitionToolSettingsEmailSearch",
     "DefinitionToolSettingsEmailSend",
@@ -550,6 +552,7 @@ __all__ = [
     "PutToolSettingsBodyDesktop",
     "PutToolSettingsBodyEdit",
     "PutToolSettingsBodyEmailDraft",
+    "PutToolSettingsBodyEmailFile",
     "PutToolSettingsBodyEmailRead",
     "PutToolSettingsBodyEmailSearch",
     "PutToolSettingsBodyEmailSend",
@@ -892,6 +895,7 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     email_read: DefinitionInputToolSettingsEmailRead
     email_draft: DefinitionInputToolSettingsEmailDraft
     email_send: DefinitionInputToolSettingsEmailSend
+    email_file: DefinitionInputToolSettingsEmailFile
     browser: DefinitionInputToolSettingsBrowser
     subagent: DefinitionInputToolSettingsSubagent
     pdf_pages: DefinitionInputToolSettingsPdfPages
@@ -950,6 +954,11 @@ class DefinitionInputToolSettingsEmailDraft(TypedDict, total=False):
 
 class DefinitionInputToolSettingsEmailSend(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
 
 
 class DefinitionInputToolSettingsBrowser(TypedDict, total=False):
@@ -1095,6 +1104,7 @@ class DefinitionToolSettings(TypedDict, total=False):
     email_read: DefinitionToolSettingsEmailRead
     email_draft: DefinitionToolSettingsEmailDraft
     email_send: DefinitionToolSettingsEmailSend
+    email_file: DefinitionToolSettingsEmailFile
     browser: DefinitionToolSettingsBrowser
     subagent: DefinitionToolSettingsSubagent
     pdf_pages: DefinitionToolSettingsPdfPages
@@ -1153,6 +1163,11 @@ class DefinitionToolSettingsEmailDraft(TypedDict, total=False):
 
 class DefinitionToolSettingsEmailSend(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
 
 
 class DefinitionToolSettingsBrowser(TypedDict, total=False):
@@ -5356,6 +5371,7 @@ class PutToolSettingsBody(TypedDict, total=False):
     email_read: PutToolSettingsBodyEmailRead
     email_draft: PutToolSettingsBodyEmailDraft
     email_send: PutToolSettingsBodyEmailSend
+    email_file: PutToolSettingsBodyEmailFile
     browser: PutToolSettingsBodyBrowser
     subagent: PutToolSettingsBodySubagent
     pdf_pages: PutToolSettingsBodyPdfPages
@@ -5410,6 +5426,10 @@ class PutToolSettingsBodyEmailDraft(TypedDict, total=False):
 
 
 class PutToolSettingsBodyEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailFile(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 

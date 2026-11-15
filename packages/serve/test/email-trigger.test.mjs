@@ -1,11 +1,11 @@
 // The email trigger (trigger-email.ts) through the API, against the fake mail account (email/email-faux.ts): it polls the
-// account's INBOX on a grid of every_s seconds and starts one run per new message, its payload marked untrusted. The first
-// poll fires nothing and says how many messages it leaves; a changed UIDVALIDITY the same, said; the cursor (UIDVALIDITY
-// and the last UID) survives a restart; a Message-ID seen twice fires once; a poll takes at most 20 messages, oldest
-// first; a message this server sent (X-AgentRun-Sent) is left, and said; `accept` takes and ignores. Every read is a
-// PEEK: the inbox reads unread after. A server that can't be reached is said on the trigger and never turns it off;
-// three refused sign-ins in a row do, naming Settings → Email. The schedules' own tests (triggers.test.mjs) stand as
-// they are.
+// account's INBOX on a grid of every_s seconds and starts one run per new message, its payload marked untrusted. Its
+// creation fires nothing and says how many messages it leaves (email-start.test.mjs has the rest of where it starts); a
+// changed UIDVALIDITY the same, said; the cursor (UIDVALIDITY and the last UID) survives a restart; a Message-ID seen
+// twice fires once; a poll takes at most 20 messages, oldest first; a message this server sent (X-AgentRun-Sent) is
+// left, and said; `accept` takes and ignores. Every read is a PEEK: the inbox reads unread after. A server that can't be
+// reached is said on the trigger and never turns it off; three refused sign-ins in a row do, naming Settings → Email.
+// The schedules' own tests (triggers.test.mjs) stand as they are.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
@@ -38,7 +38,7 @@ test("no account: an email trigger is refused, naming Settings → Email; a sour
   assert.deepEqual(fields, ["source.account", "source.accept[0].event", "source.every_s", "source.folder"].sort(), JSON.stringify(bad.body));
 });
 
-test("the first poll fires nothing and says so; one new message then starts one run, its payload whole and marked untrusted, its title the sender and subject; every read is a PEEK", { timeout: 120_000 }, async (t) => {
+test("its creation fires nothing and says so; one new message then starts one run, its payload whole and marked untrusted, its title the sender and subject; every read is a PEEK", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock(T0);
   const { api, baseUrl, data } = await serve(t, { triggerClock: clock });
   const faux = await mailbox(t);

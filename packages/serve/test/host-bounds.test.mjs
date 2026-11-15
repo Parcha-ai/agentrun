@@ -98,12 +98,13 @@ test("every host tool's largest result is within the host's result bound, which 
     ...fills.map((fill) => emailText({ messages: [{ ...bare(0), text: fill.repeat(2_000_000) }] })),
     ...fills.map((fill) => emailText({ saved: true, mailbox: fill.repeat(50_000), message_id: fill.repeat(50_000) })),
     ...fills.map((fill) => emailText({ sent: true, message_id: fill.repeat(50_000), note: fill.repeat(50_000) })),
+    ...fills.map((fill) => emailText({ filed: true, message_id: fill.repeat(50_000), to: fill.repeat(50_000), archived: true, subject: fill.repeat(50_000) })),
     ...fills.map((fill) => emailError(`email_read: ${fill.repeat(50_000)}`)),
   ];
   const thread = JSON.parse(mails[2 * fills.length]);
   assert.ok(thread.messages.length === 20 && thread.messages.filter((m) => m.text.length === 1_000).length === 10, "a thread's short texts kept whole, its long ones sharing what is left");
   assert.ok(JSON.parse(mails[0]).omitted > 0, "a search's messages that do not fit are counted");
-  for (const tool of ["email_search", "email_read", "email_draft", "email_send"]) keep(tool, ...mails);
+  for (const tool of ["email_search", "email_read", "email_draft", "email_send", "email_file"]) keep(tool, ...mails);
 
   // A monid endpoint (one host tool per pinned endpoint, runner/monid-run.ts): one answer far past CLIP, the whole filed
   // under work/, by the longest run id it files by.

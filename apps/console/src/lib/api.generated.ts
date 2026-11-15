@@ -299,6 +299,10 @@ export interface components {
       email_send?: {
         permission?: "allow" | "ask" | "deny";
       };
+      email_file?: {
+        permission?: "allow" | "ask" | "deny";
+        scope?: "thread" | "mailbox";
+      };
       browser?: {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "deny";
@@ -3690,6 +3694,9 @@ export interface operations {
         permission?: "allow" | "ask" | "deny";
       };
       email_send?: {
+        permission?: "allow" | "ask" | "deny";
+      };
+      email_file?: {
         permission?: "allow" | "ask" | "deny";
       };
       browser?: {

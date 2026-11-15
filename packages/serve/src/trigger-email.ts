@@ -2,15 +2,17 @@
 // epoch, it reads the server's email account's mailbox (INBOX by default) over IMAP, read-only, and each message that
 // came since its cursor is one firing through the path a pushed event takes (triggers.ts): its accept filter, a run per
 // message, max_active_runs, its key kept for its day. The cursor is the mailbox's UIDVALIDITY and the last UID read, in
-// the trigger's own settings, kept only once the poll's firings are recorded, so a restart goes on from it. The first
-// poll fires nothing and says how many messages it leaves; a UIDVALIDITY the server changed the same. A message's key is
+// the trigger's own settings, kept only once the poll's firings are recorded, so a restart goes on from it. Its start
+// (the engine's start hook) is taken when the trigger is made, when an edit changes its mailbox or account, and when it
+// is turned on again: mail from before then starts no run, and that is said; any other edit keeps the cursor. A start
+// that can't sign in is taken at the first poll that does, and said; a UIDVALIDITY the server changed the same. A message's key is
 // its Message-ID (else UIDVALIDITY:UID), so one seen twice fires once. At most POLL_TAKES messages a poll, oldest first. A
 // message this server sent (X-AgentRun-Sent, email/tools.ts email_send) is left, and said. An unreachable server is said
 // on the trigger and tried at the next time; a refused sign-in counts (the engine turns the trigger off at the third).
 import { DEFAULT_ACCOUNT, NO_ACCOUNT, type OpenedAccount } from "./email/account.js";
-import type { MailMessage } from "./email/mail.js";
+import type { ImapSession, MailMessage } from "./email/mail.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
-import { closedSchema, type PolledEvent, type PollResult, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
+import { closedSchema, type PolledEvent, type PollResult, type Source, type StartResult, type StartWhy, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 import { MAX_EVERY_S, MIN_EVERY_S } from "./trigger-schedule.js";
 
 /** The most messages one poll takes: the rest wait for the next. */
@@ -82,22 +84,47 @@ function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => 
 /** `n` messages, in words. */
 const messages = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
 
+/** The cursor at the end of `source`'s mailbox as it is now, and how many messages it holds: where watching starts. */
+async function endOf(session: ImapSession, source: EmailSource): Promise<{ cursor: Cursor; exists: number }> {
+  const path = await session.resolve(source.mailbox);
+  const box = await session.open(path);
+  // The newest UID there: UIDNEXT's one before, else the highest a search finds.
+  const uid = box.uidNext > 0 ? box.uidNext - 1 : Math.max(0, ...(await session.uids({ all: true })));
+  return { cursor: { mailbox: path, uidvalidity: box.uidValidity, uid }, exists: box.exists };
+}
+
+/** The history line of a start taken for `why`, with `exists` messages left. */
+const watching = (source: EmailSource, exists: number, why: StartWhy) =>
+  why === "enabled"
+    ? `Watching ${source.mailbox} from now, on again: the ${messages(exists)} already there, any that came while it was off among them, won't start runs.`
+    : `Watching ${source.mailbox} from now: the ${messages(exists)} already there won't start runs.`;
+/** The history line of a start that could not read the mailbox. */
+const unchecked = (source: Source, why: StartWhy) =>
+  `Couldn't check ${String(source.mailbox ?? "INBOX")} when it was ${why === "created" ? "created" : why === "edited" ? "changed" : "turned on again"}; watching from the first check that signs in.`;
+
+/** `source`'s start, on `account`: the cursor at its mailbox's end now. */
+async function start(source: EmailSource, account: OpenedAccount, why: StartWhy): Promise<StartResult> {
+  const { MailError, withImap } = await import("./email/mail.js");
+  return withImap(account, async (session) => {
+    const end = await endOf(session, source);
+    return { check: { ok: true, message: `Watching ${source.mailbox}.` }, note: watching(source, end.exists, why), cursor: kept(end.cursor) };
+  }).catch((error: unknown): StartResult => {
+    const failure = error instanceof MailError ? error : new MailError("failed", String((error as Error)?.message ?? error));
+    return { check: { ok: false, message: failure.message }, note: unchecked(source, why) };
+  });
+}
+
 /** One poll of `source`'s mailbox from `cursor`, on `account`. The mail libraries load at the first poll, never with the
  *  registry (every process that reads the sources). */
 async function poll(source: EmailSource, account: OpenedAccount, cursor: Cursor | undefined): Promise<PollResult> {
   const { MailError, payloadOf, READ_BYTES, withImap } = await import("./email/mail.js");
   return withImap(account, async (session) => {
-    const path = await session.resolve(source.mailbox);
-    const box = await session.open(path);
-    // The newest UID there: UIDNEXT's one before, else the highest a search finds.
-    const newest = async () => (box.uidNext > 0 ? box.uidNext - 1 : Math.max(0, ...(await session.uids({ all: true }))));
-    if (!cursor || cursor.mailbox !== path) {
-      const at = { mailbox: path, uidvalidity: box.uidValidity, uid: await newest() };
-      return { check: { ok: true, message: `Watching ${source.mailbox}.` }, note: `Watching ${source.mailbox} from now: the ${messages(box.exists)} already there won't start runs.`, cursor: kept(at) };
-    }
-    if (cursor.uidvalidity !== box.uidValidity) {
-      const at = { mailbox: path, uidvalidity: box.uidValidity, uid: await newest() };
-      return { check: { ok: true, message: `Watching ${source.mailbox} again: the mail server rebuilt it.` }, note: `${source.mailbox} was rebuilt on the mail server (its UIDVALIDITY changed): watching it from now; the ${messages(box.exists)} there won't start runs.`, cursor: kept(at) };
+    const end = await endOf(session, source);
+    const path = end.cursor.mailbox;
+    // No start yet (one that could not sign in, or a cursor kept before starts were taken): this check takes it.
+    if (!cursor || cursor.mailbox !== path) return { check: { ok: true, message: `Watching ${source.mailbox}.` }, note: watching(source, end.exists, "created"), cursor: kept(end.cursor) };
+    if (cursor.uidvalidity !== end.cursor.uidvalidity) {
+      return { check: { ok: true, message: `Watching ${source.mailbox} again: the mail server rebuilt it.` }, note: `${source.mailbox} was rebuilt on the mail server (its UIDVALIDITY changed): watching it from now; the ${messages(end.exists)} there won't start runs.`, cursor: kept(end.cursor) };
     }
     // `n:*` names the highest UID even when it is below n: only those past the cursor count.
     const fresh = (await session.uids({ uid: `${cursor.uid + 1}:*` })).filter((uid) => uid > cursor.uid);
@@ -160,6 +187,15 @@ export const email: TriggerAdapter = {
     const account = (await ctx.credentials()) as OpenedAccount | undefined;
     if (!account) return { check: { ok: false, message: NO_ACCOUNT } };
     return poll(source as EmailSource, account, cursorOf(ctx.setting(CURSOR)));
+  },
+  start: {
+    on: ["account", "mailbox"],
+    async take(source, ctx) {
+      const account = (await ctx.credentials()) as OpenedAccount | undefined;
+      if (!account) return { check: { ok: false, message: NO_ACCOUNT }, note: unchecked(source, ctx.why) };
+      return start(source as EmailSource, account, ctx.why);
+    },
+    unchecked,
   },
   title: (attrs) => `${attrs.from ?? ""} — ${attrs.subject ?? ""}`,
 };

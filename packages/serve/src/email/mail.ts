@@ -1,8 +1,9 @@
 // The wire to the server's mail account (account.ts): one IMAP session at a time (imapflow), SMTP for what is sent
 // (nodemailer), a message parsed (mailparser) into the one shape the trigger's payload and the tools answer, and a
 // message built (nodemailer's composer) for a draft or a send. TLS always: 993 and 465 from the start, any other port
-// with STARTTLS required, plaintext only to the loopback address (the fakes, account.ts securityOf). Every mailbox is
-// opened read-only (EXAMINE) and every message read with BODY.PEEK, so no read or poll changes a flag. An error is one
+// with STARTTLS required, plaintext only to the loopback address (the fakes, account.ts securityOf). Every mailbox a read
+// or a poll opens is opened read-only (EXAMINE) and every message read with BODY.PEEK, so no read or poll changes a flag;
+// only filing (email_file) opens one read-write, to label or move the one message it files. An error is one
 // of four kinds (MailError), said in words that never hold the password: the server could not be reached, it refused
 // the sign-in, a mailbox or message is not there, or it answered something else.
 import { ImapFlow, type FetchMessageObject, type ListResponse, type SearchObject } from "imapflow";
@@ -189,6 +190,37 @@ export class ImapSession {
     const rows = await this.client.fetchAll(uids.join(","), { uid: true, flags: true, internalDate: true, source: { maxLength: bytes } }, { uid: true });
     const messages = await Promise.all(rows.map((row) => messageOf(row, path)));
     return messages.sort((a, b) => a.uid - b.uid);
+  }
+
+  /** Whether the server says it does `capability` (X-GM-EXT-1: Gmail's labels). */
+  can(capability: string): boolean {
+    return this.client.capabilities.has(capability);
+  }
+
+  /** `path` opened read-write (SELECT), to change what it holds. */
+  async select(path: string): Promise<void> {
+    await this.client.mailboxOpen(path, { readOnly: false });
+  }
+
+  /** The folder (or Gmail label) `path`, created when the account has none of that name; whether it was. */
+  async ensure(path: string): Promise<boolean> {
+    if ((await this.mailboxes()).some((box) => box.path === path)) return false;
+    const made = await this.client.mailboxCreate(path);
+    this.listed = undefined;
+    return made?.created !== false;
+  }
+
+  /** Gmail labels `labels` added to (or, `remove`, taken off) message `uid` of the open mailbox. */
+  async label(uid: number, labels: string[], remove = false): Promise<void> {
+    const options = { uid: true, useLabels: true } as const;
+    const done = remove ? await this.client.messageFlagsRemove(String(uid), labels, options) : await this.client.messageFlagsAdd(String(uid), labels, options);
+    if (!done) throw new MailError("failed", `The mail server did not ${remove ? "take the label off" : "label"} the message.`);
+  }
+
+  /** Message `uid` of the open mailbox moved to `path` (UID MOVE, else UID COPY and UID EXPUNGE). */
+  async move(uid: number, path: string): Promise<void> {
+    const done = await this.client.messageMove(String(uid), path, { uid: true });
+    if (!done) throw new MailError("failed", `The mail server did not move the message to ${path}.`);
   }
 
   /** `raw` appended to `path` with `flags`. */

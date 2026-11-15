@@ -13,7 +13,9 @@ import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { APPROVAL_ROW, type ApprovalPrice, type PendingApproval, previewOf } from "./tool-gate.js";
 import { ASK_TOOL } from "./tools.js";
-import { EMAIL_SEND, sendSummary } from "./email/names.js";
+import { EMAIL_FILE, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
+// The email tools' timeline lines (registerLabel), registered as this module loads.
+import "./email/labels.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
@@ -472,16 +474,20 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-/** A call's approval summary, where its tool has one (email_send's: to whom, and what), redacted as its arguments are. */
+/** The tools whose approval card says what the call does in words: email_send's to whom and what, email_file's which
+ *  message and where. */
+const SUMMARIES: Record<string, (args: unknown) => string | undefined> = { [EMAIL_SEND]: sendSummary, [EMAIL_FILE]: fileSummary };
+/** A call's approval summary, where its tool has one (SUMMARIES), redacted as its arguments are. */
 function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
-  if (approval.tool !== EMAIL_SEND) return {};
+  const summarize = Object.hasOwn(SUMMARIES, approval.tool) ? SUMMARIES[approval.tool]! : undefined;
+  if (!summarize) return {};
   let args: unknown;
   try {
     args = JSON.parse(approval.args_json);
   } catch {
     return {};
   }
-  const summary = sendSummary(args);
+  const summary = summarize(args);
   return summary === undefined ? {} : { summary: redact(summary) };
 }
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {

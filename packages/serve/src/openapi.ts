@@ -435,7 +435,7 @@ const BASH_POLICY = {
 /** An email read tool's scope in an agent's own tool settings (email/tools.ts). */
 const EMAIL_SCOPE = {
   enum: [...EMAIL_SCOPES],
-  description: "An agent's own setting on email_read and email_search only, never the server's. thread (the default): on a run an email trigger started, the tool sees the thread of the message that started it alone (that message, and every message whose References or In-Reply-To links it, in any mailbox), and a message outside it is answered \"outside this run's thread\" and never fetched; mailbox: the whole account. A run no email started sees the whole account either way.",
+  description: "An agent's own setting on email_read, email_search and email_file only, never the server's. thread (the default): on a run an email trigger started, the tool sees (and email_file files) the thread of the message that started it alone (that message, and every message whose References or In-Reply-To links it, in any mailbox), and a message outside it is answered \"outside this run's thread\" and never fetched; mailbox: the whole account. A run no email started sees the whole account either way.",
   "x-agentrun-serve": "email/1",
 };
 /** An agent's own tool settings (definition.tool_settings): the map, with bash's policy and the email read tools' scope. */
@@ -2658,7 +2658,7 @@ const PENDING: Json = {
         tool: { type: "string" },
         call_id: { type: "string", description: "The call's id, as its tool_result row's tool_use_id." },
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes.` },
-        summary: { type: "string", description: "What the call does, in words, where its tool says: email_send's \"Send email to <to>, cc <cc>: <subject>\", a blank line, then the text's first 300 characters. Redacted as args_preview is.", "x-agentrun-serve": "email/1" },
+        summary: { type: "string", description: "What the call does, in words, where its tool says: email_send's \"Send email to <to>, cc <cc>: <subject>\", a blank line, then the text's first 300 characters; email_file's \"File <message_id> under <to>\". Redacted as args_preview is.", "x-agentrun-serve": "email/1" },
         requested_at: { type: "string", format: "date-time" },
         price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }, { const: "priced by usage" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call; \"priced by usage\" for a monid endpoint priced by usage: monid estimates its cost only when the call runs, after the allow (the call is held at that estimate, and a charge above it stops the run), so nothing is sent to monid while it waits. Absent when the tool names none." },
         destructive: { const: true, description: `Present on an MCP tool's call that is destructive by the annotations the run pinned (destructiveHint true, readOnlyHint not true), and on a call whose allow lets such a tool run (a learned workflow's, its card naming the tool in \`mcp_calls\`): its allow needs \`confirm_destructive: true\`. Absent on every other call.`, "x-agentrun-serve": "allowreads/1" },
