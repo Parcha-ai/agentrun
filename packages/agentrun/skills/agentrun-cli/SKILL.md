@@ -117,7 +117,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 ## Commands
 
-- `agentrun agents`: archive, create, delete-agent-archil, forget-sign-in, get, get-agent-archil, get-learning-loop, list, list-learning-promotions, runs, unarchive, update
+- `agentrun agents`: archive, connect-native, create, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-promotions, runs, unarchive, update, verify-native
 - `agentrun files`: create, delete, get, list, upload
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: batch, batch-cancel, batch-start, batches, cost, evals, get, log, notes, read, record-eval, replay, retire, workflow-revisions, write

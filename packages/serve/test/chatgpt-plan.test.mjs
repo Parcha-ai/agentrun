@@ -9,6 +9,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as createNetServer } from "node:net";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
@@ -827,4 +828,54 @@ test("signing out through the API answers whether OpenAI confirmed the revocatio
   const confirmed = await api("DELETE", "/settings/chatgpt");
   assert.deepEqual([confirmed.status, confirmed.body], [200, { revoked: true }]);
   assert.equal(openai.revocationsOf(third.refresh), 1);
+});
+
+
+test("normal server shutdown releases a pending ChatGPT callback without signing out the saved plan", { timeout: 30_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const originalStart = ChatGPTPlan.prototype.startSignIn;
+  let pendingOwner;
+  t.mock.method(ChatGPTPlan.prototype, "startSignIn", function (...args) {
+    pendingOwner = this;
+    return originalStart.apply(this, args);
+  });
+  // Failure-only cleanup: the port-release assertion below must pass using normal server shutdown.
+  // This keeps the causal negative control from leaking its intentionally unclosed listener.
+  t.after(() => pendingOwner?.close());
+  const first = await serve(t, { faux: undefined, runner: false, harnesses: false });
+  const initial = await first.api("POST", "/settings/chatgpt/sign-in");
+  assert.equal(initial.status, 200, JSON.stringify(initial.body));
+  assert.equal((await first.api("POST", "/settings/chatgpt/sign-in/finish", { redirect_url: callbackFor(initial.body.authorize_url) })).status, 200);
+  const sealed = Buffer.from(await first.store.sealedKeys.get(PLAN_ROW));
+  const pending = await first.api("POST", "/settings/chatgpt/sign-in");
+  assert.equal(pending.status, 200, JSON.stringify(pending.body));
+  assert.equal((await first.api("GET", "/settings/chatgpt")).body.state, "pending");
+  const callback = await fetch(`http://${CALLBACK_HOST}:1455/not-a-callback`);
+  assert.equal(callback.status, 404, "the real callback listener is accepting requests before shutdown");
+  await callback.text();
+
+  await first.stop();
+  // No polling or fixture cancellation: the just-stopped server must have released this exact listener.
+  const probe = createNetServer();
+  await new Promise((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(1455, CALLBACK_HOST, resolve);
+  });
+  await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+  pendingOwner = undefined;
+  assert.equal(openai.codes, 1, "the pending sign-in never exchanges a code");
+  assert.deepEqual(openai.revoked, [], "shutdown is not sign-out");
+
+  const again = await serve(t, { data: first.data, faux: undefined, harnesses: false });
+  assert.deepEqual(Buffer.from(await again.store.sealedKeys.get(PLAN_ROW)), sealed, "the durable credential bytes survive shutdown and restart");
+  assert.equal((await again.api("GET", "/settings/chatgpt")).body.state, "signed_in");
+  assert.equal((await again.api("POST", "/agents", agent("after-shutdown"))).status, 201);
+  const started = await again.api("POST", "/agents/after-shutdown/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal((await follow(again.api, started.body.run_id, ["completed", "failed"])).last.status, "completed");
+  assert.ok(openai.responses.length > 0, "an ordinary task still uses the saved plan through the fake provider");
+  assert.equal(openai.refreshes, 0);assert.deepEqual(openai.revoked, []);
+  await again.stop();
 });
