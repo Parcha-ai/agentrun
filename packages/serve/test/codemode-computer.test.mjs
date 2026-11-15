@@ -387,3 +387,17 @@ test("on Codex, whose own code mode reaches only the tools it is handed, a deskt
     for (const name of ["computer_op", "computer_act", "computer_screenshot"]) assert.ok(handed.some((tool) => tool.name === name && !tool.deferred), `${label}: ${name} listed: ${JSON.stringify(handed)}`);
   }
 });
+
+test("a desktop run whose codemode is set to deny, under surface code too, lists the step tools and computer_op: with no script to call them, the computer stays in the model's reach", async (t) => {
+  const { fauxAdapter } = await import("@parcha/agentrun-kernel/testing");
+  for (const surface of [undefined, "code"]) {
+    const { run, tools } = await desktop({ more: VENDOR, ...(surface ? { surface } : {}) });
+    let handed;
+    const faux = fauxAdapter({ script: (spec) => ((handed ??= spec.tools.map((tool) => ({ name: tool.name, deferred: tool.deferred === true }))), [{ say: "done" }]) });
+    const gate = Object.assign(() => "allow", { permission: async (name) => (name === CODEMODE ? "deny" : "allow") });
+    await codemodeRun(t, [], tools, gate, undefined, { computer: run.computer, adapter: faux });
+    const label = `surface ${surface}`;
+    assert.ok(!handed.some((tool) => tool.name === CODEMODE), `${label}: codemode set to deny is not offered: ${JSON.stringify(handed)}`);
+    for (const name of ["computer_op", "computer_act", "computer_screenshot"]) assert.ok(handed.some((tool) => tool.name === name && !tool.deferred), `${label}: ${name} listed: ${JSON.stringify(handed)}`);
+  }
+});
