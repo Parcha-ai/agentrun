@@ -59,7 +59,7 @@ import { piAdapter } from "./adapters/pi.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
-import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
+import { bookedSpend, cliRunMetrics, endCostOf, runCostOf, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
@@ -785,33 +785,32 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     workRoot: root,
-    // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
-    // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
+    // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf):
+    // every model request its session's proxy booked (pi's own answers and its side calls: a learned workflow's nodes,
+    // web_search's hosted search with its fee), its paid tool calls (a Parallel search's, a monid call's, a person's
+    // browser time, each booked in its own session) and its decisions (a learned workflow's decision nodes, LS-07; one
+    // that reported none is unknown, never the cap's hold for it). A request a cancel or a stop cut while it streamed is
+    // booked at no known cost (the provider may bill what it streamed), so the run's cost is unknown, never the $0 its cut
+    // answer carries. One cheap read, apart from the metrics below, so metrics that run late never take the cost with them.
+    endCost: async () => endCostOf(runCostOf((await journalEntries(deps.journal(claim), context)) as never)),
+    // The end's metrics, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
+    // runs.ts storedMetrics). A pi run adds its effort, no model (metrics.ts).
     endPatch: async () => {
       // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
       const entries = await agentEntriesOf(deps.journal(claim), context);
       // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics), by the
       // one classifier the cost per run reads back (runPathOverStore).
       const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never);
-      // Its cost is its booking's, as a CLI run's is (metrics.ts bookedSpend, the one reader): every model request its
-      // session's proxy booked, pi's own answers and its side calls (a learned workflow's nodes, web_search's hosted search
-      // with its fee) alike, and its decisions (a learned workflow's decision nodes, LS-07; one that reported none is
-      // unknown, never the cap's hold for it). A request a cancel or a stop cut while it streamed is booked at no known cost
-      // (the provider may bill what it streamed), so the run's cost is unknown, never the $0 its cut answer carries.
-      const all = (await journalEntries(deps.journal(claim), context)) as never;
-      const booked = bookedSpend(all, "model");
-      // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
-      // (each on its cap, in its own session, not on the root), are the run's cost too; any part unknown leaves the run's unknown.
-      const total = runEndCost({ model: booked.usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
       // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
       const catalog = await hashedMcpOf(deps.store, claim.runId);
       const { metrics } = servedOf(entries as never)
-        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model, catalog }) }
+        ? { metrics: cliRunMetrics(piShaped(entries as never), bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model"), { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model, catalog }) }
         : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), catalog });
-      // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics: { ...metrics, ...path } };
+      // Its cost is endCost's, read apart (an unknown one written as null, never left out: a follow-up's end clears the
+      // cost an earlier end stored).
+      return { metrics: { ...metrics, ...path } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts): the loop waits for their start
     // and release, and runs their calls on it.
