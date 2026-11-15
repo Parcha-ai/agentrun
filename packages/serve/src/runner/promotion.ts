@@ -11,8 +11,9 @@
 // REPLAY_MIN graded inputs: the digest is promoted on its passing dry run, as before, and its record says so. A serving
 // digest is checked once per REFIT_EVERY more graded runs it served: its thresholds refit (a new revision when they move
 // and still clear the bar), and held when its graded runs fall below the bar: the hold keeps the served runs graded wrong
-// (held_on), which a replay of it must answer on before it serves again, and a promotion counts only the grades after it
-// began (`since`). A hand-back is the agent's answer, never a
+// (held_on), which a replay of it must answer on before it serves again, and a promotion counts only the grades of the
+// runs it served (`since`, its name, which each run it serves keeps); a check writes only while the promotion it read is
+// still the digest's. A hand-back is the agent's answer, never a
 // failure; but a revision that hands back every input it replayed would never answer alone, and is held.
 // The champion keeps serving meanwhile: while the folder's revision (the challenger) replays, or once it is held, the
 // digest promoted last (learn/promote.ts championOf) serves the run, read from the learning commit its record names, so
@@ -65,7 +66,7 @@ import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
 import { type RefitRow, refitGuards, refitRowsOf, scoreRows } from "../learn/refit.js";
-import { type FirstChoice, fits, type Promoted, servedOf, workflowDigest } from "./workflow-first.js";
+import { type FirstChoice, fits, type Promoted, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
 import { learningCommit } from "../learn/commit.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { recordOnly } from "../learn/promote.js";
@@ -185,10 +186,10 @@ export const promotionGate = (deps: PromotionDeps): Promoted => {
     deps.log(`workflow-first: ${workflow.name}'s promotion could not be read (${(error as Error)?.message ?? error}); the agent takes this run`);
     return undefined;
   };
-  const gate = async (workflow: LearnedWorkflow, digest: string): Promise<LearnedWorkflow | undefined> => {
+  const gate = async (workflow: LearnedWorkflow, digest: string): Promise<Serving | undefined> => {
     try {
       const kept = await keptFor(deps, workflow, digest);
-      if (kept) return kept;
+      if (kept) return { workflow: kept };
       await decide(deps, workflow, digest);
       return await servingNow(deps, workflow, digest, true);
     } catch (error) {
@@ -196,9 +197,10 @@ export const promotionGate = (deps: PromotionDeps): Promoted => {
     }
   };
   // The champion alone, for a laid revision that does not take the run's input (workflowFirstOf): nothing replays.
-  const champion = async (workflow: LearnedWorkflow, digest: string): Promise<LearnedWorkflow | undefined> => {
+  const champion = async (workflow: LearnedWorkflow, digest: string): Promise<Serving | undefined> => {
     try {
-      return (await keptFor(deps, workflow, digest)) ?? (await servingNow(deps, workflow, digest, false));
+      const kept = await keptFor(deps, workflow, digest);
+      return kept ? { workflow: kept } : await servingNow(deps, workflow, digest, false);
     } catch (error) {
       return failed(workflow, error);
     }
@@ -211,9 +213,10 @@ export const promotionGate = (deps: PromotionDeps): Promoted => {
  *  never serves again. The laid revision at `digest` when it is the champion and still serves after its graded check
  *  (stillServing, a refit written as the next revision); `laid` false: it is not asked (the laid text does not take the
  *  input). Another champion: its text at its record's commit (its digest checked), still serving after its graded check
- *  with no refit (a refit written now would land over the laid revision on the folder's main). Undefined when none
- *  serves: none promoted, the champion held, or its text cannot be read (the agent takes the run). */
-async function servingNow(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, laid: boolean): Promise<LearnedWorkflow | undefined> {
+ *  with no refit (a refit written now would land over the laid revision on the folder's main). With the champion's
+ *  promotion (its since), which the run keeps (WorkflowFirst.promotion). Undefined when none serves: none promoted, the
+ *  champion held, or its text cannot be read (the agent takes the run). */
+async function servingNow(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, laid: boolean): Promise<Serving | undefined> {
   const records = await promotionsOf(deps.store.settings, deps.agentId);
   const champion = championOf(records, workflow.name);
   const own = promotionOf(records, workflow.name, digest);
@@ -221,16 +224,18 @@ async function servingNow(deps: PromotionDeps, workflow: LearnedWorkflow, digest
     if (own?.decided === "promote") deps.log(`workflow-first: ${workflow.name} at ${digest} was promoted, but the revision promoted after it is held; no revision serves, the agent takes this run`);
     return undefined;
   }
-  if (champion.digest === digest) return laid && (await stillServing(deps, workflow, digest, champion)) ? workflow : undefined;
+  const serving = (text: LearnedWorkflow, under: PromotionRecord | undefined): Serving | undefined => (under ? { workflow: text, ...(under.since !== undefined ? { promotion: under.since } : {}) } : undefined);
+  if (champion.digest === digest) return laid ? serving(workflow, await stillServing(deps, workflow, digest, champion)) : undefined;
   if (!deps.champion) return undefined;
   const text = champion.commit ? await deps.champion(workflow.name, champion.commit).catch(() => undefined) : undefined;
   if (!text || workflowDigest(text) !== champion.digest) {
     deps.log(`workflow-first: ${workflow.name}'s champion at ${champion.digest} could not be read from its learning commit; the agent takes this run`);
     return undefined;
   }
-  if (!(await stillServing({ ...deps, commit: undefined }, text, champion.digest, champion))) return undefined;
+  const under = await stillServing({ ...deps, commit: undefined }, text, champion.digest, champion);
+  if (!under) return undefined;
   deps.log(`workflow-first: ${workflow.name}'s champion at ${champion.digest} serves this run while ${digest} ${own?.decided === "promote" ? "is a revision promoted before it" : "is not promoted"}`);
-  return text;
+  return serving(text, under);
 }
 
 /** A run already executing keeps its revision: when an earlier claim of it served `workflow` first (its WORKFLOW_FIRST
@@ -589,9 +594,9 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
       : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts`
         : !answersAlone(score) ? `it handed back every one of its ${plural(score.n, "replayed input")}: it would never answer alone (${said})`
           : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
-  // Promoted: it begins at the agent's newest grade (`since`), so a revision that served before (promoted, held, now
-  // replayed again) is checked only on the grades after this promotion, never again on the ones it was held on. Held: it
-  // still owes the runs it was held on.
+  // Promoted: named by the agent's newest grade (`since`), which every run it serves keeps, so a revision that served
+  // before (promoted, held, now replayed again) is checked only on the runs this promotion served, never again on the
+  // ones it was held on. Held: it still owes the runs it was held on.
   const since = ok ? Math.max(0, ...(await gradesOf(store.settings, agentId)).map((grade) => grade.seq ?? 0)) : undefined;
   const owed = heldOn(record);
   const decided = await recordPromotion(store.settings, agentId, {
@@ -617,25 +622,30 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
 
 /** A serving digest, checked once per REFIT_EVERY more graded runs it served: its thresholds refit over those runs and its
  *  replay's rows (a new revision when they move and still clear the bar), and held when its graded runs' accuracy fell
- *  more than PROMOTE_BAR under the agent's. True: it still serves this run. */
-async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<boolean> {
+ *  more than PROMOTE_BAR under the agent's. The promotion it serves this run under (`record`, or the digest's newer
+ *  promotion when one replaced it meanwhile), undefined when it does not serve it. */
+async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<PromotionRecord | undefined> {
   const { store, agentId, log } = deps;
   const now = deps.now ?? Date.now;
   const grades = await gradesOf(store.settings, agentId);
-  // Only the grades put since this promotion began (`since`): promoted again after a hold, never the ones it was held on.
-  const since = record.since ?? 0;
-  const served = grades.filter((grade) => grade.workflow === workflow.name && grade.digest === digest && (grade.path === "workflow" || grade.path === "handed_back") && (grade.seq ?? 0) > since);
+  // Only the grades of runs this promotion served (each keeps its `since`, Grade.promotion): promoted again after a hold,
+  // never the ones it was held on, nor a run served under the promotion before and graded after this one.
+  const served = grades.filter((grade) => grade.workflow === workflow.name && grade.digest === digest && (grade.path === "workflow" || grade.path === "handed_back") && grade.promotion === record.since);
+  // Each write is kept only while the promotion this check read is still the digest's (the same since): a check that read
+  // an older one, replaced meanwhile (held, replayed and promoted again), writes nothing over the newer one.
+  const same = (was: PromotionRecord | undefined) => was?.decided === "promote" && was.since === record.since;
   // New since the last check: by seq (putGrade), a cursor the trim of the kept grades never moves back.
   const checked = record.checked ?? 0;
   const through = Math.max(checked, ...served.map((grade) => grade.seq ?? 0));
-  if (served.filter((grade) => (grade.seq ?? 0) > checked).length < REFIT_EVERY) return true;
+  if (served.filter((grade) => (grade.seq ?? 0) > checked).length < REFIT_EVERY) return record;
+  const promoted = (one: PromotionRecord | undefined) => (one?.decided === "promote" ? one : undefined);
   // The agent's accuracy by hand: its newest graded runs on the agent path, else the replay's.
   const byHand = grades.filter((grade) => grade.path === "agent").slice(-REPLAY_INPUTS);
   const agentAcc = byHand.length ? byHand.filter((grade) => grade.correct).length / byHand.length : record.replay?.agent_acc;
   // Marked checked at this count first, so two claims never check the same window twice.
   // Only the claim whose write marked it refits: one that lost the write reads the winner's record back, the same cursor.
-  const marked = await recordPromotion(store.settings, agentId, { ...record, at: iso(now()), checked: through }, (was) => was?.decided === "promote" && (was.checked ?? 0) === checked);
-  if (!marked.won || agentAcc === undefined) return marked.record?.decided === "promote";
+  const marked = await recordPromotion(store.settings, agentId, { ...record, at: iso(now()), checked: through }, (was) => same(was) && (was?.checked ?? 0) === checked);
+  if (!marked.won || agentAcc === undefined) return promoted(marked.record);
   const rows: RefitRow[] = [];
   for (const grade of served) {
     const run = await store.runs.get(grade.run);
@@ -653,11 +663,11 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
     const reason = `${plural(served.length, "graded run")} it served were right ${(servedAcc * 100).toFixed(1)}% of the time, more than ${PROMOTE_BAR * 100} pts under the agent's ${(agentAcc * 100).toFixed(1)}% by hand`;
     // It keeps the served runs graded wrong it was held on, newest first: its next replay owes them (heldOn).
     const wrong = served.filter((grade) => !grade.correct).map((grade) => grade.run).reverse().slice(0, REPLAY_INPUTS);
-    const held = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "hold", source: "graded", reason, held_on: wrong }, (was) => was?.decided === "promote");
+    const held = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "hold", source: "graded", reason, held_on: wrong }, same);
     if (held.won) log(`workflow-first: ${workflow.name} at ${digest} held: ${reason}`);
-    return held.record?.decided === "promote";
+    return promoted(held.record);
   }
-  return true;
+  return marked.record;
 }
 
 /** One refit of `workflow` over `rows`; when it moves a guard and the rows clear the bar at the new thresholds, the new

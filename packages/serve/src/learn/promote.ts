@@ -47,6 +47,10 @@ export interface Grade {
   /** Its place among the agent's grades, one more than the grade put before it (a re-grade takes a new one): a cursor a
    *  serving digest's check counts new grades from (PromotionRecord.checked) that the GRADES_KEPT trim never moves back. */
   readonly seq?: number;
+  /** The promotion of `digest` that served the run (its record's `since`, PromotionRecord.since), read from the run's
+   *  record when it was graded: a serving check counts the grade only for that promotion. Absent: one with no since (the
+   *  digest's first), or none served it. Not in the API's view. */
+  readonly promotion?: number;
   /** The feedback round the grade opened its run again on, null for none (runner/feedback-round.ts keepGrade). Set only
    *  once the round opened, so a kept grade never names a round that didn't. */
   readonly feedback?: FeedbackRound | null;
@@ -85,8 +89,9 @@ export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boo
  *  run, never scored) and at which tools (`skipped_tools`, SkippedTool), and its runs' outcomes (`outcomes`,
  *  ReplayOutcomes). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
- *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). `since`: on a promote,
- *  the agent's newest grade (its seq) when this promotion began: its checks count only the grades after it. `held_on`: the
+ *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). `since`: on a replay's
+ *  promote, the agent's newest grade (its seq) when this promotion began: which promotion of the digest it is (a run it
+ *  serves keeps it, Grade.promotion, and its checks count only those runs' grades). `held_on`: the
  *  served runs graded wrong a revision was held on, owed by its next replay (heldOn). */
 export interface PromotionRecord {
   readonly workflow: string;
@@ -111,10 +116,13 @@ export interface PromotionRecord {
   readonly launch?: ReplayLaunch;
   readonly refit?:{ readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
-  /** A promote record's start (a replay's promote): the agent's newest grade's seq when it was written. A revision that
-   *  served before (promoted, held, replayed and promoted again) is checked only on the grades put after it, never again
-   *  on the ones it was held on. A grade's seq is the store's own order, never a clock. Absent: every grade of the digest
-   *  counts (a digest that never served before has none). */
+  /** A promote record's start (a replay's promote): the agent's newest grade's seq when it was written, which names this
+   *  promotion of the digest: a run it serves keeps it (metrics.workflow_promotion, then Grade.promotion), and its checks
+   *  count only the grades of those runs, never a run served under an earlier promotion and graded after this one, nor
+   *  the ones it was held on. Two promotions of a digest never share it: one is promoted again only after a graded hold,
+   *  which counts runs served (and graded, each at a newer seq) under the one before. Its checks' writes are kept only
+   *  while it is still the digest's promotion (the same since), so a check that read an older promotion writes nothing.
+   *  Absent: the digest's first record (a dry run's or a refit's promote), whose runs keep none. */
   readonly since?: number;
   /** The runs a revision served that were graded wrong when its graded check held it (newest first, at most REPLAY_INPUTS),
    *  kept on that hold, on the replay of it its owner starts (those of them still graded and fitting it, each one of its

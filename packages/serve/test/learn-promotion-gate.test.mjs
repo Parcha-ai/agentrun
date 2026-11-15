@@ -37,7 +37,7 @@ async function storeOf({ text, served, byHand = 10, byHandWrong = 0, threshold =
   const logs = [];
   const gate = promotionGate({ store, agentId: "a", runId: "now", revisionId: "rev", launch: { input: {}, title: "", place: { mode: "runner" } }, context: ctx, log: (line) => logs.push(line), commit: async (files, reason, id) => (commits.push({ files, reason, id }), `commit-${commits.length}`) });
   // The gate answers the workflow that serves: this one, or none (the agent takes the run).
-  const serves = async (workflow, at) => { const got = await gate(workflow, at); assert.ok(got === undefined || got === workflow, "no champion here: the laid workflow or none"); return got === workflow; };
+  const serves = async (workflow, at) => { const got = (await gate(workflow, at))?.workflow; assert.ok(got === undefined || got === workflow, "no champion here: the laid workflow or none"); return got === workflow; };
   return { gate: serves, settings, digest, commits, logs };
 }
 
@@ -310,8 +310,8 @@ async function twoChampionsOf({ held = false, kept } = {}) {
 test("A promoted, then B: a run queued on A and claimed now is served by B, the champion", async () => {
   const { gate, a, b, da, logs } = await twoChampionsOf();
   const got = await gate(a, da);
-  assert.equal(got?.workflow, b.workflow, `B serves, never A's old promote record: ${logs.join("\n")}`);
-  assert.equal(await gate.champion(a, da), b, "the champion alone, for a revision that does not take the input: B too");
+  assert.equal(got?.workflow.workflow, b.workflow, `B serves, never A's old promote record: ${logs.join("\n")}`);
+  assert.equal((await gate.champion(a, da))?.workflow, b, "the champion alone, for a revision that does not take the input: B too");
 });
 
 test("A promoted, then B, then B held: a run queued on A is the agent's, never A's", async () => {
@@ -323,9 +323,9 @@ test("A promoted, then B, then B held: a run queued on A is the agent's, never A
 test("a run already executing on A (an earlier claim of it served A) keeps A after B is promoted, and after B is held", async () => {
   for (const held of [false, true]) {
     const { gate, a, da, logs } = await twoChampionsOf({ held, kept: { workflow: "answer", digest: workflowDigest({ workflow: flowOf(undefined) }), outcome: "answered" } });
-    assert.equal(await gate(a, da), a, `it keeps the revision it started on: ${logs.join("\n")}`);
+    assert.equal((await gate(a, da))?.workflow, a, `it keeps the revision it started on: ${logs.join("\n")}`);
   }
   // Executing on B (it served B's text in place of a laid A), re-claimed once B is held: still B.
   const { gate, a, b, da, db, logs } = await twoChampionsOf({ held: true, kept: { workflow: "answer", digest: workflowDigest({ workflow: flowOf(undefined).replace("Answer.", "Answer, revision B.") }), outcome: "handed_back" } });
-  assert.equal((await gate(a, da))?.workflow, b.workflow, `${db}: ${logs.join("\n")}`);
+  assert.equal((await gate(a, da))?.workflow.workflow, b.workflow, `${db}: ${logs.join("\n")}`);
 });

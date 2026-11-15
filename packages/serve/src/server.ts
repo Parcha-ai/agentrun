@@ -3192,12 +3192,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (body.source !== undefined && !GRADE_SOURCES.includes(body.source as never)) throw invalid([{ field: "source", reason: "not_an_option", message: `source is one of ${GRADE_SOURCES.join(", ")}` }]);
         if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > LABEL_MAX)) throw invalid([{ field: "label", reason: "wrong_type", message: `label is a string of at most ${LABEL_MAX} characters: the grade's words` }]);
         if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
-        const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
+        const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown; workflow_promotion?: unknown };
         if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
         const path = RUN_PATHS.includes(m.path as never) ? (m.path as Grade["path"]) : "agent";
         const grade: Grade = {
           run: row.id, correct: body.correct, ...(body.expected !== undefined ? { expected: body.expected as Record<string, unknown> } : {}), source: (body.source as GradeSource | undefined) ?? "feedback", at: new Date().toISOString(), path,
           ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
+          ...(typeof m.workflow_promotion === "number" ? { promotion: m.workflow_promotion } : {}),
         };
         // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, a revision ask, or a look-back.
         const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
