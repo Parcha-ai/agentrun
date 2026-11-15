@@ -192,11 +192,11 @@ test("usage whose every count is 0 (a translation's start) is no report: an erro
   assert.deepEqual(after[0].ended, { end: 'nothing', label: 'refused', reason: 'Overloaded' });
 });
 
-test("an error whose data is words, not JSON (a failure a translation reports with no provider event), is booked as before: unknown", async (t) => {
+test("an error whose data is words, not JSON (a failure a translation reports with no provider event), is booked as before: unknown; its end says the error, in its words", async (t) => {
   const { p, after } = await proxy(t, { fetch: answering(stream('event: error\ndata: 500 the upstream failed')) });
   await send(p.url);
   await until(() => after.length === 1, 'the booking');
-  assert.deepEqual(after[0].ended, { end: 'answered', usd: null });
+  assert.deepEqual(after[0].ended, { end: 'answered', usd: null, label: 'error', reason: '500 the upstream failed' });
 });
 
 test("an error once the model's content streamed with no usage reported is not refused: an unknown cost, the hold, with its words", async (t) => {
