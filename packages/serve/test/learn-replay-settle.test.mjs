@@ -11,6 +11,9 @@
 //     graded runs it replayed out of the grades kept;
 //   - r7: a revision held on runs it served graded wrong keeps them (held_on); its owner's replay always covers them and
 //     promotes it only once it answered on them; promoted again, its check counts only the grades after `since`.
+//   - r8: a promotion's `since` names it: each run it serves keeps it, and its check counts only those runs' grades (a run
+//     served before a re-promotion and graded after never counts for the new one); a check whose promotion was replaced
+//     meanwhile writes nothing.
 // The replay runs are records the read reads (row, launch, metrics); the learning folder is real (landWorkflows).
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,7 +29,7 @@ const { launchBody } = await import("../dist/run-launch.js");
 const { sealRunMcpAuth } = await import("../dist/store/seal.js");
 const { REPLAY_DEADLINE_MS, REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
 const { championOf, GRADES_KEPT, gradesKey, gradesOf, promotionOf, promotionsOf, putGrade, recordPromotion, servingOf, trimPromotions, PROMOTIONS_KEPT } = await import("../dist/learn/promote.js");
-const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+const { pathMetrics, servedOf, WORKFLOW_FIRST, workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { learningFolderOf, secretsShown } = await import("../dist/learning.js");
 
 const FLOW = {
@@ -303,8 +306,8 @@ test("#2823 review: an owner's replay stopped after 2 of its 5 runs is finished 
 // Review on #2823 r7 (Greptile P1s): a revision held on the runs it served graded wrong.
 /** DIGEST promoted by a replay on graded-0..4 (graded wrong, the agent's), then serving 20 runs graded wrong: 18 with no
  *  launch (never replayable) and X = graded-5, Y = graded-6, which a replay can run. Ten more agent runs graded right by
- *  hand. A claim's check holds it on them. */
-async function heldOnServed(t) {
+ *  hand. Not checked yet: a claim's check (`gate`) holds it on them. */
+async function heldOnServedPromoted(t) {
   const w = await world(t, { graded: 7, agentCorrect: false });
   const settings = w.store().settings;
   const older = w.gradedRuns.slice(0, 5);
@@ -316,6 +319,12 @@ async function heldOnServed(t) {
   await served("graded-5");
   await served("graded-6");
   const gate = () => promotionGate({ store: w.ask().store, agentId: "agent-1", runId: "now", revisionId: "rev-1", launch: { input: { content: "Now?", question: "Now" }, title: "Now", place: { mode: "runner" }, learning: startAt(w.seed) }, context: BACKGROUND_CONTEXT, log: (line) => w.logs.push(line), now: () => w.clock.at })({ name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(FLOW) }, DIGEST);
+  return { w, settings, older, gate };
+}
+
+/** heldOnServedPromoted, held by a claim's check on the 20 it served wrong. */
+async function heldOnServed(t) {
+  const { w, settings, older, gate } = await heldOnServedPromoted(t);
   assert.equal(await gate(), undefined, "held on the 20 it served wrong");
   const held = (await w.records()).at(-1);
   assert.deepEqual([held.decided, held.source], ["hold", "graded"]);
@@ -357,9 +366,59 @@ test("#2823 r7: a revision held, replayed and promoted again is checked only on 
   const grades = await gradesOf(settings, "agent-1");
   assert.equal(promoted.since, Math.max(...grades.map((one) => one.seq)), "it began at the agent's newest grade");
   assert.equal(promoted.checked, undefined, "checked is the next check's cursor, never set by the promotion");
-  // A full window of fresh runs it served, all right: checked on those 20 alone (100% right), never the 20 wrong before.
-  for (let i = 0; i < 20; i++) await putGrade(settings, "agent-1", { run: `fresh-${i}`, correct: true, source: "eval", at: "t", path: "workflow", workflow: "answer", digest: DIGEST });
+  // A full window of fresh runs it served (each keeps the promotion's since), all right: checked on those 20 alone (100%
+  // right), never the 20 wrong before.
+  for (let i = 0; i < 20; i++) await putGrade(settings, "agent-1", { run: `fresh-${i}`, correct: true, source: "eval", at: "t", path: "workflow", workflow: "answer", digest: DIGEST, promotion: promoted.since });
   assert.ok(await gate(), `it serves on: ${w.logs.join("\n")}`);
   const after = (await w.records()).at(-1);
   assert.deepEqual([after.decided, after.since, after.checked], ["promote", promoted.since, Math.max(...(await gradesOf(settings, "agent-1")).map((one) => one.seq))], "checked moved; since did not");
+});
+
+// Review on #2823 r8 (Greptile P1 "Old checks undo re-promotion"): a check that read promotion P1, delayed while the
+// revision was held and its owner's replay promoted it again (P2), writes nothing: neither its `checked` mark (a copy of
+// P1 over P2, losing since) nor its hold (on P1's grades).
+test("#2823 r8: a stale check that read the promotion before a hold and a re-promotion writes nothing over the new one", async (t) => {
+  const { w, gate } = await heldOnServedPromoted(t);
+  // The stale claim reads the records (P1 is the champion), then waits at its read of the grades.
+  let release;
+  const reached = new Promise((resolve) => (w.gate.reached = resolve));
+  w.gate.hold = new Promise((resolve) => (release = resolve));
+  w.gate.armed = true;
+  const stale = gate();
+  await reached;
+  // Meanwhile another claim's check holds P1 on the 20 it served wrong, and the owner's replay promotes it again: P2.
+  assert.equal(await gate(), undefined, "held on the 20 it served wrong");
+  const { view } = await ownersReplay(w, () => "answered");
+  assert.deepEqual([view.status, view.decided], ["done", "promote"], JSON.stringify(view));
+  const p2 = (await w.records()).at(-1);
+  assert.equal(typeof p2.since, "number");
+  const count = (await w.records()).length;
+  // The stale check goes on: P1's 20 wrong would hold it, but P1 is no longer the digest's promotion.
+  release();
+  assert.ok(await stale, `the stale claim reads P2 back and it serves: ${w.logs.join("\n")}`);
+  const after = await w.records();
+  assert.equal(after.length, count, `the stale check wrote nothing: ${JSON.stringify(after.slice(count))}`);
+  assert.deepEqual([after.at(-1).decided, after.at(-1).since, after.at(-1).checked], ["promote", p2.since, undefined], "P2 stays promoted with its since");
+});
+
+// TL on #2823 r8: a run served under P1 (before the re-promote) but graded after P2 counts for P1, never for P2's check.
+test("#2823 r8: a run served before the re-promotion and graded wrong after it never counts toward the new promotion's check", async (t) => {
+  const { w, settings, gate } = await heldOnServed(t);
+  const { view } = await ownersReplay(w, () => "answered");
+  assert.deepEqual([view.status, view.decided], ["done", "promote"], JSON.stringify(view));
+  const p2 = (await w.records()).at(-1);
+  // 20 runs served under P1 (their grades keep P1's promotion: none) graded wrong now, after P2: never P2's check.
+  for (let i = 0; i < 20; i++) await putGrade(settings, "agent-1", { run: `late-${i}`, correct: false, source: "eval", at: "t", path: "workflow", workflow: "answer", digest: DIGEST });
+  assert.ok(await gate(), `it serves on: ${w.logs.join("\n")}`);
+  const unchecked = (await w.records()).at(-1);
+  assert.deepEqual([unchecked.decided, unchecked.since, unchecked.checked], ["promote", p2.since, undefined], "not checked: none of them was served under P2");
+  // A run the gate serves now keeps P2's since (WorkflowFirst.promotion), as its WORKFLOW_FIRST entry and its record do.
+  assert.equal((await gate())?.promotion, p2.since, "served under P2");
+  const entries = [{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: DIGEST, promotion: p2.since, revision: w.seed, call: "workflow-first", outcome: "answered" } }];
+  assert.equal(servedOf(entries)?.promotion, p2.since);
+  assert.equal(pathMetrics({ input: {}, title: "", place: { mode: "runner" }, learning: startAt(w.seed) }, { path: "workflow", workflow: "answer", digest: DIGEST, promotion: p2.since }).workflow_promotion, p2.since);
+  // 20 it served under P2, all right: checked on those alone.
+  for (let i = 0; i < 20; i++) await putGrade(settings, "agent-1", { run: `p2-${i}`, correct: true, source: "eval", at: "t", path: "workflow", workflow: "answer", digest: DIGEST, promotion: p2.since });
+  assert.ok(await gate(), `it serves on: ${w.logs.join("\n")}`);
+  assert.deepEqual([(await w.records()).at(-1).decided, (await w.records()).at(-1).since], ["promote", p2.since]);
 });
