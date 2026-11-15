@@ -164,3 +164,14 @@ test("an endpoint whose input the agent's harness refuses is refused at the save
   assert.equal(pi.status, 201, JSON.stringify(pi.body));
   assert.deepEqual(Object.keys(await pinOf(store, "tagger-pi")), ["monid:tagger/tag"]);
 });
+
+test("a carried pin is still held to the harness when the monid key is gone: a move to a harness that refuses its input is refused, never only the key's warning", async (t) => {
+  withEnv(t, {}, ["MONID_API_KEY"]);
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: KEY } })).status, 204);
+  assert.equal((await api("POST", "/agents", agent("carried", { tools: ["monid:tagger/tag"] }))).status, 201);
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  const moved = await api("PUT", "/agents/carried/definition", { definition: { harness: "codex", instructions: "Answer in one line.", tools: ["monid:tagger/tag"] } });
+  assert.equal(moved.status, 422, JSON.stringify(moved.body));
+  assert.match(JSON.stringify(moved.body.error?.fields ?? moved.body), /The tool monid:tagger\/tag cannot be offered on codex: /, "the harness's refusal, not the missing key");
+});
