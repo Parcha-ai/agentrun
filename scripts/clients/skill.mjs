@@ -48,15 +48,9 @@ function capRecipe(commands) {
   const lines = [intro, ''];
   if (raise) {
     const field = (usd) => (raise.flags.find((f) => f.name === '--max-cost-usd') ? `--max-cost-usd ${usd}` : `--body '{"max_cost_usd": ${usd}}'`);
-    // --cap-mode strict when the start takes it: then no request goes past the cap, which the text says, with what the
-    // default allows.
-    const start = find(commands, 'createRun');
-    const strict = start?.flags.some((f) => f.name === '--cap-mode') ?? false;
-    lines.push(strict
-      ? 'A cap too small for the task stops the run before a request it cannot pay for. With `--cap-mode strict` no request is sent that the cap cannot cover; under the default, `expected`, a request that misses the cache can go over by at most the run\'s `cost.overshoot_bound_usd`:'
-      : 'A cap too small for the task stops the run before a request it cannot pay for:', '',
+    lines.push('A cap too small for the task stops the run before a request it cannot pay for. No request is sent that the cap cannot cover, a cache miss included:', '',
       '```sh',
-      `agentrun runs start notes --max-cost-usd 0.05${strict ? ' --cap-mode strict' : ''} --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json`,
+      `agentrun runs start notes --max-cost-usd 0.05 --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json`,
       '# exit 8 once it pauses at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough',
       '```', '',
       'Only the person who set the cap raises it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on). Then the run goes on from where it stopped:', '',

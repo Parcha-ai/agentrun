@@ -30,6 +30,7 @@ import { type ArgumentsOf, deniedText, noApproverText, type Permission, type Run
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
+import type { WebFake, WebFakes } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
@@ -55,13 +56,12 @@ import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, ti
 import { catalogSessionNames, type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
-import { computerCodemode } from "./adapters/pi-computer.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
-import { piShaped } from "../store-reads/journal.js";
+import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
 import { laidFor, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
@@ -188,10 +188,19 @@ export interface AdapterSpecDeps {
    *  server (runner/beside.ts, Serve.localInstall) is told so, by that server in its own process. Absent, never: a hosted
    *  or standalone runner's loopback is its host's other services. */
   readonly mcpLoopback?: boolean;
+  /** A template eval's web fakes, by the agent a run is of (web-fake.ts): such a run's web_search and web_fetch answer
+   *  from its case, and its harness's own search is never offered (fakedPlane). Only the eval's own runner, in the eval's
+   *  process, is given it (runner/beside.ts); no environment variable, flag, setting or API field maps onto it. */
+  readonly webFakes?: WebFakes;
   /** For tests only: the adapter loop's model retry (adapter-loop.ts retry and stream), so a test whose provider fails a run
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
+  /** A template eval's clocks, by the agent a run is of (template-eval.ts, a case's `now`): such a run is told that date
+   *  and time wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date). Only the eval's own
+   *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
+   *  maps onto it. Absent, or undefined for a run: the real clock. */
+  readonly clockOf?: (agentId: string) => Date | undefined;
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -209,8 +218,9 @@ export function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
-  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
+  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead). A ChatGPT plan's route is
+  // billed to the plan: its requests cost the run no dollars (CapModel.plan), never an unknown price.
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.provider.plan ? { plan: true } : {}) };
 }
 
 /** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
@@ -279,7 +289,7 @@ export type RunPermissions = {
   readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, options: { readonly computerCodemode?: boolean; readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly script: ScriptDecide; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly script: ScriptDecide; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -287,10 +297,9 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // Where the run's shell is (run-tools.ts shell): with no computer, a tool no setting names takes the kernel's ruled
   // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused.
   // An MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf): what "allow reads" lifts an ask by.
-  // pi's code mode on a desktop or a phone (pi-computer.ts) owns the name `codemode` there: held to the kind's setting.
-  const where = { root: folder, work: folder, ...(options.computerCodemode ? { computerCodemode: true } : {}), ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}) };
+  const where = { root: folder, work: folder, ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}) };
   const gate = runGate({ ...where, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
-  // A script's computer calls (computer_script, pi's code mode) run on the run's computer, a desktop that mounts no folder
+  // A script's computer calls (computer_script's) run on the run's computer, a desktop that mounts no folder
   // too: decided as on a computer, so its shell.run and processes.start follow bash's one setting alike. The run's own
   // host tools keep `gate`, where its bash is (Archil's exec, or none).
   const onComputer = runGate({ ...where, computer: true }, claim.runId, revision, () => current, approvers);
@@ -452,9 +461,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const heldComputer = heldSpecOf(launch, loopComputer);
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv).
   const bashPolicy = bashPolicyOf(body.toolSettings);
-  // pi's codemode is its script tool (codeMode): a code-only computer lists no computer_script beside it, and a
-  // tools-only one gets no codemode (tools.computer is absent then).
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, codeMode: true, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
+  // The computer's tools are the run's own host tools, as on every harness: the host's codemode (meta-tools.ts) calls them
+  // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is.
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
   holds.hold({ tools });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
@@ -484,9 +493,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of this session's host tools: a CLI
   //   harness gets the same tool as a host tool (cli-run-spec.ts), whose turn the loop cuts at the question.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
-  // - pi's code mode, with a desktop or a phone (pi-computer.ts): the `codemode` tool beside the run's own, its scripts
-  //   with `computer` bound on the run's held port.
-  const native: Extension[] = [...(granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : []), ...(tools.computer ? [computerCodemode(tools.computer)] : [])];
+  const native: Extension[] = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
   // pi-native tools in the session's own extension (PiAdapterOptions.tools): the subagent tool, pushed below.
   const piTools: ToolRegistration[] = [];
   // A run granted subagent (runner/subagent.ts): the model of each of its tiers, the revision's own (modelTiers) else the
@@ -538,10 +545,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { computerCodemode: Boolean(tools.computer), ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}) });
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
   // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
-  // denied bash or write holds inside computer_script and codemode.
-  tools.computer?.guard.install(gate.script);
+  // denied bash or write holds inside computer_script.
+  tools.guard.install(gate.script);
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
@@ -559,7 +566,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
-    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
   };
@@ -656,7 +662,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const web = deps.webFakes?.(runRow.agentId);
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, ...(web ? { web } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
@@ -684,7 +691,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
-  const system = [environmentLine(), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
+  // The run's clock: a template eval case's (clockOf), else the real one.
+  const now = deps.clockOf?.(runRow.agentId);
+  const system = [environmentLine(now), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
@@ -700,11 +709,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         // A tier with no model of its own (no model_tiers, no AGENT_MODEL_<TIER>): the agent's own model.
         const at = tierRoutes.get(subagentRoute(tier));
         if (!at) return { ref: { provider: PORT_PROVIDER, modelId: route.model } };
-        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on.
-        if (at.unpriced && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
+        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on. A
+        // ChatGPT plan's tier is not unpriced: it costs the run no dollars (capModelOf).
+        if (at.unpriced && !at.provider.plan && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
         return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
-      preamble: environmentLine(),
+      preamble: environmentLine(now),
     }));
   }
 
@@ -797,9 +807,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const total = runEndCost({ model: booked.usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
+      // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
+      const catalog = await hashedMcpOf(deps.store, claim.runId);
       const { metrics } = servedOf(entries as never)
-        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model }) }
-        : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model, catalog }) }
+        : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), catalog });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
       return { costUsd: total, metrics: { ...metrics, ...path } };
     },
@@ -986,10 +998,13 @@ export function buildToolHost(opts: {
   readonly sealKey: Buffer;
   readonly life: ReturnType<typeof hostLifecycle>;
   readonly redact: HeldRedact;
+  /** The run's web fake, where a template eval's own runner gives one (AdapterSpecDeps.webFakes). */
+  readonly web?: WebFake;
 }): ToolHost {
   const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
   return {
+    ...(opts.web ? { web: opts.web } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },

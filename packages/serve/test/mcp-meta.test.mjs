@@ -70,6 +70,7 @@ test("a saved server's read says why a grant of a tool is refused (grant_problem
   const { api } = shared;
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
+  // `mcp__wide__` and 45 characters: past the 52 a wire name has, so it is called by its hashed wire name, and refused by none.
   const long = "a".repeat(45);
   fake.tools[long] = { description: "a name past the wire budget", input: object, run: answer };
   fake.tools.pick = { description: "a schema whose root is a choice", input: { anyOf: [object, { type: "object", properties: { x: { type: "string" } } }] }, run: answer };
@@ -78,14 +79,15 @@ test("a saved server's read says why a grant of a tool is refused (grant_problem
   assert.equal(put.status, 200, JSON.stringify(put.body));
   for (const view of [put.body, (await api("GET", "/settings/mcp-servers/wide")).body]) {
     const byName = Object.fromEntries(view.tools.map((tool) => [tool.name, tool]));
-    assert.deepEqual(byName[long].grant_problems, { "*": `mcp:wide/${long} is too long: mcp__wide__${long} must be at most 52 characters, the budget every harness's tool names share.` });
+    assert.equal(byName[long].grant_problems, undefined, "a long name refuses no grant");
     assert.deepEqual(Object.keys(byName.pick.grant_problems), ["claude-agent"], "only the harness whose own client drops the shape");
     assert.match(byName.pick.grant_problems["claude-agent"], /^The tool mcp:wide\/pick cannot be offered on claude-agent: .*root has anyOf/);
     assert.equal(byName.plain.grant_problems, undefined);
   }
-  const refused = await retried(api)("POST", "/agents", agent("wide-long", { tools: [`mcp:wide/${long}`] }));
+  assert.equal((await retried(api)("POST", "/agents", agent("wide-long", { tools: [`mcp:wide/${long}`] }))).status, 201, "the long name's grant saves");
+  const refused = await retried(api)("POST", "/agents", agent("wide-pick", { harness: "claude-agent", tools: ["mcp:wide/pick"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.ok(JSON.stringify(refused.body).includes(put.body.tools.find((tool) => tool.name === long).grant_problems["*"]), "the save says what the read said");
+  assert.ok(JSON.stringify(refused.body).includes(put.body.tools.find((tool) => tool.name === "pick").grant_problems["claude-agent"]), "the save says what the read said");
   const doc = (await api("GET", "/openapi.json")).body;
   const served = doc.paths["/settings/mcp-servers/{name}"].get.responses["200"].content["application/json"].schema;
   assert.equal(served.properties.tools.items.properties.grant_problems?.type, "object", "the served document names grant_problems on an MCP tool");

@@ -8,7 +8,7 @@
 // (beforeRequestOf, over the learning run's one booking) at its worst case: its input uncached and its whole output bound
 // (GRADE_MAX_TOKENS), never cut down to fit, so a verdict is never lost to a short answer. A call that doesn't fit is
 // never sent, and the grade is skipped, said so (learning-loop.ts GradeOverCap). The generality pre-check's Jev requests
-// are the grade's spend too: before they leave, their worst case (decision-cap.ts holdOf, strict: the rule a workflow's
+// are the grade's spend too: before they leave, their worst case (decision-cap.ts holdOf: the rule a workflow's
 // decision is held at under its run's cap) is judged against the same cap, less what an earlier attempt's cut check may
 // have spent; a check that doesn't fit is never sent, and is skipped, said so (learning-loop.ts GeneralOverCap), the
 // grader then judged on its own. What the check spent is outside the grade's records, so each grader call's room is the
@@ -46,6 +46,7 @@ export interface LearningDispatchDeps {
   readonly store: Pick<Store, "runs" | "agents" | "learning">;
   /** The server's data directory: each agent's learning folder. */
   readonly data: string;
+  readonly sourceInstructions?: (runId:string) => Promise<string>;
   /** The runner's one model route (its pi runs take the same): where a grade goes, on which model, at what price; under
    *  --faux, the faux model's. GraderRoute moves to runner/model-route.ts with the route. */
   readonly routeOf: (grade: GradeRouteAsk) => GraderRoute | Promise<GraderRoute>;
@@ -104,22 +105,22 @@ async function gradeOf(store: LearningDispatchDeps["store"], learningRunId: stri
 }
 
 /** The learning run's cap on its grade (`capUsd`), the kernel's one rule over its booking (bookedAsk's runBooking): each
- *  grader call on `route` judged at its worst case before it leaves, every input token uncached ("strict") and its whole
+ *  grader call on `route` judged at its worst case before it leaves, every input token uncached and its whole
  *  output bound as the least it may be sent with, so a grade never runs on a cut answer. Another model than the route's is
  *  priced by nothing here: refused. */
 export function gradeCap(capUsd: number, route: GraderRoute): BeforeRequest {
   const model = capModelOf(route);
-  const judge = beforeRequestOf({ capUsd: () => capUsd, modelOf: (id) => (id === route.model ? model : undefined), mode: "strict" });
+  const judge = beforeRequestOf({ capUsd: () => capUsd, modelOf: (id) => (id === route.model ? model : undefined) });
   return (request) => judge({ ...request, ...(request.outputTokensAsked !== undefined ? { outputTokensLeast: request.outputTokensAsked } : {}) });
 }
 
 /** The worst case of the generality check's requests to `jev` (learn/general.ts generalRequest, one a note), each held as a
- *  workflow's decision is under its run's cap (decision-cap.ts holdOf, strict); unpriced when any one's price is not known
+ *  workflow's decision is under its run's cap (decision-cap.ts holdOf); unpriced when any one's price is not known
  *  here. */
 export async function generalHeld(jev: DecisionProvider, notes: readonly NoteText[], source: GeneralSource): Promise<{ usd: number } | { unpriced: string }> {
   let usd = 0;
   for (const note of notes) {
-    const hold = await holdOf(jev, generalRequest(note, source) as Parameters<typeof holdOf>[1], "strict");
+    const hold = await holdOf(jev, generalRequest(note, source) as Parameters<typeof holdOf>[1]);
     if ("unpriced" in hold) return hold;
     usd += hold.usd;
   }
@@ -155,7 +156,7 @@ export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
       if (held.usd > room) throw new GeneralOverCap(`its worst case of ${money(held.usd)} is over the ${money(room)} the cap leaves`, false);
       return generalScores(jev, notes, source, signal, run, sending && (() => sending(held.usd)));
     };
-    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.jev ? { general } : {}), ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}), ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
+    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.sourceInstructions ? { sourceInstructions: deps.sourceInstructions } : {}), ...(deps.jev ? { general } : {}), ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}), ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
     return {
       start: (claim) => {
         claimed = claim.runId;

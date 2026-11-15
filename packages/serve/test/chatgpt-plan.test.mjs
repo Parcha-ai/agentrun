@@ -9,6 +9,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as createNetServer } from "node:net";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
@@ -110,6 +111,10 @@ function fakeOpenAI(t) {
       const body = JSON.parse(text || "{}");
       o.responses.push({ authorization: request.headers.get("authorization"), originator: request.headers.get("originator"), body });
       if (!liveAccess(request)) return Response.json({ error: { message: "bad token" } }, { status: 401 });
+      // As OpenAI answered a live plan run of pi on 2026-11-15: sol takes no "none" effort (pi-ai's catalog: off is null).
+      if (body.model === "gpt-6.1-sol" && body.reasoning?.effort === "none") {
+        return Response.json({ error: { message: "Unsupported value: 'none' is not supported with the 'gpt-6.1-sol' model. Supported values are: 'low', 'medium', 'high', 'xhigh'.", type: "invalid_request_error", param: "reasoning.effort", code: "unsupported_value" } }, { status: 400 });
+      }
       const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: o.reply, annotations: [] }] };
       const usage = { input_tokens: 120, output_tokens: 12, total_tokens: 132 };
       const events = [
@@ -256,6 +261,7 @@ test("a server with no model key runs codex and pi on a person's ChatGPT plan: s
       assert.equal(request.authorization, `Bearer ${openai.issued[0].access}`, `${id} sends the plan's bearer`);
       assert.equal(request.body.model, "gpt-6.1-sol", id);
       assert.equal("max_output_tokens" in request.body, false, `${id}: no max_output_tokens on the plan`);
+      assert.notEqual(request.body.reasoning?.effort, "none", `${id}: no "none" effort to a model whose catalog takes none (sol's off is null)`);
     }
     const turns = turnsOf(done.runId);
     assert.ok(turns.length > 0, `${id} booked its turns`);
@@ -827,4 +833,54 @@ test("signing out through the API answers whether OpenAI confirmed the revocatio
   const confirmed = await api("DELETE", "/settings/chatgpt");
   assert.deepEqual([confirmed.status, confirmed.body], [200, { revoked: true }]);
   assert.equal(openai.revocationsOf(third.refresh), 1);
+});
+
+
+test("normal server shutdown releases a pending ChatGPT callback without signing out the saved plan", { timeout: 30_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const originalStart = ChatGPTPlan.prototype.startSignIn;
+  let pendingOwner;
+  t.mock.method(ChatGPTPlan.prototype, "startSignIn", function (...args) {
+    pendingOwner = this;
+    return originalStart.apply(this, args);
+  });
+  // Failure-only cleanup: the port-release assertion below must pass using normal server shutdown.
+  // This keeps the causal negative control from leaking its intentionally unclosed listener.
+  t.after(() => pendingOwner?.close());
+  const first = await serve(t, { faux: undefined, runner: false, harnesses: false });
+  const initial = await first.api("POST", "/settings/chatgpt/sign-in");
+  assert.equal(initial.status, 200, JSON.stringify(initial.body));
+  assert.equal((await first.api("POST", "/settings/chatgpt/sign-in/finish", { redirect_url: callbackFor(initial.body.authorize_url) })).status, 200);
+  const sealed = Buffer.from(await first.store.sealedKeys.get(PLAN_ROW));
+  const pending = await first.api("POST", "/settings/chatgpt/sign-in");
+  assert.equal(pending.status, 200, JSON.stringify(pending.body));
+  assert.equal((await first.api("GET", "/settings/chatgpt")).body.state, "pending");
+  const callback = await fetch(`http://${CALLBACK_HOST}:1455/not-a-callback`);
+  assert.equal(callback.status, 404, "the real callback listener is accepting requests before shutdown");
+  await callback.text();
+
+  await first.stop();
+  // No polling or fixture cancellation: the just-stopped server must have released this exact listener.
+  const probe = createNetServer();
+  await new Promise((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(1455, CALLBACK_HOST, resolve);
+  });
+  await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+  pendingOwner = undefined;
+  assert.equal(openai.codes, 1, "the pending sign-in never exchanges a code");
+  assert.deepEqual(openai.revoked, [], "shutdown is not sign-out");
+
+  const again = await serve(t, { data: first.data, faux: undefined, harnesses: false });
+  assert.deepEqual(Buffer.from(await again.store.sealedKeys.get(PLAN_ROW)), sealed, "the durable credential bytes survive shutdown and restart");
+  assert.equal((await again.api("GET", "/settings/chatgpt")).body.state, "signed_in");
+  assert.equal((await again.api("POST", "/agents", agent("after-shutdown"))).status, 201);
+  const started = await again.api("POST", "/agents/after-shutdown/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal((await follow(again.api, started.body.run_id, ["completed", "failed"])).last.status, "completed");
+  assert.ok(openai.responses.length > 0, "an ordinary task still uses the saved plan through the fake provider");
+  assert.equal(openai.refreshes, 0);assert.deepEqual(openai.revoked, []);
+  await again.stop();
 });

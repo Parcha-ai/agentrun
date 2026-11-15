@@ -1,26 +1,25 @@
 // The kernel cap's one pricing rule, the same for every harness: a request's input bound (one token per UTF-8 byte of what
-// is sent, plus what its provider adds and its hosted tools read) at the dearer of the input and cache-write prices; under
-// "expected" (the default) the cache of a recent request of the session read at the cache-read price (one that ended under
-// 4 minutes ago on the same model, the biggest no bigger than this one), so only a cache miss can pass the cap, by at most
-// the request's bound; under "strict" every token uncached. Its output held at what it is sent with, its thinking budget
-// included. A model with no price, and a priced model with no output ceiling, cannot be kept within a cap: under one they
-// are refused for good.
+// is sent, plus what its provider adds and its hosted tools read) at the dearer of the input and cache-write prices, the
+// worst case: whatever the session cached before, every input token is priced uncached, so no request passes the cap, a
+// cache miss included. Its output held at what it is sent with, its thinking budget included. A model with no price, and
+// a priced model with no output ceiling, cannot be kept within a cap: under one they are refused for good.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CACHE_WARM_MS, CapRefused, RECENT_REQUESTS_KEPT, recentAfter, warmFrom } from "../dist/kernel/cap/index.js";
+import { CapRefused, pricingOf } from "../dist/kernel/cap/index.js";
 import { providerInputOverhead } from "../dist/host/index.js";
 import { capOn, FREE, GPT, modelRequest, SONNET, T0, UNPRICED, usd } from "./kernel-cap-support.mjs";
 
 const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-12, `${message ?? ""} ${actual} vs ${expected}`);
+/** A session's previous request that read 90% of its input from the cache: a field the cap no longer reads. */
 const warm = (overrides = {}) => ({ model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000, ...overrides });
 
 test("the input bound is priced at the dearer of input and cache write: an input that alone passes what is left is not sent", async () => {
   const { cap } = capOn(0.37);
   // 100,000 tokens at $3.75 (cache write, dearer than input's $3) is $0.375: past the $0.37 cap before any output.
   await assert.rejects(cap.admit(modelRequest(SONNET, 100_000)), (error) => error instanceof CapRefused && !error.forGood);
-  const { cap: wide } = capOn(10, { mode: "strict" });
+  const { cap: wide } = capOn(10);
   const admitted = await wide.admit(modelRequest(GPT, 100_000, 1_000));
-  near(admitted.worstUsd, usd(100_000, 1.25) + usd(1_000, 10), "no cache-write price: the input price");
+  near(admitted.heldUsd, usd(100_000, 1.25) + usd(1_000, 10), "no cache-write price: the input price");
 });
 
 test("an unpriced model is refused under a cap and only under one; a catalog $0 is a known $0", async () => {
@@ -33,132 +32,79 @@ test("an unpriced model is refused under a cap and only under one; a catalog $0 
 });
 
 test("a harness's own search adds its allowance to the request's bound: 8 searches of 25,000 tokens", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 1_000, { extraInputTokens: 8 * 25_000 }));
-  near(admitted.worstUsd, usd(210_000, 3.75) + usd(1_000, 15));
+  near(admitted.heldUsd, usd(210_000, 3.75) + usd(1_000, 15));
 });
 
-test("a request's least is the figure admit refuses it below: uncached with no previous request, cache-read with one", async () => {
+test("a request's least is the figure admit refuses it below: its input uncached, whatever the session cached before", async () => {
   const { cap } = capOn(10);
   const cold = modelRequest(SONNET, 10_000);
   near(cap.leastUsd(cold), usd(10_000, 3.75) + usd(1_024, 15), "uncached, 1,024 answer tokens");
   const hot = modelRequest(SONNET, 10_000, 4_096, { recent: [warm({ cachedTokens: 9_000, inputTokens: 1_000, boundTokens: 10_000 })] });
-  near(cap.leastUsd(hot), usd(9_000, 0.3) + usd(1_000, 3.75) + usd(1_024, 15), "read from the cache");
+  near(cap.leastUsd(hot), cap.leastUsd(cold), "a cached session's request: the same");
   const least = cap.leastUsd(cold);
   await assert.rejects(capOn(least - 0.0001).cap.admit(modelRequest(SONNET, 10_000)), CapRefused);
   await capOn(least).cap.admit(modelRequest(SONNET, 10_000));
 });
 
-test("expected mode on a ~90% cached run spends at least 90% of a $0.50 cap and never passes it", async () => {
+/** A run of growing Sonnet requests under a $0.50 cap, each billed by `billed(bound, cached, output)`, until the cap
+ *  refuses the next: what it spent. */
+async function cappedRun(billed) {
   const { cap, clock } = capOn(0.5);
-  let previous;
+  let previous = 0;
   let bound = 2_000;
   for (;;) {
-    const request = modelRequest(SONNET, bound, 1_100, previous ? { recent: [previous] } : {});
+    const request = modelRequest(SONNET, bound, 1_100);
     let admitted;
     try {
       admitted = await cap.admit(request);
     } catch (error) {
-      assert.ok(error instanceof CapRefused, String(error));
+      assert.ok(error instanceof CapRefused && !error.forGood, String(error));
       break;
     }
-    // A cache hit: the previous bound read from the cache, the rest written, and the output it was sent with.
-    const cached = previous ? previous.boundTokens : 0;
     const output = admitted.outputTokensMax ?? 1_100;
-    const cost = usd(cached, 0.3) + usd(bound - cached, 3.75) + usd(output, 15);
+    const cost = billed(bound, previous, output);
+    assert.ok(cost <= admitted.heldUsd + 1e-12, `request of ${bound} billed ${cost}, past its hold ${admitted.heldUsd}`);
     clock.now += 1_000;
     await cap.settle(request.id, { end: "answered", usd: cost });
-    previous = { model: SONNET.id, cachedTokens: cached, inputTokens: bound - cached, boundTokens: bound, endedAt: clock.now };
+    previous = bound;
     bound += 500;
   }
-  assert.ok(cap.spentUsd() >= 0.45, `spent ${cap.spentUsd()}`);
-  assert.ok(cap.spentUsd() <= 0.5 + 1e-12, `spent ${cap.spentUsd()}`);
+  return cap.spentUsd();
+}
+
+test("a ~90% cached run and the same run with every cache missed both stop at a $0.50 cap and never pass it", async () => {
+  // A cache hit: the previous bound read from the cache, the rest written, and the output it was sent with.
+  const hit = await cappedRun((bound, cached, output) => usd(cached, 0.3) + usd(bound - cached, 3.75) + usd(output, 15));
+  // Every request missed: its whole input written to the cache.
+  const missed = await cappedRun((bound, _cached, output) => usd(bound, 3.75) + usd(output, 15));
+  assert.ok(hit <= 0.5 + 1e-12, `cached: spent ${hit}`);
+  assert.ok(missed <= 0.5 + 1e-12, `missed: spent ${missed}`);
+  assert.ok(missed >= 0.45, `the run that missed used its cap: spent ${missed}`);
+  assert.ok(hit > 0, "the cached run ran");
 });
 
-test("strict mode holds the worst case with no bound", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+test("a request whose session read the cache is held at the worst case all the same, with no bound beside it", async () => {
+  const { cap } = capOn(10);
   const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm()] }));
-  near(admitted.heldUsd, admitted.worstUsd);
-  assert.equal(admitted.boundUsd, 0);
-});
-
-test("the previous cache counts under 4 minutes: at 3:59.999 the expected cost, at 4:00.001 the worst case", async () => {
-  assert.equal(CACHE_WARM_MS, 240_000);
-  const { cap, clock } = capOn(10);
-  const fresh = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm({ endedAt: clock.now - (CACHE_WARM_MS - 1) })] }));
-  near(fresh.heldUsd, usd(90_000, 0.3) + usd(10_000, 3.75) + usd(1_000, 15), "expected");
-  near(fresh.boundUsd, fresh.worstUsd - fresh.heldUsd, "the bound is what a miss can add");
-  const stale = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm({ endedAt: clock.now - (CACHE_WARM_MS + 1) })] }));
-  near(stale.heldUsd, stale.worstUsd);
-  assert.equal(stale.boundUsd, 0);
-});
-
-test("another model than the previous answer's counts no cache: worst case, no bound", async () => {
-  const { cap } = capOn(10);
-  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm({ model: GPT.id })] }));
-  near(admitted.heldUsd, admitted.worstUsd);
-  assert.equal(admitted.boundUsd, 0);
-});
-
-test("a request smaller than the previous one (a compaction, another conversation's) reads none of its cache: worst case, no bound", async () => {
-  const { cap } = capOn(10);
-  const admitted = await cap.admit(modelRequest(SONNET, 40_000, 1_000, { recent: [warm()] }));
-  near(admitted.heldUsd, admitted.worstUsd, "never under what it can cost");
-  assert.equal(admitted.boundUsd, 0);
-});
-
-test("a smaller request between two of a conversation's own (Codex's while a tool runs) leaves its next request warm from its last", async () => {
-  const main = (bound, endedAt) => ({ model: SONNET.id, cachedTokens: bound - 1_000, inputTokens: 1_000, boundTokens: bound, endedAt });
-  let recent = [];
-  recent = recentAfter(recent, main(100_000, T0 - 3_000));
-  recent = recentAfter(recent, main(110_000, T0 - 2_000));
-  recent = recentAfter(recent, main(40_000, T0 - 1_000));
-  assert.deepEqual(recent.map((one) => one.boundTokens), [100_000, 110_000, 40_000], "the smaller request is kept beside the others, never in their place");
-  assert.equal(warmFrom(120_000, recent, T0, SONNET.id).boundTokens, 110_000, "the conversation's next request: from its last, the biggest no bigger");
-  assert.equal(warmFrom(45_000, recent, T0, SONNET.id).boundTokens, 40_000, "the smaller one's next (a compacted conversation's): from it");
-  assert.equal(warmFrom(30_000, recent, T0, SONNET.id), undefined, "smaller than every one: uncached");
-  const { cap } = capOn(10);
-  const next = await cap.admit(modelRequest(SONNET, 120_000, 1_000, { recent }));
-  near(next.heldUsd, usd(109_000, 0.3) + usd(1_000 + 10_000, 3.75) + usd(1_000, 15), "held warm from the 110,000-token request");
-});
-
-test("the recent requests: warm ones only, the newer of one bound, at most RECENT_REQUESTS_KEPT; each priced only from its model's, warm, no bigger", () => {
-  const one = (boundTokens, endedAt, overrides = {}) => ({ model: SONNET.id, cachedTokens: 0, inputTokens: boundTokens, boundTokens, endedAt, ...overrides });
-  assert.deepEqual(recentAfter([one(50_000, T0 - CACHE_WARM_MS)], one(60_000, T0)).map((r) => r.boundTokens), [60_000], "one that ended 4 minutes before the new one goes");
-  assert.deepEqual(recentAfter([one(60_000, T0 - 10)], one(60_000, T0)).map((r) => r.endedAt), [T0], "one of the same bound: the newer");
-  assert.equal(recentAfter([one(60_000, T0 - 10, { counted: true })], one(60_000, T0)).length, 2, "one measured another way: both");
-  assert.equal(recentAfter([one(60_000, T0 - 10, { model: GPT.id })], one(60_000, T0)).length, 2, "another model's: both");
-  let many = [];
-  for (let k = 0; k < RECENT_REQUESTS_KEPT + 4; k += 1) many = recentAfter(many, one(1_000 + k, T0 + k));
-  assert.equal(many.length, RECENT_REQUESTS_KEPT);
-  assert.equal(many.at(-1).boundTokens, 1_000 + RECENT_REQUESTS_KEPT + 3, "the newest kept");
-  const recent = [one(80_000, T0 - 1_000), one(90_000, T0 - 1_000, { model: GPT.id }), one(95_000, T0 - CACHE_WARM_MS)];
-  assert.equal(warmFrom(100_000, recent, T0, SONNET.id).boundTokens, 80_000, "neither another model's nor a cold one is read");
-  assert.equal(warmFrom(100_000, [one(80_000, T0)], T0 - 1, SONNET.id), undefined, "a clock that reads before its end: none");
-  assert.equal(warmFrom(100_000, [one(80_000, T0 - 5), one(80_000, T0 - 1, { cachedTokens: 7 })], T0, SONNET.id).cachedTokens, 7, "of equal bounds, the newest");
-});
-
-test("a warm guess that misses (another conversation's request whose bound fit) costs at most the request's hold and its bound", async () => {
-  const { cap } = capOn(10);
-  const admitted = await cap.admit(modelRequest(SONNET, 120_000, 1_000, { recent: [warm({ boundTokens: 110_000 })] }));
-  const missed = usd(120_000, 3.75) + usd(admitted.outputTokensMax ?? 1_000, 15);
-  assert.ok(admitted.heldUsd < missed - 0.2, `held warm: $${admitted.heldUsd}`);
-  near(admitted.heldUsd + admitted.boundUsd, missed, "the bound covers the whole miss");
+  near(admitted.heldUsd, usd(100_000, 3.75) + usd(1_000, 15));
+  assert.equal("boundUsd" in admitted, false);
 });
 
 test("a request is held at the output it is sent with, its thinking budget included", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 4_096, { thinkingBudget: 8_000 }));
   assert.equal(admitted.outputTokensMax, 12_096);
-  near(admitted.worstUsd, usd(10_000, 3.75) + usd(12_096, 15));
+  near(admitted.heldUsd, usd(10_000, 3.75) + usd(12_096, 15));
 });
 
 test("the input adds the provider's server-side tokens from the proxy's table: tools and an image held the same on every harness", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const shape = { tools: true, toolChoice: "auto", images: [{ bytes: 0 }] };
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 1_000, { shape }));
   // Its image at its model's provider's figure (a Claude model: Anthropic's per-image maximum, its size unread).
-  near(admitted.worstUsd, usd(10_000 + providerInputOverhead("anthropic-messages", { ...shape, model: SONNET.id }), 3.75) + usd(1_000, 15));
+  near(admitted.heldUsd, usd(10_000 + providerInputOverhead("anthropic-messages", { ...shape, model: SONNET.id }), 3.75) + usd(1_000, 15));
   assert.equal(providerInputOverhead("anthropic-messages", { ...shape, model: SONNET.id }), 675 + 4784);
 });
 
@@ -171,9 +117,9 @@ test("a gateway or provider with no documented figure is priced and sent, never 
 });
 
 test("a tool's own request adds its hosted allowance and most fee: web search at 5 searches of 25,000 tokens and 5 searches' fee", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 1_000, { extraInputTokens: 5 * 25_000, feeUsd: 5 * 0.01 }));
-  near(admitted.worstUsd, usd(135_000, 3.75) + usd(1_000, 15) + 0.05);
+  near(admitted.heldUsd, usd(135_000, 3.75) + usd(1_000, 15) + 0.05);
 });
 
 test("a priced output with no ceiling is refused whatever is asked; a free output with none passes; with no cap nothing is", async () => {
@@ -183,30 +129,28 @@ test("a priced output with no ceiling is refused whatever is asked; a free outpu
   await capOn(undefined).cap.admit(modelRequest(unbounded, 1_000, 100));
 });
 
-// A price with tiers, as the catalog gives gpt-6.1-sol's: past 272,000 input tokens in all (fresh and cached), the whole
-// request at the tier's rates, as pi-ai's calculateCost prices it (the parity with that function is serve's
-// kernel-cap-tiers-parity test, on the catalog's own entry).
+// A price with tiers, as the catalog gives gpt-6.1-sol's: past 272,000 input tokens, the whole request at the tier's
+// rates, as pi-ai's calculateCost prices it (the parity with that function is serve's kernel-cap-tiers-parity test, on
+// the catalog's own entry).
 const SOL = Object.freeze({
   id: "gpt-6.1-sol", api: "openai-responses", outputCeiling: 128_000,
   price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] },
 });
 
-test("a price with tiers: a request whose input passes a tier's threshold is priced at that tier, whole, its cached tokens counting toward it", async () => {
-  const { pricingOf } = await import("../dist/kernel/cap/index.js");
+test("a price with tiers: a request whose input passes a tier's threshold is priced at that tier, whole, uncached", () => {
   const price = pricingOf(SOL.price);
-  near(price({ cached: 0, fresh: 272_000 }, 1_024), usd(272_000, 2.5) + usd(1_024, 10), "at the threshold, the base rates");
-  near(price({ cached: 0, fresh: 300_000 }, 1_024), usd(300_000, 5) + usd(1_024, 15), "past it, the tier's rates for all of it");
-  near(price({ cached: 200_000, fresh: 100_000 }, 1_024), usd(200_000, 0.2) + usd(100_000, 5) + usd(1_024, 15), "the cache read counts toward the threshold");
+  near(price(272_000, 1_024), usd(272_000, 2.5) + usd(1_024, 10), "at the threshold, the base rates");
+  near(price(300_000, 1_024), usd(300_000, 5) + usd(1_024, 15), "past it, the tier's rates for all of it");
 });
 
 test("the hold of a request past a tier's threshold is the tiered price, never the base one", async () => {
-  const admitted = await capOn(10, { mode: "strict" }).cap.admit(modelRequest(SOL, 300_000, 4_096));
+  const admitted = await capOn(10).cap.admit(modelRequest(SOL, 300_000, 4_096));
   near(admitted.heldUsd, usd(300_000, 5) + usd(4_096, 15));
 });
 
 test("a run whose cap the tiered price passes parks, where the base price would have let it pass its cap by up to 2x", async () => {
   // Base: 300,000 at $2.50 and 1,024 out at $10 is $0.76, under the $1 cap. Tiered: $1.51536, over it.
-  await assert.rejects(capOn(1, { mode: "strict" }).cap.admit(modelRequest(SOL, 300_000, 4_096)), (error) => {
+  await assert.rejects(capOn(1).cap.admit(modelRequest(SOL, 300_000, 4_096)), (error) => {
     assert.ok(error instanceof CapRefused && !error.forGood, String(error));
     near(error.figures.needsUsd, usd(300_000, 5) + usd(1_024, 15), "the need at the tier's rates");
     return true;

@@ -15,13 +15,16 @@ import { MCP_SOURCES, type McpSource } from "./mcp-sources.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
+import { harnessOf } from "./harness-table.js";
+import { chooseModel, FAUX_ENV, harnessRuns, hostModel, MODEL_KEYS, providerModels, THINKING_LEVELS, type Tier } from "./model.js";
+import { harnessModel } from "./runnable.js";
 import { isPinKeys, type PinKeys, type PinScalar, type PinValue } from "./tool-gate.js";
 import { formatToolName, isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { MOVE_FIELD } from "./trigger-composio.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
@@ -79,6 +82,9 @@ const SAMPLES = { string: "x", number: 1, integer: 1, boolean: true } as const;
 const FORMAT_SAMPLES: Record<string, string> = { uri: "https://example.com", email: "someone@example.com", hostname: "example.com", date: "2026-01-01", "date-time": "2026-01-01T00:00:00Z", uuid: "00000000-0000-4000-8000-000000000000", cron: "0 9 * * *", timezone: "UTC" };
 /** A scalar's sample: its first choice, else one of its format, else one of its type. */
 const sampleOf = (spec: { type?: unknown; enum?: unknown; format?: unknown }): unknown => (Array.isArray(spec.enum) ? spec.enum[0] : FORMAT_SAMPLES[spec.format as string] ?? SAMPLES[spec.type as ScalarType]);
+/** A composio trigger's fields this server sets when it makes the trigger on Composio (composio-triggers.ts). */
+const COMPOSIO_SET = ["instance_id", "hook", MOVE_FIELD] as const;
+
 /** An agent id in the shape an apply gives a trigger's target, for that check. */
 const SAMPLE_AGENT = `agt_${"0".repeat(24)}`;
 // semver.org's own expression, SemVer 2.0.0.
@@ -96,6 +102,51 @@ const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
  *  destination the owner set. */
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>> };
+/** One of a package's model choices (manifest `model.choices`): a model and the harness it runs on, which an owner picks
+ *  by `id` at install (apply's overrides.choice) in place of the package's tier and preference. `label` names it on the
+ *  install form; `warning`, shown there word for word beside it; `note`, a setup line; `secrets`, the keys only this
+ *  choice needs, refused at apply as the package's own are. Apply runs the agent on exactly this model, or refuses. */
+export type ModelChoice = { id: string; label: string; model: string; harness: string; warning?: string; note?: string; secrets: string[] };
+/** A package's model choices at most, a choice label's length, and a warning's or a note's. */
+const MAX_CHOICES = 3;
+const MAX_CHOICE_LABEL = 40;
+const MAX_CHOICE_TEXT = 300;
+const CHOICE_FIELDS = ["id", "label", "model", "harness", "warning", "note", "secrets"];
+const CHOICE_WORDS = "{id, label, model, harness, warning?, note?, secrets?}";
+
+/** A manifest's `model.choices`, checked: each problem said through `bad`, in words that say the rule. A choice's harness
+ *  is one of the package's `harness` list (`harness`), or any this server knows when the package names none. */
+function modelChoices(given: unknown, harness: readonly string[] | undefined, bad: (message: string) => void): ModelChoice[] {
+  if (!Array.isArray(given) || !given.length || given.length > MAX_CHOICES) return bad(`model.choices is a list of 1 to ${MAX_CHOICES} choices, each ${CHOICE_WORDS}: the models an owner may pick one of at install`), [];
+  const text = (value: unknown, max: number) => typeof value === "string" && value.trim() !== "" && value.length <= max;
+  const ids = new Set<unknown>();
+  const out: ModelChoice[] = [];
+  given.forEach((choice, i) => {
+    const at = `model.choices[${i}]`;
+    if (!isObject(choice)) return bad(`${at} is ${CHOICE_WORDS}`);
+    let ok = true;
+    const no = (message: string) => { ok = false; bad(message); };
+    for (const issue of unknownFields(choice, CHOICE_FIELDS)) no(`${at} has no field ${issue.field}: a choice is ${CHOICE_WORDS}`);
+    if (typeof choice.id !== "string" || !NAME.test(choice.id) || choice.id.length > 64) no(`${at}.id is lowercase letters, digits and dashes, at most 64: what an apply's overrides.choice names`);
+    else if (ids.has(choice.id)) no(`${at}.id ${choice.id} is an earlier choice's: each choice has its own id`);
+    ids.add(choice.id);
+    if (!text(choice.label, MAX_CHOICE_LABEL)) no(`${at}.label is text of 1 to ${MAX_CHOICE_LABEL} characters, shown beside the choice at install`);
+    if (typeof choice.model !== "string" || !MODEL_REF.test(choice.model)) no(`${at}.model is "provider/model-id"`);
+    const harnesses: readonly string[] = harness ?? HARNESSES;
+    if (typeof choice.harness !== "string" || !harnesses.includes(choice.harness)) no(`${at}.harness is one of ${harness ? `the package's harness list (${harness.join(", ")})` : HARNESSES.join(", ")}: the choice runs on it`);
+    if (choice.warning !== undefined && !text(choice.warning, MAX_CHOICE_TEXT)) no(`${at}.warning is text of 1 to ${MAX_CHOICE_TEXT} characters, shown word for word beside the choice at install`);
+    if (choice.note !== undefined && !text(choice.note, MAX_CHOICE_TEXT)) no(`${at}.note is text of 1 to ${MAX_CHOICE_TEXT} characters, a setup line shown beside the choice at install`);
+    const secrets = choice.secrets ?? [];
+    if (!Array.isArray(secrets) || !secrets.every((name) => typeof name === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(name))) no(`${at}.secrets is a list of key names, as the package's secrets`);
+    else {
+      if (new Set(secrets).size !== secrets.length) no(`${at}.secrets names one key twice`);
+      for (const name of secrets.filter((one) => !PACKAGE_SECRETS.includes(one))) no(`${at}.secrets names ${name}, a key this server cannot hold: a choice needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
+    }
+    if (ok) out.push({ id: choice.id as string, label: choice.label as string, model: choice.model as string, harness: choice.harness as string, ...(typeof choice.warning === "string" ? { warning: choice.warning } : {}), ...(typeof choice.note === "string" ? { note: choice.note } : {}), secrets: secrets as string[] });
+  });
+  return out;
+}
+
 /** A need mapped to the saved MCP server an apply gives it (`server`, its saved name). */
 export type McpServed = McpNeed & { server: string };
 type ScalarType = (typeof SCALAR_TYPES)[number];
@@ -129,8 +180,9 @@ export type Package = {
   /** Harness ids in the order the package prefers them; absent, any (the server's default). */
   harness?: string[];
   /** The agent's tier and the model it prefers on it; `fast` and `strong`, the model it prefers for each of those tiers
-   *  when a subagent runs on it (runner/subagent.ts), compiled into the definition's model_tiers (packageTiers). */
-  model?: { tier: string; prefer?: string; fast?: string; strong?: string };
+   *  when a subagent runs on it (runner/subagent.ts), compiled into the definition's model_tiers (packageTiers);
+   *  `choices`, the named models an owner may pick one of at install instead (apply's overrides.choice). */
+  model?: { tier: string; prefer?: string; fast?: string; strong?: string; choices?: ModelChoice[] };
   effort?: string;
   /** Absent, the tools the server gives a new agent that names none. */
   tools?: string[];
@@ -245,10 +297,12 @@ const inputFilled = (value: unknown, given: Record<string, unknown>): unknown =>
   return value;
 };
 
-/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), the rest as text. */
+/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), its enabled the boolean its one
+ *  placeholder names, the rest as text. */
 const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
   const out = filled(trigger, given) as Json;
   if (isObject(trigger.target) && trigger.target.input !== undefined) out.target = { ...(out.target as Json), input: inputFilled(trigger.target.input, given) };
+  if (typeof trigger.enabled === "string" && WHOLE.test(trigger.enabled)) out.enabled = typedFilled(trigger.enabled, given);
   return out;
 };
 
@@ -538,7 +592,9 @@ export function readPackage(from: string | PackageFiles): Package {
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);
   const ref = (value: unknown) => value === undefined || (typeof value === "string" && MODEL_REF.test(value));
-  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer", ...MODEL_TIER_NAMES]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && ref(f.model.prefer) && MODEL_TIER_NAMES.every((tier) => ref((f.model as Record<string, unknown>)[tier])))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id", ${MODEL_TIER_NAMES.map((tier) => `${tier}?: "provider/model-id"`).join(", ")}}`);
+  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer", ...MODEL_TIER_NAMES, "choices"]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && ref(f.model.prefer) && MODEL_TIER_NAMES.every((tier) => ref((f.model as Record<string, unknown>)[tier])))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id", ${MODEL_TIER_NAMES.map((tier) => `${tier}?: "provider/model-id"`).join(", ")}, choices?: [${CHOICE_WORDS}]}`);
+  // The named models an owner may pick one of at install; the package's own tier and preference stay the default.
+  const choices = isObject(f.model) && f.model.choices !== undefined ? modelChoices(f.model.choices, harness, (message) => bad(MANIFEST, message)) : undefined;
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
   if (tools?.some(isMcpName)) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
@@ -614,6 +670,11 @@ export function readPackage(from: string | PackageFiles): Package {
     if (triggerNames.has(name)) bad(MANIFEST, `triggers[${i}]: two triggers are named ${name}`);
     triggerNames.add(name);
     if (!isObject(target) || target.kind !== "start_run" || target.agent_id !== undefined) bad(MANIFEST, `triggers[${i}].target is a start_run with no agent_id: the agent is the one the package makes`);
+    // What makes a composio trigger on Composio is this server's to set, at the create: a package carrying it would run on
+    // an instance made elsewhere, or move the project's subscription here unasked.
+    const source = isObject(trigger) ? trigger.source : undefined;
+    const set = isObject(source) && source.kind === "composio" ? COMPOSIO_SET.filter((field) => source[field] !== undefined) : [];
+    if (set.length) bad(MANIFEST, `triggers[${i}].source holds ${set.join(" and ")}, which this server sets when it makes a composio trigger on Composio: a template can't carry ${set.length > 1 ? "them" : "it"}. Leave ${set.length > 1 ? "them" : "it"} out, or make the trigger from the console on this server (Triggers → New app trigger) once the agent is made.`);
   });
   if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;
@@ -650,8 +711,19 @@ export function readPackage(from: string | PackageFiles): Package {
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
+      : key === "enabled" && typeof value === "string" ? []
       : [[key, value] as const]);
     for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    // enabled is true, false, or one boolean parameter with a default, filled at apply (triggerFilled): the trigger is on
+    // or off by the owner's answer, and by the package's default when the apply leaves it out.
+    if (typeof trigger.enabled === "string") {
+      const rule = `triggers[${i}].enabled is true, false, or one placeholder alone, "\${parameters.<name>}", naming a boolean parameter with a default`;
+      const whole = WHOLE.exec(trigger.enabled);
+      const spec = whole && Object.hasOwn(fields, whole[1]!) ? fields[whole[1]!] : undefined;
+      if (!whole) bad(MANIFEST, rule);
+      else if (spec && spec.type !== "boolean") bad(MANIFEST, `${rule}: parameters.${whole[1]} is a ${spec.type as string}`);
+      else if (spec && spec.default === undefined) bad(MANIFEST, `${rule}: parameters.${whole[1]} has no default, and the trigger is on or off even when the apply leaves it out`);
+    }
     if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
         if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
@@ -728,7 +800,7 @@ export function readPackage(from: string | PackageFiles): Package {
     id: name, origin: null, name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
-    ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as NonNullable<Package["model"]> } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
+    ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
   };
@@ -753,7 +825,12 @@ export function readPackage(from: string | PackageFiles): Package {
     const whole = typeof value === "string" ? WHOLE.exec(value) : null;
     return !!whole && Object.hasOwn(fields, whole[1]!) && fields[whole[1]!]!.default === undefined;
   };
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  // A trigger's enabled given as text is said above, by its own rule, not again as POST /v2/triggers words it.
+  const saidEnabled = (field: string): boolean => {
+    const at = /^triggers\.(\d+)\.enabled$/.exec(field);
+    return !!at && typeof p.triggers[Number(at[1])]?.enabled === "string";
+  };
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (!saidEnabled(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }
@@ -785,10 +862,17 @@ export function packageView(p: Package) {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     category: p.category ?? null, tags: p.tags,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
+    harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
+}
+
+/** A package's model as GET /v2/templates lists it: each choice whole, a warning or note it has none of null. */
+function modelView(model: Package["model"]) {
+  if (!model) return null;
+  const { choices, ...rest } = model;
+  return { ...rest, ...(choices ? { choices: choices.map(({ id, label, model: ref, harness, warning, note, secrets }) => ({ id, label, model: ref, harness, warning: warning ?? null, note: note ?? null, secrets })) } : {}) };
 }
 
 /** A package as an import answers it: its listing, and every text its agent would be given, the instructions and each
@@ -822,10 +906,11 @@ export class TemplateRegistry {
   }
 }
 
-/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model}}`), checked against the package:
- *  the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the package lists, by its gate name), and the model
- *  asked for in place of the package's. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; approvals?: Approvals } {
+/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model?, choice?, approvals?}}`), checked
+ *  against the package: the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the
+ *  package lists, by its gate name), and the model asked for in place of the package's: one of its own (`model`), or one
+ *  of the package's model choices by id (`choice`), never both. 422 naming every field that is wrong. */
+export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals } {
   const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides"]);
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
@@ -855,29 +940,38 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
   ]);
   if (isObject(given)) issues.push(...inputIssues(parameters, p.parameters, "parameters"));
   const overrides = body.overrides ?? {};
-  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?, approvals?}" });
-  else {
-    issues.push(...unknownFields(overrides, ["model", "approvals"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model and the approvals alone." })));
+  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?, choice?, approvals?}" });
+  const choices = p.model?.choices ?? [];
+  const choice = isObject(overrides) ? choices.find((one) => one.id === overrides.choice) : undefined;
+  if (isObject(overrides)) {
+    issues.push(...unknownFields(overrides, ["model", "choice", "approvals"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model (one of its own, or one of the package's choices) and the approvals alone." })));
     if (overrides.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(overrides.approvals)) issues.push({ field: "overrides.approvals", reason: "not_an_option", message: `overrides.approvals is one of ${APPROVALS.join(", ")}: never runs the agent unattended, while a deny still refuses` });
     if (overrides.model !== undefined && !(typeof overrides.model === "string" && MODEL_REF.test(overrides.model))) issues.push({ field: "overrides.model", reason: "bad_format", message: 'overrides.model is "provider/model-id"' });
+    // A choice is the package's model and harness together; a model of the owner's own says something else: never both.
+    if (overrides.choice !== undefined && overrides.model !== undefined) issues.push({ field: "overrides.choice", reason: "not_allowed", message: "overrides.choice and overrides.model say different things: send one, a choice of the package's by its id or a model of your own." });
+    else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, servers, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
- *  with a key for its provider, but never through a gateway (AGENT_MODEL_BASE_URL), which never said it serves it: then
- *  a warning says so. Else the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL or
- *  AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
+ *  with a key for its provider, else `refused` (preferUnrunnable): apply makes nothing, never the tier's model in its
+ *  place. Through a gateway (AGENT_MODEL_BASE_URL), which never said it serves `prefer`, it is not used and a warning says
+ *  so. With no `prefer`, or one skipped there, the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL
+ *  or AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
  *  which no definition can name: then no model, and the agent runs on the server's default (a warning when the tier's
  *  model is not that default). No model either when the package names none or the server has none. */
-export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string }> {
+export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string; refused?: { why: string; fix: string } }> {
   if (!model) return {};
   // Through a gateway, only the gateway knows what it serves: a preferred model it never named is not picked, and the
   // owner is told (overrides.model picks one it serves).
   const gateway = Boolean(env.AGENT_MODEL_BASE_URL);
   const skipped = model.prefer && gateway ? `model.prefer ${model.prefer} is not used: this server reaches its models through a gateway, which has not said it serves that model.` : undefined;
-  if (!skipped && model.prefer && harnessRuns(env, model.prefer, harness) && !("why" in (await chooseModel(env, model.prefer, "default", harness)))) return { model: model.prefer };
+  if (model.prefer && !gateway) {
+    const refused = await preferUnrunnable(env, model.prefer, harness, Boolean(model.choices?.length));
+    return refused ? { refused } : { model: model.prefer };
+  }
   const tier = MODEL_TIERS[model.tier]!;
   const id = hostModel(env, tier, harness);
   // A gateway's own id (no provider) is no "provider/model-id" a definition can name: the agent is left to the server's
@@ -889,6 +983,48 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
     : undefined;
   const warning = [skipped, runsOn, skipped ? "overrides.model picks another the gateway serves." : undefined].filter(Boolean).join(" ");
   return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
+}
+
+/** `model` on `harness` as a save and a run take it (runnable.ts harnessModel, on the harness's own route), and where it
+ *  runs, refused all the same when no catalog here lists the entry its runs are priced by (the harness's priceModel):
+ *  claude-agent takes any Anthropic id on its own, and a package's model no catalog knows makes an agent whose runs fail
+ *  at the provider. A faux model server runs any. */
+async function modelHere(env: NodeJS.ProcessEnv, harness: string, model: string): ReturnType<typeof harnessModel> {
+  const chosen = await harnessModel(env, harness, model, true);
+  if (!chosen || !("model" in chosen) || env[FAUX_ENV]) return chosen;
+  const priced = harnessOf(env, harness)?.priceModel(env, chosen.model) ?? chosen.model;
+  if ((await providerModels(env)).getModel(priced.provider, priced.modelId)) return chosen;
+  return { why: `${model} is not a model ${harness} runs here: no model catalog here lists it`, host: false, needs: "model" };
+}
+
+/** Why this server can't run a package's `prefer` on `harness`, and what the owner does about it, as `{why, fix}` in
+ *  words; undefined when it can. Asked as a save and a run ask it (runnable.ts harnessModel), on the harness's own
+ *  route: codex reaches an OpenAI model through OpenRouter's key alone. A missing key names its provider and Settings → Model keys; a model no catalog here
+ *  lists, or one the harness does not run, only another model: overrides.model, or a model choice where the package
+ *  has them (`choices`). */
+async function preferUnrunnable(env: NodeJS.ProcessEnv, prefer: string, harness: string, choices: boolean): Promise<{ why: string; fix: string } | undefined> {
+  const other = `apply with overrides.model${choices ? " or one of the package's model choices (overrides.choice)" : ""}.`;
+  const another = `${other[0]!.toUpperCase()}${other.slice(1)}`;
+  if (!harnessRuns(env, prefer, harness)) return { why: `${harness} does not run it`, fix: another };
+  const chosen = await modelHere(env, harness, prefer);
+  if (chosen && "model" in chosen) return undefined;
+  if (chosen && "why" in chosen && chosen.needs === "model") return { why: "no model catalog here lists it", fix: another };
+  const row = MODEL_KEYS.find((one) => one.id === prefer.slice(0, prefer.indexOf("/")));
+  if (chosen && "why" in chosen && chosen.needs === "key" && row && !env[row.field]) return { why: `no ${row.label} key is saved here`, fix: `Save ${/^[AEIOU]/.test(row.label) ? "an" : "a"} ${row.label} key in Settings → Model keys, or ${other}` };
+  return { why: (chosen === undefined ? `${harness} does not run here` : "refused" in chosen ? chosen.refused : chosen.why).replace(/\.$/, ""), fix: another };
+}
+
+/** Why this server can't run a model choice's model on its harness, in words; undefined when it can. As with `prefer`
+ *  (packageModel), a choice is never swapped for the tier's model: the owner who picked it gets it, or apply refuses. The
+ *  harness is the server's offer of it (`offer`, capabilities' harnesses): one not available here runs nothing. The model
+ *  is asked of the harness's own route, as a save and a run ask it (runnable.ts harnessModel). A gateway
+ *  (AGENT_MODEL_BASE_URL) never said it serves the model, so a choice is refused there, as `prefer` is skipped. */
+export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoice, offer: { available: boolean; reason?: string } | undefined): Promise<string | undefined> {
+  if (!offer?.available) return `${choice.harness} is not available here${offer?.reason ? `: ${offer.reason.replace(/\.$/, "")}` : ""}`;
+  if (env.AGENT_MODEL_BASE_URL) return "this server reaches its models through a gateway, which has not said it serves that model; overrides.model picks one it serves";
+  if (!harnessRuns(env, choice.model, choice.harness)) return `${choice.harness} does not run that model here`;
+  const chosen = await modelHere(env, choice.harness, choice.model);
+  return chosen === undefined ? `${choice.harness} does not run here` : "refused" in chosen ? chosen.refused : "why" in chosen ? chosen.why : undefined;
 }
 
 /** A computer setting as a definition names it (`definition.computer`). */

@@ -24,27 +24,16 @@ export interface ModelPrice extends PriceRates {
 }
 
 /** A model as the cap prices it: its API (what its provider adds server-side, and whether its thinking takes a budget),
- *  its price (null: none known), and its output ceiling (null: none). */
+ *  its price (null: none known), and its output ceiling (null: none). `plan`: billed to a person's subscription plan (a
+ *  ChatGPT plan's model), never by the token: a request on it costs the run no dollars, so the cap holds it at $0 and
+ *  never limits its output, whatever its price says. */
 export interface CapModel {
   readonly id: string;
   readonly api: string;
   readonly price: ModelPrice | null;
   readonly outputCeiling: number | null;
   readonly reasoning?: boolean;
-}
-
-/** One of the session's recent requests (price.ts recentAfter), as its usage reported it: what of its input was read from
- *  or written to the cache, the rest, its input bound (the unit a later request's is in) and when it ended (ms), on which
- *  model. A later request reads its cache from one of them (price.ts warmFrom). */
-export interface RecentRequest {
-  /** Its model as the cap prices it (CapModel.id), whatever id its client named it by. */
-  readonly model: string;
-  readonly cachedTokens: number;
-  readonly inputTokens: number;
-  readonly boundTokens: number;
-  /** Its bound was its provider's count, not its bytes: used only for a next request bounded the same way. */
-  readonly counted?: boolean;
-  readonly endedAt: number;
+  readonly plan?: boolean;
 }
 
 /** A model request about to be sent, from any harness (pi in process, a CLI's through the model proxy). */
@@ -68,9 +57,6 @@ export interface ModelCapRequest {
   readonly outputTokensLeast?: number;
   /** Its thinking budget, on an API whose thinking takes one beside the answer's output. */
   readonly thinkingBudget?: number;
-  /** The session's recent requests on its model, their bounds measured as this one's is: its input is expected to read
-   *  the cache of the one warmFrom picks, else none (priced uncached). */
-  readonly recent?: readonly RecentRequest[];
   /** A side call (a title, a summary), never its turn's own. */
   readonly side?: boolean;
   /** It carries the cap's wrap-up note (Cap.note) in its body, its bytes in `inputTokens`: told once it is answered. */
@@ -79,7 +65,7 @@ export interface ModelCapRequest {
 
 /** A workflow decision about to be judged, held as main holds it (serve decision-cap.ts holdOf): its model at its
  *  catalog's price (`outputCeiling`: the catalog's most completion tokens), "unreadable" when the catalog could not be
- *  read for one. Its output is DECISION_OUTPUT_TOKENS a question (expected), or its model's most (strict); its input its
+ *  read for one. Its output is its model's most (no answer can take more); its input its
  *  state and questions' bytes plus DECISION_IMAGE_TOKENS an image; its fees the catalog's per request and per image. With
  *  no cap it is not priced at all. */
 export interface DecisionCapRequest {
@@ -88,8 +74,6 @@ export interface DecisionCapRequest {
   readonly model: CapModel | "unreadable";
   /** The UTF-8 bytes of its state and questions as JSON, one token a byte. */
   readonly inputTokens: number;
-  /** How many questions it asks. */
-  readonly questions: number;
   /** How many images it sends. */
   readonly images?: number;
   /** The catalog's price per request and per image, in USD. */
@@ -109,14 +93,12 @@ export interface ToolCapRequest {
 
 export type CapRequest = ModelCapRequest | ToolCapRequest | DecisionCapRequest;
 
-/** A step the cap let go: what it is held at until it settles (a model request's expected cost at the output it may be
- *  sent with, its worst case under strict), the most a cache miss can add (`boundUsd`), its worst case, and for a model
- *  request the output it is limited to and what it counts at if stopped having streamed that many tokens. */
+/** A step the cap let go: what it is held at until it settles (a model request's worst case at the output it may be sent
+ *  with: its whole input bound uncached), and for a model request the output it is limited to and what it counts at if
+ *  stopped having streamed that many tokens. */
 export interface Admission {
   readonly id: string;
   readonly heldUsd: number;
-  readonly boundUsd: number;
-  readonly worstUsd: number;
   readonly outputTokensMax?: number;
   readonly thinkingBudget?: number;
   stoppedUsd(streamedTokens: number): number;
@@ -128,7 +110,6 @@ export interface RefusalFigures {
   readonly spentUsd: number;
   readonly needsUsd: number;
   readonly leastCapUsd: number;
-  readonly boundUsd?: number;
   /** A paid call's refusal: the call (its name, hold and basis), so a pause that lands after the refusal can say it again
    *  with the run's spend as it is then (paidRefusal). */
   readonly step?: { readonly name: string; readonly holdUsd: number; readonly basis: string };
@@ -140,7 +121,6 @@ export type Settled = Ended | { end: "charged"; usd: number | null };
 export interface CapOptions {
   /** The run's cap, read before every paid check, so a raise holds from the next one. Undefined: no cap. */
   capUsd(): number | undefined;
-  mode?: CapMode;
   /** What the run has spent when the cap opens (null: unknown). openCap reads it from `marks`. */
   spentUsd?: number | null;
   now?: () => number;
@@ -149,9 +129,6 @@ export interface CapOptions {
   /** How long settle waits for a step's end mark before it fails loudly. Default 10 s. */
   endMarkWaitMs?: number;
 }
-
-/** How the cap prices a request's input: "expected" from a recent request's cache; "strict" every token uncached. */
-export type CapMode = "expected" | "strict";
 
 export interface Cap {
   admit(request: CapRequest): Promise<Admission>;

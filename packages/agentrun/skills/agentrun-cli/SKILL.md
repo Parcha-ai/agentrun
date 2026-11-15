@@ -83,10 +83,10 @@ agentrun runs get "$run" > out.json && node -p 'JSON.stringify(require("./out.js
 
 A run paused at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in out.json.
 
-A cap too small for the task stops the run before a request it cannot pay for. With `--cap-mode strict` no request is sent that the cap cannot cover; under the default, `expected`, a request that misses the cache can go over by at most the run's `cost.overshoot_bound_usd`:
+A cap too small for the task stops the run before a request it cannot pay for. No request is sent that the cap cannot cover, a cache miss included:
 
 ```sh
-agentrun runs start notes --max-cost-usd 0.05 --cap-mode strict --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json
+agentrun runs start notes --max-cost-usd 0.05 --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json
 # exit 8 once it pauses at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough
 ```
 
@@ -117,11 +117,11 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 ## Commands
 
-- `agentrun agents`: archive, create, delete-agent-archil, forget-sign-in, get, get-agent-archil, get-learning-loop, list, list-learning-promotions, runs, unarchive, update
+- `agentrun agents`: archive, connect-native, create, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-promotions, runs, unarchive, update, verify-native
 - `agentrun files`: create, delete, get, list, upload
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: batch, batch-cancel, batch-start, batches, cost, evals, get, log, notes, read, record-eval, replay, retire, workflow-revisions, write
-- `agentrun local`: create-pairing, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-workspace-archil, list-computer-choices, list-computers, test-computer, test-workspace-archil
+- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
 - `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh

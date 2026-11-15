@@ -7,12 +7,12 @@ import { CapRefused } from "./errors.js";
 import { FIT_TOLERANCE, inputBound, mostOutput, outputAsked, outputLeast, pricingOf, requestPrice, STOP_ALLOWANCE_TOKENS, thinkingWithin } from "./price.js";
 import { typicalCost, WRAP_UP_STEP0_ANSWER_TOKENS, wrapUpDue, wrapUpWords } from "./wrap-up.js";
 import { noCeiling, noPrice, noToolPrice, paidRefusal, roomRefusal, unknownHeld, unknownSpend, unmeasured } from "./words.js";
-import type { CapMode, ModelCapRequest, ToolCapRequest } from "./types.js";
+import type { ModelCapRequest, ToolCapRequest } from "./types.js";
 
 /** What a judgement reads: the cap (read before this check), the run's spend (null: unknown) and its holds (null:
  *  unknown). `keepUsd`: what the host keeps back beside a model request for the steps it may still ask for while it
  *  streams (serve's wrap-up reserve: one typical step and one least answer); judgeModel says how it limits the output. */
-export type JudgeState = { capUsd: number; spentUsd: number | null; heldUsd: number | null; mode: CapMode; now: number; keepUsd?: number };
+export type JudgeState = { capUsd: number; spentUsd: number | null; heldUsd: number | null; keepUsd?: number };
 /** The state once both figures are known. */
 type Known = JudgeState & { spentUsd: number; heldUsd: number };
 
@@ -20,57 +20,54 @@ type Known = JudgeState & { spentUsd: number; heldUsd: number };
  *  unknown: it never reads as $0 and never frees room. */
 export const isFigure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
 
-/** A step admitted: what it is held at, the most a cache miss adds, its worst case, the output it may be sent with and its
- *  thinking budget, and what it counts at if stopped having streamed that many tokens (within its hold). */
-export type Judged = { heldUsd: number; boundUsd: number; worstUsd: number; outputTokensMax?: number; thinkingBudget?: number; stoppedUsd(streamedTokens: number): number };
+/** A step admitted: what it is held at (its worst case: no answer, miss or cut books it past this), the output it may be
+ *  sent with and its thinking budget, and what it counts at if stopped having streamed that many tokens (within its hold). */
+export type Judged = { heldUsd: number; outputTokensMax?: number; thinkingBudget?: number; stoppedUsd(streamedTokens: number): number };
 
-/** A model request priced: its output asked and least, and its cost and worst case at an output. */
-export function priced(request: ModelCapRequest, mode: CapMode, now: number) {
+/** A model request priced: its output asked and least, and its worst case at an output (price.ts requestPrice). */
+export function priced(request: ModelCapRequest) {
+  // A plan's request costs the run nothing at any output: its least, its step-0 figure and its worst are $0.
+  if (request.model.plan) return { asked: outputAsked(request), cost: (_output: number) => 0, least: 0 };
   const bound = inputBound(request);
   const price = request.model.price;
   if (bound === undefined || price === null) return undefined;
   const asked = outputAsked(request);
-  const { cost, worst } = requestPrice(pricingOf(price), bound, request.recent, now, mode, request.model.id, request.feeUsd ?? 0);
-  return { asked, cost, worst, least: asked === undefined ? 0 : outputLeast(request, asked) };
+  const cost = requestPrice(pricingOf(price), bound, request.feeUsd ?? 0);
+  return { asked, cost, least: asked === undefined ? 0 : outputLeast(request, asked) };
 }
 
-function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, mode, now, keepUsd }: Known): Judged {
+function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, keepUsd }: Known): Judged {
+  // A request on a person's subscription plan (CapModel.plan) is billed to the plan, never in dollars: held at $0, its
+  // output never limited (the plan's own limits apply), and admitted at any known spend, even one at the cap. Whatever else the run pays for (a
+  // paid tool, a model on a key) is judged as ever, so the cap still holds every dollar.
+  if (request.model.plan) return { heldUsd: 0, stoppedUsd: () => 0 };
   if (inputBound(request) === undefined) throw new CapRefused(unmeasured(capUsd), { forGood: true, spentUsd: spent });
   const price = request.model.price;
   if (price === null) throw new CapRefused(noPrice(capUsd), { forGood: true, spentUsd: spent });
   if (request.model.outputCeiling === null && price.output > 0) throw new CapRefused(noCeiling(capUsd), { forGood: true, spentUsd: spent });
-  const p = priced(request, mode, now)!;
+  const p = priced(request)!;
   const left = capUsd - spent - held;
-  // The output it is sent with. With a keep-back from its host, first the most whose WORST case (its hold and the cache
-  // miss its bound covers, as a request in flight counts in the run's records) leaves `keepUsd` free: a tool call the
-  // request makes while it streams then finds room for the steps after it (serve's wrap-up, which counts the request
-  // at its worst until it is booked). When even its least and the keep-back do not fit, the run is wrapping up and this
-  // request may be its answer: it gets the most what is left buys, as with no keep-back.
-  // Why the cap still holds: the first branch only lowers the output, never below the least: cost(out) <= worst(out) <=
-  // left - keepUsd <= left. The second is the rule as it was. So every hold is at most what is left, as before; the
-  // hold, its bound, what a stop counts and what is booked are priced by the same p at the output sent, unchanged.
-  // (The keep-back is kept with a float's tail to spare, so the host's sum of the same figures never reads it as passed.)
-  // When the warm guess is wrong (expected mode prices the bound's head as cached from a recent request, and the cache
-  // is gone): the hold is too low, and three things still bound the spend. The output is limited to what is sent
-  // here, so the request's real cost is at most its worst: its whole bound uncached at the dearer input price plus
-  // that output. The first branch admits only a worst that leaves the keep-back free, so a full miss still lands under
-  // the cap. Its real cost is then booked at the turn, so the next request is judged on what this one cost, never on
-  // its hold. Only the second branch (no keep-back, or a run wrapping up) admits on the hold, and there a miss passes
-  // the cap by at most its bound, the overshoot expected mode states; strict mode reads no cache and has none.
-  const kept = isFigure(keepUsd) && keepUsd > 0 ? mostOutput(p.worst, p.least, p.asked ?? 0, left - keepUsd - 2 * FIT_TOLERANCE) : undefined;
+  // The output it is sent with, clamped so its worst case fits: its whole input bound uncached and that output. With a
+  // keep-back from its host, first the most that leaves `keepUsd` free: a tool call the request makes while it streams
+  // then finds room for the steps after it (serve's wrap-up, which counts the request at its hold until it is booked).
+  // When even its least and the keep-back do not fit, the run is wrapping up and this request may be its answer: it gets
+  // the most what is left buys, as with no keep-back. Below its least, it is refused and the run parks for a raise.
+  // Why no request can pass the cap: every branch admits only an output whose worst case is at most what is left (the
+  // first at most what is left less the keep-back). The output is limited to that when sent, so whatever the cache did,
+  // and if it is cut with no usage, the request is booked at no more than its hold, which counts in the run's records
+  // while it is out; a stop counts what streamed, within the hold. (The keep-back is kept with a float's tail to spare,
+  // so the host's sum of the same figures never reads it as passed.)
+  const kept = isFigure(keepUsd) && keepUsd > 0 ? mostOutput(p.cost, p.least, p.asked ?? 0, left - keepUsd - 2 * FIT_TOLERANCE) : undefined;
   const output = kept ?? mostOutput(p.cost, p.least, p.asked ?? 0, left);
   if (output === undefined) {
-    const { text, figures } = roomRefusal(capUsd, spent, held, p.cost(p.least), p.worst(p.least) - p.cost(p.least));
+    const { text, figures } = roomRefusal(capUsd, spent, held, p.cost(p.least));
     throw new CapRefused(text, { forGood: false, spentUsd: spent, figures });
   }
   const heldUsd = p.cost(output);
-  const worstUsd = p.worst(output);
   const stoppedPrice = (streamed: number) => p.cost(Math.min(output, streamed + STOP_ALLOWANCE_TOKENS));
   const thinking = thinkingWithin(request, output);
   return {
     heldUsd,
-    boundUsd: Math.max(0, worstUsd - heldUsd),
-    worstUsd,
     ...(p.asked === undefined ? {} : { outputTokensMax: output }),
     ...(thinking === undefined ? {} : { thinkingBudget: thinking }),
     stoppedUsd: (streamed) => Math.min(heldUsd, stoppedPrice(streamed)),
@@ -86,7 +83,7 @@ function judgeTool(request: ToolCapRequest, { capUsd, spentUsd: spent, heldUsd: 
     const { text, figures } = paidRefusal(capUsd, spent, held, request.name, request.holdUsd, request.basis);
     throw new CapRefused(text, { forGood: false, spentUsd: spent, figures });
   }
-  return { heldUsd: request.holdUsd, boundUsd: 0, worstUsd: request.holdUsd, stoppedUsd: () => request.holdUsd };
+  return { heldUsd: request.holdUsd, stoppedUsd: () => request.holdUsd };
 }
 
 /** The one rule: admits `request` under `state`, or throws CapRefused. */
@@ -103,30 +100,31 @@ export const capRule = { judge };
 
 /** A main-model request's figures as the cap prices it, for what a run keeps back to answer: its least (an answer at the
  *  fewest output tokens the cap admits it at), its step-0 typical cost (its input and a WRAP_UP_STEP0_ANSWER_TOKENS answer,
- *  the wrap-up's own) and its worst (its full asked output, its bound included). Undefined when it cannot be priced. */
-export function requestFigures(request: ModelCapRequest, mode: CapMode, now: number): { leastUsd: number; step0Usd: number; worstUsd: number } | undefined {
-  const p = priced(request, mode, now);
+ *  the wrap-up's own). Undefined when it cannot be priced. */
+export function requestFigures(request: ModelCapRequest): { leastUsd: number; step0Usd: number } | undefined {
+  const p = priced(request);
   if (!p) return undefined;
-  return { leastUsd: p.cost(p.least), step0Usd: p.cost(Math.min(p.asked ?? 0, WRAP_UP_STEP0_ANSWER_TOKENS)), worstUsd: p.worst(p.asked ?? p.least) };
+  return { leastUsd: p.cost(p.least), step0Usd: p.cost(Math.min(p.asked ?? 0, WRAP_UP_STEP0_ANSWER_TOKENS)) };
 }
 
 /** What the wrap-up reads: the cap, spend and holds as admission counts them, the run's own priced answers on the
  *  request's model, and whether it was told. */
-export type NoteState = { capUsd: number | undefined; spentUsd: number | null; heldUsd: number; costs: readonly number[]; told: boolean; mode: CapMode; now: number };
+export type NoteState = { capUsd: number | undefined; spentUsd: number | null; heldUsd: number; costs: readonly number[]; told: boolean };
 
 /** The wrap-up for `request`, the run's next main-model request measured before the note is placed: due under three times
  *  the typical cost (step 0: its input and a 4,096-token answer) or twice its least, not yet told, never for a side call,
  *  and never when the request fits what is left only without the note's bytes. */
 export function noteFor(request: ModelCapRequest, state: NoteState): { words: string; leftUsd: number } | undefined {
-  if (request.side || state.told || state.capUsd === undefined || state.spentUsd === null) return undefined;
-  const p = priced(request, state.mode, state.now);
+  // A plan's request is never stopped by the cap, so the model on it has nothing to wrap up for.
+  if (request.side || request.model.plan || state.told || state.capUsd === undefined || state.spentUsd === null) return undefined;
+  const p = priced(request);
   if (!p) return undefined;
   const least = p.cost(p.least);
   const typical = typicalCost(state.costs, p.cost(Math.min(p.asked ?? 0, WRAP_UP_STEP0_ANSWER_TOKENS)));
   const due = wrapUpDue(state.capUsd, state.spentUsd, state.heldUsd, typical, least);
   if (!due) return undefined;
   const words = wrapUpWords(due.leftUsd, state.costs.length === 0);
-  const noted = priced({ ...request, inputTokens: (request.inputTokens ?? 0) + Buffer.byteLength(words, "utf8") }, state.mode, state.now);
+  const noted = priced({ ...request, inputTokens: (request.inputTokens ?? 0) + Buffer.byteLength(words, "utf8") });
   if (noted && noted.cost(noted.least) > due.leftUsd + FIT_TOLERANCE && least <= due.leftUsd + FIT_TOLERANCE) return undefined;
   return { words, leftUsd: due.leftUsd };
 }

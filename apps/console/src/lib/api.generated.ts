@@ -135,6 +135,10 @@ export interface components {
     harnesses?: {
       id: "pi" | "claude-agent" | "codex" | "opencode";
       available: boolean;
+      free_models: {
+        id: string;
+        context_window: number;
+      }[];
       models: string[];
       run_memory_mib: number;
       max_concurrent_runs: number;
@@ -214,9 +218,9 @@ export interface components {
     basis: "charge" | "estimate";
     charge_state?: "held" | "settled" | "released" | null;
     cap_usd?: number | null;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
-    overshoot_bound_usd?: number;
     plan?: {
       requests: number;
       tokens: number;
@@ -235,6 +239,36 @@ export interface components {
     output_schema?: components["JsonObject"];
     workflow?: components["JsonObject"];
     max_cost_usd?: number;
+    native?: {
+      runtime: "claude-code" | "codex";
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      version: string | null;
+      model: string | null;
+      fingerprint: string;
+      configuration: {
+        path: string;
+        sha256: string;
+      }[];
+      skills: string[];
+      mcp_servers: string[];
+      state: "needs_verification" | "needs_attention" | "ready";
+      issues: string[];
+      capabilities: {
+        launch: boolean;
+        notes: boolean;
+        skills: boolean;
+        workflows: false;
+        approval: "native" | "unavailable";
+        usage: boolean;
+      };
+      connected: boolean;
+      verified_at?: string;
+    };
     model?: string;
     model_tiers?: {
       fast?: string;
@@ -340,7 +374,6 @@ export interface components {
     approvals?: "ask" | "never";
     learning?: true | false | "notes";
     checkout?: "pull_request" | "none";
-    cap_mode?: "expected" | "strict";
   };
   Effort: "low" | "medium" | "high";
   Error: {
@@ -363,7 +396,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "external_body_conflict" | "learned_not_active" | "replay_conflict";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict";
   ExternalRef: {
     source: string;
     kind: string;
@@ -454,7 +487,7 @@ export interface components {
     };
     triggers?: {
       routes: boolean;
-      sources: ("schedule" | "webhook" | "github")[];
+      sources: ("schedule" | "webhook" | "github" | "composio")[];
       targets: ("start_run" | "message_run")[];
       min_every_s: number;
       history_kept: number;
@@ -660,12 +693,41 @@ export interface components {
     error: components["RunError"] | null;
     cost: components["Cost"];
     poll_after_ms: number;
+    native?: {
+      runtime: string;
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      fingerprint: string;
+      session_id: string | null;
+      model: string | null;
+      learning_revision: string | null;
+      usage: {
+        task: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        } | null;
+        reflection: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        }[];
+      };
+      model_requests: null;
+    };
     console_url?: string;
     revision: string;
     kind: "agentic" | "workflow";
     archived_at: string | null;
     approvals?: "ask" | "never";
-    cap_mode?: "expected" | "strict" | null;
     last_progress_at?: string | null;
     input?: Record<string, unknown> | null;
     file_ids?: string[];
@@ -751,7 +813,6 @@ export interface components {
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
-      overshoot_bound_usd?: number;
       said: string;
       at: string;
       node?: string | null;
@@ -787,7 +848,6 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
-    cap_mode?: "expected" | "strict";
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -810,7 +870,6 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
-    cap_mode?: "expected" | "strict";
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -865,6 +924,36 @@ export interface components {
     created_at: components["Timestamp"];
     ended_at: components["Timestamp"] | null;
     cost: components["Cost"];
+    native?: {
+      runtime: string;
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      fingerprint: string;
+      session_id: string | null;
+      model: string | null;
+      learning_revision: string | null;
+      usage: {
+        task: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        } | null;
+        reflection: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        }[];
+      };
+      model_requests: null;
+    };
     console_url?: string;
     revision: string;
     kind: "agentic" | "workflow";
@@ -929,7 +1018,6 @@ export interface components {
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
-      overshoot_bound_usd?: number;
       said: string;
       at: string;
       node?: string | null;
@@ -1030,7 +1118,7 @@ export interface components {
     origin?: "server" | "trigger";
     trigger?: {
       id: string;
-      source: "schedule" | "webhook" | "slack" | "github";
+      source: "schedule" | "webhook" | "slack" | "github" | "composio";
       owner: boolean;
       name?: string;
     };
@@ -1074,7 +1162,8 @@ export interface components {
   };
   TimelineUsage: {
     usd: number | null;
-    requests: number;
+    requests: number | null;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
     not_metered?: number;
@@ -1124,6 +1213,7 @@ export interface operations {
       grants?: string[];
       overrides?: {
         model?: string;
+        choice?: string;
         approvals?: "ask" | "never";
       };
     };
@@ -1266,6 +1356,49 @@ export interface operations {
       action: string;
       manifest: Record<string, unknown>;
       state: string;
+    };
+  };
+  connectNative: {
+    body: {
+      project: string;
+      runtime: "claude-code" | "codex";
+      selector?: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+    };
+    answer: {
+      agent: components["Agent"];
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      };
     };
   };
   createAgent: {
@@ -1413,6 +1546,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -1478,6 +1633,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -1517,7 +1694,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -1549,6 +1726,12 @@ export interface operations {
       removed: {
         disk_id: string;
       } | null;
+    };
+  };
+  deleteComposioSubscription: {
+    body: never;
+    answer: {
+      deleted: true;
     };
   };
   deleteComputer: {
@@ -1583,7 +1766,13 @@ export interface operations {
   };
   deleteTrigger: {
     body: never;
-    answer: never;
+    answer: {
+      deleted: true;
+      composio: {
+        done: false;
+        note: string;
+      };
+    };
   };
   deleteWebhook: {
     body: never;
@@ -1613,6 +1802,78 @@ export interface operations {
       note: string;
     };
   };
+  disconnectNative: {
+    body: never;
+    answer: {
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      };
+    };
+  };
+  discoverNative: {
+    body: {
+      project: string;
+      runtime?: "claude-code" | "codex";
+    };
+    answer: {
+      machine_id: string;
+      targets: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+      }[];
+    };
+  };
   finishChatGPTSignIn: {
     body: {
       redirect_url: string;
@@ -1630,7 +1891,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -1861,11 +2122,12 @@ export interface operations {
       digest: string;
       status: "running" | "done" | "failed";
       inputs: number;
-      answered: number;
-      handed_back: number;
-      failed: number;
-      skipped_write: number;
-      alone: number;
+      outcomes: {
+        answered: number;
+        handed_back: number;
+        failed: number;
+        skipped_write: number;
+      };
       score: {
         n: number;
         agree: number;
@@ -2083,6 +2345,41 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+    };
+  };
+  getNative: {
+    body: never;
+    answer: {
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      } | null;
     };
   };
   getOpenapi: {
@@ -2354,15 +2651,15 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
-          input: number;
-          cache_read: number;
-          cache_write: number;
-          output: number;
-          requests: number;
-          unmetered: number;
+          input: number | null;
+          cache_read: number | null;
+          cache_write: number | null;
+          output: number | null;
+          requests: number | null;
+          unmetered: number | null;
         };
         time: {
           ended_runs: number;
@@ -2378,7 +2675,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
         }[];
@@ -2389,7 +2686,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
         }[];
@@ -2400,7 +2697,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
         }[];
@@ -2507,6 +2804,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -2546,7 +2865,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -2679,6 +2998,17 @@ export interface operations {
         model: {
           tier: "fast" | "balanced" | "strong";
           prefer?: string;
+          fast?: string;
+          strong?: string;
+          choices?: {
+            id: string;
+            label: string;
+            model: string;
+            harness: string;
+            warning: string | null;
+            note: string | null;
+            secrets: string[];
+          }[];
         } | null;
         effort: string | null;
         tools: string[] | null;
@@ -2741,6 +3071,21 @@ export interface operations {
     body: never;
     answer: components["RunList"];
   };
+  listComposioEvents: {
+    body: never;
+    answer: {
+      server: string;
+      toolkit: string;
+      events: {
+        slug: string;
+        name: string;
+        description: string;
+        config: Record<string, unknown>;
+        polled: boolean;
+        instructions?: string;
+      }[];
+    };
+  };
   listComposioTools: {
     body: {
       api_key: string;
@@ -2754,6 +3099,24 @@ export interface operations {
         name: string;
         description: string;
       }[];
+    };
+  };
+  listComposioTriggers: {
+    body: never;
+    answer: {
+      triggers: {
+        id: string;
+        name: string;
+        enabled: boolean;
+        event: string;
+        instance_id: string;
+        on_composio: "on" | "off" | "missing" | "unknown";
+      }[];
+      subscription: {
+        ours: boolean;
+        webhook_url: string;
+      } | null;
+      composio_error?: string;
     };
   };
   listComputerChoices: {
@@ -3049,7 +3412,6 @@ export interface operations {
           handed_back: number;
           of?: string[];
           cost_usd?: number | null;
-          skipped_write?: number;
           skipped_tools?: {
             tool: string;
             inputs: number;
@@ -3197,6 +3559,17 @@ export interface operations {
         model: {
           tier: "fast" | "balanced" | "strong";
           prefer?: string;
+          fast?: string;
+          strong?: string;
+          choices?: {
+            id: string;
+            label: string;
+            model: string;
+            harness: string;
+            warning: string | null;
+            note: string | null;
+            secrets: string[];
+          }[];
         } | null;
         effort: string | null;
         tools: string[] | null;
@@ -3285,7 +3658,7 @@ export interface operations {
     answer: {
       firings: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3353,6 +3726,28 @@ export interface operations {
               prefix: string;
             })[];
           }[];
+        } | {
+          kind: "composio";
+          server: string;
+          event: string;
+          config: Record<string, unknown>;
+          accept?: {
+            event: string;
+            actions?: string[];
+            where?: ({
+              pointer: string;
+              in: unknown[];
+            } | {
+              pointer: string;
+              exists: boolean;
+            } | {
+              pointer: string;
+              prefix: string;
+            })[];
+          }[];
+          instance_id?: string;
+          hook?: string;
+          move_subscription?: true;
         };
         target: {
           kind: "start_run";
@@ -3392,7 +3787,7 @@ export interface operations {
         updated_at: string;
         last_firing: {
           key: string;
-          by: "schedule" | "manual" | "webhook" | "github";
+          by: "schedule" | "manual" | "webhook" | "github" | "composio";
           nominal_at: string;
           status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
           at: string;
@@ -3671,7 +4066,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3691,7 +4086,7 @@ export interface operations {
       ok: "duplicate";
     } | {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3707,12 +4102,58 @@ export interface operations {
       catch_up?: true;
     };
   };
+  receiveHook_composio: {
+    body: never;
+    answer: {
+      firings: ({
+        key: string;
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
+        nominal_at: string;
+        status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+        at: string;
+        run_id: string | null;
+        reason: string | null;
+        error: {
+          code: string;
+          message: string;
+        } | null;
+        count?: number;
+        attempts?: number;
+        retry_at?: string;
+        catch_up?: true;
+      } | {
+        ok: "duplicate";
+      })[];
+    } | {
+      ok: "ignored";
+    } | {
+      firings: ({
+        key: string;
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
+        nominal_at: string;
+        status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+        at: string;
+        run_id: string | null;
+        reason: string | null;
+        error: {
+          code: string;
+          message: string;
+        } | null;
+        count?: number;
+        attempts?: number;
+        retry_at?: string;
+        catch_up?: true;
+      } | {
+        ok: "duplicate";
+      })[];
+    };
+  };
   receiveHook_github: {
     body: never;
     answer: {
       firings: ({
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3734,7 +4175,7 @@ export interface operations {
     } | Record<string, unknown> | {
       firings: ({
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3863,6 +4304,12 @@ export interface operations {
   retireLearningFile: {
     body: never;
     answer: never;
+  };
+  rotateComposioSecret: {
+    body: never;
+    answer: {
+      rotated: true;
+    };
   };
   rotateTriggerSecret: {
     body: {
@@ -4224,6 +4671,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target?: {
         kind: "start_run";
@@ -4289,6 +4758,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -4328,7 +4819,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4346,6 +4837,10 @@ export interface operations {
       hook_url?: string;
       secret?: components["SecretMeta"];
       note?: string;
+      composio?: {
+        done: false;
+        note: string;
+      };
     };
   };
   uploadFile: {
@@ -4365,6 +4860,41 @@ export interface operations {
         message: string;
       }[];
       warnings: string[];
+    };
+  };
+  verifyNative: {
+    body: never;
+    answer: {
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      };
     };
   };
   writeHomeFile: {

@@ -6,6 +6,8 @@
 // argument `pin` form in tool settings (the lead's ruling): at most 8 arguments mapped to JSON scalars, keys sorted, so
 // two equal pins are one revision.
 import { createHash } from "node:crypto";
+import type { NativeBinding } from "../native/types.js";
+import { nativeBindingOf } from "../native/binding.js";
 
 /** A revision's body the store refuses: its content is not one the store keeps. The server maps it to an input refusal. */
 export class AgentBodyInvalid extends Error {
@@ -61,14 +63,14 @@ export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
  *  listed it at the save; its input as POST /v1/run takes it; `usd` its fixed price (monid.ts fixedUsd), null for one
  *  priced by usage (held at monid's estimate). Stamped by the save (server.ts saveable), never shown in a definition. */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
-export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+export type AgenticBody = { native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
+export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
-  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+  | { kind: "agentic"; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
+  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
@@ -131,10 +133,9 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     ...(toolSettings ? { toolSettings } : {}),
   };
 
-  // A default spend cap, and how it prices a request, for a revision of either kind.
+  // A default spend cap, for a revision of either kind.
   if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) invalid("the maxCostUsd is not a number above 0");
-  if (input.capMode !== undefined && (typeof input.capMode !== "string" || input.capMode === "")) invalid("the capMode is not a non-empty string");
-  const capped = { ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}), ...(input.capMode !== undefined ? { capMode: input.capMode } : {}) };
+  const capped = input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {};
 
   // Whether the agent runs unattended (its definition.approvals): "never" lets an ask run without a person, for a revision
   // of either kind. "ask" (the default, as an agent read says it) is taken and kept as no value, so the default stays
@@ -152,6 +153,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     if (input.modelTiers !== undefined && !(isObject(input.modelTiers) && Object.keys(input.modelTiers).length && Object.entries(input.modelTiers).every(([tier, ref]) => (tier === "fast" || tier === "strong") && typeof ref === "string" && ref !== ""))) invalid("the modelTiers are not fast and strong to a non-empty model");
     const body: AgenticBody = {
       instructions: input.instructions,
+      ...(input.native !== undefined ? { native: nativeBindingOf(input.native) } : {}),
       skills: skillShas,
       tools: [...tools],
       ...(input.model !== undefined ? { model: input.model } : {}),

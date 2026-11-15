@@ -288,6 +288,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       found = await versionOf(connection);
     }
     if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
+    const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
+    if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new Error("Start the AgentRun server to install MCP and Monid revision metadata before opening a runner. The runner does not upgrade this store.");
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
@@ -296,9 +298,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
     // An earlier build of this version pinned each run's MCP tools at its first claim (mcp_pins) and kept no pin on a
     // revision: the server adds revisions.mcp_pin (schema.ts REVISIONS_MCP_PIN) and drops mcp_pins. A revision saved
-    // before has no pin until its first run here pins it (Agents.pinOnce); no run's pin moves to a revision. So for monid_pin.
+    // before has no MCP pin until its first managed run here pins it (Agents.pinOnce); no run's pin moves to a revision.
+    // Monid pins are also nullable revision metadata; adding the column infers no pin from a historical body.
     if (role === "server") {
-      const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
       await connection.write([
         ...(columns.has("mcp_pin") ? [] : [{ sql: REVISIONS_MCP_PIN }]),
         ...(columns.has("monid_pin") ? [] : [{ sql: REVISIONS_MONID_PIN }]),

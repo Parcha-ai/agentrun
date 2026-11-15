@@ -105,8 +105,11 @@ function watched(store, { onEnd = async () => {}, onRead = () => {} }) {
  *  store is `watched` with `hooks`, on the store's clock. Parked on the call unless `parks` is false; `before` is done
  *  to the queued run before its runner starts. */
 async function runOf(t, hooks = {}, { permission = "ask", parks = true, before } = {}) {
+  // Only explicit skew steps expire these retry backoffs; wall-clock assertion deadlines and polling still run normally.
   // The store's wait for another connection's write lock is a wall-clock budget too (10 s by default): a hang guard here.
-  const opened = await stores({ runners: 1, busyTimeoutMs: HANG_MS, frozen: true });
+  const at = Date.now();
+  const time = () => at;
+  const opened = await stores({ runners: 1, time, busyTimeoutMs: HANG_MS });
   await queue(opened.server, "run-1");
   if (before) await before(opened.server);
   const sent = [];
@@ -234,6 +237,19 @@ async function releasedAfter(server, tries) {
 
 /** The waits the runner said it retries in, by the run's name, in order. */
 const waitsSaid = (events) => events.filter((event) => event.type === "error" && event.runId === "run-1" && REFUSED.test(event.message)).map((event) => Number(REFUSED.exec(event.message)[2]));
+
+test("the stop fixture's retry clock stays fixed while real runner polls continue, and moves only on its explicit skew", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, clock, now, beats, requests, sent } = await runOf(t);
+  const [at, polled, asked] = [now(), beats.count, requests.length];
+  await upon(() => beats.count >= polled + 2, "two actual runner polls after the parked call");
+  assert.equal(now(), at, "observer scheduling cannot expire the first retry backoff");
+  assert.equal(await server.sealedKeys.clock(), at, "the store and runner share that clock");
+  clock.skewMs += BACKOFF_MS;
+  assert.equal(now(), at + BACKOFF_MS);
+  assert.equal(await server.sealedKeys.clock(), at + BACKOFF_MS);
+  assert.equal(requests.length, asked);
+  assert.deepEqual(sent, []);
+});
 
 test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads nothing pending and the call withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   let reached;

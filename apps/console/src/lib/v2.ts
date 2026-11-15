@@ -78,6 +78,17 @@ export type TriggerCreate = Body<"createTrigger">;
 export type TriggerMade = Answer<"createTrigger">;
 /** A webhook trigger's new signing secret (POST /v2/triggers/{id}/secret), shown that once. */
 export type TriggerSecret = Answer<"rotateTriggerSecret">;
+/** An edit's answer: the trigger, and for a trigger from an app whose pause or resume Composio could not follow, what to
+ *  do there by hand (`composio`). */
+export type TriggerUpdated = Answer<"updateTrigger">;
+/** A delete's answer: none (204), or, when Composio could not follow it, what to remove there by hand. */
+export type TriggerDeleted = Answer<"deleteTrigger"> | undefined;
+/** A saved Composio server's events (GET /v2/settings/mcp-servers/{name}/composio/events): each one's slug, name,
+ *  description, config schema, and whether Composio polls for it. */
+export type ComposioEvents = Answer<"listComposioEvents">;
+export type ComposioEvent = ComposioEvents["events"][number];
+/** A saved Composio server's triggers, each with its state at Composio, and where the project's subscription sends events. */
+export type ComposioTriggers = Answer<"listComposioTriggers">;
 /** A tool call set to ask, waiting for the owner's approval (approvals/1): POST /v2/runs/{id}/approvals/{id} answers it. */
 export type PendingApproval = Extract<NonNullable<Run["pending"]>, { kind: "approval" }>;
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */

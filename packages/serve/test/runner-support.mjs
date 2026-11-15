@@ -77,17 +77,15 @@ const openAt = ({ file, schema }, role, now, busyTimeoutMs) => (schema ? openPos
 
 /**
  * A store file of its own: the server's store (schema set up), and `runners` more opened on the same file as runners.
- * Every store's clock is real time plus `clock.skewMs`, so a test can move the store's now (as a clock that jumped).
+ * Every store's clock is `time()` plus `clock.skewMs` (real time by default), so a test can move its deadlines explicitly.
+ * A fixed time source keeps an intermediate backoff observable however long its assertion is scheduled after it.
  */
-export async function stores({ runners = 1, busyTimeoutMs, frozen = false } = {}) {
+export async function stores({ runners = 1, time = () => Date.now(), busyTimeoutMs } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-"));
   const schema = onPostgres ? await freshSchema() : undefined;
   const file = schema ? `pg:${schema}` : join(dir, "store.sqlite");
   const clock = { skewMs: 0 };
-  // `frozen`: the store's now moves only when the test moves skewMs, so a backoff or lease never runs out because a loaded
-  // box was slow.
-  const start = Date.now();
-  const now = () => (frozen ? start : Date.now()) + clock.skewMs;
+  const now = () => time() + clock.skewMs;
   const entry = { stores: [], dir, schema };
   opened.push(entry);
   atTestEnd(() => closeEntry(entry));

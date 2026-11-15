@@ -17,7 +17,7 @@ test("pi on OpenRouter's Claude Sonnet 5.5 at a $1 cap: the first request goes w
   assert.ok(sonnet, "the catalog lists it");
   const perToken = sonnet.cost.output / 1e6;
   assert.ok(sonnet.maxTokens * perToken > 1, `its ceiling alone is over $1: ${sonnet.maxTokens} tokens at $${sonnet.cost.output} a million`);
-  const { cap } = capOn(1, { mode: "strict" });
+  const { cap } = capOn(1);
   const admitted = await cap.admit(modelRequest(entry(sonnet), 20, sonnet.maxTokens, { thinkingBudget: 8_000 }));
   const max = admitted.outputTokensMax;
   assert.ok(max < sonnet.maxTokens && max * perToken < 1, `max_tokens ${max} is within $1`);
@@ -27,10 +27,10 @@ test("pi on OpenRouter's Claude Sonnet 5.5 at a $1 cap: the first request goes w
 });
 
 test("the cap's hold for a particle-1 request is its worst case at the list price, never the catalog's promotional one", async () => {
-  // Its worst case is its 131,072 output tokens: $0.131 at $1.00 a million, $0.066 at $0.50. A strict cap of $0.10 limits the
+  // Its worst case is its 131,072 output tokens: $0.131 at $1.00 a million, $0.066 at $0.50. A cap of $0.10 limits the
   // request's output to what fits: under 100,000 tokens at the list price, where the promotional price would let all 131,072 go.
   const model = (await providerModels({})).getModel("openrouter", "particle-ai/particle-1");
-  const { cap } = capOn(0.1, { mode: "strict" });
+  const { cap } = capOn(0.1);
   const admitted = await cap.admit(modelRequest(entry(model), 10, model.maxTokens));
   const allowed = admitted.outputTokensMax;
   assert.ok(typeof allowed === "number" && allowed <= 100_000 && allowed > 99_000, `its output is held at the list price: $0.10 buys at most 100,000 tokens at $1.00 a million, not 131,072 at $0.50 (admitted with ${allowed})`);

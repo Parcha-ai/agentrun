@@ -30,11 +30,14 @@ export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { n
 /** Whether `tool`'s label says a call that errored failed (registerLabel's saysFailure). */
 export const saysFailure = (tool: string): boolean => saying.has(tool);
 
-/** A remote MCP server's tool as the harnesses name it, `mcp__<server>__<tool>` (a server's name has no `_`; `hands` is a
- *  harness's own tools'), read `<server> · <tool>`. */
+/** A remote MCP server's tool, read `<server> · <tool>`: by its catalog name, `mcp:<server>/<tool>`, or by the name the
+ *  harnesses call it, `mcp__<server>__<tool>` (a server's name has no `_`; `hands` is a harness's own tools'). A tool whose
+ *  `mcp__<server>__<tool>` is too long is called by a hashed name (the server's catalog.ts wireName), which reads as no
+ *  tool of its own: its rows are labelled by its catalog name (TimelineOptions.catalog). */
 const MCP_TOOL = /^mcp__([a-z][a-z0-9-]{0,31})__([A-Za-z0-9_-]{1,64})$/;
+const MCP_CATALOG = /^mcp:([a-z][a-z0-9-]{0,31})\/([A-Za-z0-9_-]{1,64})$/;
 const mcpLabel = (tool: string): string | undefined => {
-  const match = MCP_TOOL.exec(tool);
+  const match = MCP_CATALOG.exec(tool) ?? MCP_TOOL.exec(tool);
   return match && match[1] !== "hands" ? `${match[1]} · ${match[2]}` : undefined;
 };
 

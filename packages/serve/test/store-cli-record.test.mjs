@@ -397,7 +397,7 @@ test("a workflow whose only bookings are decisions has a graph model-node cost o
 /** A run on `harness` that made two model requests at $0.01 each and one call to an MCP tool with no price (the gateway's
  *  agentrun.tool_unmetered on the root), as pi writes it or as a CLI harness's record and booking do; ended unless
  *  `running`. */
-async function unmeteredRun(t, harness, { running = false, stopped = false } = {}) {
+async function unmeteredRun(t, harness, { running = false, stopped = false, aggregate = false } = {}) {
   const { store } = await storeOn(t);
   const claim = await claimed(store, { harness, runId: "run-1" });
   const j = store.journal(claim);
@@ -418,12 +418,12 @@ async function unmeteredRun(t, harness, { running = false, stopped = false } = {
       entry(await j.mintId(), "agentrun.message", { role: "person", text: "Read item 1." }),
       { type: "conversation", value: { id: conv } },
       entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
-      { type: "entry", value: { id: req1, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "gpt-test", heldUsd: 0.02 } } },
+      { type: "entry", value: { id: req1, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "gpt-test", heldUsd: 0.02, ...(aggregate ? { aggregate: true } : {}) } } },
       { type: "entry", value: { id: turn1, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: 0.01 } } },
       entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp:hn/item", input: {}, replaySafe: false }),
       unmetered,
       entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "done", output: "ok" }),
-      { type: "entry", value: { id: req2, conversationId: conv, kind: "runner.request", data: { turn: 2, model: "gpt-test", heldUsd: 0.02 } } },
+      { type: "entry", value: { id: req2, conversationId: conv, kind: "runner.request", data: { turn: 2, model: "gpt-test", heldUsd: 0.02, ...(aggregate ? { aggregate: true } : {}) } } },
       { type: "entry", value: { id: turn2, conversationId: conv, kind: "runner.turn", data: { turn: 2, usd: 0.01 } } },
       entry(await j.mintId(), "agentrun.message", { role: "model", text: "Done." }),
     ], context);
@@ -460,3 +460,10 @@ test("a running run's usage row says what it has cost so far, on pi and a CLI ha
     assert.deepEqual(await usageRowsOf(await unmeteredRun(t, harness, { running: true })), [live, live], harness);
   }
 });
+
+for (const harness of ["codex", "claude-agent"]) {
+  test(`a native ${harness} aggregate keeps unknown request count and unmetered tool coverage in the ended usage row`, async (t) => {
+    const ended = [[{ usd: 0.02, requests: null, not_metered: 1 }, "Cost: $0.0200; native model request count unavailable; 1 tool call not metered"]];
+    assert.deepEqual(await usageRowsOf(await unmeteredRun(t, harness, { aggregate: true })), [ended, ended]);
+  });
+}

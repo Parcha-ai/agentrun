@@ -1,3 +1,7 @@
+import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from "./native/binding.js";
+import { discoverNative } from "./native/discovery.js";
+import { isNativeRuntime } from "./native/runtimes.js";
+import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -87,7 +91,6 @@ import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_MODES } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
@@ -108,6 +111,7 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
+import { ComposioTriggers } from "./composio-triggers.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
@@ -134,7 +138,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, choiceUnrunnable, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
 import { templateInstallLink, templateLink } from "./console-links.js";
 import { GITHUB_HOSTS } from "./template-source.js";
@@ -423,6 +427,11 @@ export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
   | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
+  {method:"POST",pattern:/^\/native\/discover$/,name:"discoverNative"},
+  {method:"POST",pattern:/^\/native\/connect$/,name:"connectNative"},
+  {method:"GET",pattern:/^\/agents\/([^/]+)\/native$/,name:"getNative"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/native\/verify$/,name:"verifyNative"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/native\/disconnect$/,name:"disconnectNative"},
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
   // Answered here only with accounts off: with accounts on, the owner's routes answer it before any route (ownerRoute).
@@ -515,6 +524,12 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio$/, name: "saveComposioServer" },
+  // A saved Composio server's triggers (composio-triggers.ts): its toolkit's events, its triggers and their state on
+  // Composio, and the project's webhook subscription (its secret rotated, or the subscription deleted: secret writes).
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/events$/, name: "listComposioEvents" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/triggers$/, name: "listComposioTriggers" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/rotate-secret$/, name: "rotateComposioSecret" },
+  { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio\/subscription$/, name: "deleteComposioSubscription" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
@@ -545,7 +560,8 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
-  { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
+  // A source that keeps its key per scope (Composio's projects) is served at /hooks/{source}/{scope}.
+  { method: "POST", pattern: /^\/hooks\/([^/]+)(?:\/([^/]+))?$/, name: "receiveHook" },
   { method: "GET", pattern: /^\/integrations\/github$/, name: "getGitHubConnection" },
   { method: "DELETE", pattern: /^\/integrations\/github$/, name: "disconnectGitHub" },
   { method: "POST", pattern: /^\/integrations\/github\/connect$/, name: "connectGitHub" },
@@ -1315,7 +1331,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
   // needs that live in this request layer are gathered once as StartDeps; the run's model is resolved once, now (the runner
   // reads launch.model alone).
-  const modelOf = (_entry: AgentEntry, revision: Revision) => runModelRef(env, revision);
+  const modelOf = (_entry: AgentEntry, revision: Revision) => nativeOf(revision.body) ? Promise.resolve(undefined) : runModelRef(env, revision);
   const startDeps: StartDeps = {
     runBodyIssues,
     boundRepos: async (agentId) => bindingOf(await store.triggers.list(agentId), agentId),
@@ -1608,6 +1624,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...targets,
     settings: (adapterId) => triggerSettings.get(adapterId),
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
+    // A Composio trigger's instance, and the project's subscription, are made and kept on Composio with its server's key.
+    upstream: (kind) => (kind === "composio" ? composioTriggers : undefined),
+  });
+  const composioTriggers = new ComposioTriggers({
+    control: options.composioControl ?? {},
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
+    sealed: triggerSettings.get("composio")!,
+    credential: (name, refusal) => mcpServers.composioOf(name, refusal),
+    holders: () => triggers.ofKind("composio"),
+    signal: stopping.signal,
+    say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
   // A repair of the GitHub installations (below) stops before the triggers close, in a start that fails as in close.
   stops.push(() => githubConnect.close());
@@ -1865,6 +1892,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+    const native = nativeOf(revision.body);
+    if (native) {
+      const overrides = nativeModelOverrides(revision.body);
+      if (overrides.length) throw new ApiError("agent_not_runnable", NATIVE_MODEL_SETTINGS_UNSUPPORTED, { fields: overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })) });
+      const execution = nativeExecutionOverrides(revision.body);
+      if (execution.length) throw new ApiError("agent_not_runnable", NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, { fields: execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })) });
+      if (((revision.body as { maxToolCalls?: number }).maxToolCalls ?? 0) > 0) throw new ApiError("agent_not_runnable", NATIVE_TOOL_BUDGET_UNSUPPORTED, { fields: [{ field: "definition.max_tool_calls", reason: "not_an_option", message: NATIVE_TOOL_BUDGET_UNSUPPORTED }] });
+      if ((options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
+      if (capped) throw new ApiError("agent_not_runnable", "Native runs retain their own limits; AgentRun cannot enforce a dollar cap on this connection. Remove max_cost_usd and use native limits.");
+      await launchNative(native); return;
+    }
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
     // An agentic revision's MCP tools are checked as its save pinned them (its pin, never the server's listing now), for
     // a server still saved here; a granted tool its pin does not hold is said first, with how to pin it.
@@ -1980,6 +2018,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
+    if (nativeOf(body)) {
+      const overrides = nativeModelOverrides(body);
+      if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
+      const execution = nativeExecutionOverrides(body);
+      if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
+      return { warnings: [], stamp: {} };
+    }
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
     if (install) {
@@ -2074,7 +2119,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const id = source.agent.id;
     const learned = await promotable(data, id, raw, { refuse: await learningValues(id), draftTools: () => learnedDraftToolsOf(id, source) });
     // Its policy from the same read of the source as the tools checked above: one revision's, whatever is saved meanwhile.
-    const policy = (source.revision?.body ?? {}) as { toolSettings?: Record<string, unknown>; approvals?: string; maxCostUsd?: number; capMode?: string };
+    const policy = (source.revision?.body ?? {}) as { toolSettings?: Record<string, unknown>; approvals?: string; maxCostUsd?: number };
     const promoted = (agentId: string) => ({
       id: agentId,
       name: typeof body.name === "string" ? body.name.trim() : agentId,
@@ -2084,7 +2129,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       ...(policy.toolSettings ? { tool_settings: policy.toolSettings } : {}),
       ...(policy.approvals === "never" ? { approvals: "never" } : {}),
       ...(policy.maxCostUsd !== undefined ? { max_cost_usd: policy.maxCostUsd } : {}),
-      ...(policy.capMode !== undefined ? { cap_mode: policy.capMode } : {}),
     });
     const note = `Made from the learned workflow ${learned.name} of agent ${id}.`;
     // Another promotion (or a create) may take the id between the read and the write: the next one is tried.
@@ -2112,8 +2156,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(template: Package, body: Json) {
-    const { parameters, grants: asked, servers: picks, model: override, approvals } = applyBodyOf(template, body);
-    const missing = template.secrets.filter((name) => !secret(name, storedKeys));
+    const { parameters, grants: asked, servers: picks, model: override, choice, approvals } = applyBodyOf(template, body);
+    // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
+    const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
     // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
@@ -2138,8 +2183,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
-    const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
-    const picked = override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
+    // A model choice the owner picked is its model on its harness, or a refusal naming the model: never the tier's model
+    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway.
+    const unrunnable = choice && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
+    if (choice && unrunnable) {
+      const message = `The ${pkg.name} template's choice ${choice.label} runs ${choice.model} on ${choice.harness}, which this server can't run: ${unrunnable.replace(/\.$/, "")}. Nothing was created.`;
+      throw new ApiError("agent_not_runnable", message, { fields: [{ field: "overrides.choice", reason: NOT_SET_UP, message, fix: "Apply with the default or another choice, or, where the model only wants a key, add it in Settings → Model keys." }] });
+    }
+    const harness = choice ? choice.harness : pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+    const picked = choice ? { model: choice.model } : override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
+    if ("refused" in picked && picked.refused) {
+      const message = `The ${pkg.name} template prefers ${pkg.model?.prefer}, which this server can't run on ${harness ?? DEFAULT_HARNESS}: ${picked.refused.why}. Nothing was created.`;
+      throw new ApiError("agent_not_runnable", message, { fields: [{ field: "model", reason: NOT_SET_UP, message, fix: picked.refused.fix }] });
+    }
     const model = picked.model;
     // Which model the agent got, where it is not the package's: a note, never a lack. The agent runs; only the package's
     // choice was not an option here (not_set_up_here would read as a run refused until the host has something).
@@ -2319,6 +2375,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
     const { body, sealer } = handedMcpAuth(await bodyOf(req));
+    if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine; an inline definition cannot create one.");
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
     const issues: InputIssue[] = [
@@ -2407,7 +2464,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo", "workflow_first", "hold", "hold_minutes"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id", "learning", "archil_disk", "repo", "workflow_first", "hold", "hold_minutes"]);
     issues.push(...holdIssues(body));
     if (body.repo !== undefined && !(typeof body.repo === "string" && REPO_NAME.test(body.repo))) issues.push({ field: "repo", reason: "wrong_type", message: "repo is a GitHub repository as owner/name, one the agent is bound to" });
     if (body.archil_disk !== undefined) {
@@ -2420,7 +2477,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
     if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
     if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
-    if (body.cap_mode !== undefined && !(CAP_MODES as readonly unknown[]).includes(body.cap_mode)) issues.push({ field: "cap_mode", reason: "not_an_option", message: `cap_mode is one of ${CAP_MODES.join(", ")}` });
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
     if (body.workflow_first !== undefined && typeof body.workflow_first !== "boolean") issues.push({ field: "workflow_first", reason: "wrong_type", message: "workflow_first is true or false" });
     if (body.learning !== undefined && body.learning !== RUN_LEARNING_USE) issues.push({ field: "learning", reason: "not_an_option", message: `learning is "${RUN_LEARNING_USE}" (the run starts from what its agent learned and keeps nothing), or absent (its agent's own)` });
@@ -2850,7 +2906,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, ...((([, segment, sub]) => [segment!, sub] as const)(/^\/hooks\/([^/]+)(?:\/([^/]+))?$/.exec(path)!)));
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
@@ -2964,11 +3020,39 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
     if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
+    if (["discoverNative","connectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {
+      case "discoverNative": {
+        const body=await bodyOf(req);
+        if(typeof body.project!=="string" || (body.runtime!==undefined && !isNativeRuntime(body.runtime))) throw new ApiError("input_invalid","Choose the project directory on this source machine and a supported CLI runtime.");
+        return send(res,200,await discoverNative({project:body.project,...(body.runtime?{runtime:body.runtime}:{})}));
+      }
+      case "connectNative": {
+        const entry=await connectNative(store,await bodyOf(req));
+        return send(res,200,{agent:agentView(entry,linkOrigin(req),await agentExtra(entry)),native:nativeOf(entry.revision?.body)});
+      }
+      case "getNative": {
+        const entry=await needAgent(id);
+        const native=nativeOf(entry.revision?.body);
+        return send(res,200,{native:native??null});
+      }
+      case "verifyNative": {
+        const before=await needAgent(id);
+        if(options.apiOnly || options.publicUrl || !isLoopback(host))throw new ApiError("forbidden","Local native verification must run on the source machine.");
+        const entry=await verifyConnection(store,before);
+        return send(res,200,{native:nativeOf(entry.revision?.body)});
+      }
+      case "disconnectNative": {
+        const entry=await needAgent(id); const native=nativeOf(entry.revision?.body);
+        if(!native)throw new ApiError("not_found","This agent has no native connection.");
+        const changed=await updateNative(store,entry,{...native,connected:false});
+        return send(res,200,{native:nativeOf(changed.revision?.body)});
+      }
       case "createAgent": {
         const body = await bodyOf(req);
+        if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine.");
         const answer = await idempotent(req, "/agents", body, async () => {
           const { entry, warnings } = await createAgentOf(body);
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
@@ -3011,6 +3095,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // contract's is the definition itself, and takes the contract's preconditions: If-Match, and a version past the
         // current one.
         const contract = !("definition" in body);
+        const nativeEdit = contract ? body.native : isObject(body.definition) ? body.definition.native : undefined;
+        if (nativeEdit !== undefined && stable(nativeEdit) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "Native references are changed only through the native connection endpoints. Normal edits retain the existing reference.");
+        // Check explicit native selectors before canonicalization (the ordinary default harness, pi, is not stored).
+        const definition = contract ? body : body.definition;
+        if (nativeOf(entry.revision?.body) && isObject(definition)) {
+          const execution = nativeExecutionOverrides({ ...definition, native: nativeOf(entry.revision?.body) });
+          if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
+        }
         if (contract) {
           if (match === undefined) throw new ApiError("precondition_failed", "If-Match is required: the agent's ETag, as GET /agents/{agent_id} returned it.");
           if (body.version === undefined || (typeof body.version === "number" && body.version <= entry.version)) throw invalid([{ field: "definition.version", reason: body.version === undefined ? "missing" : "not_an_option", message: `definition.version must be greater than the current one, ${entry.version}` }]);
@@ -3044,7 +3136,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (extra.length) throw invalid(extra);
         const revision = body.revision;
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
-        if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+        const candidate = await agents.revision(id, revision);
+        if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+        if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
+        if (nativeOf(candidate.revision.body)) {
+          const overrides = nativeModelOverrides(candidate.revision.body);
+          if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
+          const execution = nativeExecutionOverrides(candidate.revision.body);
+          if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
+        }
         const moved = await agents.setCurrent(entry, revision);
         reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
@@ -3494,6 +3594,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await refreshMcpMeta();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      case "listComposioEvents":
+        return send(res, 200, await composioTriggers.events(id), { "cache-control": "no-store" });
+      case "listComposioTriggers":
+        return send(res, 200, await composioTriggers.triggersOf(id), { "cache-control": "no-store" });
+      case "rotateComposioSecret":
+        return send(res, 200, await composioTriggers.rotate(id), { "cache-control": "no-store" });
+      case "deleteComposioSubscription":
+        return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
         const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
@@ -3540,8 +3648,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Our row goes first, by the checked removal (a 412 sends Composio nothing), and answers what it removed: a Composio
         // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key.
         // Composio refusing or not answering, or a key that does not open, never keeps our row: the answer says what to
-        // remove there by hand.
-        const { composio: made } = await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
+        // remove there by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
+        // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting).
+        const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
         await refreshMcpMeta();
         const forgotten = !made ? undefined : "unusable" in made ? composioNote(id) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal);
         if (forgotten && !forgotten.removed) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
@@ -3809,9 +3918,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "updateTrigger":
         // Its secret's metadata as a read answers it, so a page showing the changed trigger keeps saying it is set.
         return send(res, 200, withSecretOf(await triggers.update(id, await bodyOf(req))));
-      case "deleteTrigger":
-        await triggers.remove(id);
+      case "deleteTrigger": {
+        // Deleted here whatever its sender says; what could not be removed there is answered (Composio's instance).
+        const said = await triggers.remove(id);
+        if (said) return send(res, 200, { deleted: true, ...(said as Record<string, unknown>) });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
         if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Running a trigger now takes an Idempotency-Key of 1 to 255 characters: a retry with the same key fires it once.");
@@ -4214,6 +4326,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // the store closes last.
     closing = true;
     stopping.abort();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
+    plan.close();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
     // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the store closes.

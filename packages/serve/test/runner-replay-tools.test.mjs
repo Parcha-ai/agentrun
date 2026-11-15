@@ -157,7 +157,7 @@ test("a replay answers its write from the graded run's recording, never sending 
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "workflow", JSON.stringify(second.metrics));
   const decided = (await promotionsOf(server.settings, "agent-1")).filter((one) => one.source === "replay").at(-1);
-  assert.deepEqual({ decided: decided.decided, n: decided.replay.n, wf_acc: decided.replay.wf_acc, skipped_write: decided.replay.skipped_write }, { decided: "promote", n: 5, wf_acc: 1, skipped_write: 0 }, JSON.stringify(decided));
+  assert.deepEqual({ decided: decided.decided, n: decided.replay.n, wf_acc: decided.replay.wf_acc, skipped_write: decided.replay.outcomes.skipped_write }, { decided: "promote", n: 5, wf_acc: 1, skipped_write: 0 }, JSON.stringify(decided));
   const said = [...logs, ...lines, JSON.stringify(await promotionsOf(server.settings, "agent-1")), JSON.stringify(runs), JSON.stringify(fake.log)].join("\n");
   assert.equal(said.includes(TOKEN), false, "the credential is never printed, logged or recorded");
 });
@@ -177,7 +177,7 @@ test("a write whose arguments the recording does not have is never sent: the inp
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.skipped_write }, { decided: "hold", source: "replay", n: 0, skipped_write: 5 });
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.outcomes.skipped_write }, { decided: "hold", source: "replay", n: 0, skipped_write: 5 });
   assert.match(decided.reason, /every one of its 5 graded inputs needs a write the recording doesn't have/);
   assert.deepEqual(decided.replay.skipped_tools, [{ tool: "mcp:fake/delete_thing", inputs: 5, no_read_only_hint: false }], "a destructive tool: a write, never a missing hint");
   assert.doesNotMatch(decided.reason, /readOnlyHint/);
@@ -198,6 +198,6 @@ test("an MCP tool its server lists with no annotations stops every input: held, 
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.skipped_write, skipped_tools: decided.replay.skipped_tools }, { decided: "hold", source: "replay", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }] });
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.outcomes.skipped_write, skipped_tools: decided.replay.skipped_tools }, { decided: "hold", source: "replay", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }] });
   assert.equal(decided.reason, "nothing was replayed on its 5 graded inputs: add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server");
 });

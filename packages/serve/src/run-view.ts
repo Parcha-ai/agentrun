@@ -80,27 +80,28 @@ export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: num
   return unpriced > 0 ? { so_far_usd: Math.round((models.known + (decisions?.known ?? 0)) * 1e6) / 1e6, unpriced } : undefined;
 }
 
+/** Whether a run's cost (`usd`) is $0 because every model request went to a free model (one whose known price is $0 for
+ *  every token): its usage row says so (`free`, from the run's booking). Never for a cost above $0 or unknown. */
+export function freeOf(rows: readonly TimelineEvent[], usd: number | null): { free: true } | undefined {
+  return usd === 0 && usageOf(rows)?.usage?.free === true ? { free: true } : undefined;
+}
+
 /** An amount in an over-cap row's or failure's words, to the cent ($0.38020940000000003 is $0.38; $1 is $1), as money
- *  says it; `centsUp` to the cent above, for what a run went over by and a bound, so neither reads $0 or under. */
+ *  says it; `centsUp` to the cent above, for what a run went over by, so it never reads $0 or under. */
 export const cents = (usd: number): string => money(Math.round(usd * 100) / 100);
 export const centsUp = (usd: number): string => money(Math.ceil(usd * 100 - 1e-9) / 100);
-/** Whether a run that spent `usd` passed its `cap` by no more than `bound`, the bounds of the requests that ended since
- *  its cost last fit (bounds.ts): a cache miss an expected-cost cap (cap.ts) admits the risk of, never a cap the run's own
- *  rule broke. */
-export const overByMiss = (usd: number, cap: number, bound: number): boolean => bound > 0 && usd - cap <= bound + FIT_TOLERANCE;
 
 /** The row that says a run's booked spend passed its cap, and by how much, after its usage row: a request's cost is
- *  booked once it answers, never clipped, and under an expected-cost cap (cap.ts) a request that missed the cache can cost
- *  up to its bound beyond what it was admitted at; one carrying a native web search is held at an allowance, not a bound,
- *  so a run can pass its cap by its last request. The next request is then refused. `bound`: the requests' that ended since the cost last fit,
- *  bound; when the run passed its cap by no more than it, the row says a cache miss did it, and the most it could have. */
-export function withOverCap(rows: TimelineEvent[], cap: number | undefined, bound = 0): TimelineEvent[] {
+ *  booked once it answers, never clipped. Each request is held at its worst case, so only a cost its admission never
+ *  priced passes the cap: one carrying a native web search is held at an allowance, not a bound, and a provider may bill
+ *  past its list price. The next request is then refused. */
+export function withOverCap(rows: TimelineEvent[], cap: number | undefined): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
   const usd = rows[at]?.usage?.usd;
   if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
   const { usage: _, ...usage } = rows[at]!;
-  // In cents: what it went over by and the bound rounded up, so "at most" holds.
-  const summary = overByMiss(usd, cap, bound) ? `Went ${centsUp(usd - cap)} over its cap on a cache miss (at most ${centsUp(bound)}).` : `Spent ${cents(usd)}, ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
+  // In cents: what it went over by rounded up.
+  const summary = `Spent ${cents(usd)}, ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
   const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary, text: null };
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
@@ -306,15 +307,15 @@ export const raiseFollowUpId = (pause: string): string => `agentrun:raise:${paus
 /** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
  *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
  *  the park's), what the cap counted as taken and the least the refused step needs, the raise offered (recomputed from
- *  those by the view's one formula), and the cap's words at the run's last meaningful row. The overshoot bound reads 0: the
- *  kernel cap's parkOf keeps no cache-miss bound. Undefined when no park is active. */
+ *  those by the view's one formula), and the cap's words at the run's last meaningful row. Undefined when no park is
+ *  active. */
 export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "meta" | "rows" | "updatedAt">): Pending | undefined {
   const mark = activeBudget(entries);
   if (!mark) return undefined;
   const p = mark.pending;
   const cap = run.meta.max_cost_usd ?? p.cap_usd;
   const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
-    ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd), overshoot_bound_usd: microUp(0) }
+    ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd) }
     : {};
   // A workflow's pause names the node whose step waits (null when not known); an agentic run's names none.
   return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt, ...(mark.node !== undefined ? { node: mark.node } : {}) };
@@ -409,9 +410,6 @@ export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: 
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 export const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
-/** A bound to a millionth, rounded up, so "at most" holds. No bound is 0, never -0: the ceiling of a hair under 0 is -0,
- *  which the budget card would print as "-0". */
-export const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6 + 0;
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
@@ -465,7 +463,7 @@ export const raisedToGo = (run: RunView): boolean => raisedSince(run) && continu
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
+export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
 export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;

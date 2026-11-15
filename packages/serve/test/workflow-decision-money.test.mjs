@@ -191,9 +191,9 @@ test("a capped workflow's decision whose provider reports no cost: the cap count
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
   assert.ok(sent, "the decision was sent to the provider");
-  // main's hold for the exact request the provider was sent (serve decision-cap.ts holdOf), under the run's mode: the
-  // cap's figure for it, booked as held.
-  const hold = await holdOf({ id: "openrouter", priceOf: async () => priceOf() }, { label: "ask", kind: "judge", model: sent.model, state: sent.state, questions: sent.questions }, "expected");
+  // main's hold for the exact request the provider was sent (serve decision-cap.ts holdOf): the cap's figure for it,
+  // booked as held.
+  const hold = await holdOf({ id: "openrouter", priceOf: async () => priceOf() }, { label: "ask", kind: "judge", model: sent.model, state: sent.state, questions: sent.questions });
   assert.ok("usd" in hold && hold.usd > 0, `main holds it at a figure: ${JSON.stringify(hold)}`);
   // The cap held it at main's hold, and its answer came back with no cost (its turn's usd null): the cap counts it at
   // that hold (charged as held).
@@ -681,7 +681,7 @@ const near = (actual, expected, what) => assert.ok(typeof actual === "number" &&
 // A decision's settle commits before its receipt (runner/workflow-spec.ts decisionJudging: `admitted` settles before the
 // driver saves the answer), so a crash never leaves a receipt that names a charge beside a booking it lost: lost at the
 // settle, the receipt is lost too, and the provider may have billed its worst case.
-test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold and bound, asks it no more, and sends the run to review", async (t) => {
+test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold, asks it no more, and sends the run to review", async (t) => {
   const { row, records, requests, asked } = await lostAround(t, { at: "settle", price: feeOnly(0.4), costUsd: 0.1 });
   assert.equal(asked, 1, "asked once, by runner A; never again by runner B");
   assert.deepEqual([row.state, row.outcome, row.epoch > 1], ["ended", "escalated", true], `runner B finds the decision asked and never answered, and escalates it: ${JSON.stringify(row)}`);
@@ -690,7 +690,7 @@ test("a decision whose booking a crash lost at its settle never reached its rece
   const request = records.find((r) => r.kind === "runner.request")?.data;
   const turns = records.filter((r) => r.kind === "runner.turn").map((r) => r.data);
   assert.deepEqual([records.filter((r) => r.kind === "runner.request").length, turns.map((d) => [d.cut === true, d.usd])], [1, [[true, null]]], `one booking, cut by the next claim: ${JSON.stringify(records)}`);
-  near(sessionSpendOf(records).spentUsd, request.heldUsd + (request.boundUsd ?? 0), "the cap counts it at its hold and bound");
+  near(sessionSpendOf(records).spentUsd, request.heldUsd, "the cap counts it at its hold, its worst case");
   assert.equal(row.costUsd, null, `its cost is unknown, never its hold: ${JSON.stringify(row)}`);
 });
 

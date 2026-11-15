@@ -43,6 +43,7 @@ __all__ = [
     "CancelRunResponse",
     "Capabilities",
     "CapabilitiesHarnessesItem",
+    "CapabilitiesHarnessesItemFreeModelsItem",
     "CapabilitiesHome",
     "CapabilitiesLearning",
     "CapabilitiesLinks",
@@ -62,6 +63,13 @@ __all__ = [
     "CommitSha",
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
+    "ConnectNativeBody",
+    "ConnectNativeBodySelector",
+    "ConnectNativeResponse",
+    "ConnectNativeResponseNative",
+    "ConnectNativeResponseNativeCapabilities",
+    "ConnectNativeResponseNativeConfigurationItem",
+    "ConnectNativeResponseNativeSelector",
     "Cost",
     "CostPlan",
     "CreateAgentBody",
@@ -94,6 +102,11 @@ __all__ = [
     "CreateTriggerBodySource5AcceptItemWhereItem1",
     "CreateTriggerBodySource5AcceptItemWhereItem2",
     "CreateTriggerBodySource5AcceptItemWhereItem3",
+    "CreateTriggerBodySource6",
+    "CreateTriggerBodySource6AcceptItem",
+    "CreateTriggerBodySource6AcceptItemWhereItem1",
+    "CreateTriggerBodySource6AcceptItemWhereItem2",
+    "CreateTriggerBodySource6AcceptItemWhereItem3",
     "CreateTriggerBodyTarget1",
     "CreateTriggerBodyTarget2",
     "CreateTriggerBodyTarget2Input",
@@ -117,6 +130,11 @@ __all__ = [
     "CreateTriggerResponseSource5AcceptItemWhereItem1",
     "CreateTriggerResponseSource5AcceptItemWhereItem2",
     "CreateTriggerResponseSource5AcceptItemWhereItem3",
+    "CreateTriggerResponseSource6",
+    "CreateTriggerResponseSource6AcceptItem",
+    "CreateTriggerResponseSource6AcceptItemWhereItem1",
+    "CreateTriggerResponseSource6AcceptItemWhereItem2",
+    "CreateTriggerResponseSource6AcceptItemWhereItem3",
     "CreateTriggerResponseTarget1",
     "CreateTriggerResponseTarget2",
     "CreateTriggerResponseTarget2Input",
@@ -127,6 +145,10 @@ __all__ = [
     "DefinitionInputComputer",
     "DefinitionInputComputerGpu",
     "DefinitionInputModelTiers",
+    "DefinitionInputNative",
+    "DefinitionInputNativeCapabilities",
+    "DefinitionInputNativeConfigurationItem",
+    "DefinitionInputNativeSelector",
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
     "DefinitionInputToolSettings",
@@ -147,6 +169,10 @@ __all__ = [
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
     "DefinitionModelTiers",
+    "DefinitionNative",
+    "DefinitionNativeCapabilities",
+    "DefinitionNativeConfigurationItem",
+    "DefinitionNativeSelector",
     "DefinitionPlace1",
     "DefinitionPlace2",
     "DefinitionToolSettings",
@@ -169,11 +195,25 @@ __all__ = [
     "DeleteAgentArchilResponse",
     "DeleteAgentArchilResponseArchilDisk",
     "DeleteAgentArchilResponseRemoved",
+    "DeleteComposioSubscriptionResponse",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponseComposio",
+    "DeleteTriggerResponse",
+    "DeleteTriggerResponseComposio",
     "DeleteWorkspaceArchilResponse",
     "DeleteWorkspaceArchilResponseSecret",
     "DisconnectGitHubResponse",
+    "DisconnectNativeResponse",
+    "DisconnectNativeResponseNative",
+    "DisconnectNativeResponseNativeCapabilities",
+    "DisconnectNativeResponseNativeConfigurationItem",
+    "DisconnectNativeResponseNativeSelector",
+    "DiscoverNativeBody",
+    "DiscoverNativeResponse",
+    "DiscoverNativeResponseTargetsItem",
+    "DiscoverNativeResponseTargetsItemCapabilities",
+    "DiscoverNativeResponseTargetsItemConfigurationItem",
+    "DiscoverNativeResponseTargetsItemSelector",
     "Effort",
     "ExternalRef",
     "Features",
@@ -245,6 +285,7 @@ __all__ = [
     "GetHealthResponse",
     "GetHealthResponseChecks",
     "GetLearnedWorkflowReplayResponse",
+    "GetLearnedWorkflowReplayResponseOutcomes",
     "GetLearnedWorkflowReplayResponseScore",
     "GetLearningBatchResponse",
     "GetLearningBatchResponseLessons",
@@ -272,6 +313,11 @@ __all__ = [
     "GetMcpServerResponseAuth",
     "GetMcpServerResponseOauth",
     "GetMcpServerResponseToolsItem",
+    "GetNativeResponse",
+    "GetNativeResponseNative",
+    "GetNativeResponseNativeCapabilities",
+    "GetNativeResponseNativeConfigurationItem",
+    "GetNativeResponseNativeSelector",
     "GetOpenapiResponse",
     "GetRunGraphResponse",
     "GetRunGraphResponseDecisionsItem",
@@ -343,6 +389,11 @@ __all__ = [
     "GetTriggerResponseSource5AcceptItemWhereItem1",
     "GetTriggerResponseSource5AcceptItemWhereItem2",
     "GetTriggerResponseSource5AcceptItemWhereItem3",
+    "GetTriggerResponseSource6",
+    "GetTriggerResponseSource6AcceptItem",
+    "GetTriggerResponseSource6AcceptItemWhereItem1",
+    "GetTriggerResponseSource6AcceptItemWhereItem2",
+    "GetTriggerResponseSource6AcceptItemWhereItem3",
     "GetTriggerResponseTarget1",
     "GetTriggerResponseTarget2",
     "GetTriggerResponseTarget2Input",
@@ -370,6 +421,7 @@ __all__ = [
     "ImportTemplateResponseTemplateMcpItemToolsItem",
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
+    "ImportTemplateResponseTemplateModelChoicesItem",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
     "InputIssue",
@@ -379,9 +431,14 @@ __all__ = [
     "LimitsMaxCostUsd",
     "ListAgentsResponse",
     "ListAllRunsResponse",
+    "ListComposioEventsResponse",
+    "ListComposioEventsResponseEventsItem",
     "ListComposioToolsBody",
     "ListComposioToolsResponse",
     "ListComposioToolsResponseToolsItem",
+    "ListComposioTriggersResponse",
+    "ListComposioTriggersResponseSubscription",
+    "ListComposioTriggersResponseTriggersItem",
     "ListComputerChoicesResponse",
     "ListComputerChoicesResponseChoicesItem1",
     "ListComputerChoicesResponseChoicesItem1OptionsItem",
@@ -451,6 +508,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
+    "ListTemplatesResponseTemplatesItemModelChoicesItem",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
     "ListToolKeysResponse",
@@ -484,6 +542,11 @@ __all__ = [
     "ListTriggersResponseTriggersItemSource5AcceptItemWhereItem1",
     "ListTriggersResponseTriggersItemSource5AcceptItemWhereItem2",
     "ListTriggersResponseTriggersItemSource5AcceptItemWhereItem3",
+    "ListTriggersResponseTriggersItemSource6",
+    "ListTriggersResponseTriggersItemSource6AcceptItem",
+    "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1",
+    "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2",
+    "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3",
     "ListTriggersResponseTriggersItemTarget1",
     "ListTriggersResponseTriggersItemTarget2",
     "ListTriggersResponseTriggersItemTarget2Input",
@@ -534,6 +597,16 @@ __all__ = [
     "RaiseRunCapBody",
     "RaiseRunCapResponse",
     "ReadLearningFileResponse",
+    "ReceiveHookComposioResponse",
+    "ReceiveHookComposioResponseObject11",
+    "ReceiveHookComposioResponseObject11FiringsItem1",
+    "ReceiveHookComposioResponseObject11FiringsItem1Error",
+    "ReceiveHookComposioResponseObject11FiringsItem2",
+    "ReceiveHookComposioResponseObject12",
+    "ReceiveHookComposioResponseObject2",
+    "ReceiveHookComposioResponseObject2FiringsItem1",
+    "ReceiveHookComposioResponseObject2FiringsItem1Error",
+    "ReceiveHookComposioResponseObject2FiringsItem2",
     "RecordLearningEvalBody",
     "RecordLearningEvalResponse",
     "RedeliverWebhookResponse",
@@ -550,6 +623,7 @@ __all__ = [
     "Resources",
     "ResumeRunResponse",
     "RevisionsResource",
+    "RotateComposioSecretResponse",
     "RotateTriggerSecretBody",
     "RotateTriggerSecretResponse",
     "Run",
@@ -576,6 +650,11 @@ __all__ = [
     "RunLearningSkillsItem",
     "RunLearningWorkflowsItem",
     "RunList",
+    "RunNative",
+    "RunNativeSelector",
+    "RunNativeUsage",
+    "RunNativeUsageReflectionItem",
+    "RunNativeUsageTask",
     "RunPending1",
     "RunPending2",
     "RunPending3",
@@ -596,6 +675,11 @@ __all__ = [
     "RunSummaryLearningReadItem",
     "RunSummaryLearningSkillsItem",
     "RunSummaryLearningWorkflowsItem",
+    "RunSummaryNative",
+    "RunSummaryNativeSelector",
+    "RunSummaryNativeUsage",
+    "RunSummaryNativeUsageReflectionItem",
+    "RunSummaryNativeUsageTask",
     "RunSummaryPending1",
     "RunSummaryPending2",
     "RunSummaryPending3",
@@ -693,10 +777,16 @@ __all__ = [
     "UpdateTriggerBodySource5AcceptItemWhereItem1",
     "UpdateTriggerBodySource5AcceptItemWhereItem2",
     "UpdateTriggerBodySource5AcceptItemWhereItem3",
+    "UpdateTriggerBodySource6",
+    "UpdateTriggerBodySource6AcceptItem",
+    "UpdateTriggerBodySource6AcceptItemWhereItem1",
+    "UpdateTriggerBodySource6AcceptItemWhereItem2",
+    "UpdateTriggerBodySource6AcceptItemWhereItem3",
     "UpdateTriggerBodyTarget1",
     "UpdateTriggerBodyTarget2",
     "UpdateTriggerBodyTarget2Input",
     "UpdateTriggerResponse",
+    "UpdateTriggerResponseComposio",
     "UpdateTriggerResponseDisabled1",
     "UpdateTriggerResponseDisabled2",
     "UpdateTriggerResponseDisabled3",
@@ -716,6 +806,11 @@ __all__ = [
     "UpdateTriggerResponseSource5AcceptItemWhereItem1",
     "UpdateTriggerResponseSource5AcceptItemWhereItem2",
     "UpdateTriggerResponseSource5AcceptItemWhereItem3",
+    "UpdateTriggerResponseSource6",
+    "UpdateTriggerResponseSource6AcceptItem",
+    "UpdateTriggerResponseSource6AcceptItemWhereItem1",
+    "UpdateTriggerResponseSource6AcceptItemWhereItem2",
+    "UpdateTriggerResponseSource6AcceptItemWhereItem3",
     "UpdateTriggerResponseTarget1",
     "UpdateTriggerResponseTarget2",
     "UpdateTriggerResponseTarget2Input",
@@ -727,6 +822,11 @@ __all__ = [
     "ValidateWorkflowBody",
     "ValidateWorkflowResponse",
     "ValidateWorkflowResponseIssuesItem",
+    "VerifyNativeResponse",
+    "VerifyNativeResponseNative",
+    "VerifyNativeResponseNativeCapabilities",
+    "VerifyNativeResponseNativeConfigurationItem",
+    "VerifyNativeResponseNativeSelector",
     "WebhookResource",
     "WorkflowsResource",
     "WriteHomeFileResponse",
@@ -737,175 +837,26 @@ __all__ = [
 ArchiveAgentResponse: TypeAlias = "dict[str, Any]"
 
 
-CreateAgentBody: TypeAlias = "AgentCreate"
+class _ConnectNativeBodyRequired(TypedDict):
+    project: str
+    runtime: Literal["claude-code", "codex"]
 
 
-class _AgentCreateRequired(TypedDict):
-    definition: DefinitionInput
+class ConnectNativeBody(_ConnectNativeBodyRequired, total=False):
+    selector: ConnectNativeBodySelector
 
 
-class AgentCreate(_AgentCreateRequired, total=False):
-    skills: SkillFiles
-    note: str
+class _ConnectNativeBodySelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
 
 
-class _DefinitionInputRequired(TypedDict):
+class ConnectNativeBodySelector(_ConnectNativeBodySelectorRequired, total=False):
     name: str
 
 
-class DefinitionInput(_DefinitionInputRequired, total=False):
-    id: Id
-    version: int
-    description: str
-    instructions: str
-    skills: list[str]
-    tools: list[str]
-    input_schema: JsonObject
-    output_schema: JsonObject
-    workflow: JsonObject
-    max_cost_usd: float
-    model: str
-    model_tiers: DefinitionInputModelTiers
-    thinking: Literal["low", "medium", "high", "xhigh", "max"]
-    harness: Literal["pi", "claude-agent", "codex", "opencode"]
-    place: DefinitionInputPlace1 | DefinitionInputPlace2
-    computer: DefinitionInputComputer
-    tool_settings: DefinitionInputToolSettings
-    approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
-    checkout: Literal["pull_request", "none"]
-    cap_mode: Literal["expected", "strict"]
-
-
-Id: TypeAlias = "str"
-
-
-JsonObject: TypeAlias = "dict[str, Any]"
-
-
-class DefinitionInputModelTiers(TypedDict, total=False):
-    fast: str
-    strong: str
-
-
-class DefinitionInputPlace1(TypedDict):
-    mode: Literal["runner"]
-
-
-class DefinitionInputPlace2(TypedDict):
-    mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
-
-
-class _DefinitionInputComputerRequired(TypedDict):
-    kind: Literal["none", "sandbox", "desktop", "phone", "browser"]
-
-
-class DefinitionInputComputer(_DefinitionInputComputerRequired, total=False):
-    provider: str
-    image: str
-    gpu: DefinitionInputComputerGpu
-    persistent: bool
-    surface: Literal["code", "tools"]
-    exec: bool
-
-
-class DefinitionInputComputerGpu(TypedDict):
-    type: str
-    count: int
-
-
-class DefinitionInputToolSettings(TypedDict, total=False):
-    read: DefinitionInputToolSettingsRead
-    write: DefinitionInputToolSettingsWrite
-    edit: DefinitionInputToolSettingsEdit
-    bash: DefinitionInputToolSettingsBash
-    ask_person: DefinitionInputToolSettingsAskPerson
-    web_fetch: DefinitionInputToolSettingsWebFetch
-    web_search: DefinitionInputToolSettingsWebSearch
-    browser: DefinitionInputToolSettingsBrowser
-    subagent: DefinitionInputToolSettingsSubagent
-    pdf_pages: DefinitionInputToolSettingsPdfPages
-    llm: DefinitionInputToolSettingsLlm
-    desktop: DefinitionInputToolSettingsDesktop
-    phone: DefinitionInputToolSettingsPhone
-    jev: DefinitionInputToolSettingsJev
-    parallel: DefinitionInputToolSettingsParallel
-    openrouter: DefinitionInputToolSettingsOpenrouter
-
-
-class DefinitionInputToolSettingsRead(TypedDict, total=False):
-    permission: Literal["allow", "ask", "deny"]
-
-
-class DefinitionInputToolSettingsWrite(TypedDict, total=False):
-    permission: Literal["allow", "ask", "deny"]
-
-
-class DefinitionInputToolSettingsEdit(TypedDict, total=False):
-    permission: Literal["allow", "ask", "deny"]
-
-
-class DefinitionInputToolSettingsBash(TypedDict, total=False):
-    permission: Literal["allow", "ask", "deny"]
-    policy: Literal["read-only"]
-
-
-class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
-    permission: Literal["allow", "ask", "deny"]
-
-
-class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
-    permission: Literal["allow", "ask", "deny"]
-
-
-class DefinitionInputToolSettingsBrowser(TypedDict, total=False):
-    provider: Literal["auto", "browserbase", "kernel", "chrome"]
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsSubagent(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsPdfPages(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsLlm(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsDesktop(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsPhone(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsJev(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsParallel(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-class DefinitionInputToolSettingsOpenrouter(TypedDict, total=False):
-    permission: Literal["allow", "deny"]
-
-
-SkillFiles: TypeAlias = "dict[str, str]"
-
-
-CreateAgentResponse: TypeAlias = "Agent"
+class ConnectNativeResponse(TypedDict):
+    agent: Agent
+    native: ConnectNativeResponseNative
 
 
 class _AgentRequired(TypedDict):
@@ -936,6 +887,9 @@ class Agent(_AgentRequired, total=False):
     warnings: list[InputIssue]
 
 
+Id: TypeAlias = "str"
+
+
 class _DefinitionRequired(TypedDict):
     id: Id
     version: int
@@ -951,6 +905,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
     thinking: Literal["low", "medium", "high", "xhigh", "max"]
@@ -961,7 +916,52 @@ class Definition(_DefinitionRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
-    cap_mode: Literal["expected", "strict"]
+
+
+JsonObject: TypeAlias = "dict[str, Any]"
+
+
+class _DefinitionNativeRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: DefinitionNativeSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[DefinitionNativeConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: DefinitionNativeCapabilities
+    connected: bool
+
+
+class DefinitionNative(_DefinitionNativeRequired, total=False):
+    verified_at: str
+
+
+class _DefinitionNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class DefinitionNativeSelector(_DefinitionNativeSelectorRequired, total=False):
+    name: str
+
+
+class DefinitionNativeConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class DefinitionNativeCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
 
 
 class DefinitionModelTiers(TypedDict, total=False):
@@ -1203,6 +1203,257 @@ class InputIssue(_InputIssueRequired, total=False):
     example: Any
 
 
+class _ConnectNativeResponseNativeRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: ConnectNativeResponseNativeSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[ConnectNativeResponseNativeConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: ConnectNativeResponseNativeCapabilities
+    connected: bool
+
+
+class ConnectNativeResponseNative(_ConnectNativeResponseNativeRequired, total=False):
+    verified_at: str
+
+
+class _ConnectNativeResponseNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class ConnectNativeResponseNativeSelector(_ConnectNativeResponseNativeSelectorRequired, total=False):
+    name: str
+
+
+class ConnectNativeResponseNativeConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class ConnectNativeResponseNativeCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
+CreateAgentBody: TypeAlias = "AgentCreate"
+
+
+class _AgentCreateRequired(TypedDict):
+    definition: DefinitionInput
+
+
+class AgentCreate(_AgentCreateRequired, total=False):
+    skills: SkillFiles
+    note: str
+
+
+class _DefinitionInputRequired(TypedDict):
+    name: str
+
+
+class DefinitionInput(_DefinitionInputRequired, total=False):
+    id: Id
+    version: int
+    description: str
+    instructions: str
+    skills: list[str]
+    tools: list[str]
+    input_schema: JsonObject
+    output_schema: JsonObject
+    workflow: JsonObject
+    max_cost_usd: float
+    native: DefinitionInputNative
+    model: str
+    model_tiers: DefinitionInputModelTiers
+    thinking: Literal["low", "medium", "high", "xhigh", "max"]
+    harness: Literal["pi", "claude-agent", "codex", "opencode"]
+    place: DefinitionInputPlace1 | DefinitionInputPlace2
+    computer: DefinitionInputComputer
+    tool_settings: DefinitionInputToolSettings
+    approvals: Literal["ask", "never"]
+    learning: Literal[True, False, "notes"]
+    checkout: Literal["pull_request", "none"]
+
+
+class _DefinitionInputNativeRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: DefinitionInputNativeSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[DefinitionInputNativeConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: DefinitionInputNativeCapabilities
+    connected: bool
+
+
+class DefinitionInputNative(_DefinitionInputNativeRequired, total=False):
+    verified_at: str
+
+
+class _DefinitionInputNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class DefinitionInputNativeSelector(_DefinitionInputNativeSelectorRequired, total=False):
+    name: str
+
+
+class DefinitionInputNativeConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class DefinitionInputNativeCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
+class DefinitionInputModelTiers(TypedDict, total=False):
+    fast: str
+    strong: str
+
+
+class DefinitionInputPlace1(TypedDict):
+    mode: Literal["runner"]
+
+
+class DefinitionInputPlace2(TypedDict):
+    mode: Literal["sandbox"]
+    box: Literal["docker", "modal", "daytona"]
+
+
+class _DefinitionInputComputerRequired(TypedDict):
+    kind: Literal["none", "sandbox", "desktop", "phone", "browser"]
+
+
+class DefinitionInputComputer(_DefinitionInputComputerRequired, total=False):
+    provider: str
+    image: str
+    gpu: DefinitionInputComputerGpu
+    persistent: bool
+    surface: Literal["code", "tools"]
+    exec: bool
+
+
+class DefinitionInputComputerGpu(TypedDict):
+    type: str
+    count: int
+
+
+class DefinitionInputToolSettings(TypedDict, total=False):
+    read: DefinitionInputToolSettingsRead
+    write: DefinitionInputToolSettingsWrite
+    edit: DefinitionInputToolSettingsEdit
+    bash: DefinitionInputToolSettingsBash
+    ask_person: DefinitionInputToolSettingsAskPerson
+    web_fetch: DefinitionInputToolSettingsWebFetch
+    web_search: DefinitionInputToolSettingsWebSearch
+    browser: DefinitionInputToolSettingsBrowser
+    subagent: DefinitionInputToolSettingsSubagent
+    pdf_pages: DefinitionInputToolSettingsPdfPages
+    llm: DefinitionInputToolSettingsLlm
+    desktop: DefinitionInputToolSettingsDesktop
+    phone: DefinitionInputToolSettingsPhone
+    jev: DefinitionInputToolSettingsJev
+    parallel: DefinitionInputToolSettingsParallel
+    openrouter: DefinitionInputToolSettingsOpenrouter
+
+
+class DefinitionInputToolSettingsRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsWrite(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEdit(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsBash(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    policy: Literal["read-only"]
+
+
+class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
+    provider: Literal["kernel", "parallel"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
+    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsBrowser(TypedDict, total=False):
+    provider: Literal["auto", "browserbase", "kernel", "chrome"]
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsSubagent(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsPdfPages(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsLlm(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsDesktop(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsPhone(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsJev(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsParallel(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+class DefinitionInputToolSettingsOpenrouter(TypedDict, total=False):
+    permission: Literal["allow", "deny"]
+
+
+SkillFiles: TypeAlias = "dict[str, str]"
+
+
+CreateAgentResponse: TypeAlias = "Agent"
+
+
 class DeleteAgentArchilResponse(TypedDict):
     on: bool
     archil_disk: DeleteAgentArchilResponseArchilDisk | None
@@ -1215,6 +1466,104 @@ class DeleteAgentArchilResponseArchilDisk(TypedDict):
 
 class DeleteAgentArchilResponseRemoved(TypedDict):
     disk_id: str
+
+
+class DisconnectNativeResponse(TypedDict):
+    native: DisconnectNativeResponseNative
+
+
+class _DisconnectNativeResponseNativeRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: DisconnectNativeResponseNativeSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[DisconnectNativeResponseNativeConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: DisconnectNativeResponseNativeCapabilities
+    connected: bool
+
+
+class DisconnectNativeResponseNative(_DisconnectNativeResponseNativeRequired, total=False):
+    verified_at: str
+
+
+class _DisconnectNativeResponseNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class DisconnectNativeResponseNativeSelector(_DisconnectNativeResponseNativeSelectorRequired, total=False):
+    name: str
+
+
+class DisconnectNativeResponseNativeConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class DisconnectNativeResponseNativeCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
+class _DiscoverNativeBodyRequired(TypedDict):
+    project: str
+
+
+class DiscoverNativeBody(_DiscoverNativeBodyRequired, total=False):
+    runtime: Literal["claude-code", "codex"]
+
+
+class DiscoverNativeResponse(TypedDict):
+    machine_id: str
+    targets: list[DiscoverNativeResponseTargetsItem]
+
+
+class DiscoverNativeResponseTargetsItem(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: DiscoverNativeResponseTargetsItemSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[DiscoverNativeResponseTargetsItemConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: DiscoverNativeResponseTargetsItemCapabilities
+
+
+class _DiscoverNativeResponseTargetsItemSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class DiscoverNativeResponseTargetsItemSelector(_DiscoverNativeResponseTargetsItemSelectorRequired, total=False):
+    name: str
+
+
+class DiscoverNativeResponseTargetsItemConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class DiscoverNativeResponseTargetsItemCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
 
 
 class ForgetSignInResponse(TypedDict):
@@ -1385,6 +1734,53 @@ class GetLearningLoopResponseGuardsItemPointsItem(TypedDict):
     correct: bool | None
 
 
+class GetNativeResponse(TypedDict):
+    native: GetNativeResponseNative | None
+
+
+class _GetNativeResponseNativeRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: GetNativeResponseNativeSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[GetNativeResponseNativeConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: GetNativeResponseNativeCapabilities
+    connected: bool
+
+
+class GetNativeResponseNative(_GetNativeResponseNativeRequired, total=False):
+    verified_at: str
+
+
+class _GetNativeResponseNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class GetNativeResponseNativeSelector(_GetNativeResponseNativeSelectorRequired, total=False):
+    name: str
+
+
+class GetNativeResponseNativeConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class GetNativeResponseNativeCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
 ListAgentsResponse: TypeAlias = "AgentList"
 
 
@@ -1433,7 +1829,6 @@ class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
 class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotionsResponsePromotionsItemReplayRequired, total=False):
     of: list[str]
     cost_usd: float | None
-    skipped_write: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
     outcomes: ListLearningPromotionsResponsePromotionsItemReplayOutcomes
 
@@ -1496,6 +1891,7 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
+    native: RunSummaryNative
     console_url: str
     effort: Effort
     error: RunError | None
@@ -1520,15 +1916,57 @@ class _CostRequired(TypedDict):
 class Cost(_CostRequired, total=False):
     charge_state: Literal["held", "settled", "released"] | None
     cap_usd: float | None
+    free: Literal[True]
     so_far_usd: float
     unpriced: int
-    overshoot_bound_usd: float
     plan: CostPlan
 
 
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+
+
+class RunSummaryNative(TypedDict):
+    runtime: str
+    project: str
+    selector: RunSummaryNativeSelector
+    machine_id: str
+    fingerprint: str
+    session_id: str | None
+    model: str | None
+    learning_revision: str | None
+    usage: RunSummaryNativeUsage
+    model_requests: None
+
+
+class _RunSummaryNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class RunSummaryNativeSelector(_RunSummaryNativeSelectorRequired, total=False):
+    name: str
+
+
+class RunSummaryNativeUsage(TypedDict):
+    task: RunSummaryNativeUsageTask | None
+    reflection: list[RunSummaryNativeUsageReflectionItem]
+
+
+class RunSummaryNativeUsageTask(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSummaryNativeUsageReflectionItem(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 Effort: TypeAlias = "Literal[\"low\", \"medium\", \"high\"]"
@@ -1665,7 +2103,6 @@ class RunSummaryPending3(_RunSummaryPending3Required, total=False):
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
-    overshoot_bound_usd: float
     node: str | None
 
 
@@ -1703,6 +2140,53 @@ UpdateDefinitionBody: TypeAlias = "DefinitionInput | AgentCreate"
 
 
 UpdateDefinitionResponse: TypeAlias = "Agent"
+
+
+class VerifyNativeResponse(TypedDict):
+    native: VerifyNativeResponseNative
+
+
+class _VerifyNativeResponseNativeRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: VerifyNativeResponseNativeSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[VerifyNativeResponseNativeConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: VerifyNativeResponseNativeCapabilities
+    connected: bool
+
+
+class VerifyNativeResponseNative(_VerifyNativeResponseNativeRequired, total=False):
+    verified_at: str
+
+
+class _VerifyNativeResponseNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class VerifyNativeResponseNativeSelector(_VerifyNativeResponseNativeSelectorRequired, total=False):
+    name: str
+
+
+class VerifyNativeResponseNativeConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class VerifyNativeResponseNativeCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
 
 
 CreateFileBody: TypeAlias = "FileCreate"
@@ -2462,11 +2946,7 @@ class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
     digest: str
     status: Literal["running", "done", "failed"]
     inputs: int
-    answered: int
-    handed_back: int
-    failed: int
-    skipped_write: int
-    alone: int
+    outcomes: GetLearnedWorkflowReplayResponseOutcomes
     score: GetLearnedWorkflowReplayResponseScore
     cost_usd: float | None
 
@@ -2474,6 +2954,13 @@ class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
 class GetLearnedWorkflowReplayResponse(_GetLearnedWorkflowReplayResponseRequired, total=False):
     decided: Literal["promote", "hold", "superseded"]
     reason: str
+
+
+class GetLearnedWorkflowReplayResponseOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
 
 
 class GetLearnedWorkflowReplayResponseScore(TypedDict):
@@ -2531,6 +3018,10 @@ class CreatePairingResponse(TypedDict):
     id: str
     code: str
     expires_at: str
+
+
+class DeleteComposioSubscriptionResponse(TypedDict):
+    deleted: Literal[True]
 
 
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
@@ -2624,6 +3115,24 @@ class GetWorkspaceArchilResponseSecret(TypedDict):
     changed_at: str | None
 
 
+class ListComposioEventsResponse(TypedDict):
+    server: str
+    toolkit: str
+    events: list[ListComposioEventsResponseEventsItem]
+
+
+class _ListComposioEventsResponseEventsItemRequired(TypedDict):
+    slug: str
+    name: str
+    description: str
+    config: dict[str, Any]
+    polled: bool
+
+
+class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItemRequired, total=False):
+    instructions: str
+
+
 class ListComposioToolsBody(TypedDict):
     api_key: str
     toolkit: str
@@ -2639,6 +3148,29 @@ class ListComposioToolsResponseToolsItem(TypedDict):
     slug: str
     name: str
     description: str
+
+
+class _ListComposioTriggersResponseRequired(TypedDict):
+    triggers: list[ListComposioTriggersResponseTriggersItem]
+    subscription: ListComposioTriggersResponseSubscription | None
+
+
+class ListComposioTriggersResponse(_ListComposioTriggersResponseRequired, total=False):
+    composio_error: str
+
+
+class ListComposioTriggersResponseTriggersItem(TypedDict):
+    id: str
+    name: str
+    enabled: bool
+    event: str
+    instance_id: str
+    on_composio: Literal["on", "off", "missing", "unknown"]
+
+
+class ListComposioTriggersResponseSubscription(TypedDict):
+    ours: bool
+    webhook_url: str
 
 
 class ListComputerChoicesResponse(TypedDict):
@@ -2806,6 +3338,79 @@ class PutWorkspaceArchilResponseSecret(TypedDict):
     set: bool
     source: Literal["env", "console", "sign-in"] | None
     changed_at: str | None
+
+
+ReceiveHookComposioResponse: TypeAlias = "ReceiveHookComposioResponseObject11 | ReceiveHookComposioResponseObject12 | ReceiveHookComposioResponseObject2"
+
+
+class ReceiveHookComposioResponseObject11(TypedDict):
+    firings: list[ReceiveHookComposioResponseObject11FiringsItem1 | ReceiveHookComposioResponseObject11FiringsItem2]
+
+
+class _ReceiveHookComposioResponseObject11FiringsItem1Required(TypedDict):
+    key: str
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReceiveHookComposioResponseObject11FiringsItem1Error | None
+
+
+class ReceiveHookComposioResponseObject11FiringsItem1(_ReceiveHookComposioResponseObject11FiringsItem1Required, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    catch_up: Literal[True]
+
+
+class ReceiveHookComposioResponseObject11FiringsItem1Error(TypedDict):
+    code: str
+    message: str
+
+
+class ReceiveHookComposioResponseObject11FiringsItem2(TypedDict):
+    ok: Literal["duplicate"]
+
+
+class ReceiveHookComposioResponseObject12(TypedDict):
+    ok: Literal["ignored"]
+
+
+class ReceiveHookComposioResponseObject2(TypedDict):
+    firings: list[ReceiveHookComposioResponseObject2FiringsItem1 | ReceiveHookComposioResponseObject2FiringsItem2]
+
+
+class _ReceiveHookComposioResponseObject2FiringsItem1Required(TypedDict):
+    key: str
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReceiveHookComposioResponseObject2FiringsItem1Error | None
+
+
+class ReceiveHookComposioResponseObject2FiringsItem1(_ReceiveHookComposioResponseObject2FiringsItem1Required, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    catch_up: Literal[True]
+
+
+class ReceiveHookComposioResponseObject2FiringsItem1Error(TypedDict):
+    code: str
+    message: str
+
+
+class ReceiveHookComposioResponseObject2FiringsItem2(TypedDict):
+    ok: Literal["duplicate"]
+
+
+class RotateComposioSecretResponse(TypedDict):
+    rotated: Literal[True]
 
 
 class _SaveComposioServerBodyRequired(TypedDict):
@@ -3459,7 +4064,6 @@ class RunCreateInline(_RunCreateInlineRequired, total=False):
     max_cost_usd: float
     quote_id: str
     mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
-    cap_mode: Literal["expected", "strict"]
     workflow_first: bool
     learning: Literal["use"]
     repo: str
@@ -3509,9 +4113,9 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
+    native: RunNative
     console_url: str
     approvals: Literal["ask", "never"]
-    cap_mode: Literal["expected", "strict"] | None
     last_progress_at: str | None
     input: dict[str, Any] | None
     file_ids: list[str]
@@ -3531,6 +4135,48 @@ class _RunResultRequired(TypedDict):
 
 class RunResult(_RunResultRequired, total=False):
     output_error: str
+
+
+class RunNative(TypedDict):
+    runtime: str
+    project: str
+    selector: RunNativeSelector
+    machine_id: str
+    fingerprint: str
+    session_id: str | None
+    model: str | None
+    learning_revision: str | None
+    usage: RunNativeUsage
+    model_requests: None
+
+
+class _RunNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class RunNativeSelector(_RunNativeSelectorRequired, total=False):
+    name: str
+
+
+class RunNativeUsage(TypedDict):
+    task: RunNativeUsageTask | None
+    reflection: list[RunNativeUsageReflectionItem]
+
+
+class RunNativeUsageTask(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunNativeUsageReflectionItem(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 class RunClaim(TypedDict):
@@ -3663,7 +4309,6 @@ class RunPending3(_RunPending3Required, total=False):
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
-    overshoot_bound_usd: float
     node: str | None
 
 
@@ -4089,7 +4734,6 @@ class RunCreate(_RunCreateRequired, total=False):
     max_cost_usd: float
     quote_id: str
     mcp_auth: dict[str, RunCreateMcpAuthValue]
-    cap_mode: Literal["expected", "strict"]
     workflow_first: bool
     learning: Literal["use"]
     repo: str
@@ -4203,10 +4847,11 @@ TimelineKind: TypeAlias = "Literal[\"thinking\", \"text_block\", \"tool_use\", \
 
 class _TimelineUsageRequired(TypedDict):
     usd: float | None
-    requests: int
+    requests: int | None
 
 
 class TimelineUsage(_TimelineUsageRequired, total=False):
+    free: Literal[True]
     so_far_usd: float
     unpriced: int
     not_metered: int
@@ -4214,7 +4859,7 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
 
 class _TimelineRowTriggerRequired(TypedDict):
     id: str
-    source: Literal["schedule", "webhook", "slack", "github"]
+    source: Literal["schedule", "webhook", "slack", "github", "composio"]
     owner: bool
 
 
@@ -4444,7 +5089,7 @@ class FeaturesWebhooks(TypedDict):
 
 class FeaturesTriggers(TypedDict):
     routes: bool
-    sources: list[Literal["schedule", "webhook", "github"]]
+    sources: list[Literal["schedule", "webhook", "github", "composio"]]
     targets: list[Literal["start_run", "message_run"]]
     min_every_s: int
     history_kept: int
@@ -4535,6 +5180,7 @@ class CapabilitiesPlacesDefaultPlace2(TypedDict):
 class _CapabilitiesHarnessesItemRequired(TypedDict):
     id: Literal["pi", "claude-agent", "codex", "opencode"]
     available: bool
+    free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
     run_memory_mib: int
     max_concurrent_runs: int
@@ -4546,6 +5192,11 @@ class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False)
     reason: str
     needs: list[Literal["key", "chatgpt"]]
     installs: Literal["on_first_use"]
+
+
+class CapabilitiesHarnessesItemFreeModelsItem(TypedDict):
+    id: str
+    context_window: int
 
 
 class _CapabilitiesToolsItemRequired(TypedDict):
@@ -4715,15 +5366,15 @@ class GetStatsResponseAnalyticsTotals(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
-    tokens: int
+    tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
-    input: int
-    cache_read: int
-    cache_write: int
-    output: int
-    requests: int
-    unmetered: int
+    input: int | None
+    cache_read: int | None
+    cache_write: int | None
+    output: int | None
+    requests: int | None
+    unmetered: int | None
 
 
 class GetStatsResponseAnalyticsTime(TypedDict):
@@ -4741,7 +5392,7 @@ class GetStatsResponseAnalyticsByHarnessEffortItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
-    tokens: int
+    tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
 
@@ -4753,7 +5404,7 @@ class GetStatsResponseAnalyticsByDayItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
-    tokens: int
+    tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
 
@@ -4765,7 +5416,7 @@ class GetStatsResponseAnalyticsBySourceItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
-    tokens: int
+    tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
 
@@ -4793,6 +5444,7 @@ class ApplyTemplateBody(TypedDict, total=False):
 
 class ApplyTemplateBodyOverrides(TypedDict, total=False):
     model: str
+    choice: str
     approvals: Literal["ask", "never"]
 
 
@@ -4895,6 +5547,19 @@ class _ImportTemplateResponseTemplateModelRequired(TypedDict):
 
 class ImportTemplateResponseTemplateModel(_ImportTemplateResponseTemplateModelRequired, total=False):
     prefer: str
+    fast: str
+    strong: str
+    choices: list[ImportTemplateResponseTemplateModelChoicesItem]
+
+
+class ImportTemplateResponseTemplateModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
 
 
 class ImportTemplateResponseTemplateToolPolicy(TypedDict):
@@ -5003,6 +5668,19 @@ class _ListTemplatesResponseTemplatesItemModelRequired(TypedDict):
 
 class ListTemplatesResponseTemplatesItemModel(_ListTemplatesResponseTemplatesItemModelRequired, total=False):
     prefer: str
+    fast: str
+    strong: str
+    choices: list[ListTemplatesResponseTemplatesItemModelChoicesItem]
+
+
+class ListTemplatesResponseTemplatesItemModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
 
 
 class ListTemplatesResponseTemplatesItemToolPolicy(TypedDict):
@@ -5253,7 +5931,7 @@ class PutToolSettingsResponseBrowser(_PutToolSettingsResponseBrowserRequired, to
 
 
 class _CreateTriggerBodyRequired(TypedDict):
-    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5
+    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6
     target: CreateTriggerBodyTarget1 | CreateTriggerBodyTarget2
 
 
@@ -5345,6 +6023,42 @@ class CreateTriggerBodySource5AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerBodySource6Required(TypedDict):
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
+
+
+class CreateTriggerBodySource6(_CreateTriggerBodySource6Required, total=False):
+    accept: list[CreateTriggerBodySource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
+
+
+class _CreateTriggerBodySource6AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerBodySource6AcceptItem(_CreateTriggerBodySource6AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerBodySource6AcceptItemWhereItem1 | CreateTriggerBodySource6AcceptItemWhereItem2 | CreateTriggerBodySource6AcceptItemWhereItem3]
+
+
+CreateTriggerBodySource6AcceptItemWhereItem1 = TypedDict("CreateTriggerBodySource6AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerBodySource6AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -5370,7 +6084,7 @@ class _CreateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5
+    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6
     target: CreateTriggerResponseTarget1 | CreateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -5466,6 +6180,42 @@ class CreateTriggerResponseSource5AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerResponseSource6Required(TypedDict):
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
+
+
+class CreateTriggerResponseSource6(_CreateTriggerResponseSource6Required, total=False):
+    accept: list[CreateTriggerResponseSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
+
+
+class _CreateTriggerResponseSource6AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerResponseSource6AcceptItem(_CreateTriggerResponseSource6AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerResponseSource6AcceptItemWhereItem1 | CreateTriggerResponseSource6AcceptItemWhereItem2 | CreateTriggerResponseSource6AcceptItemWhereItem3]
+
+
+CreateTriggerResponseSource6AcceptItemWhereItem1 = TypedDict("CreateTriggerResponseSource6AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -5512,7 +6262,7 @@ class CreateTriggerResponseDisabled4(TypedDict):
 
 class _CreateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github"]
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -5533,9 +6283,19 @@ class CreateTriggerResponseLastFiringError(TypedDict):
     message: str
 
 
+class DeleteTriggerResponse(TypedDict):
+    deleted: Literal[True]
+    composio: DeleteTriggerResponseComposio
+
+
+class DeleteTriggerResponseComposio(TypedDict):
+    done: Literal[False]
+    note: str
+
+
 class _FireTriggerResponseRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github"]
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -5562,7 +6322,7 @@ class ListTriggerFiringsResponse(TypedDict):
 
 class _ListTriggerFiringsResponseFiringsItemRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github"]
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -5587,7 +6347,7 @@ class _GetTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5
+    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6
     target: GetTriggerResponseTarget1 | GetTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -5681,6 +6441,42 @@ class GetTriggerResponseSource5AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _GetTriggerResponseSource6Required(TypedDict):
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
+
+
+class GetTriggerResponseSource6(_GetTriggerResponseSource6Required, total=False):
+    accept: list[GetTriggerResponseSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
+
+
+class _GetTriggerResponseSource6AcceptItemRequired(TypedDict):
+    event: str
+
+
+class GetTriggerResponseSource6AcceptItem(_GetTriggerResponseSource6AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[GetTriggerResponseSource6AcceptItemWhereItem1 | GetTriggerResponseSource6AcceptItemWhereItem2 | GetTriggerResponseSource6AcceptItemWhereItem3]
+
+
+GetTriggerResponseSource6AcceptItemWhereItem1 = TypedDict("GetTriggerResponseSource6AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class GetTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class GetTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _GetTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -5727,7 +6523,7 @@ class GetTriggerResponseDisabled4(TypedDict):
 
 class _GetTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github"]
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -5756,7 +6552,7 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5
+    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6
     target: ListTriggersResponseTriggersItemTarget1 | ListTriggersResponseTriggersItemTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -5850,6 +6646,42 @@ class ListTriggersResponseTriggersItemSource5AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _ListTriggersResponseTriggersItemSource6Required(TypedDict):
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
+
+
+class ListTriggersResponseTriggersItemSource6(_ListTriggersResponseTriggersItemSource6Required, total=False):
+    accept: list[ListTriggersResponseTriggersItemSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
+
+
+class _ListTriggersResponseTriggersItemSource6AcceptItemRequired(TypedDict):
+    event: str
+
+
+class ListTriggersResponseTriggersItemSource6AcceptItem(_ListTriggersResponseTriggersItemSource6AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1 | ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2 | ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3]
+
+
+ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1 = TypedDict("ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _ListTriggersResponseTriggersItemTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -5896,7 +6728,7 @@ class ListTriggersResponseTriggersItemDisabled4(TypedDict):
 
 class _ListTriggersResponseTriggersItemLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github"]
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -5932,7 +6764,7 @@ class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=Fa
 class UpdateTriggerBody(TypedDict, total=False):
     name: str
     enabled: bool
-    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5
+    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6
     target: UpdateTriggerBodyTarget1 | UpdateTriggerBodyTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -6019,6 +6851,42 @@ class UpdateTriggerBodySource5AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerBodySource6Required(TypedDict):
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
+
+
+class UpdateTriggerBodySource6(_UpdateTriggerBodySource6Required, total=False):
+    accept: list[UpdateTriggerBodySource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
+
+
+class _UpdateTriggerBodySource6AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerBodySource6AcceptItem(_UpdateTriggerBodySource6AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerBodySource6AcceptItemWhereItem1 | UpdateTriggerBodySource6AcceptItemWhereItem2 | UpdateTriggerBodySource6AcceptItemWhereItem3]
+
+
+UpdateTriggerBodySource6AcceptItemWhereItem1 = TypedDict("UpdateTriggerBodySource6AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerBodySource6AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -6044,7 +6912,7 @@ class _UpdateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5
+    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6
     target: UpdateTriggerResponseTarget1 | UpdateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -6061,6 +6929,7 @@ class UpdateTriggerResponse(_UpdateTriggerResponseRequired, total=False):
     hook_url: str
     secret: SecretMeta
     note: str
+    composio: UpdateTriggerResponseComposio
 
 
 class UpdateTriggerResponseSource1(TypedDict):
@@ -6138,6 +7007,42 @@ class UpdateTriggerResponseSource5AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerResponseSource6Required(TypedDict):
+    kind: Literal["composio"]
+    server: str
+    event: str
+    config: dict[str, Any]
+
+
+class UpdateTriggerResponseSource6(_UpdateTriggerResponseSource6Required, total=False):
+    accept: list[UpdateTriggerResponseSource6AcceptItem]
+    instance_id: str
+    hook: str
+    move_subscription: Literal[True]
+
+
+class _UpdateTriggerResponseSource6AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerResponseSource6AcceptItem(_UpdateTriggerResponseSource6AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerResponseSource6AcceptItemWhereItem1 | UpdateTriggerResponseSource6AcceptItemWhereItem2 | UpdateTriggerResponseSource6AcceptItemWhereItem3]
+
+
+UpdateTriggerResponseSource6AcceptItemWhereItem1 = TypedDict("UpdateTriggerResponseSource6AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -6184,7 +7089,7 @@ class UpdateTriggerResponseDisabled4(TypedDict):
 
 class _UpdateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github"]
+    by: Literal["schedule", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6203,6 +7108,11 @@ class UpdateTriggerResponseLastFiring(_UpdateTriggerResponseLastFiringRequired, 
 class UpdateTriggerResponseLastFiringError(TypedDict):
     code: str
     message: str
+
+
+class UpdateTriggerResponseComposio(TypedDict):
+    done: Literal[False]
+    note: str
 
 
 GetUsageResponse: TypeAlias = "Usage"
@@ -6369,17 +7279,22 @@ class ValidateWorkflowResponseIssuesItem(TypedDict):
 # Each operation as the runtime sends it, by operationId.
 OPERATIONS: dict[str, Operation] = {
     "archiveAgent": Operation(method="POST", path="/agents/{agent_id}/archive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "connectNative": Operation(method="POST", path="/native/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createAgent": Operation(method="POST", path="/agents", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteAgentArchil": Operation(method="DELETE", path="/agents/{agent_id}/archil", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "disconnectNative": Operation(method="POST", path="/agents/{agent_id}/native/disconnect", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "discoverNative": Operation(method="POST", path="/native/discover", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "forgetSignIn": Operation(method="DELETE", path="/agents/{agent_id}/sign-ins/{key}", path_params=("agent_id", "key"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getAgent": Operation(method="GET", path="/agents/{agent_id}", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=True),
     "getAgentArchil": Operation(method="GET", path="/agents/{agent_id}/archil", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getLearningLoop": Operation(method="GET", path="/agents/{agent_id}/learning/loop", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getNative": Operation(method="GET", path="/agents/{agent_id}/native", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listAgents": Operation(method="GET", path="/agents", path_params=(), multi_segment=(), query=("limit", "cursor", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningPromotions": Operation(method="GET", path="/agents/{agent_id}/learning/promotions", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
+    "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "createFile": Operation(method="POST", path="/files", path_params=(), multi_segment=(), query=("path", "content_type", "sha256"), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json", "application/octet-stream", "*/*")), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteFile": Operation(method="DELETE", path="/files/{file_id}", path_params=("file_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "getFile": Operation(method="GET", path="/files/{file_id}", path_params=("file_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6406,6 +7321,7 @@ OPERATIONS: dict[str, Operation] = {
     "writeLearningFile": Operation(method="PUT", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match", "If-None-Match"), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="text", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6415,10 +7331,14 @@ OPERATIONS: dict[str, Operation] = {
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "listComposioEvents": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/events", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComposioTools": Operation(method="POST", path="/settings/mcp-servers/composio/tools", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit",), tagged=False),
+    "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6475,7 +7395,7 @@ OPERATIONS: dict[str, Operation] = {
     "getToolSettings": Operation(method="GET", path="/settings/tools", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putToolSettings": Operation(method="PUT", path="/settings/tools", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createTrigger": Operation(method="POST", path="/triggers", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "deleteTrigger": Operation(method="DELETE", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteTrigger": Operation(method="DELETE", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "fireTrigger": Operation(method="POST", path="/triggers/{trigger_id}/fire", path_params=("trigger_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggerFirings": Operation(method="GET", path="/triggers/{trigger_id}/firings", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6500,6 +7420,10 @@ class AgentsResource(Group):
         """Archive the agent: hidden from the lists, kept with its history (POST /agents/{agent_id}/archive)."""
         return self._call("archiveAgent", (agent_id,), None, None, timeout=timeout)
 
+    def connect_native(self, body: ConnectNativeBody, *, timeout: float | None = None) -> ConnectNativeResponse:
+        """Connect a native project using ordinary agent and revision storage (POST /native/connect)."""
+        return self._call("connectNative", (), body, None, timeout=timeout)
+
     def create(self, body: CreateAgentBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CreateAgentResponse:
         """Create an agent home (POST /agents)."""
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
@@ -6507,6 +7431,14 @@ class AgentsResource(Group):
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
         """Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil)."""
         return self._call("deleteAgentArchil", (agent_id,), None, None, timeout=timeout)
+
+    def disconnect_native(self, agent_id: str, *, timeout: float | None = None) -> DisconnectNativeResponse:
+        """Disconnect future native jobs while retaining source configuration and history (POST /agents/{agent_id}/native/disconnect)."""
+        return self._call("disconnectNative", (agent_id,), None, None, timeout=timeout)
+
+    def discover_native(self, body: DiscoverNativeBody, *, timeout: float | None = None) -> DiscoverNativeResponse:
+        """Discover existing native projects on this source machine without running a model (POST /native/discover)."""
+        return self._call("discoverNative", (), body, None, timeout=timeout)
 
     def forget_sign_in(self, agent_id: str, key: str, *, timeout: float | None = None) -> ForgetSignInResponse:
         """Forget one of the agent's saved sign-ins (DELETE /agents/{agent_id}/sign-ins/{key})."""
@@ -6523,6 +7455,10 @@ class AgentsResource(Group):
     def get_learning_loop(self, agent_id: str, *, timeout: float | None = None) -> GetLearningLoopResponse:
         """The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop)."""
         return self._call("getLearningLoop", (agent_id,), None, None, timeout=timeout)
+
+    def get_native(self, agent_id: str, *, timeout: float | None = None) -> GetNativeResponse:
+        """Read a native connection (GET /agents/{agent_id}/native)."""
+        return self._call("getNative", (agent_id,), None, None, timeout=timeout)
 
     def list(self, *, limit: int | None = None, cursor: str | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAgentsResponse:
         """List agents (GET /agents)."""
@@ -6543,6 +7479,10 @@ class AgentsResource(Group):
     def update(self, agent_id: str, body: UpdateDefinitionBody, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[UpdateDefinitionResponse]:
         """Replace the agent's definition (PUT /agents/{agent_id}/definition)."""
         return self._call("updateDefinition", (agent_id,), body, {"If-Match": if_match}, timeout=timeout)
+
+    def verify_native(self, agent_id: str, *, timeout: float | None = None) -> VerifyNativeResponse:
+        """Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify)."""
+        return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
 
 
 class FilesResource(Group):
@@ -6664,6 +7604,10 @@ class LocalResource(Group):
         """A code that pairs a person's own computer with this server (POST /computers/pairings)."""
         return self._call("createPairing", (), None, None, timeout=timeout)
 
+    def delete_composio_subscription(self, name: str, *, timeout: float | None = None) -> DeleteComposioSubscriptionResponse:
+        """Delete the Composio project's webhook subscription, once no trigger uses it (DELETE /settings/mcp-servers/{name}/composio/subscription)."""
+        return self._call("deleteComposioSubscription", (name,), None, None, timeout=timeout)
+
     def delete_computer(self, computer_id: str, *, timeout: float | None = None) -> None:
         """Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id})."""
         return self._call("deleteComputer", (computer_id,), None, None, timeout=timeout)
@@ -6692,9 +7636,17 @@ class LocalResource(Group):
         """Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil)."""
         return self._call("getWorkspaceArchil", (), None, None, timeout=timeout)
 
+    def list_composio_events(self, name: str, *, timeout: float | None = None) -> ListComposioEventsResponse:
+        """List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events)."""
+        return self._call("listComposioEvents", (name,), None, None, timeout=timeout)
+
     def list_composio_tools(self, body: ListComposioToolsBody, *, timeout: float | None = None) -> ListComposioToolsResponse:
         """List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("listComposioTools", (), body, None, timeout=timeout)
+
+    def list_composio_triggers(self, name: str, *, timeout: float | None = None) -> ListComposioTriggersResponse:
+        """A saved Composio server's triggers, each with its instance's state on Composio (GET /settings/mcp-servers/{name}/composio/triggers)."""
+        return self._call("listComposioTriggers", (name,), None, None, timeout=timeout)
 
     def list_computer_choices(self, provider: str, *, timeout: float | None = None) -> ListComputerChoicesResponse:
         """The values a computer provider's picked keys offer, read from the vendor (GET /computers/{provider}/choices)."""
@@ -6707,6 +7659,14 @@ class LocalResource(Group):
     def put_workspace_archil(self, body: PutWorkspaceArchilBody, *, timeout: float | None = None) -> PutWorkspaceArchilResponse:
         """Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil)."""
         return self._call("putWorkspaceArchil", (), body, None, timeout=timeout)
+
+    def receive_hook_composio(self, hook: str, body: RawBody, *, body_type: str | None = None, timeout: float | None = None) -> ReceiveHookComposioResponse:
+        """Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook})."""
+        return self._call("receiveHook_composio", (hook,), body, None, timeout=timeout, body_type=body_type)
+
+    def rotate_composio_secret(self, name: str, *, timeout: float | None = None) -> RotateComposioSecretResponse:
+        """Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret)."""
+        return self._call("rotateComposioSecret", (name,), None, None, timeout=timeout)
 
     def save_composio_server(self, name: str, body: SaveComposioServerBody, *, timeout: float | None = None) -> SaveComposioServerResponse:
         """Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
@@ -6960,7 +7920,7 @@ class TriggersResource(Group):
         """Make a trigger: a schedule or a signed webhook that starts a capped run of an agent, or messages a run (POST /triggers)."""
         return self._call("createTrigger", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
-    def delete(self, trigger_id: str, *, timeout: float | None = None) -> None:
+    def delete(self, trigger_id: str, *, timeout: float | None = None) -> DeleteTriggerResponse | None:
         """Delete a trigger and its firings; the runs it started stay (DELETE /triggers/{trigger_id})."""
         return self._call("deleteTrigger", (trigger_id,), None, None, timeout=timeout)
 

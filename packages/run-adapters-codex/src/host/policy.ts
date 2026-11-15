@@ -28,9 +28,12 @@
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 //
 // A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`);
-// on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`).
+// on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`); on a route
+// OpenAI does not count (a gateway), the kernel's local o200k_base count with its margin when that is lower
+// (`responsesLocalInputTokens`).
 import type { IncomingHttpHeaders } from "node:http";
-import { lastObjectOf, NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { PLAN_LIMIT_CODE, PLAN_LIMIT_WORDS } from "@parcha/agentrun-kernel";
+import { lastObjectOf, NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -566,6 +569,24 @@ export function addResponsesNote(body: Record<string, unknown>, text: string): R
   return { ...body, input: [...input, { type: "message", role: "developer", content: [{ type: "input_text", text }] }] };
 }
 
+/** The error codes OpenAI's Responses API gives a ChatGPT plan's request past its limit, with status 429. */
+const PLAN_LIMIT_ERRORS: ReadonlySet<string> = new Set(["usage_limit_exceeded", "subscription_sharing_usage_limit_exceeded"]);
+
+/** A ChatGPT plan's 429 past its limit (PLAN_LIMIT_ERRORS, as the error's `code` or `type`): final, in PLAN_LIMIT_WORDS.
+ *  Any other error goes through as it came (a 429 for the rate, which its client waits out and asks again). */
+export function planLimitOf(status: number, body: string): { message: string; code: string } | undefined {
+  if (status !== 429) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  const error = isPlain(parsed) && isPlain(parsed.error) ? parsed.error : isPlain(parsed) ? parsed : undefined;
+  const named = [error?.code, error?.type].some((value) => typeof value === "string" && PLAN_LIMIT_ERRORS.has(value));
+  return named ? { message: PLAN_LIMIT_WORDS, code: PLAN_LIMIT_CODE } : undefined;
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
@@ -600,6 +621,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       const usage = tokensOf(text, body);
       return usage && { ...usage, billing: "plan" as const };
     } : tokensOf,
+    ...(plan ? { finalError: planLimitOf } : {}),
     filtered,
     cut,
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
@@ -610,7 +632,13 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
     contentBytesOf: responsesContentBytes,
-    ...(plan ? {} : { limitOutput: limitResponsesOutput, countInput: OPENAI_INPUT_COUNTER }),
+    // A plan request is held at $0, so it is never counted. A body that offers the live search has no input bound
+    // (below), and is never counted into one.
+    ...(plan ? {} : {
+      limitOutput: limitResponsesOutput,
+      countInput: OPENAI_INPUT_COUNTER,
+      countInputLocally: (body: Record<string, unknown>) => (search && Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search") ? undefined : responsesLocalInputTokens(body)),
+    }),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured (and never
     // counted into a number).
