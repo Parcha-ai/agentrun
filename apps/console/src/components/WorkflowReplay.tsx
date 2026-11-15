@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Bone } from "@/components/Skeleton";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { Button } from "@/components/ui/button";
@@ -71,8 +71,19 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
   const { steps, unreadable } = useMemo(() => replaySteps(data.revisions), [data.revisions]);
   const [at, setAt] = useState(Math.max(0, steps.length - 1));
   const [playing, setPlaying] = useState(false);
-  // A new read lands on the newest revision, the workflow as it is now.
-  useEffect(() => { setAt(Math.max(0, steps.length - 1)); setPlaying(false); }, [steps]);
+  // A new read lands on the newest revision, the workflow as it is now; a card that was on an older revision stays on it
+  // (by digest), so the replay it just ran keeps its decision on screen.
+  const shownAt = useRef(at);
+  shownAt.current = at;
+  const last = useRef(steps);
+  useEffect(() => {
+    const before = last.current;
+    last.current = steps;
+    const was = before[shownAt.current]?.digest ?? null;
+    const same = before === steps || shownAt.current >= before.length - 1 || was === null ? -1 : steps.findIndex((s) => s.digest === was);
+    setAt(same >= 0 ? same : Math.max(0, steps.length - 1));
+    setPlaying(false);
+  }, [steps]);
   useEffect(() => {
     if (!playing) return;
     const timer = setInterval(() => setAt((n) => Math.min(n + 1, steps.length - 1)), stepMs);
