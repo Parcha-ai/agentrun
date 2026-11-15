@@ -9,6 +9,8 @@
 //   are out; a child's request once the run's spend leaves no room), and the run parks in words that say what is spent
 //   and what is held apart, its pending figures too (spent_usd is never a hold);
 // - a cancel while steps wait for room: they leave the line unsent, and nothing more is asked of any model;
+// - a paid call of a CLI whose answer is booked only after its calls (Claude Code) never waits on that answer: it is
+//   judged beside its hold and refused at once when it does not fit, never left to stall;
 // - a running run's listed spend is what it spent, never a hold (metrics.ts bookedListSpend).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -18,8 +20,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as metrics from "../dist/runner/metrics.js";
 import { KEY } from "./fixtures/faux-monid.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs";
 
+const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const SONNET = new URL("./fixtures/faux-sonnet55.mjs", import.meta.url).pathname;
 const FAUX_CAP_WAIT = new URL("./fixtures/faux-cap-wait.mjs", import.meta.url).pathname;
 const FAUX_BURST = new URL("./fixtures/faux-burst.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -171,6 +176,34 @@ test("a paid call that cannot fit even once the calls in flight settle is refuse
   const peaks = admissions(entries);
   assert.ok(Math.max(...peaks) <= 0.9 + 1e-9, `never past the cap: ${Math.max(...peaks)}`);
   t.diagnostic(`refused: ${refusal}`);
+});
+
+test("claude-agent: a paid call never waits on the answer that asked for it, booked only after the call: refused at once beside it, the run goes on", { timeout: 120_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, data } = await serve(t, { faux: SONNET, fauxMonid: FAUX_MONID, harnessTable: fauxTable(FAUX_HARNESS) });
+  // The answer asking for the $1 call is held at $0.33 or more until the call returns; under a $1.20 cap the call fits
+  // alone, never beside it. Waiting on it would wait on itself (the stall bound is 10 minutes).
+  const instructions = "Run monid's /person/lookup while the answer asking for it is booked after it.";
+  assert.equal((await api("POST", "/agents", agent("under", { harness: "claude-agent", instructions, tools: [LOOKUP], tool_settings: ALLOWED }))).status, 201);
+  const started = await api("POST", "/agents/under/runs", { input: { content: "go" }, max_cost_usd: 1.2 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["input_required", ...ENDED], { deadlineMs: 30_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  const entries = journalOf(data, runId);
+  t.diagnostic(`booked in order (session, +hold or -booked): ${traceOf(entries)}`);
+  const results = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "tool_result").map((row) => row.text ?? row.summary ?? "");
+  // The call's refusal is its result; at the model's next request the answer that asked for it is booked ($0.01), so the
+  // call would fit then: no pause (adapter-loop.ts landing), and the run goes on to its answer.
+  assert.deepEqual([view.status, view.pending], ["completed", null], JSON.stringify({ status: view.status, pending: view.pending, error: view.error, results }));
+  // Refused beside the answer's hold, in the rule's words: what it holds said apart from what was spent.
+  assert.equal(results.length, 1, JSON.stringify(results));
+  assert.match(results[0], /spend_cap_reached: Not sent: this run has spent \$0 and holds \$0\.\d\d for steps still running, of its \$1\.20 cap, and the next step, monid:faux\/person\/lookup, could cost up to \$1 \([^)]+\)\. Raise the cap to at least \$1\.\d\d to continue\./, JSON.stringify(results));
+  assert.equal(entries.filter((e) => e.kind === "runner.request" && String(e.data?.model).startsWith("paid:")).length, 0, "the call was never admitted");
+  assert.equal((await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/run").length, 0, "the call was not made");
+  const peaks = admissions(entries);
+  assert.ok(Math.max(...peaks) <= 1.2 + 1e-9, `never past the cap: ${Math.max(...peaks)}`);
 });
 
 test("a request that cannot fit even once the steps in flight settle is refused: the run parks saying spent and held apart", { timeout: 240_000 }, async (t) => {

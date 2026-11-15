@@ -20,15 +20,25 @@
 // of steps in flight that settle on their own) is not handed on: the request waits in the run's line, first come first
 // served, and is asked again once a step it waited on has settled (each settle books the step at what it cost, at most its
 // hold, so the room comes back). Every step joins the line as it comes, before its first ask, and only the line's first
-// asks, so a small one never takes the room an earlier one waits for, even when the two came together. Model requests, decisions and paid tool calls (a web
-// fetch's, a search's) wait alike: a tool call runs once the request that asked for it has answered, so it never waits on
-// a hold its own wait keeps from settling.
+// asks, so a small one never takes the room an earlier one waits for, even when the two came together. Model requests,
+// decisions and paid tool calls (a web fetch's, a search's) wait alike, but for one thing:
+// - A paid call never waits on the request that asked for it. pi runs a tool once its request has answered, but a CLI
+//   may not: Claude Code books a request's cost after its calls, and Codex starts a call with its response still open,
+//   so that request settles only once the call returns. A paid call names the model session whose tool call it runs in
+//   (ModelRequest.paid.under); that session's requests in flight are its parents, which no record links to the call
+//   (the call's id is in the response, never on the request's records), so each of them counts as one. For the call,
+//   they are `stays`: held beside it, never waited on. It fits beside them or is refused now (a raise sends it), never
+//   admitted past the cap. It still waits on every other step, which settles without it (another session's requests
+//   included: pi's children, each booked before its own calls run).
+// - A paid call whose own session has a request in flight goes ahead of the line's steps that are not such calls (after
+//   any that are, in the order they came): a step waiting for room may wait on that request, which cannot settle until
+//   the call is done, so behind it the call would wait on its own request too.
 // - The hold ledger is the run's records (every session's runner.request and runner.turn), which every process of the run
 //   writes: a waiter reads them again on a short timer, from WAIT_POLL_FIRST_MS doubling to WAIT_POLL_MOST_MS, so a step
 //   that settles in this process or any other wakes it the same way. No process signals another.
 // - No deadlock: a waiter holds nothing while it waits (nothing is admitted, recorded or held for it), and it waits only on
-//   steps that end by themselves (a request streaming, a decision, a paid call), never on a hold-only step or on a lost
-//   claim's request. A waiter whose steps stop settling for WAIT_STALL_MS is refused after all, in the words it waited
+//   steps that end by themselves (a request streaming, a decision, a paid call), never on a hold-only step, on a lost
+//   claim's request, or, for a paid call, on its own session's requests. A waiter whose steps stop settling for WAIT_STALL_MS is refused after all, in the words it waited
 //   under: the run parks for a raise, as before waiting existed.
 // - A waiter leaves the line, admitted for nothing and holding nothing, when its client goes (its signal: a stop, a
 //   cancel, a lost claim), when the run stops (`stopped`, for a paid call or a decision too), when its booking stops (`halted`: thrown, as a stop that came during the check), or when the
@@ -73,15 +83,16 @@ const idOf = (key: string, turn: number) => `${key}\u0000${turn}`;
 /** The error a waiter leaves with when its client goes. */
 const gone = (signal: AbortSignal): Error => (signal.reason instanceof Error ? signal.reason : new Error("the request's client went while it waited for room under the run's cap"));
 
-/** A request in the line, and how to cut its wait short (the line's first left, its signal aborted). */
-type Place = { wake?: () => void };
+/** A request in the line, and how to cut its wait short (the line's first left, its signal aborted). `under`: a paid
+ *  call whose own session had a request in flight as it came, which goes ahead of the steps that are not. */
+type Place = { wake?: () => void; under?: true };
 
 /** `before`, asked about each request with the run's totals over `sessions` in place of its session's own; a refusal that
  *  waits is asked again once the room may be there (above). */
 export function runBooking(sessions: RunSessions, before: BeforeRequest, options: RunBookingOptions = {}): BeforeRequest {
   /** Admitted here and not yet answered, by session and turn, with when. One whose record never lands (its write refused,
    *  its process gone) stays held: the run's spend is never under-counted. */
-  const admitted = new Map<string, InFlight & { at: number }>();
+  const admitted = new Map<string, InFlight & { at: number; key: string }>();
   let queue: Promise<unknown> = Promise.resolve();
   /** The requests waiting for room, in the order they came: only the first asks. */
   const line: Place[] = [];
@@ -123,11 +134,13 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
       const now = Date.now();
       const settling = new Set<string>();
       const inFlight: InFlight[] = [];
-      for (const [id, { at, ...flight }] of admitted) {
+      const under = request.paid?.under;
+      for (const [id, { at, key, ...flight }] of admitted) {
         if (flight.freeRequest && !recorded.has(id)) freeRequestsMade += 1;
         // One that may never settle by itself (a hold-only step, an admission whose record never landed) stays: held, and
-        // never waited on.
-        const stays = flight.stays === true || (!recorded.has(id) && now - at > RECORD_WAIT_MS);
+        // never waited on. So does, for a paid call, a request of the session it runs in: it may be the one that asked
+        // for the call, which settles only once the call is done.
+        const stays = flight.stays === true || (!recorded.has(id) && now - at > RECORD_WAIT_MS) || (under !== undefined && key === under);
         if (!stays) settling.add(id);
         inFlight.push(stays ? { ...flight, stays: true } : flight);
       }
@@ -138,6 +151,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
         const outputTokensMax = verdict && "outputTokensMax" in verdict ? verdict.outputTokensMax : request.outputTokensAsked;
         admitted.set(idOf(request.key, request.turn), {
           at: Date.now(),
+          key: request.key,
           turn: request.turn,
           model: request.model,
           ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }),
@@ -185,6 +199,16 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
     if (halted) throw halted;
     return options.parked?.() ? "parked" : undefined;
   };
+  /** Whether `request` is a paid call whose own session (paid.under) has a request in flight: one admitted here that the
+   *  session's records do not show answered. */
+  const underOpen = async (request: Parameters<BeforeRequest>[0]): Promise<boolean> => {
+    const under = request.paid?.under;
+    if (under === undefined) return false;
+    const turns = [...admitted.values()].filter((flight) => flight.key === under).map((flight) => flight.turn);
+    if (turns.length === 0) return false;
+    const answered = sessionSpendOf(await sessions.read(under)).answered;
+    return turns.some((turn) => !answered.has(turn));
+  };
   /** A refusal as handed on: one that waits is the plain refusal it is to anyone not waiting. */
   const plain = (verdict: Awaited<ReturnType<BeforeRequest>>) => {
     if (!(verdict && "refuse" in verdict && verdict.waits)) return verdict;
@@ -198,9 +222,12 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
     const signal = request.signal && options.stopped ? AbortSignal.any([request.signal, options.stopped]) : (request.signal ?? options.stopped);
     // Every step joins the line as it comes, before its first ask, and asks only once it is first: steps that come together
     // are asked in the order they came, so one behind a step that must wait never goes ahead of it. The first leaving
-    // (admitted, refused or gone) wakes the next at once.
-    const place: Place = {};
-    line.push(place);
+    // (admitted, refused or gone) wakes the next at once. A paid call whose own session has a request in flight goes ahead
+    // of every step that is not one: a step ahead may wait on that request, which settles only once the call is done.
+    const place: Place = request.paid?.under !== undefined && (await underOpen(request)) ? { under: true } : {};
+    const ahead = place.under ? line.findIndex((other) => !other.under) : -1;
+    if (ahead < 0) line.push(place);
+    else line.splice(ahead, 0, place);
     try {
       let pause = WAIT_POLL_FIRST_MS;
       while (line[0] !== place) {

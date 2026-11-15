@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { modelPortFor, RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
+import { fauxAdapter, memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import * as cap from "../dist/kernel/cap/index.js";
 
 /** A decision model whose hold is its input alone: $1 a million input tokens, its output free. */
@@ -221,6 +221,133 @@ test("the free count an observer keeps stays the run's when a step waits: only t
   assert.deepEqual(counts, [1, 1, 1, 2], "the count after each told verdict: the free request, the two paid calls, the free request");
   const made = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.request && r.data.freeRequest === true).length;
   assert.equal(freeMade, made, "the observer's count is the run's records'");
+});
+
+/** A model priced at $1 a million input tokens, its output free: a request is held at its input alone. */
+const FAUX = { id: "faux", api: "openrouter", price: { input: 1, output: 0 }, outputCeiling: null };
+/** The CLI's model session. */
+const CLI = "cli:run-1";
+
+/** A CLI session (the faux harness) on the run's cap of `capUsd`, sending `actions`, with one host tool, `fetch`, whose
+ *  call is `onCall` over the run's paid calls and decisions. `start` runs one turn and gives its end; `results`, each
+ *  call's answer. */
+async function cliOn(capUsd, actions, onCall, extra = {}) {
+  const { store, run, peaks } = runOn(capUsd, { modelOf: (id) => (id === FAUX.id ? FAUX : undefined), ...extra });
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  const decisions = await run.decisions(await store.open(cap.DECISION_SESSION));
+  const results = [];
+  const fetch = { name: "fetch", description: "Fetch a page.", inputSchema: { type: "object" }, replay: "never", call: async () => {
+    const answer = await onCall({ tools, decisions });
+    results.push(answer);
+    return answer;
+  } };
+  const writer = await store.open(CLI);
+  const booking = await modelPortFor(writer, { key: CLI, label: CLI, beforeRequest: run.before });
+  const adapter = fauxAdapter({ script: () => actions });
+  const spec = { key: CLI, label: CLI, system: ["Fetch."], tools: [fetch], context: "fresh" };
+  const start = async () => {
+    const session = await adapter.open(spec, { store, writer, models: booking.models, signal: new AbortController().signal, onEvent: () => {} });
+    await session.send("go");
+    const end = await session.turnEnd();
+    await session.close();
+    return end;
+  };
+  return { store, run, peaks, tools, decisions, results, start };
+}
+
+/** A paid call of the CLI's tool call (`under` its session), held at `holdUsd` and charged `usd`: its answer, and how long
+ *  its admission took. */
+async function paidUnder(tools, id, holdUsd, usd) {
+  const began = Date.now();
+  try {
+    const admitted = await tools.admit({ ...fetchCall(id, holdUsd), under: CLI });
+    const waitedMs = Date.now() - began;
+    await tools.settle(admitted.id, usd);
+    return { text: "fetched", waitedMs };
+  } catch (error) {
+    return { text: String(error?.message ?? error), isError: true, waitedMs: Date.now() - began, error };
+  }
+}
+
+test("a paid call never waits on the request that asked for it: one whose cost is booked after its calls (Claude Code) is judged beside it, refused at once when it does not fit", async () => {
+  // The request asking for the call is held at $0.40 and booked only once the call returns; the call, held at $0.30,
+  // fits the $0.50 cap alone but not beside it. Waiting would wait on itself: the run stalls until the stall bound.
+  const { store, peaks, results, start } = await cliOn(0.5, [
+    { calls: [{ call: "fetch" }], bookAfter: true, usd: 0.01, inputTokensMax: 400_000 },
+    { say: "Done.", usd: 0.001, inputTokensMax: 1_000 },
+  ], ({ tools }) => paidUnder(tools, "under", 0.3, 0.02), { waitStallMs: 1_500 });
+  const end = await start();
+  assert.equal(end.status, "completed", JSON.stringify(end));
+  const [answer] = results;
+  assert.ok(answer.waitedMs < 500, `refused at once, never waiting on its own request: ${answer.waitedMs} ms`);
+  assert.ok(answer.error instanceof cap.CapRefused && !answer.error.forGood, String(answer.error));
+  assert.equal(answer.text, "spend_cap_reached: Not sent: this run has spent $0 and holds $0.40 for steps still running, of its $0.50 cap, and the next step, web_fetch, could cost up to $0.30 (a fetch). Raise the cap to at least $0.70 to continue.");
+  assert.equal((await requestsIn(store, cap.TOOL_SESSION)).length, 0, "the call was not admitted");
+  assert.ok(Math.max(...peaks) <= 0.5 + 1e-9, `never past the cap: ${Math.max(...peaks)}`);
+});
+
+test("a paid call goes ahead of a waiter that waits on the request that asked for it, and that waiter goes once the request is booked", async () => {
+  // A $0.70 decision comes while the CLI's $0.40 request is out: it waits on that request. The request's call, $0.30,
+  // fits beside the request, but the decision came first: behind it, the call would wait on its own request too.
+  let waiting;
+  const order = [];
+  const { peaks, results, start } = await cliOn(1, [
+    { calls: [{ call: "fetch" }], bookAfter: true, usd: 0.01, inputTokensMax: 400_000 },
+    { say: "Done.", usd: 0.001, inputTokensMax: 1_000 },
+  ], async ({ tools, decisions }) => {
+    waiting = decisions.admit(decision("d", 0.7)).then((a) => (order.push("decision"), a), (error) => error);
+    await sleep(150);
+    const answer = await paidUnder(tools, "under", 0.3, 0.02);
+    order.push("call");
+    return answer;
+  }, { waitStallMs: 1_500 });
+  const end = await start();
+  assert.equal(end.status, "completed", JSON.stringify(end));
+  const [answer] = results;
+  assert.ok(!answer.isError, answer.text);
+  assert.ok(answer.waitedMs < 500, `admitted at once: ${answer.waitedMs} ms`);
+  const admitted = await waiting;
+  assert.ok(!(admitted instanceof Error), `the decision went once the request was booked: ${admitted}`);
+  assert.deepEqual(order, ["call", "decision"]);
+  assert.ok(Math.max(...peaks) <= 1 + 1e-9, `never past the cap: ${Math.max(...peaks)}`);
+});
+
+test("a paid call under an open request still waits for other steps' holds, and goes once they settle", async () => {
+  // Another paid call holds $0.40 and settles 300 ms in. The CLI's $0.40 request asks for a $0.30 call: $1.10 together,
+  // past the $1 cap; beside the request alone it fits, so it waits for the other call, not for its own request.
+  const { tools: outer, peaks, results, start } = await cliOn(1, [
+    { calls: [{ call: "fetch" }], bookAfter: true, usd: 0.01, inputTokensMax: 400_000 },
+    { say: "Done.", usd: 0.001, inputTokensMax: 1_000 },
+  ], ({ tools }) => paidUnder(tools, "under", 0.3, 0.02), { waitStallMs: 5_000 });
+  const other = await outer.admit(fetchCall("other", 0.4));
+  const settled = sleep(300).then(() => outer.settle(other.id, 0.02));
+  const end = await start();
+  await settled;
+  assert.equal(end.status, "completed", JSON.stringify(end));
+  const [answer] = results;
+  assert.ok(!answer.isError, answer.text);
+  assert.ok(answer.waitedMs >= 100, `it waited for the other call: ${answer.waitedMs} ms`);
+  assert.ok(Math.max(...peaks) <= 1 + 1e-9, `never past the cap: ${Math.max(...peaks)}`);
+});
+
+test("a paid call whose request was booked before it ran (pi) waits for another session's request in flight, as any step does", async () => {
+  // Another session's request holds $0.40 and answers 300 ms in. The CLI's request is booked before its call runs, so
+  // nothing of its own is out: the $0.30 call does not fit beside the other request under $0.60, and waits for it.
+  const { store, run, peaks, results, start } = await cliOn(0.6, [
+    { calls: [{ call: "fetch" }], usd: 0.01, inputTokensMax: 100_000 },
+    { say: "Done.", usd: 0.001, inputTokensMax: 1_000 },
+  ], ({ tools }) => paidUnder(tools, "under", 0.3, 0.02), { waitStallMs: 5_000 });
+  const key = "child:run-1";
+  const booking = await modelPortFor(await store.open(key), { key, label: key, beforeRequest: run.before });
+  const ticket = await booking.models.beforeRequest({ model: FAUX.id, inputTokensMax: 400_000 });
+  const answered = sleep(300).then(() => booking.models.afterRequest({ input: 10, output: 5, cacheRead: 0, usd: 0.02 }, ticket, { end: "answered", usd: 0.02 }));
+  const end = await start();
+  await answered;
+  assert.equal(end.status, "completed", JSON.stringify(end));
+  const [answer] = results;
+  assert.ok(!answer.isError, answer.text);
+  assert.ok(answer.waitedMs >= 100, `it waited for the other session's request: ${answer.waitedMs} ms`);
+  assert.ok(Math.max(...peaks) <= 0.6 + 1e-9, `never past the cap: ${Math.max(...peaks)}`);
 });
 
 test("the words of a model request that cannot fit alone: spent, held and the least apart", () => {

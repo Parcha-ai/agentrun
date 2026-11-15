@@ -61,8 +61,9 @@ export type BeforeRequest = (request: {
   /** A paid tool call, no model request (ModelRequest.paid): held at its fee alone, named so in a refusal. `call`: the
    *  tool call it was booked under, `charged_by`, who charges for it, and `tool`/`tag`, the tool it is and its session,
    *  all written on its runner.request. `owed`: money already owed at its provider, held and booked, never refused.
-   *  `hold`: a hold-only step, given back on a lost claim; `ref`: the one booking it names (ModelRequest.paid). */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string };
+   *  `hold`: a hold-only step, given back on a lost claim; `ref`: the one booking it names; `under`: the model session
+   *  whose tool call it runs in, whose requests in flight it never waits on (ModelRequest.paid). */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string };
   /** A side call (ModelRequest.side): on another model than the session's (a client's), or the host's own (`host`). */
   side?: true;
   /** A request on the session's model that is no answer of the turn (ModelRequest.unanswered: a title, a summary, a
