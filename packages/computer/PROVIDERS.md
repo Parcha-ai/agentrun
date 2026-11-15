@@ -262,10 +262,14 @@ export const E2B = defineProvider({
 	mounts: ["archil"],
 	network: ["none"],
 	capabilities: [SANDBOX, LINUX_DESKTOP],
-	defaultImage: { sandbox: E2B_BASE_TEMPLATE, desktop: E2B_DESKTOP_TEMPLATE },
+	prepareImage: true,
 	load: () => import("../e2b.js"),
 });
 ```
+
+E2B's names no `defaultImage`: it says `prepareImage`, and the provider's `prepareImage()` answers the box template
+(`boxE2bTemplate()` in `box-image.ts`) with no call, so a sandbox and a desktop that mount an Archil disk start from
+an image that has its client. A vendor whose stock image will do names it in `defaultImage` by setting kind instead.
 
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 

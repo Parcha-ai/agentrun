@@ -357,8 +357,8 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   Archil disk in Settings and the folder lives there instead, and the Docker sandbox is refused. A sandbox that mounts
   the disk needs Archil's image in your own vendor account. Agent37's sandbox and desktop register it there on their
   first run (the run waits once while the image is pulled), so they are ready once the keys work. A Modal sandbox starts
-  from our public box image, which has it, so it is ready once the keys work too. An E2B sandbox and desktop can't get it
-  there yet: Settings shows them not ready. Orgo's desktop, a phone and a browser mount
+  from our public box image, which has it, so it is ready once the keys work too. An E2B sandbox and desktop start from
+  our public box template, so they are ready once the keys work as well. Orgo's desktop, a phone and a browser mount
   nothing and still run.
 - **Watching and taking over.** A browser run streams to the run's **Screen** tab through your own server, never
   through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for

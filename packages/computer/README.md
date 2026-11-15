@@ -431,7 +431,7 @@ in the kernel's tool registry, keyed by these groups.
   | docker | none |
   | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
   | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
-  | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
+  | e2b | none: `prepareImage()` answers the box template (`boxE2bTemplate()`), for a sandbox and a desktop alike |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
   | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
@@ -1706,11 +1706,16 @@ E2B's own. `create` takes the caller's request id (`{ requestId }`, serve's is t
 `computer-` and the first 12 hex digits of its sha256, and a retry of the same request finds the computer the first
 made instead of making a second.
 
-An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2B Desktop's (Ubuntu 22.04 with Xvfb,
-Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
-server itself, as on a Docker desktop, and its X11 shim drives it. With `kind: "linux"` it is kind `linux`
-on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
-offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
+An E2B computer is a sandbox made from an E2B template. The descriptor names no default: it says `prepareImage`, and
+`prepareImage()` answers the box template, `boxE2bTemplate()` (`src/box-image.ts`), with no call and no wait. That is
+`<BOX_E2B_PUBLISHER>/agentrun-archil-<recipe hash>`, the box image (`box/Dockerfile`: the archil client and helper,
+the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box-e2b` job builds as a template in the publishing
+team and makes public, so any E2B account starts it by that name. A sandbox and a desktop both start from it, in either
+mode. It is kind `desktop`: computerd starts the X server and xfwm4 itself (`src/desktop.ts`), as on a Docker desktop,
+and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any template, with no display: the same
+provider, minus the X server, so it costs nothing to offer. A caller that names a template (`create({ image })`) gets
+that one: E2B Desktop's own, `desktop`, still works for kind `desktop`, since computerd needs only Xvfb and xfwm4 from
+it. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
 as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
 Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
@@ -1910,7 +1915,8 @@ The conformance module, `dist/conformance/e2b.js`, checks `AGENTRUN_COMPUTER_LIV
 else, then reads the run's settings (`settingsFromEnv`, below) and builds the provider through `create()` with every
 computer capped at 30 minutes, Hobby's plan for conformance
 (Hobby caps a sandbox at 1 h; a run that needs more moves to Pro). `conformanceImage()` is `COMPUTER_E2B_TEMPLATE`, else
-`desktop` (`base` for kind linux), and `createDriftedProvider()` uploads a daemon built with Go as `<version>-drift`.
+`desktop` (`base` for kind linux), E2B's stock templates, which conformance keeps since it proves the provider rather
+than the box (a run against the box template passes it as `COMPUTER_E2B_TEMPLATE`), and `createDriftedProvider()` uploads a daemon built with Go as `<version>-drift`.
 `test/e2b/conformance.e2b.test.mjs` runs the suite with `computerd-fixture` built for linux/amd64, and skips unless the
 switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 
@@ -2726,7 +2732,7 @@ it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `key
 fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
 `metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
 `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
-`prepareImage` (a provider that builds or pulls its image before a run), `imageEnv` (the server's environment variable
+`prepareImage` (a provider whose `prepareImage()` answers its image before a run: it builds, pulls or names it), `imageEnv` (the server's environment variable
 that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
 (a computer on this host), and
 `ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and

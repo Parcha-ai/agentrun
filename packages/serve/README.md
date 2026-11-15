@@ -751,10 +751,10 @@ passes the binding's conformance cases (below) needs no change here.
   key's workspace (`agentrun-box-<recipe hash>`) and waits once, saying it is pulling. Its sandbox and desktop are
   ready once the keys work. Modal's descriptor says `prepareImage` too, and it answers our public box image by its
   registry tag, which Modal pulls at a computer's first create in a workspace, so a Modal sandbox is ready once the keys
-  work. This server can't put the image in an E2B account yet, so Settings shows E2B not ready, an agent's save warns,
-  and a run's start refuses it (409) before any computer is made. An E2B desktop mounts
-  the folder as well (it has files and exec), so it is refused in the same words. Docker's sandbox is refused, since it
-  cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
+  work. E2B's says `prepareImage` as well, and it answers our public box template by name
+  (`<publisher>/agentrun-archil-<recipe hash>`, which the release builds and makes public), with no call, so an E2B
+  sandbox and desktop are ready once the key works; the desktop mounts the folder too (it has files and exec). Docker's
+  sandbox is refused, since it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -822,10 +822,9 @@ DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints sn
 A Daytona computer takes no Archil mount, so this server never holds a run's folder on one (see Mode 2 above). A
 Daytona [box](#sandbox) never reads it.
 
-A desktop, a phone and a browser run in either mode, except E2B's desktop in Mode 2, which would mount the owner's disk
-and needs Archil's image in your vendor account first (see Mode 2 above). The run's folder is at
+A desktop, a phone and a browser run in either mode. The run's folder is at
 `/workspace` in every computer that mounts it: a sandbox always, and a desktop whose provider mounts the mode's folder
-(Docker's in Mode 1, Agent37's in Mode 2). A phone and a browser never mount it. On a desktop that mounts it, the
+(Docker's in Mode 1, Agent37's and E2B's in Mode 2). A phone and a browser never mount it. On a desktop that mounts it, the
 `shell` group's commands and the programs `processes.start` opens start in `/workspace` too, as `bash` does.
 
 **Where `bash` runs.** It follows the mount:
