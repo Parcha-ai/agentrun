@@ -68,6 +68,9 @@ __all__ = [
     "CommitSha",
     "CompleteRemoteCommandBody",
     "CompleteRemoteCommandResponse",
+    "CompleteSdkRunBody",
+    "CompleteSdkRunBodyUsage",
+    "CompleteSdkRunResponse",
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
     "ConnectNativeBody",
@@ -161,6 +164,7 @@ __all__ = [
     "DefinitionInputNativeSelector",
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
+    "DefinitionInputSdk",
     "DefinitionInputToolSettings",
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
@@ -186,6 +190,7 @@ __all__ = [
     "DefinitionNativeSelector",
     "DefinitionPlace1",
     "DefinitionPlace2",
+    "DefinitionSdk",
     "DefinitionToolSettings",
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
@@ -371,6 +376,7 @@ __all__ = [
     "GetRunLearningResponseObjectVerdictItemsItem",
     "GetRunLearningResponseObjectWorkflowsItem",
     "GetRunResponse",
+    "GetSdkRunResponse",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
     "GetStatsResponseAnalyticsByDayItem",
@@ -431,6 +437,9 @@ __all__ = [
     "HandBackRunComputerResponse",
     "HomeResource",
     "Id",
+    "ImportRemoteHistoryBody",
+    "ImportRemoteHistoryResponse",
+    "ImportRemoteHistoryResponseRunsItem",
     "ImportRemoteTargetBody",
     "ImportRemoteTargetBodyTarget",
     "ImportRemoteTargetBodyTargetCapabilities",
@@ -713,6 +722,8 @@ __all__ = [
     "RunPlace2",
     "RunResult",
     "RunReview",
+    "RunSdk",
+    "RunSdkUsage",
     "RunState",
     "RunStatus",
     "RunSummary",
@@ -735,6 +746,8 @@ __all__ = [
     "RunSummaryPending4",
     "RunSummaryPending5",
     "RunSummaryReview",
+    "RunSummarySdk",
+    "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunTrigger",
     "RunsResource",
@@ -765,6 +778,12 @@ __all__ = [
     "SaveWebhookResponseObject21Disabled",
     "SaveWebhookResponseObject22",
     "SaveWebhookResponseObject22Disabled",
+    "SdkRunEventsBody",
+    "SdkRunEventsBodyEventsItem1",
+    "SdkRunEventsBodyEventsItem2",
+    "SdkRunEventsBodyEventsItem3",
+    "SdkRunEventsResponse",
+    "SdkRunsResource",
     "SecretMeta",
     "SendMessageBody",
     "SendMessageResponse",
@@ -782,6 +801,10 @@ __all__ = [
     "StartRunBody",
     "StartRunResponse",
     "StartRunResponseHeld",
+    "StartSdkRunBody",
+    "StartSdkRunResponse",
+    "StartSdkRunResponseLearning",
+    "StartSdkRunResponseLearningSkillsItem",
     "StopResult",
     "StopRunResponse",
     "TakeOverRunComputerBody",
@@ -956,6 +979,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    sdk: DefinitionSdk
     native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
@@ -970,6 +994,10 @@ class Definition(_DefinitionRequired, total=False):
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
+
+
+class DefinitionSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -1385,6 +1413,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    sdk: DefinitionInputSdk
     native: DefinitionInputNative
     model: str
     model_tiers: DefinitionInputModelTiers
@@ -1396,6 +1425,10 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
+
+
+class DefinitionInputSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -2071,6 +2104,7 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
+    sdk: RunSummarySdk
     native: RunSummaryNative
     console_url: str
     effort: Effort
@@ -2105,6 +2139,22 @@ class Cost(_CostRequired, total=False):
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+
+
+class RunSummarySdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSummarySdkUsage | None
+
+
+class RunSummarySdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 class RunSummaryNative(TypedDict):
@@ -2395,12 +2445,30 @@ class EnrollRemoteConnectorBody(TypedDict, total=False):
 
 class EnrollRemoteConnectorBodyCapabilities(TypedDict, total=False):
     native_execution: bool
+    history_import: bool
 
 
 class EnrollRemoteConnectorResponse(TypedDict):
     enrollment_token: str
     expires_at: str
     workspace_id: Literal["local"]
+
+
+class ImportRemoteHistoryBody(TypedDict):
+    sessions: list[dict[str, Any]]
+
+
+class ImportRemoteHistoryResponse(TypedDict):
+    agent_id: str
+    runs: list[ImportRemoteHistoryResponseRunsItem]
+    imported: int
+    already: int
+
+
+class ImportRemoteHistoryResponseRunsItem(TypedDict):
+    session_id: str
+    run_id: str
+    already: bool
 
 
 class _ImportRemoteTargetBodyRequired(TypedDict):
@@ -2410,6 +2478,7 @@ class _ImportRemoteTargetBodyRequired(TypedDict):
 
 class ImportRemoteTargetBody(_ImportRemoteTargetBodyRequired, total=False):
     name: str
+    history_only: bool
 
 
 class _ImportRemoteTargetBodyTargetRequired(TypedDict):
@@ -2533,6 +2602,7 @@ class ListRemoteConnectorsResponseConnectorsItem(TypedDict):
 class ListRemoteConnectorsResponseConnectorsItemCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 class _PollRemoteConnectorBodyRequired(TypedDict):
@@ -2565,8 +2635,12 @@ class RegisterRemoteConnectorBody(_RegisterRemoteConnectorBodyRequired, total=Fa
     label: str
 
 
-class RegisterRemoteConnectorBodyCapabilities(TypedDict):
+class _RegisterRemoteConnectorBodyCapabilitiesRequired(TypedDict):
     native_execution: bool
+
+
+class RegisterRemoteConnectorBodyCapabilities(_RegisterRemoteConnectorBodyCapabilitiesRequired, total=False):
+    history_import: bool
 
 
 class RegisterRemoteConnectorResponse(TypedDict):
@@ -2589,6 +2663,7 @@ class RegisterRemoteConnectorResponseConnector(TypedDict):
 class RegisterRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 class RemoteCommandEventsBody(TypedDict):
@@ -2619,6 +2694,7 @@ class RevokeRemoteConnectorResponseConnector(TypedDict):
 class RevokeRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 CreateFileBody: TypeAlias = "FileCreate"
@@ -4545,6 +4621,7 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
+    sdk: RunSdk
     native: RunNative
     console_url: str
     approvals: Literal["ask", "never"]
@@ -4567,6 +4644,22 @@ class _RunResultRequired(TypedDict):
 
 class RunResult(_RunResultRequired, total=False):
     output_error: str
+
+
+class RunSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdkUsage | None
+
+
+class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 class RunNative(TypedDict):
@@ -5353,6 +5446,102 @@ class TimelineRowLearning(TypedDict):
 
 
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
+
+
+class _CompleteSdkRunBodyRequired(TypedDict):
+    status: Literal["completed", "failed", "cancelled"]
+    answer: str
+
+
+class CompleteSdkRunBody(_CompleteSdkRunBodyRequired, total=False):
+    error: str
+    model: str
+    session_id: str
+    usage: CompleteSdkRunBodyUsage
+    evidence_complete: bool
+
+
+class CompleteSdkRunBodyUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class CompleteSdkRunResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class SdkRunEventsBody(TypedDict):
+    sequence: int
+    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3]
+
+
+class SdkRunEventsBodyEventsItem1(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class SdkRunEventsBodyEventsItem2(TypedDict):
+    type: Literal["session"]
+    session_id: str
+
+
+class _SdkRunEventsBodyEventsItem3Required(TypedDict):
+    type: Literal["tool"]
+    id: str
+    name: str
+    status: Literal["started", "completed", "failed"]
+
+
+class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+    input: Any
+    output: Any
+
+
+class SdkRunEventsResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class _GetSdkRunResponseRequired(TypedDict):
+    run_id: str
+    state: Literal["running", "processing", "completed", "failed", "cancelled"]
+    learning: Any
+
+
+class GetSdkRunResponse(_GetSdkRunResponseRequired, total=False):
+    learning_run_id: str
+
+
+class _StartSdkRunBodyRequired(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    input: str
+    instructions: str
+
+
+class StartSdkRunBody(_StartSdkRunBodyRequired, total=False):
+    model: str
+
+
+class StartSdkRunResponse(TypedDict):
+    run_id: str
+    agent_id: str
+    console_url: str
+    token: str
+    learning: StartSdkRunResponseLearning
+
+
+class StartSdkRunResponseLearning(TypedDict):
+    enabled: bool
+    revision: str | None
+    context: str
+    skills: list[StartSdkRunResponseLearningSkillsItem]
+
+
+class StartSdkRunResponseLearningSkillsItem(TypedDict):
+    name: str
+    files: dict[str, str]
 
 
 GetCapabilitiesResponse: TypeAlias = "Capabilities"
@@ -7733,6 +7922,7 @@ OPERATIONS: dict[str, Operation] = {
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteTarget": Operation(method="POST", path="/connectors/{connector_id}/import", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "listRemoteConnectors": Operation(method="GET", path="/connectors", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "pollRemoteConnector": Operation(method="POST", path="/connectors/{connector_id}/poll", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -7824,6 +8014,10 @@ OPERATIONS: dict[str, Operation] = {
     "takeOverRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/take-over", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getSdkRun": Operation(method="GET", path="/sdk-runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startSdkRun": Operation(method="POST", path="/agents/{agent_id}/sdk-runs", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getCapabilities": Operation(method="GET", path="/capabilities", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getHealth": Operation(method="GET", path="/health", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callMcp": Operation(method="POST", path="/mcp", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -7939,6 +8133,10 @@ class ConnectorsResource(Group):
     def enroll_remote_connector(self, body: EnrollRemoteConnectorBody, *, timeout: float | None = None) -> EnrollRemoteConnectorResponse:
         """Create a ten-minute one-use connection code (POST /connectors/enrollment)."""
         return self._call("enrollRemoteConnector", (), body, None, timeout=timeout)
+
+    def import_remote_history(self, connector_id: str, target_id: str, body: ImportRemoteHistoryBody, *, timeout: float | None = None) -> ImportRemoteHistoryResponse:
+        """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
+        return self._call("importRemoteHistory", (connector_id, target_id), body, None, timeout=timeout)
 
     def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse:
         """Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import)."""
@@ -8061,7 +8259,7 @@ class LearningResource(Group):
         return self._call("recordLearningEval", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
-        """A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
+        """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
@@ -8325,6 +8523,26 @@ class RunsResource(Group):
         return self._call("unarchiveRun", (run_id,), None, None, timeout=timeout)
 
 
+class SdkRunsResource(Group):
+    """client.sdk_runs: one method per operation."""
+
+    def complete(self, run_id: str, body: CompleteSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CompleteSdkRunResponse:
+        """Complete a backend SDK task (POST /sdk-runs/{run_id}/complete)."""
+        return self._call("completeSdkRun", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def events(self, run_id: str, body: SdkRunEventsBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SdkRunEventsResponse:
+        """Record bounded SDK execution evidence (POST /sdk-runs/{run_id}/events)."""
+        return self._call("sdkRunEvents", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def get(self, run_id: str, *, timeout: float | None = None) -> GetSdkRunResponse:
+        """Read SDK run and learning state (GET /sdk-runs/{run_id})."""
+        return self._call("getSdkRun", (run_id,), None, None, timeout=timeout)
+
+    def start(self, agent_id: str, body: StartSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
+        """Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs)."""
+        return self._call("startSdkRun", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+
 class ServerResource(Group):
     """client.server: one method per operation."""
 
@@ -8476,6 +8694,7 @@ class Resources:
     local: LocalResource
     mcp_servers: McpServersResource
     revisions: RevisionsResource
+    sdk_runs: SdkRunsResource
     server: ServerResource
     template: TemplateResource
     tool_keys: ToolKeysResource
@@ -8494,6 +8713,7 @@ class Resources:
         self.local = LocalResource(call)
         self.mcp_servers = McpServersResource(call)
         self.revisions = RevisionsResource(call)
+        self.sdk_runs = SdkRunsResource(call)
         self.server = ServerResource(call)
         self.template = TemplateResource(call)
         self.tool_keys = ToolKeysResource(call)

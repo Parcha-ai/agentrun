@@ -160,6 +160,15 @@ Route: `POST /connectors/enrollment`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun connectors import-remote-history CONNECTOR_ID TARGET_ID`
+
+Import explicitly selected, redacted past sessions without running or learning from them.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/history`.
+
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun connectors import-remote-target CONNECTOR_ID`
 
 Import an explicitly selected source-native agent reference.
@@ -168,6 +177,7 @@ Route: `POST /connectors/{connector_id}/import`.
 
 - `--target-id STRING` (string, required)
 - `--name STRING` (string)
+- `--history-only` (boolean)
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -394,7 +404,7 @@ Route: `POST /agents/{agent_id}/learning/evals`.
 
 ### `agentrun learning replay AGENT_ID NAME DIGEST REPLAY_ID`
 
-A replay of a learned workflow's revision: running, done or failed, its counts and its score.
+Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab).
 
 Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
 
@@ -829,6 +839,55 @@ Wait until the run ends or waits on a person, and print it.
 Route: `GET /runs/{run_id}/timeline, long-polled, then GET /runs/{run_id}`.
 
 - `--timeout SECONDS` (number, this CLI's own): stop waiting after this long, exit 1 (the run goes on)
+
+## sdk-runs
+
+### `agentrun sdk-runs complete RUN_ID`
+
+Complete a backend SDK task.
+
+Route: `POST /sdk-runs/{run_id}/complete`.
+
+- `--idempotency-key STRING` (string)
+- `--status completed|failed|cancelled` (string, one of these, required)
+- `--answer STRING` (string, required)
+- `--error STRING` (string)
+- `--model STRING` (string)
+- `--session-id STRING` (string)
+- `--evidence-complete` (boolean)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun sdk-runs events RUN_ID`
+
+Record bounded SDK execution evidence.
+
+Route: `POST /sdk-runs/{run_id}/events`.
+
+- `--idempotency-key STRING` (string)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun sdk-runs get RUN_ID`
+
+Read SDK run and learning state.
+
+Route: `GET /sdk-runs/{run_id}`.
+
+### `agentrun sdk-runs start AGENT_ID`
+
+Register a task executed by an existing backend SDK.
+
+Route: `POST /agents/{agent_id}/sdk-runs`.
+
+- `--idempotency-key STRING` (string, required)
+- `--runtime claude-agent-sdk|codex-sdk` (string, one of these, required)
+- `--input STRING` (string, required)
+- `--instructions STRING` (string, required)
+- `--model STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ## server
 

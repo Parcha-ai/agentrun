@@ -119,6 +119,9 @@ export type DefinitionInput = {
   output_schema?: JsonObject;
   workflow?: JsonObject;
   max_cost_usd?: number;
+  sdk?: {
+    runtime: "claude-agent-sdk" | "codex-sdk";
+  };
   native?: {
     runtime: "claude-code" | "codex";
     project: string;
@@ -310,6 +313,19 @@ export type RunSummary = {
   created_at: Timestamp;
   ended_at: Timestamp | null;
   cost: Cost;
+  sdk?: {
+    runtime: "claude-agent-sdk" | "codex-sdk";
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
   native?: {
     runtime: string;
     project: string;
@@ -562,6 +578,19 @@ export type Run = {
   error: RunError | null;
   cost: Cost;
   poll_after_ms: number;
+  sdk?: {
+    runtime: "claude-agent-sdk" | "codex-sdk";
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
   native?: {
     runtime: string;
     project: string;
@@ -1541,12 +1570,28 @@ export type EnrollRemoteConnectorBody = {
   label?: string;
   capabilities?: {
     native_execution?: boolean;
+    history_import?: boolean;
   };
 };
 export type EnrollRemoteConnectorResponse = {
   enrollment_token: string;
   expires_at: string;
   workspace_id: "local";
+};
+
+/** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+export type ImportRemoteHistoryBody = {
+  sessions: Array<Record<string, unknown>>;
+};
+export type ImportRemoteHistoryResponse = {
+  agent_id: string;
+  runs: Array<{
+    session_id: string;
+    run_id: string;
+    already: boolean;
+  }>;
+  imported: number;
+  already: number;
 };
 
 /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
@@ -1587,6 +1632,7 @@ export type ImportRemoteTargetBody = {
       target_id: string;
     };
   };
+  history_only?: boolean;
 };
 export type ImportRemoteTargetResponse = {
   agent_id: string;
@@ -1638,6 +1684,7 @@ export type ListRemoteConnectorsResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   }>;
@@ -1665,6 +1712,7 @@ export type RegisterRemoteConnectorBody = {
   label?: string;
   capabilities: {
     native_execution: boolean;
+    history_import?: boolean;
   };
 };
 export type RegisterRemoteConnectorResponse = {
@@ -1678,6 +1726,7 @@ export type RegisterRemoteConnectorResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
@@ -1707,6 +1756,7 @@ export type RevokeRemoteConnectorResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
@@ -2297,7 +2347,7 @@ export type RecordLearningEvalResponse = {
   recorded_at: string;
 };
 
-/** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+/** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
 export type GetLearnedWorkflowReplayResponse = {
   replay: string;
   workflow: string;
@@ -3452,6 +3502,88 @@ export type GetTimelineResponse = TimelinePage;
 
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
+
+/** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
+export type CompleteSdkRunBody = {
+  status: "completed" | "failed" | "cancelled";
+  answer: string;
+  error?: string;
+  model?: string;
+  session_id?: string;
+  usage?: {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_tokens?: number | null;
+    cache_write_tokens?: number | null;
+    cost_usd?: number | null;
+  };
+  evidence_complete?: boolean;
+};
+export interface CompleteSdkRunParams {
+  "Idempotency-Key"?: string;
+}
+export type CompleteSdkRunResponse = {
+  accepted: true;
+};
+
+/** Record bounded SDK execution evidence (POST /sdk-runs/{run_id}/events). */
+export type SdkRunEventsBody = {
+  sequence: number;
+  events: Array<{
+    type: "text";
+    text: string;
+  } | {
+    type: "session";
+    session_id: string;
+  } | {
+    type: "tool";
+    id: string;
+    name: string;
+    status: "started" | "completed" | "failed";
+    input?: unknown;
+    output?: unknown;
+  }>;
+};
+export interface SdkRunEventsParams {
+  "Idempotency-Key"?: string;
+}
+export type SdkRunEventsResponse = {
+  accepted: true;
+};
+
+/** Read SDK run and learning state (GET /sdk-runs/{run_id}). */
+export type GetSdkRunResponse = {
+  run_id: string;
+  state: "running" | "processing" | "completed" | "failed" | "cancelled";
+  learning_run_id?: string;
+  learning: unknown;
+};
+
+/** Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs). */
+export type StartSdkRunBody = {
+  runtime: "claude-agent-sdk" | "codex-sdk";
+  input: string;
+  instructions: string;
+  model?: string;
+};
+export interface StartSdkRunParams {
+  "Idempotency-Key": string;
+}
+export type StartSdkRunResponse = {
+  run_id: string;
+  agent_id: string;
+  console_url: string;
+  token: string;
+  learning: {
+    enabled: boolean;
+    revision: string | null;
+    context: string;
+    skills: Array<{
+      name: string;
+      files: Record<string, string>;
+    }>;
+  };
+};
 
 /** What this backend offers (GET /capabilities). */
 export type GetCapabilitiesResponse = Capabilities;
@@ -4838,6 +4970,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteTarget: {"method":"POST","path":"/connectors/{connector_id}/import","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRemoteConnectors: {"method":"GET","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pollRemoteConnector: {"method":"POST","path":"/connectors/{connector_id}/poll","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4929,6 +5062,10 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   takeOverRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/take-over","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  completeSdkRun: {"method":"POST","path":"/sdk-runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  sdkRunEvents: {"method":"POST","path":"/sdk-runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getSdkRun: {"method":"GET","path":"/sdk-runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  startSdkRun: {"method":"POST","path":"/agents/{agent_id}/sdk-runs","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapabilities: {"method":"GET","path":"/capabilities","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getHealth: {"method":"GET","path":"/health","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   callMcp: {"method":"POST","path":"/mcp","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5005,6 +5142,8 @@ export function resources(call: Call) {
       completeRemoteCommand: (connectorId: string, commandId: string, body: CompleteRemoteCommandBody, options?: RequestOptions): Promise<CompleteRemoteCommandResponse> => call("completeRemoteCommand", [connectorId, commandId], body, undefined, options),
       /** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
       enrollRemoteConnector: (body: EnrollRemoteConnectorBody, options?: RequestOptions): Promise<EnrollRemoteConnectorResponse> => call("enrollRemoteConnector", [], body, undefined, options),
+      /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+      importRemoteHistory: (connectorId: string, targetId: string, body: ImportRemoteHistoryBody, options?: RequestOptions): Promise<ImportRemoteHistoryResponse> => call("importRemoteHistory", [connectorId, targetId], body, undefined, options),
       /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
       importRemoteTarget: (connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options),
       /** List remote source machines and imported agent targets (GET /connectors). */
@@ -5063,7 +5202,7 @@ export function resources(call: Call) {
       read: (agentId: string, file: string, options?: RequestOptions): Promise<Tagged<ReadLearningFileResponse | string>> => call("readLearningFile", [agentId, file], undefined, undefined, options),
       /** Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals). */
       recordEval: (agentId: string, body: RecordLearningEvalBody, params?: RecordLearningEvalParams, options?: RequestOptions): Promise<RecordLearningEvalResponse> => call("recordLearningEval", [agentId], body, params, options),
-      /** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+      /** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
       replay: (agentId: string, name: string, digest: string, replayId: string, options?: RequestOptions): Promise<GetLearnedWorkflowReplayResponse> => call("getLearnedWorkflowReplay", [agentId, name, digest, replayId], undefined, undefined, options),
       /** Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
       retire: (agentId: string, file: string, params?: RetireLearningFileParams, options?: RequestOptions): Promise<Tagged<string>> => call("retireLearningFile", [agentId, file], undefined, params, options),
@@ -5193,6 +5332,16 @@ export function resources(call: Call) {
       timeline: (runId: string, params?: GetTimelineParams, options?: RequestOptions): Promise<GetTimelineResponse> => call("getTimeline", [runId], undefined, params, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
+    },
+    sdkRuns: {
+      /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
+      complete: (runId: string, body: CompleteSdkRunBody, params?: CompleteSdkRunParams, options?: RequestOptions): Promise<CompleteSdkRunResponse> => call("completeSdkRun", [runId], body, params, options),
+      /** Record bounded SDK execution evidence (POST /sdk-runs/{run_id}/events). */
+      events: (runId: string, body: SdkRunEventsBody, params?: SdkRunEventsParams, options?: RequestOptions): Promise<SdkRunEventsResponse> => call("sdkRunEvents", [runId], body, params, options),
+      /** Read SDK run and learning state (GET /sdk-runs/{run_id}). */
+      get: (runId: string, options?: RequestOptions): Promise<GetSdkRunResponse> => call("getSdkRun", [runId], undefined, undefined, options),
+      /** Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs). */
+      start: (agentId: string, body: StartSdkRunBody, params: StartSdkRunParams, options?: RequestOptions): Promise<StartSdkRunResponse> => call("startSdkRun", [agentId], body, params, options),
     },
     server: {
       /** What this backend offers (GET /capabilities). */

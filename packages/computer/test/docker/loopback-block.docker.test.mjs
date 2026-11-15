@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DaemonClient } from "../../dist/index.js";
 import { childCommands, hostedCommands } from "../../dist/hosted/scripts.js";
 
