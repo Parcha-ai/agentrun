@@ -177,6 +177,15 @@ export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number]
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
 
+/** The server's email account (GET /v2/settings/email): its address, servers and who signs in, never its password. */
+export type EmailAccount = Answer<"getEmailAccount">;
+/** A PUT's body: a preset (gmail, fastmail, icloud) or other with its own servers, the address and the password. */
+export type EmailAccountBody = Body<"saveEmailAccount">;
+/** A test's body: an account as typed, or none for the saved one; a password left out is the saved one. */
+export type EmailTestBody = Body<"testEmailAccount">;
+/** A test's answer: what IMAP and SMTP each said. Nothing is sent or saved. */
+export type EmailTest = Answer<"testEmailAccount">;
+
 /** GET /v2/integrations/github's answer, always a 200: `{connected: false}` with no App, else the App. */
 export type GitHubStatus = Answer<"getGitHubConnection">;
 /** This server's GitHub App, connected (`connected: true`): never a secret. */
