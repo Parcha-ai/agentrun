@@ -82,6 +82,22 @@ test("a codemode script sees the run's tools and nothing else of the run: no pro
   assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "undefined", "undefined", "function", false], answer.text);
 });
 
+test("a script tests for a tool with typeof: a name the run has no tool by reads \"undefined\", and calling it still throws the words that name the run's tools", async () => {
+  const calls = [];
+  const nested = { call: async (name) => (calls.push(name), { text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "return [typeof tools.missing, typeof tools['no-such-tool'], typeof tools?.missing, typeof tools.write_file, `${typeof tools.missing}`, 'typeof tools.missing', typeof tools.missing === 'undefined' ? 'absent' : 'there'];";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "function", "undefined", "typeof tools.missing", "absent"], answer.text);
+  for (const called of ["return await tools.missing({});", "const one = tools.missing;\nreturn await one({});"]) {
+    const refused = await codemode.call({ script: called }, { signal: new AbortController().signal, nested });
+    assert.equal(refused.isError, true, refused.text);
+    assert.match(refused.text, /tools\.missing does not exist\. Available: write_file, web_search, send_email, read_file\./, `${called}: today's words, naming the run's tools`);
+  }
+  assert.deepEqual(calls, [], "nothing was called");
+});
+
 test("a script reads a nested call's value: its structured value, else its one text part parsed when that is a JSON object or array, else its text", async () => {
   // As Composio answers through MCP: one text part holding a JSON object.
   const answers = {
