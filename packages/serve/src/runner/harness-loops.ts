@@ -1,3 +1,5 @@
+import { createSdkLoop, sdkSourceInstructions } from "./sdk-loop.js";
+import { sdkOf } from "../sdk/runs.js";
 import { createNativeLoop, nativeLearningLoop, nativeSourceInstructions } from "./native-loop.js";
 import { nativeOf } from "../native/binding.js";
 // The runner's dispatch switch (design 2.1: "the runner takes every run"): which loop a claimed run runs, by its revision
@@ -47,6 +49,11 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
       return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
     }
+    if (harness !== "learning" && launch.sdk) return createSdkLoop(launch, deps, async () => {
+      const base = deps.env ?? process.env;
+      const env = withModelKeys(base, await savedModelKeys({store:deps.store,sealKey:deps.sealKey,env:base}));
+      return gradeRouteFor({model:launch.learning!.gradeModel,agentId:run!.agentId},env,deps.routeOf);
+    });
     if (harness !== "learning" && launch.native) return createNativeLoop(launch, deps);
     if (harness === "learning") {
       const native = nativeOf(revision?.body);
@@ -56,6 +63,7 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
+        ...(sdkOf(revision?.body) ? {sourceInstructions:(runId:string)=>sdkSourceInstructions(deps.store,runId)} : {}),
         ...(native ? {sourceInstructions:(runId:string)=>nativeSourceInstructions(deps.store,runId)} : {}),
         // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
         // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.

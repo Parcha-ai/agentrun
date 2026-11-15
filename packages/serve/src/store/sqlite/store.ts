@@ -1291,8 +1291,12 @@ class SqliteStore implements Store {
         return row === undefined ? undefined : JSON.parse(row.value);
       },
       // `was` is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
-      replaceIf: async (key, was, value) => {
+      replaceIf: async (key, was, value, claim) => {
         const encoded=json(value);
+        if (claim) return db.transaction(async tx => {
+          const at = await underClaim(tx, claim, now);
+          return await tx.runCounted("UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", encoded, nativeCommandOwner(key,encoded), at, key, json(was)) === 1;
+        });
         const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", params: [encoded, nativeCommandOwner(key,encoded), now(), key, json(was)] }]);
         return result!.changes === 1;
       },
