@@ -66,7 +66,8 @@ focus: <the owner's focus, or none>
 For a diff pasted in the run's first message, the prompt is the first line, then `diff: inputs/message.md`: AgentRun
 saved that message there, diff and all, and each reviewer reads the change there. Never copy it into a call or a file.
 That file holds the first message only: for a diff pasted in a later message, the prompt is the first line, then
-`diff:` and that diff whole.
+all that message says of the change (`last_reviewed_sha`, `previous_findings`, any rules file), then `diff:` and
+that diff whole.
 
 Each reviewer answers with one `json` block in `findings.schema.json`'s shape. One that fails or gives no JSON counts as
 no answer. With no answer at all, say so in `summary` and post no finding.
