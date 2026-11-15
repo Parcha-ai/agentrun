@@ -430,6 +430,16 @@ test("a reopened run that ends before it takes the round's words reads not_run, 
   assert.deepEqual([read?.feedback, read?.feedback_status], ["look_back", "not_run"], `the round settled, not run: ${JSON.stringify(read)}`);
 });
 
+// Review on #2858 (round 4): a store that fails while the read looks up the round's steer row is a failed read, never a
+// 200 saying "running" (which the console would never retry); the console's failed-read retry covers it.
+test("a store failure while the read looks up the round's steer fails the read, it does not read running", { timeout: 120_000 }, async (t) => {
+  const { server, start, grade } = await world(t);
+  const first = await start("run-store-down", 1, { byHand: true });
+  await grade(first, false, LABEL(1));
+  const failing = new Proxy(server, { get: (target, key) => key === "commands" ? async () => { throw new Error("the store went away") } : Reflect.get(target, key) });
+  await assert.rejects(runLearningOverStore(failing, first.id, secretsShown([]), []), /the store went away/);
+});
+
 // Two grades of one run can share their `at` (a millisecond): the second replaces the first, then the first's round
 // opens. The round marks the grade it was opened for (its run, `at` and `seq`), never its replacement.
 test("a round marks only the grade it was opened for: a replacement given in the same millisecond stays naming none", async () => {
