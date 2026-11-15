@@ -36,18 +36,17 @@ test("after a crash, a request that never left counts nothing: the cap's refusal
   assert.equal(spendOf(marks).spentUsd, 0);
 });
 
-test("a restart mid-request reads the request at its start mark's held figure with its bound, never its worst case", async () => {
+test("a restart mid-request reads the request at its start mark's held figure: its worst case, its whole input uncached", async () => {
   const marks = memoryMarks();
-  const previous = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
   const cap = createCap({ capUsd: () => 10, now: () => T0, marks });
-  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [previous] }));
+  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000));
   const reopened = await openCap({ capUsd: () => 10, now: () => T0, marks });
-  near(reopened.spentUsd(), admitted.heldUsd, "the expected figure it was held at");
-  assert.ok(admitted.heldUsd < admitted.worstUsd);
-  near(spendOf(marks.all()).boundUsd, admitted.boundUsd, "its bound beside it");
+  near(admitted.heldUsd, (100_000 * 3.75 + 1_000 * 15) / 1e6, "held at its input at the cache-write rate and its output");
+  near(reopened.spentUsd(), admitted.heldUsd, "the figure it was held at");
+  assert.equal("boundUsd" in spendOf(marks.all()), false, "no bound beside it");
 });
 
-test("a CLI run reopened mid-request reads it at its held expected figure, and its spend after is the same", async () => {
+test("a CLI run reopened mid-request reads it at its held figure, and its spend after is the same", async () => {
   const marks = memoryMarks();
   const cap = createCap({ capUsd: () => 10, marks });
   const answered = modelRequest(SONNET, 1_000, 500);
@@ -103,9 +102,9 @@ test("a refusal for room with its own start mark is no request on the meter", ()
 });
 
 test("after a crash the cut request's held worst case is spent: the next goes while that leaves room, and is refused once it does not", async () => {
-  const roomy = await openCap({ capUsd: () => 1, marks: memoryMarks([start("cut", 0.5)]), mode: "strict" });
+  const roomy = await openCap({ capUsd: () => 1, marks: memoryMarks([start("cut", 0.5)]) });
   await roomy.admit(modelRequest(SONNET, 10_000, 2_000));
-  const tight = await openCap({ capUsd: () => 0.52, marks: memoryMarks([start("cut", 0.5)]), mode: "strict" });
+  const tight = await openCap({ capUsd: () => 0.52, marks: memoryMarks([start("cut", 0.5)]) });
   await assert.rejects(tight.admit(modelRequest(SONNET, 10_000, 2_000)), CapRefused);
 });
 
@@ -120,18 +119,18 @@ test("a parked run's figures are its marks' spend: a hold no request booked is n
 
 test("a run killed mid-request reopens and goes on with the cut request at its held worst case", async () => {
   const marks = memoryMarks();
-  const cap = createCap({ capUsd: () => 1, mode: "strict", marks });
+  const cap = createCap({ capUsd: () => 1, marks });
   const cut = await cap.admit(modelRequest(SONNET, 10_000, 2_000));
-  const reopened = await openCap({ capUsd: () => 1, mode: "strict", marks });
+  const reopened = await openCap({ capUsd: () => 1, marks });
   near(reopened.spentUsd(), cut.heldUsd);
   await reopened.admit(modelRequest(SONNET, 10_000, 2_000));
 });
 
 test("killed mid-request with no room left: the reopened run refuses the next request for room (it parks)", async () => {
   const marks = memoryMarks();
-  const cap = createCap({ capUsd: () => 0.1, mode: "strict", marks });
+  const cap = createCap({ capUsd: () => 0.1, marks });
   await cap.admit(modelRequest(SONNET, 10_000, 64_000));
-  const reopened = await openCap({ capUsd: () => 0.1, mode: "strict", marks });
+  const reopened = await openCap({ capUsd: () => 0.1, marks });
   await assert.rejects(reopened.admit(modelRequest(SONNET, 10_000, 2_000)), (error) => error instanceof CapRefused && !error.forGood);
 });
 

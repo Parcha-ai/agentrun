@@ -47,7 +47,7 @@ async function proxyOn(t, origin, { count = async () => Response.json({ input_to
   const marked = [];
   const p = await startModelProxy({
     policy, model: 'claude-main', origin, credential: () => 'provider-secret', price: () => 0.001, log: () => {},
-    hooks: { beforeRequest: async (r) => { asked.push(r.inputTokensMax); marked.push(r.inputTokensCounted === true); await admit(r); }, afterRequest: async () => {} },
+    hooks: { beforeRequest: async (r) => { asked.push(r.inputTokensMax); marked.push('inputTokensCounted' in r); await admit(r); }, afterRequest: async () => {} },
     fetch: async (url, init) => {
       if (String(url).endsWith('/count_tokens')) {
         counts.push({ url: String(url), headers: init.headers, body: JSON.parse(String(init.body)) });
@@ -68,7 +68,7 @@ test("straight to Anthropic, a request's input bound is Anthropic's count of it 
   assert.equal((await send(p.url, firstTurn)).status, 200);
   assert.equal((await send(p.url, firstTurn)).status, 200);
   assert.deepEqual(asked, [6_000 + PROMPT, 6_000 + PROMPT], `counted, against ${bytesOf(firstTurn) + PROMPT} by its bytes`);
-  assert.deepEqual(marked, [true, true], 'each counted bound is marked so (inputTokensCounted), so a host pairs it only with another counted one');
+  assert.deepEqual(marked, [false, false], 'a counted bound is not marked: the cap prices every input uncached, however it was bounded');
   assert.equal(sent.length, 2, 'each request went on');
   assert.equal(counts.length, 2);
   // Only Anthropic's own endpoint, with the credential and the version, and only the fields it counts.
@@ -113,7 +113,7 @@ test("an unmeasured bound stays unmeasured: a request with the web search tool (
   t.after(() => p.close());
   const reply = await send(p.url, { ...firstTurn, tools: [tool, { type: 'web_search_20250305', name: 'web_search', max_uses: 1 }] });
   assert.equal(asked.length, 1, reply.text);
-  assert.deepEqual([asked[0].inputTokensMax, asked[0].inputTokensCounted, counts.length], [undefined, undefined, 0], JSON.stringify(asked[0]));
+  assert.deepEqual([asked[0].inputTokensMax, counts.length], [undefined, 0], JSON.stringify(asked[0]));
 });
 
 test("a count above the request's bytes is not taken: the bound is the lower of the two", async (t) => {

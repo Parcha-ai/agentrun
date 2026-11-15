@@ -2253,7 +2253,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -3027,7 +3027,7 @@ with the token, an archived agent's too:
   `learned_not_active`. Its files are checked again as a restore checks them, and its workflow as the learning checker
   checks a run's draft against the agent's tools and gate (400 with `problems`), then as any workflow revision's save
   (422, or 409 `agent_not_runnable`). The new agent's `tools` are the ones its call nodes call, and it keeps the source
-  agent's policy as it is now (its `tool_settings`, `approvals`, `max_cost_usd` and `cap_mode`), never more. Its id is the
+  agent's policy as it is now (its `tool_settings`, `approvals` and `max_cost_usd`), never more. Its id is the
   workflow's name, with `-2`, `-3` and on past an agent's id or name already here, and its name `name` or the same. It
   answers 201 with the agent; the learned workflow stays in the folder, unchanged. It takes the owner's password session
   alone, as an approval does.
@@ -3070,30 +3070,17 @@ definition's `max_cost_usd` above 0 sets that default, and 0 clears it (no defau
 leaves the field out keeps the agent's default, as it keeps its harness and place: leaving a field out never removes a
 spend limit. A workflow definition keeps one the same way. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
-what each request still in flight is held at, plus what this request is expected to cost must stay within it, or the
+what each request still in flight is held at, plus the most this request can cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
 the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
 once ([monid](#monid)). A request costs its input, plus the output it
-is sent with at the output price, plus any fee its tokens do not show (below). How its input is priced is the run's
-`cap_mode`: the run's own (`POST /agents/{id}/runs` with `cap_mode`), else its agent's (a definition's `cap_mode`, kept by
-an edit that leaves it out), else `expected`; only a run with a cap takes one (`422 not_allowed` otherwise).
-
-- `expected`: priced from the previous request of its conversation, as that request's usage reported it. The input it
-  read from the cache or wrote to it (`cache_read_input_tokens` and `cache_creation_input_tokens` on Anthropic's API,
-  `input_tokens_details.cached_tokens` on the Responses API) at the cache-read price, if that request ended less than 4
-  minutes before (Anthropic keeps a cache 5); the rest (its input after the cache, plus what the conversation grew by
-  since, one token per byte) at the higher of the input and cache-write prices. With no previous request in hand, or one
-  older than 4 minutes, all of the input at that price. On claude-agent, codex and opencode the previous request is the
-  session's last on the same model in the run's current process, so a run's first request after a restart is priced
-  with nothing cached; on pi it is the conversation's last answer. Output never passes the cap (below); a request that
-  misses the cache can, by at most its bound: its input at full price less its input expected. The run's
-  `cost.overshoot_bound_usd` serves the bound of the requests in flight. A request's real cost is always booked, never
-  clipped: a run that passed its cap so is not failed for it, its timeline says `Went $X over its cap on a cache miss (at
-  most $Y).`, and its next request is refused, so it pauses at its cap as usual. A request whose cost never comes in (cut,
-  stopped, lost) counts at what it was held at, its expected cost, in this process and after a restart alike.
-- `strict`: every input token at the higher of the input and cache-write prices (the provider may bill any of the input as
-  a cache write), the worst case: no request passes the cap, and a run whose requests read the cache pauses well before
-  it has spent its cap.
+is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:
+every input token at the higher of the input and cache-write prices, since the provider may bill any of it as a cache
+write and a cache can miss at any request. So no request passes the cap, a cache miss included: a request costs at most
+what it was held at. A request whose cost never comes in (cut, stopped, lost) counts at that hold, in this process and
+after a restart alike. A run whose requests read the cache spends less than its holds, so it pauses before it has
+spent its whole cap; output is clamped to what is left after the input (below), so a run is parked only when what is
+left cannot pay its next request's whole input and a least answer.
 
 Near its cap, a run's model is told once to finish: when what is left (the cap less what was spent and what requests
 in flight are held at) is under three times the run's typical request, the next request of the run's own model carries
@@ -3151,20 +3138,19 @@ gateway or any other base), and its bound is that count plus the tool-use prompt
 that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it.
 
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
-step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
-answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
-cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
-screenshots, then the answer), spending about $0.04 in all:
+step is sent only when the run's spend plus that step's least (its whole input bound at the cache-write price, and a
+1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
+($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five
+requests (four screenshots, then the answer), spending about $0.04 in all:
 
-| Cap mode | Route | First request needs | Five-step run needs | Each further step |
-| --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
-| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
-| `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
+| Route | First request needs | Five-step run needs | Each further step |
+| --- | --- | --- | --- |
+| Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
+| Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 
-In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
+A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (Through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself
@@ -3328,12 +3314,12 @@ A workflow run is capped by the same checks, on the run's one ledger (the kernel
 
 | Step | Held at | Where |
 |---|---|---|
-| A model node's request | its expected cost, as an agentic run's request | the run's ledger |
+| A model node's request | its worst case, as an agentic run's request | the run's ledger |
 | A call node's `llm` call | the same | the same, as a side request |
 | A call node's paid tool call (Parallel's search or extract) | its fee | the run's ledger, as an agentic run's |
 | A decision on Parallel | its list price for one request, $0.001 | before the driver admits it (`decision-cap.ts`) |
 | A decision on Jev | TypeSafe's published price, $0.042 a million input tokens, one token a byte of its state and questions | the same |
-| A decision on an OpenRouter Decisions model | its catalog price: per request, per image, per input token, and per output token for 256 a question (`expected`) or the catalog's most (`strict`) | the same |
+| A decision on an OpenRouter Decisions model | its catalog price: per request, per image, per input token, and per output token for the catalog's most | the same |
 
 What a decision charged is booked in the run's store as the cap counted it, so a run opened again counts it once. A step
 the cap has no room for is not sent and waits where it stands: the run is `input_required`, state `waiting`, with

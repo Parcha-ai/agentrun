@@ -1,8 +1,7 @@
-// A run's first request after a new claim (an approval, a deny, a raise: each ends the claim that parked) is priced from
-// the session's recent requests as the claim before it left them, by when they ended on the cap's clock: warm
-// under CACHE_WARM_MS (4 minutes), its cache read at the cache-read price and only what the body grew by at full price;
-// cold after it, its whole bound uncached. Never cold only because the claim is new. Through the adapter loop on a real
-// store, pi on a scripted origin, the cap's clock a test's: one call the gate asks about, answered after 1 or 5 minutes.
+// A run's first request after a new claim (an approval, a deny, a raise: each ends the claim that parked) is held as
+// every request is, at its worst case: its whole bound uncached, however soon or late the answer came (a cache the claim
+// before it left may or may not still be there), and it is sent, not parked. Through the adapter loop on a real store,
+// pi on a scripted origin, the clock a test's: one call the gate asks about, answered after 1 or 5 minutes.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +9,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { cap, quiet, sleep, STEADY } from "./adapter-pi-cap-support.mjs";
+import { quiet, sleep, STEADY } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
@@ -22,8 +21,6 @@ const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 /** Sonnet 5.5's prices: input $2, output $10, a cache read $0.10 and a cache write $2.50 a million tokens. */
 const PRICED = Object.freeze({ id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 8_192 });
-/** What the scripted origin reports for each request: 100 input tokens, none read from or written to the cache. */
-const REPORTED_INPUT = 100;
 const T0 = Date.parse("2026-11-14T06:00:00Z");
 
 /** One pi run whose first request calls `noop`, which the gate asks about: parked, answered `decision` once the cap's
@@ -72,35 +69,15 @@ async function answeredAfter(t, decision, waitMs) {
   return own;
 }
 
-/** Every token of `request` uncached, and its output limit: its hold with no previous request. */
+/** Every token of `request` uncached, and its output limit: its worst case, every request's hold. */
 const whole = (request) => (request.inputTokensMax * 2.5 + Math.min(request.outputTokensAsked ?? Infinity, 8_192) * 10) / 1e6;
 
 for (const decision of ["allow", "deny"]) {
-  test(`${decision}, answered a minute after the request before it ended: the new claim's first request is priced warm from it`, async (t) => {
-    const [first, second] = await answeredAfter(t, decision, 60_000);
-    // The previous request reported 100 tokens of input and read nothing from the cache: the second's input is those 100
-    // and what the body grew by since, so the first's bound less 100, at $2.50 a million, comes off its whole bound's hold.
-    const less = ((first.request.inputTokensMax - REPORTED_INPUT) * 2.5) / 1e6;
-    assert.ok(less > 0, `${first.request.inputTokensMax}`);
-    assert.ok(Math.abs(whole(second.request) - second.answer.holdUsd - less) < 1e-9, `warm: held $${second.answer.holdUsd}, cold $${whole(second.request)}, $${less} less expected`);
-  });
-
-  test(`${decision}, answered five minutes after the request before it ended: the cache is gone, the new claim's first request is priced cold`, async (t) => {
-    const [, second] = await answeredAfter(t, decision, 5 * 60_000);
-    assert.ok(Math.abs(second.answer.holdUsd - whole(second.request)) < 1e-9, `cold: held $${second.answer.holdUsd}, its whole bound $${whole(second.request)}`);
-  });
+  for (const [when, waitMs] of [["a minute", 60_000], ["five minutes", 5 * 60_000]]) {
+    test(`${decision}, answered ${when} after the request before it ended: the new claim's first request is held at its worst case, as the first was, and sent`, async (t) => {
+      const [first, second] = await answeredAfter(t, decision, waitMs);
+      assert.ok(Math.abs(first.answer.holdUsd - whole(first.request)) < 1e-9, `the first: held $${first.answer.holdUsd}, its whole bound $${whole(first.request)}`);
+      assert.ok(Math.abs(second.answer.holdUsd - whole(second.request)) < 1e-9, `the resumed one: held $${second.answer.holdUsd}, its whole bound $${whole(second.request)}`);
+    });
+  }
 }
-
-test("the recent requests are kept on the session as the cap's figures, and one that does not read as one is left out", async () => {
-  const { recentIn } = await import("../dist/runner/adapter-loop.js");
-  const kept = { model: PRICED.id, cachedTokens: 0, inputTokens: 100, boundTokens: 4_000, endedAt: T0 };
-  const smaller = { ...kept, boundTokens: 1_000, counted: true };
-  const record = (data) => ({ kind: "agentrun.cap.recent", data });
-  assert.deepEqual(recentIn([record([kept, smaller])]), [kept, smaller]);
-  assert.deepEqual(recentIn([record([smaller]), record([kept])]), [kept], "the newest record");
-  assert.deepEqual(recentIn([record([kept]), record([])]), [], "none kept");
-  for (const bad of [{ ...kept, cachedTokens: -1 }, { ...kept, endedAt: Number.NaN }, { ...kept, model: 7 }, "x", null]) assert.deepEqual(recentIn([record([bad, kept])]), [kept], JSON.stringify(bad));
-  assert.deepEqual(recentIn([record(null)]), []);
-  assert.deepEqual(recentIn([]), []);
-  assert.equal(cap.CACHE_WARM_MS, 4 * 60_000, "the window these cases straddle");
-});

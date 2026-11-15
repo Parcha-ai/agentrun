@@ -2,9 +2,8 @@
 // workflow host and pi's decisions price them) hold what main holds for them (serve decision-cap.ts holdOf, OpenRouter's
 // catalog price): each case asserts main's own figure, read from main's code on the same price and request.
 // - A run with no cap prices nothing: a decision is never refused for a price its catalog could not give.
-// - Expected mode: its output is DECISION_OUTPUT_TOKENS (256) a question, whatever its model's most output, and a model
-//   with no most output is admitted so.
-// - Strict mode: its output is the model's most completion tokens.
+// - Its output is the model's most completion tokens (the worst case: no answer can take more), and a model with no most
+//   output whose output is priced has no bound, so neither holds it.
 // - Its fees (the catalog's per request and per image) are held beside its tokens, and each image reads as
 //   DECISION_IMAGE_TOKENS of input.
 import assert from "node:assert/strict";
@@ -21,10 +20,13 @@ const IMAGES = { passport: "data:image/png;base64,AAAA", selfie: "data:image/png
 /** The catalog's price of MODEL, as OpenRouter gives it (per token, per request, per image). */
 const priceOf = (overrides = {}) => ({ promptUsd: 1.25e-6, completionUsd: 10e-6, requestUsd: 0, imageUsd: 0, maxCompletionTokens: 4_096, ...overrides });
 
-/** main's hold for the request on `price`, under `mode`: serve decision-cap.ts holdOf on OpenRouter's catalog. */
-async function mainHold(price, mode, { images = {} } = {}) {
+/** main's hold for the request on `price`: serve decision-cap.ts holdOf on OpenRouter's catalog. */
+async function mainHoldOf(price, { images = {} } = {}) {
   const provider = { id: "openrouter", priceOf: async () => price };
-  const hold = await holdOf(provider, { label: "verify", model: MODEL, state: STATE, questions: QUESTIONS, images }, mode);
+  return holdOf(provider, { label: "verify", model: MODEL, state: STATE, questions: QUESTIONS, images });
+}
+async function mainHold(price, options) {
+  const hold = await mainHoldOf(price, options);
   assert.ok("usd" in hold, `main holds it: ${JSON.stringify(hold)}`);
   return hold.usd;
 }
@@ -35,7 +37,6 @@ const decision = (price, { images = {}, id = "decide-1" } = {}) => ({
   id,
   model: { id: MODEL, api: "openrouter", price: { input: price.promptUsd * 1e6, output: price.completionUsd * 1e6 }, outputCeiling: price.maxCompletionTokens },
   inputTokens: Buffer.byteLength(JSON.stringify({ state: STATE, questions: QUESTIONS }), "utf8"),
-  questions: Object.keys(QUESTIONS).length,
   images: Object.keys(images).length,
   requestUsd: price.requestUsd,
   imageUsd: price.imageUsd,
@@ -50,24 +51,24 @@ test("a run with no cap prices no decision: one whose catalog price could not be
   assert.equal(admitted.heldUsd, 0, "nothing held");
 });
 
-test("expected mode: a decision on a model with no most output is held at 256 output tokens a question, as main holds it", async () => {
+test("a decision on a model with no most output, its output priced, has no bound: the kernel refuses it for good, and main leaves it unpriced", async () => {
   const price = priceOf({ maxCompletionTokens: null });
-  const cap = kernel.createCap({ capUsd: () => 100, mode: "expected" });
-  const admitted = await cap.admit(decision(price)).catch((error) => error);
-  assert.equal(admitted instanceof Error, false, `admitted: ${admitted}`);
-  near(admitted.heldUsd, await mainHold(price, "expected"), "expected, no most output");
+  const refused = await kernel.createCap({ capUsd: () => 100 }).admit(decision(price)).catch((error) => error);
+  assert.ok(refused instanceof kernel.CapRefused, `refused: ${refused}`);
+  assert.equal(refused.forGood, true, "no raise sends it");
+  assert.ok("unpriced" in await mainHoldOf(price), "main holds no figure for it either");
 });
 
-test("strict mode holds the model's most completion tokens, and expected mode 256 a question, each as main holds it", async () => {
+test("a decision is held at its model's most completion tokens, as main holds it", async () => {
   const price = priceOf({ maxCompletionTokens: 4_096 });
-  const strict = await kernel.createCap({ capUsd: () => 100, mode: "strict" }).admit(decision(price));
-  near(strict.heldUsd, await mainHold(price, "strict"), "strict");
-  const expected = await kernel.createCap({ capUsd: () => 100, mode: "expected" }).admit(decision(price));
-  near(expected.heldUsd, await mainHold(price, "expected"), "expected");
+  const admitted = await kernel.createCap({ capUsd: () => 100 }).admit(decision(price));
+  const input = Buffer.byteLength(JSON.stringify({ state: STATE, questions: QUESTIONS }), "utf8");
+  near(admitted.heldUsd, input * price.promptUsd + 4_096 * price.completionUsd, "its input and its most output");
+  near(admitted.heldUsd, await mainHold(price), "main's hold");
 });
 
 test("its fees go into its hold: the catalog's price per request and per image, each image read as 3,300 input tokens, as main holds it", async () => {
   const price = priceOf({ requestUsd: 0.002, imageUsd: 0.0005 });
-  const admitted = await kernel.createCap({ capUsd: () => 100, mode: "strict" }).admit(decision(price, { images: IMAGES }));
-  near(admitted.heldUsd, await mainHold(price, "strict", { images: IMAGES }), "with two images and a request fee");
+  const admitted = await kernel.createCap({ capUsd: () => 100 }).admit(decision(price, { images: IMAGES }));
+  near(admitted.heldUsd, await mainHold(price, { images: IMAGES }), "with two images and a request fee");
 });

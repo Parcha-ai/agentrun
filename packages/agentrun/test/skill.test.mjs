@@ -104,9 +104,10 @@ test.skip("SKILL.md: its front matter, its size, and each recipe block run in or
   assert.match(of(4)[0].out, /^# Europe$/m, "recipe 4 read what the run that asked wrote: its person's answer");
   const [stopped, raised] = of(5);
   assert.ok(raised, "recipe 5 raises a cap: the table has the command");
-  // Strict, so no request goes past the cap, and the recipe says what the default allows.
-  assert.match(stopped.code, /^agentrun runs start .* --cap-mode strict /m);
-  assert.match(readFileSync(join(SKILL, "SKILL.md"), "utf8"), /`--cap-mode strict`.*no request is sent that the cap cannot cover.*`expected`.*`cost\.overshoot_bound_usd`/);
+  // One cap mode: no request goes past the cap, a cache miss included, and the recipe says so with no flag for it.
+  assert.match(stopped.code, /^agentrun runs start notes --max-cost-usd 0\.05 --body /m);
+  assert.doesNotMatch(readFileSync(join(SKILL, "SKILL.md"), "utf8"), /cap-mode|overshoot/);
+  assert.match(readFileSync(join(SKILL, "SKILL.md"), "utf8"), /No request is sent that the cap cannot cover, a cache miss included/);
   assert.deepEqual([stopped.run.status, stopped.run.pending?.kind, stopped.run.cost.cap_usd], ["input_required", "budget", 0.05], "it stopped at its cap");
   // Its hint names the command that raises the cap, with the cap the server suggests.
   assert.ok(typeof stopped.run.pending.suggested_cap_usd === "number", JSON.stringify(stopped.run.pending));

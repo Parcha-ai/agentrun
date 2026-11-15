@@ -21,10 +21,9 @@ const cases=[
  ['harness','opencode'],
  ['checkout','pull_request'],
  ['max_cost_usd',1,'maxCostUsd'],
- ['cap_mode','strict','capMode'],
  ['skills',['guard'],'skills',{'guard/SKILL.md':skillHash}],
 ];
-const defaults={tools:[],tool_settings:{},skills:[],approvals:'ask',computer:{kind:'none'},place:{mode:'runner'},checkout:'none',max_cost_usd:0,cap_mode:'expected'};
+const defaults={tools:[],tool_settings:{},skills:[],approvals:'ask',computer:{kind:'none'},place:{mode:'runner'},checkout:'none',max_cost_usd:0};
 async function setup(t,runtime){
  const f=await nativeFixture(t),names=['PATH','HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','NATIVE_TEST_LOG'];
  const before=Object.fromEntries(names.map(name=>[name,process.env[name]]));

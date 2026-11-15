@@ -39,7 +39,6 @@ export function nativeExecutionOverrides(value: unknown, registrationRuntime?: u
  if(runtime==='claude-code'||runtime==='codex')check('harness',v=>v===(runtime==='codex'?'codex':'claude-agent'));
  check('checkout',v=>v==='none');
  check('max_cost_usd',v=>v===0,'maxCostUsd');
- check('cap_mode',v=>v==='expected','capMode');
  return fields;
 }
 

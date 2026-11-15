@@ -3,21 +3,20 @@
 // call refused before its intent, in WRAP_UP_TEXT, on every harness and in every conversation of the run (a `subagent`
 // spawn is a call too). Nothing in flight is cut, and model requests are not touched: each conversation answers from what
 // it has, under the cap, which stays the last line. The figure is read from the run's committed booking records at each
-// call (the cap's own: a request still out counts at its hold and bound, one a lost claim cut the same), so a restart or a
+// call (the cap's own: a request still out counts at its hold, one a lost claim cut the same), so a restart or a
 // moved claim reads the same figure, and a raise of the cap ends the wrap-up from its next call.
 
 /** What a call reads once its run's cap is nearly taken: the same words every time, never a count the model could argue with. */
 export const WRAP_UP_TEXT = "Budget nearly spent: stop calling tools and answer now from what you have.";
 
-/** A main-model request's figures as the cap prices them (kernel cap requestFigures): its answer at its least, its step-0
- *  typical cost, and its worst (its full asked output). */
-export type RequestFigures = { readonly leastUsd: number; readonly step0Usd: number; readonly worstUsd: number };
+/** A main-model request's figures as the cap prices them (kernel cap requestFigures, its whole input uncached): its
+ *  answer at its least, and its step-0 typical cost. */
+export type RequestFigures = { readonly leastUsd: number; readonly step0Usd: number };
 
 /** What a run keeps back of its cap so it can still answer: one typical step and one final answer at its least. The
  *  typical step is the run's own priced answers' typical cost (the wrap-up note's figure, kernel cap typicalCost; before
  *  any is priced, the step-0 cost of the request), the answer the cap's least for the main model's next request.
- *  Undefined when the request cannot be priced. The rule's one place: keeping back one final answer at its worst case
- *  instead would be `figures.worstUsd`, and a worst step and a least answer `figures.worstUsd + figures.leastUsd`. */
+ *  Undefined when the request cannot be priced. The rule's one place. */
 export const reserveFor = (figures: RequestFigures | undefined, typical: (step0Usd: number) => number): number | undefined =>
   figures === undefined ? undefined : typical(figures.step0Usd) + figures.leastUsd;
 
