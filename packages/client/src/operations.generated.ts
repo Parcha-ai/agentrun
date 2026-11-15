@@ -1861,6 +1861,7 @@ export type FinishChatGPTSignInResponse = {
   email?: string;
   plan?: string;
   authorize_url?: string;
+  expires_at?: string;
   models?: Array<string>;
 };
 
@@ -1870,6 +1871,7 @@ export type GetChatGPTSignInResponse = {
   email?: string;
   plan?: string;
   authorize_url?: string;
+  expires_at?: string;
   models?: Array<string>;
 };
 

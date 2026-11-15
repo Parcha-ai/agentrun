@@ -202,6 +202,7 @@ const CHATGPT_SIGN_IN = {
     email: { type: "string", description: "The ChatGPT account's email, for display." },
     plan: { type: "string", description: "The account's ChatGPT plan (`plus`, `pro`, ...), for display." },
     authorize_url: { type: "string", format: "uri", description: "With `pending`: the link that sign-in opens." },
+    expires_at: { type: "string", format: "date-time", description: "With `pending`: when that sign-in stops waiting, as its start answered." },
     models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
   },
 };

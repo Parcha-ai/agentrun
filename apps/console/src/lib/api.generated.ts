@@ -1619,6 +1619,7 @@ export interface operations {
       email?: string;
       plan?: string;
       authorize_url?: string;
+      expires_at?: string;
       models?: string[];
     };
   };
@@ -1817,6 +1818,7 @@ export interface operations {
       email?: string;
       plan?: string;
       authorize_url?: string;
+      expires_at?: string;
       models?: string[];
     };
   };

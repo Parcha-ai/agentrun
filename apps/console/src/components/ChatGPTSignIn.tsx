@@ -32,15 +32,18 @@ export function PlanDisclosure() {
 
 /** Sign in with ChatGPT, over /v2/settings/chatgpt. Signed out or expired: "Continue with ChatGPT" (with `beside` next to
  *  it), which starts the sign-in and opens OpenAI's page in a new tab. Waiting: the paste step (the address the tab ended
- *  on, which finishes it on a server elsewhere), until when it waits, and Start again; on the machine the server runs on,
- *  the browser's return finishes it by itself, which a read every POLL_MS sees while the page is in view. Signed in: who,
- *  on which plan, and OpenAI's words on usage. A refusal is said in the server's words. `onView`: each state it moves to.
- *  The pasted address is never kept in the page: the field is uncontrolled and cleared once the sign-in finishes. */
+ *  on, which finishes it on a server elsewhere), until when it waits (the server's view says it, so a reload shows it
+ *  too), and Start again; on the machine the server runs on, the browser's return finishes it by itself, which a read
+ *  every POLL_MS sees while the page is in view. While a pasted address finishes (the server reads the plan's models
+ *  first, a few seconds), reads still say pending and the page says it is finishing; a paste the server refuses because
+ *  the browser's return finished the sign-in first shows the sign-in, not the refusal. Signed in: who, on which plan, and
+ *  OpenAI's words on usage. A refusal is said in the server's words. `onView`: each state it moves to. The pasted address
+ *  is never kept in the page: the field is uncontrolled and cleared once the sign-in finishes. */
 export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sign_in", beside }: { v2: Client; view: ChatGPTView; onView?: (v: ChatGPTView) => void; writable?: boolean; whyNot?: SecretsWhyNot; beside?: ReactNode }) {
   const [v, setV] = useState(view);
-  const [expires, setExpires] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [typed, setTyped] = useState(false);
   const field = useRef<HTMLInputElement>(null);
   // Only the newest read or write lands: a read sent before a finish never undoes it.
@@ -74,8 +77,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     try {
       const s = await v2.startChatGPT();
       if (tab) { tab.opener = null; tab.location.href = s.authorize_url; }
-      setExpires(s.expires_at);
-      set({ state: "pending", authorize_url: s.authorize_url });
+      set({ state: "pending", authorize_url: s.authorize_url, expires_at: s.expires_at });
     } catch (e) {
       tab?.close();
       setProblem(words(e));
@@ -85,14 +87,22 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     e.preventDefault();
     const address = field.current?.value.trim();
     if (!address) return;
-    setProblem(null); setBusy(true);
+    setProblem(null); setBusy(true); setFinishing(true);
     asked.current++;
-    try {
-      const done = await v2.finishChatGPT(address);
+    const done = (next: ChatGPTView) => {
       if (field.current) field.current.value = "";
       setTyped(false);
-      set(done);
-    } catch (err) { setProblem(words(err)); } finally { setBusy(false); }
+      set(next);
+    };
+    try {
+      done(await v2.finishChatGPT(address));
+    } catch (err) {
+      // The browser's return can finish the sign-in on this machine before the paste lands, which the server then refuses
+      // as no sign-in waiting: the state says what happened.
+      const now = await v2.chatGPT().then(chatGPTView, () => null);
+      if (now?.state === "signed_in") done(now);
+      else setProblem(words(err));
+    } finally { setBusy(false); setFinishing(false); }
   };
 
   const alert = problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>;
@@ -113,6 +123,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     </div>
   );
   const link = httpHref(v.authorize_url);
+  const expires = v.expires_at;
   return (
     <form onSubmit={(e) => void finish(e)} autoComplete="off" className="space-y-3 border bg-card p-4" aria-label="Finish signing in with ChatGPT">
       <p className="text-body">{PASTE_STEP}</p>
@@ -128,7 +139,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
       </label>
       {alert}
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" size="sm" variant="solid" disabled={!typed || busy}>Finish sign-in</Button>
+        <Button type="submit" size="sm" variant="solid" disabled={!typed || busy}>{finishing ? "Finishing…" : "Finish sign-in"}</Button>
         <Button type="button" size="sm" disabled={busy} onClick={() => void start()}>Start again</Button>
       </div>
     </form>

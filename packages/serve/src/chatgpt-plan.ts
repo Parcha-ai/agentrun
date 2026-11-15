@@ -53,7 +53,7 @@ const REDIRECT = Object.assign(new URL("http://callback.invalid/auth/callback"),
 
 export type PlanState = "signed_out" | "pending" | "signed_in" | "expired";
 /** GET /settings/chatgpt: never a token. */
-export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; models?: string[] };
+export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; expires_at?: string; models?: string[] };
 
 type Credential = { type: "oauth"; access: string; refresh: string; expires: number; clientId: string; scopes?: string[] };
 /** The sealed row. `lease`: a renewal in flight, its holder and its end (ms, on the holder's clock). */
@@ -224,7 +224,7 @@ export class ChatGPTPlan implements PlanReader {
     if (this.pending && this.pending.expiresAt <= this.now()) this.cancel();
     const row = this.snapshot;
     const who = row ? { ...(row.email ? { email: row.email } : {}), ...(row.plan ? { plan: row.plan } : {}) } : {};
-    if (this.pending) return { state: "pending", authorize_url: this.pending.authorizeUrl, ...who };
+    if (this.pending) return { state: "pending", authorize_url: this.pending.authorizeUrl, expires_at: new Date(this.pending.expiresAt).toISOString(), ...who };
     if (!row) return { state: "signed_out" };
     return { state: row.state, ...who, ...(row.state === "signed_in" ? { models: [...row.models] } : {}) };
   }

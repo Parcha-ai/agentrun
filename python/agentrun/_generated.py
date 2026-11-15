@@ -2526,6 +2526,7 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     email: str
     plan: str
     authorize_url: str
+    expires_at: str
     models: list[str]
 
 
@@ -2537,6 +2538,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     email: str
     plan: str
     authorize_url: str
+    expires_at: str
     models: list[str]
 
 
