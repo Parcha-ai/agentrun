@@ -6,8 +6,8 @@
 // it reads (github.ts githubPullOf).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, open, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -298,8 +298,31 @@ test("end to end: an agent with checkout pull_request, started by the App's pull
   assert.equal((await server.api("GET", "/agents/pr")).body.definition?.checkout ?? (await server.api("GET", "/agents/pr/definition")).body.checkout, "pull_request");
   const trigger = (await server.api("POST", "/triggers", { name: "prs", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: { kind: "start_run", agent_id: "pr", input: { content: 'Call read with {"path":"repo/README.md"}' }, max_cost_usd: 0.5 } })).body;
   const event = { action: "opened", pull_request: { number: 7, head: { sha: head }, base: { sha: base } }, repository: { full_name: "acme/widgets" }, installation: { id: 777 } };
+  // The removal is held where the test says: once the fetch is done (the token's revoke), the claim file the removal reads
+  // is swapped for a named pipe, so the removal's `cat` opens it only when the test's own open of the pipe meets it. That
+  // meeting is the removal having begun, and it goes on only when the test writes the claim into the pipe.
+  let runKnown;
+  const known = new Promise((resolve) => (runKnown = resolve));
+  let swapped;
+  const swap = new Promise((resolve) => (swapped = resolve));
+  let pipe;
+  let claimId;
+  server.github.hooks.onRevoke = async (token) => {
+    if (!checkoutTokens().some((entry) => entry.token === token)) return;
+    pipe = join(folderOf(server.data, "pr", await known), CHECKOUT_DIR, ".git", "agentrun-claim");
+    claimId = readFileSync(pipe, "utf8");
+    rmSync(pipe);
+    execFileSync("mkfifo", [pipe]);
+    swapped();
+  };
   assert.equal((await deliver(server.baseUrl, server.github.app.webhook_secret, "pull_request", event)).status, 202);
   const [fired] = await firings(server.api, trigger.id, 1);
+  runKnown(fired.run_id);
+  await swap;
+  const meeting = await open(pipe, "w");
+  assert.notEqual((await server.api("GET", `/runs/${fired.run_id}`)).body.status, "completed", "the run is not final while its checkout is still being removed");
+  await meeting.writeFile(claimId);
+  await meeting.close();
   const { last } = await follow(server.api, fired.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
   const answer = (await server.api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer;
   assert.equal(last.status, "completed", JSON.stringify(last));
@@ -309,7 +332,7 @@ test("end to end: an agent with checkout pull_request, started by the App's pull
   assert.ok(server.github.revoked.includes(minted[0].token), "revoked at GitHub once the fetch was done");
   assert.ok(site.seen.length > 0 && site.seen.every((request) => request.authorization !== null), "every fetch carried it");
   const folder = folderOf(server.data, "pr", fired.run_id);
-  assert.ok(!(await readdir(folder)).includes(CHECKOUT_DIR), "the run's end removed the checkout");
+  assert.ok(!(await readdir(folder)).includes(CHECKOUT_DIR), "the run's end removed the checkout before it read final");
   for (const entry of await readdir(server.data, { withFileTypes: true, recursive: true })) {
     if (!entry.isFile()) continue;
     const text = await readFile(join(entry.parentPath, entry.name), "latin1");

@@ -712,5 +712,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // resume instead, its mount credential with it, as the pi spec's.
     ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
     release: (how) => holds.release(how),
+    endCheckout: () => holds.endCheckout(),
   };
 }
