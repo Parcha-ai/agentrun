@@ -461,7 +461,10 @@ public final class UiDriver {
 			// a window expect reads that app's main window, never the one in front.
 			if (target.app == null && aimed != null) target.app = appOf(aimed);
 			String first = aimed == null ? "" : new Look(aimed, false).fingerprint();
-			String frontBefore = device.apps().foreground();
+			// Only an act that may follow the app in front reads it (follow): with neither a window target nor a window
+			// expect, and an app to compare.
+			boolean mayFollow = target.window == null && target.app != null && (expect == null || !expect.window);
+			String frontBefore = mayFollow ? device.apps().foreground() : null;
 			List<Object> answers = new ArrayList<>(steps.size());
 			boolean refused = false;
 			for (Step s : steps) {
@@ -481,7 +484,7 @@ public final class UiDriver {
 				}
 			}
 			boolean waitsForWindow = expect != null && expect.window;
-			if (!waitsForWindow) follow(a11y, target, frontBefore, cancel);
+			if (mayFollow) follow(a11y, target, frontBefore, cancel);
 			// Every verdict of the act reads one final view, read after its last settle (ui-engine.ts, the same rule): a
 			// set's hold, the expect, and the state it answers. A poll's look only says when to read it again.
 			Final read = readFinal(a11y, target, waitsForWindow, cancel);
