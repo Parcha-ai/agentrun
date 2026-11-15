@@ -239,6 +239,29 @@ test("the breaker read against a fake clock: a rate limit's wait passes at its e
   assert.equal(passed.held(), undefined);
 });
 
+test("two calls in flight rate-limited at nearly the same time: a shorter wait never shrinks a longer one, so a call between their ends is still held, unsent", () => {
+  let now = Date.parse("2026-11-15T12:00:00Z");
+  const fail = { error: "the provider's search failed" };
+  const breaker = webSearch.searchBreaker(() => now);
+  // The first answers Retry-After 60, the second, back a moment later, Retry-After 2.
+  breaker.read({ answer: fail, limit: { kind: "rate", retryAfter: "60" } });
+  now += 50;
+  breaker.read({ answer: fail, limit: { kind: "rate", retryAfter: "2" } });
+  // 3 s on, past the short wait and inside the long one: held (the call answers this and asks no provider).
+  now += 2_950;
+  const held = breaker.held();
+  assert.ok(held, "3 s on, the call is still held: a held call is answered unsent");
+  const n = Number(BUSY.exec(held.error)?.[1]);
+  assert.ok(n >= 56 && n <= 57, `about 57 s left: ${held.error}`);
+  // A longer wait still lengthens it, and a quota answer still turns search off whatever the wait.
+  breaker.read({ answer: fail, limit: { kind: "rate", retryAfter: "120" } });
+  assert.equal(breaker.held()?.error, "search is busy; try again in 120 s, or answer from what you have");
+  now += 121_000;
+  assert.equal(breaker.held(), undefined, "past the longest wait, the next call asks the provider");
+  breaker.read({ answer: fail, limit: { kind: "quota" } });
+  assert.equal(breaker.held()?.error, UNAVAILABLE);
+});
+
 test("a search that succeeds, then one the provider rate-limits, then more: the provider is asked twice in all, and every call within the wait is busy", async (t) => {
   const { env, searches } = await exa(t, "ok,429");
   const search = await bindRun(env);
