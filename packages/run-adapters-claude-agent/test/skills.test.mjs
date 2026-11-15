@@ -151,7 +151,20 @@ test("a skill that is not the host's (one the CLI bundles) is refused, and none 
   assert.ok(!JSON.stringify(last).includes(CANARY), 'nothing was loaded');
 });
 
-test('an adapter with no skills offers no Skill tool and no read_skill_file', { skip, timeout: 120_000 }, async (t) => {
+/** The system prompt of a request, its blocks joined. */
+const systemOf = (body) => (Array.isArray(body?.system) ? body.system.map((b) => b.text ?? '').join('\n') : String(body?.system ?? ''));
+
+test("with skills, the system prompt says Skill is the model's tool and when to load a skill; without, it says neither", { skip, timeout: 240_000 }, async (t) => {
+  const withSkills = await node(t, { skills: [SKILL] });
+  const first = systemOf(withSkills.main[0]?.body);
+  assert.ok(first.includes('The Skill tool is also yours'), 'the tools note names Skill as the model\'s own tool');
+  assert.ok(/load it with Skill before you act on that step/.test(first), 'it says when to load a skill');
+  assert.ok(first.indexOf('The Skill tool is also yours') > first.indexOf('Your only tools are this app'), 'it follows the tools note');
+  const without = await node(t, {});
+  assert.ok(!systemOf(without.main[0]?.body).includes('The Skill tool is also yours'), 'no Skill note without skills');
+});
+
+test('an adapter with no skills offers no Skill tool and no read_skill_file',{ skip, timeout: 120_000 }, async (t) => {
   const { output, offered } = await node(t, {});
   assert.deepEqual(output, { answer: 'ok' });
   assert.ok(offered.length >= 1 && offered.every((tools) => !tools.includes('Skill') && !tools.includes('mcp__hands__read_skill_file')), JSON.stringify(offered));
