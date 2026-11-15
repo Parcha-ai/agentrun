@@ -71,7 +71,7 @@ const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
-  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", choices: [{ id: "particle", label: "particle-1 (low cost)", model: "openrouter/particle-ai/particle-1", harness: "pi", secrets: ["OPENROUTER_API_KEY"] }] }, "medium", { per_run_usd: 0.5 }, false]);
+  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", choices: [{ id: "particle", label: "Particle 1 (OpenRouter)", model: "openrouter/particle-ai/particle-1", harness: "pi", secrets: ["OPENROUTER_API_KEY"], note: "The model this template was tuned and measured on: about 18 cents a review on our own pull requests." }] }, "medium", { per_run_usd: 0.5 }, false]);
   assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("skills/review/findings.schema.json"), "the answer's schema lives in the skill's folder, where the reviewers' guides read it");
