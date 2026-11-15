@@ -202,7 +202,7 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     } as unknown as RunRow);
     // What its claims laid of the skills and workflows it was offered (every learningLaid entry, laidOf): the run started
     // from those alone.
-    learnings.set(run.id, end ? impactLearningOf(end, started, laid, await roundsSpendOf(store, run.id), run.costUsd) : null);
+    learnings.set(run.id, end ? impactLearningOf(end, started, laid, await roundsSpendOf(store, run.id), exactCostOf(run)) : null);
   }
   return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
 }
@@ -288,14 +288,20 @@ async function roundsSpentOf(store: Pick<Store, "runs">, rounds: readonly Learni
 
 type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
 
+/** A run's cost as learning's figures read it: its row's cost, unknown when that is only an upper bound (a request a
+ *  crash cut, booked at its hold: `costUpperBound`). The figures built from it (a look-back's, a batch row's, the cost
+ *  series', the money rule's all-in cost) say no "at most", so a bound read as one of them would pass for what was spent. */
+export const exactCostOf = (run: Pick<RunRecord, "costUsd" | "costUpperBound">): number | null => (run.costUpperBound ? null : run.costUsd);
+
 /** A run's own cost and what learning added for it (runCostOf): its row's cost, every round of its learning (a run a
  *  follow-up opened again, a review's or a person's, learned in rounds: every round's look-back and grade, roundsSpendOf,
  *  never the newest round's alone), else its one round's (learningSpendOf). `total_usd` is the run's all-in cost, the one
  *  the cost page shows and the money rule reads (pastRunsOverStore); null when any part is unknown. */
 export async function allInOf(store: Store, run: RunRecord): Promise<ReturnType<typeof runCostOf>> {
   // Every round's (learningSpendOf over the rounds: what its row spent after its job answered is learning, roundsLooked).
-  const { looked, grade } = await learningSpendOf(store, run.id, run.costUsd);
-  return runCostOf(run.costUsd, looked, grade);
+  const rowUsd = exactCostOf(run);
+  const { looked, grade } = await learningSpendOf(store, run.id, rowUsd);
+  return runCostOf(rowUsd, looked, grade);
 }
 
 /** One run of the cost series, as number `n` of it: its figures (allInOf) and its path (agentCostOverStore's loop body,

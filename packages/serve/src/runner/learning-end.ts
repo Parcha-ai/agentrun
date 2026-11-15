@@ -111,7 +111,12 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       ]);
       // A pi retry's Timeline carries the answered requests alone. Its earlier cut request is still an unknown charge
       // in the booking: keep it unknown in the task snapshot too, as the run's end does, never just the retry's subtotal.
-      const unknown = (["model", "paid", "decisions"] as const).some((kind) => bookedSpend(entries, kind).usd === null);
+      // A request a crash cut booked at its hold (`bounded`) is an upper bound, not a spend: the job's and look-back's
+      // figures say no "at most", so they stay unknown, as the run's cost reads for learning (store-reads exactCostOf).
+      const unknown = (["model", "paid", "decisions"] as const).some((kind) => {
+        const spend = bookedSpend(entries, kind);
+        return spend.usd === null || spend.bounded > 0;
+      });
       const costUsd = unknown ? null : costOf(rows);
       if (launch.maxCostUsd === undefined) return { learns: true, costUsd };
       const capUsd = capNowOf(launch.maxCostUsd, entries)!;
