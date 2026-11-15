@@ -90,7 +90,7 @@ import { CAP_MODES } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
-import { ChatGPTPlan, planOf, PlanSignInRefused, withPlan } from "./chatgpt-plan.js";
+import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
@@ -3441,9 +3441,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = (await bodyOf(req)) as { redirect_url?: unknown };
         return send(res, 200, await planStep(() => plan.finishSignIn(body?.redirect_url)));
       }
-      case "signOutChatGPT":
-        await plan.signOut();
-        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "signOutChatGPT": {
+        const { revoked } = await plan.signOut();
+        return send(res, 200, revoked ? { revoked } : { revoked, message: SIGN_OUT_UNCONFIRMED });
+      }
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
