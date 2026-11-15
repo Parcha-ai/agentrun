@@ -27,7 +27,7 @@ import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
-import { environmentLine } from "../environment.js";
+import { environmentLine, runZone } from "../environment.js";
 import { type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
@@ -457,7 +457,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's clock: a template eval case's (AdapterSpecDeps.clockOf), else the real one. Its environment line and the
   // harness's own turn date (claude-agent's dateLine) read it.
   const now = deps.clockOf?.(runRow.agentId);
-  const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
+  const zone = await runZone(deps.store, launch.inputOrigin);
+  const built = await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
   // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
@@ -631,7 +632,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
-    system: [environmentLine(now), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
+    system: [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
     tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),

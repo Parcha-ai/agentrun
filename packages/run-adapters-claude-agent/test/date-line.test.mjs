@@ -66,7 +66,7 @@ test('a session resumed on a later day is told that day once, in its first messa
   const next = await processOn(t, clock, dir);
   await turns(next, store, ['third', 'fourth']);
   assert.ok(next.systems.every((s) => s.resumed && s.snapshot && s.sent.includes(SYSTEM)), `the resume sends the recorded prompt: ${JSON.stringify(next.systems.map((s) => [s.resumed, s.snapshot]))}`);
-  assert.deepEqual(next.users, ['Today is 2026-11-12 (UTC).\n\nthird', 'fourth'], 'the first message on the new day carries it, the next does not');
+  assert.deepEqual(next.users, ['Today is Thursday 12 November 2026 (UTC).\n\nthird', 'fourth'], 'the first message on the new day carries it, the next does not');
 
   // Later the same day, another process: the day was told, in a message the CLI's transcript holds. No line again.
   clock.now = new Date('2026-11-12T23:59:00Z');
