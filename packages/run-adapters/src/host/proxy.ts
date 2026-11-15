@@ -522,7 +522,7 @@ export interface ProxyRequest {
   /** On the session's model but no answer of the turn (the policy's `answers` reads it so: a title, a summary, a child's
    *  request). Still the turn's to book, but no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
-  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
+  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is answered. */
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
@@ -1049,7 +1049,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
 
   /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: its client
    *  gone while it was counted, a refusal, an error) is given back to the host then, however it left, so the next request
-   *  can take it at once. From its admission on the note is the admission's: told, or given back by its refusal. */
+   *  can take it at once. From its admission on the note is the admission's: given back by its refusal, else held by the
+   *  request until its end (afterRequest), which tells it if answered and gives it back if not. */
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     const taken: { note?: string } = {};
     try {
@@ -1279,7 +1280,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
-    // The note, if this request carries it, is its admission's from here: told once admitted, given back by a refusal.
+    // The note, if this request carries it, is its admission's from here: given back by a refusal, else told if it is answered.
     if (noted) taken.note = undefined;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({

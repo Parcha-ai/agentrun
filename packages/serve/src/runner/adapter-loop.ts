@@ -205,8 +205,9 @@ export interface AdapterRunSpec {
   readonly computer?: LoopComputer;
   /** What the model is told once its claim gave it a computer in place of an earlier claim's (computer-deps.ts
    *  computerReplacedNote): placed in this pass's first main-model request that can carry a note, as the cap's wrap-up
-   *  is (ModelPort.note), so it reaches every harness mid-turn, and written as the server's row (COMPUTER_NOTE) once that
-   *  request is admitted with it. Absent: the computer is the run's first, or the same one. */
+   *  is (ModelPort.note), so it reaches every harness mid-turn, and written as the server's row (COMPUTER_NOTE) once a
+   *  request carrying it is answered (one that fails gives it back to the next). Absent: the computer is the run's first,
+   *  or the same one. */
   readonly computerNote?: string;
   /** The run's computer held for its owner (a run started with `hold: true`, computer-held.ts): the agent's first input
    *  waits for the owner's start, and the run's end waits for the owner's release (runner/held-run.ts). */
@@ -429,9 +430,10 @@ export function pendingPauseOf(entries: readonly { readonly kind?: string; reado
 }
 /** How long a turn's end waits for the runner to hand on the rows it has not yet (LoopDeps.deliverNow). */
 const DELIVER_NOW_MS = 5_000;
-/** How long the cap's wrap-up note, once a request took it, waits for that request's admission before a later request
- *  may take it. A request that leaves before its admission gives it back as it goes (ModelPort.noteReturned): this is
- *  only the backstop for a path that never does. A proxy's token count and admission take well under it. */
+/** How long a server note (the replaced computer's, the cap's wrap-up), once a request took it, waits for that request's
+ *  admission before a later request may take it. A request that leaves before its admission gives it back as it goes
+ *  (ModelPort.noteReturned): this is only the backstop for a path that never does. A proxy's token count and admission
+ *  take well under it. Once admitted, the request holds the note until it ends, however long it streams. */
 const WRAP_UP_OFFER_MS = 30_000;
 
 /** A note the model was told (it begins with SERVER_NOTE_LABEL) as the server's row for it says it: the words after the
@@ -1739,7 +1741,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // run's cap now, what it spent and holds, and its own priced answers. Once per cap, as main's process told it
         // (cap.ts wrapUpSentIn): a CAP_WRAPUP entry names the cap it was told under, read at each claim, so a raise's new
         // cap is told again when it too comes near; written as the server's row only once a request carrying the note is
-        // admitted with it.
+        // answered.
         const wrapUpHarness = harness;
         const wrapUpRoot = root ?? (await harness.root(context));
         const toldCaps = (await entriesOf(gate.journal, wrapUpRoot.id, context))
@@ -1775,7 +1777,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
           if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
         }
-        const capNote: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; at: number }; live?: true; lastFigures?: RequestFigures } = {
+        const capNote: { costs: number[]; restUsd: number | null; live?: true; lastFigures?: RequestFigures } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
@@ -1808,18 +1810,49 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return reserveOf(requestFigures(asked));
         };
         let bookingNow: ModelBooking | undefined;
-        // The replaced computer's note (spec.computerNote): `words` until a request carrying it is admitted, `offered`
-        // while one has taken it. It goes before the wrap-up: one note per request, so the wrap-up waits a request.
-        const computerNote: { words?: string; offered?: number } = spec.computerNote !== undefined ? { words: spec.computerNote } : {};
+        // The replaced computer's note (spec.computerNote), until a request carrying it is answered. It goes before the
+        // wrap-up: one note per request, so the wrap-up waits a request.
+        let computerWords = spec.computerNote;
+        // The server's note a request carries (the replaced computer's, else the cap's wrap-up; `cap` says the wrap-up's
+        // figures), one request at a time: from its take until that request's admission ends, then, admitted carrying it
+        // (`turn`), until that request ends. Told once that request is answered (afterRequest); given back for the next
+        // request by a refusal, a dropped note, or an end with no answer (an error status, a 429, a lost or cut stream).
+        // A request that took it and left before its admission (its client gone while the proxy counted its tokens, a body
+        // the proxy refused) gives it back as it goes (noteReturned). WRAP_UP_OFFER_MS is only the backstop for a take that
+        // never reaches its admission and is never given back: past it, a later request may take the note. An admitted
+        // request always ends (the proxy books each one once), so no backstop is needed from there.
+        let carried: { words: string; at: number; turn?: number; cap?: { leftUsd: number; capUsd: number } } | undefined;
         const takeNote = (model: string, asked?: NoteRequest): string | undefined => {
-          if (computerNote.words === undefined || reflecting) return wrapUpNote(model, asked);
-          // One request at a time carries it, as the wrap-up (below); WRAP_UP_OFFER_MS is the same backstop.
-          if (computerNote.offered !== undefined && Date.now() - computerNote.offered < WRAP_UP_OFFER_MS) return undefined;
-          if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
-          computerNote.offered = Date.now();
-          return computerNote.words;
+          if (carried && (carried.turn !== undefined || Date.now() - carried.at < WRAP_UP_OFFER_MS)) return undefined;
+          const note = computerWords !== undefined && !reflecting ? { words: computerWords } : wrapUpNote(model, asked);
+          carried = note ? { ...note, at: Date.now() } : undefined;
+          return note?.words;
         };
-        const wrapUpNote = (model: string, asked?: NoteRequest): string | undefined => {
+        /** Told: the note's row, once, the server's. The note is the run's told from here, before the row is written, so
+         *  no request takes it again meanwhile. */
+        const tell = async (told: NonNullable<typeof carried>): Promise<void> => {
+          if (told.cap === undefined) {
+            computerWords = undefined;
+            try {
+              await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: COMPUTER_NOTE, data: { words: rowWords(told.words) } as unknown as JsonValue }), context);
+              await deps.flush();
+            } catch (error) {
+              console.warn(`[runner] the replaced computer's note row was not written (the note was answered): ${said(error)}`);
+            }
+            return;
+          }
+          const { leftUsd, capUsd } = told.cap;
+          if (toldAt(capUsd)) return;
+          toldCaps.push(capUsd);
+          try {
+            await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words: rowWords(told.words), leftUsd, capUsd } as unknown as JsonValue }), context);
+            await deps.flush();
+          } catch (error) {
+            console.warn(`[runner] the wrap-up's row was not written (the note was answered): ${said(error)}`);
+          }
+        };
+        /** The cap's wrap-up due for a request about to be sent, with what is left and the cap it is told under. */
+        const wrapUpNote = (model: string, asked?: NoteRequest): { words: string; cap: { leftUsd: number; capUsd: number } } | undefined => {
           // The end-of-run turn comes after the run's answer: "finish now with your answer" is the job's note, never its.
           if (reflecting) return undefined;
           const config = specNow?.runCap;
@@ -1831,12 +1864,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The model session's requests in flight, at what is held for each (as the cap reads a flight); unknown gives none.
           const inFlight = bookingNow?.heldUsd();
           const capUsd = capNow();
-          // One request at a time carries it: while one offered it waits for its admission, an overlapping request is not
-          // offered it too (its admission tells it, or a refusal or a dropped note gives it back: below). A request that
-          // took it and left before its admission (its client gone while the proxy counted its tokens, a body the proxy
-          // refused) gives it back as it goes (noteReturned), so the next request takes it at once. WRAP_UP_OFFER_MS is
-          // only the backstop for a path that never gives it back: past it, a later request is offered it.
-          if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
           if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
           const spentUsd = sessionSpent + decided + paidSpent + rest;
           // The tools' gate counts a request in flight at its hold (sessionSpendOf), so the note counts it the same: it never
@@ -1852,8 +1879,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const atLine = wrappingUp(capUsd, spentUsd + heldUsd, reserveOf(figuresOf(model, asked)));
           const leftUsd = capUsd - spentUsd - heldUsd;
           const note = due ?? (atLine ? { words: wrapUpWords(leftUsd, capNote.costs.length === 0), leftUsd } : undefined);
-          capNote.offered = note ? { ...note, capUsd, at: Date.now() } : undefined;
-          return note?.words;
+          return note ? { words: note.words, cap: { leftUsd: note.leftUsd, capUsd } } : undefined;
         };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
         // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
@@ -1865,8 +1891,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           note: takeNote,
           // A request that took it and left before its admission gives it back: the next request may take it at once.
           noteReturned: (note) => {
-            if (computerNote.words === note) computerNote.offered = undefined;
-            if (capNote.offered?.words === note) capNote.offered = undefined;
+            if (carried?.turn === undefined && carried?.words === note) carried = undefined;
           },
           onEvent: async (event) => {
             // The run's own priced answers, the typical cost the wrap-up is worked out by (a request the host sent beside
@@ -2088,29 +2113,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               mcpStale = false;
               await mcp.fresh();
             }
-            // The note this request carries: the replaced computer's when it took that one (only one is offered at a time,
-            // takeNote), else the wrap-up, taken off the offer now. Its admission tells it; a refusal (the throw below) or a
-            // dropped note leaves it untold, to be offered to a later request. The replaced computer's stays on offer until
-            // this admission ends, so no request that starts meanwhile carries it too.
-            const noted = (request as { noted?: boolean }).noted === true;
-            const computerTold = noted && computerNote.offered !== undefined ? computerNote.words : undefined;
-            const offer = noted && computerTold === undefined ? capNote.offered : undefined;
-            if (offer) capNote.offered = undefined;
+            // The note this request carries, the one it took (takeNote: one at a time). Admitted with it, the request holds it
+            // until it ends (afterRequest tells it or gives it back); a refusal (the throw) or a dropped note gives it back
+            // now, for a later request.
+            const taken = (request as { noted?: boolean }).noted === true && carried?.turn === undefined ? carried : undefined;
             let ticket: Awaited<ReturnType<typeof port.beforeRequest>>;
             try {
               ticket = await port.beforeRequest(request);
-            } finally {
-              if (computerTold !== undefined) computerNote.offered = undefined;
+            } catch (error) {
+              if (taken && carried === taken) carried = undefined;
+              throw error;
             }
-            // The replaced computer's note, told: once, its row the server's, made durable before the request leaves.
-            if (computerTold !== undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped) {
-              computerNote.words = undefined;
-              try {
-                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: COMPUTER_NOTE, data: { words: rowWords(computerTold) } as unknown as JsonValue }), context);
-                await deps.flush();
-              } catch (error) {
-                console.warn(`[runner] the replaced computer's note row was not written (the note went with the request): ${said(error)}`);
-              }
+            if (taken && carried === taken) {
+              if (ticket && !(ticket as { noteDropped?: true }).noteDropped) taken.turn = ticket.turn;
+              else carried = undefined;
             }
             unbooked += 1;
             // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
@@ -2125,24 +2141,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               capNote.restUsd = null;
               console.warn(`[runner] the run's other sessions' spend was not read; no wrap-up until it is: ${said(error)}`);
             }
-            // Told once a request carrying it is admitted with it (never one that went without the note's bytes): the server's
-            // row, once per cap, made durable before the request leaves, so a machine lost after it never tells that cap twice.
-            if (offer && ticket && !(ticket as { noteDropped?: true }).noteDropped && !toldAt(offer.capUsd)) {
-              const { words, leftUsd, capUsd } = offer;
-              toldCaps.push(capUsd);
-              try {
-                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words: rowWords(words), leftUsd, capUsd } as unknown as JsonValue }), context);
-                await deps.flush();
-              } catch (error) {
-                console.warn(`[runner] the wrap-up's row was not written (the note went with the request): ${said(error)}`);
-              }
-            }
             return ticket;
           },
-          afterRequest: async (...args) => {
+          afterRequest: async (usage, ticket, ended) => {
+            // The note this request carried: told once the model answered it, else given back. Settled before anything here
+            // waits: the proxy calls this as its client has the end, so a client's retry finds the note told or on offer.
+            const held = carried?.turn !== undefined && carried.turn === ticket?.turn ? carried : undefined;
+            if (held) carried = undefined;
             try {
+              // An answer the model gave, not the provider's error inside one (a stream ended in an error event: the
+              // client drops it and asks again).
+              if (held && ended?.end === "answered" && ended.label !== "error") await tell(held);
               await hooks.beforeBooking?.();
-              await port.afterRequest(...args);
+              await port.afterRequest(usage, ticket, ended);
             } finally {
               unbooked = Math.max(0, unbooked - 1);
               if (unbooked === 0) for (const wake of bookedAll.splice(0)) wake();
