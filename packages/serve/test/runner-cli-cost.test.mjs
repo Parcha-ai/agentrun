@@ -26,7 +26,7 @@ const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { readRun } = await import("../dist/store-reads/runs.js");
 const { metersOverStore, spentOverStore } = await import("../dist/store-reads/cap.js");
-const { costView } = await import("../dist/run-view.js");
+const { costWordsOfView } = await import("../dist/run-view.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -140,7 +140,7 @@ for (const harness of Object.keys(HARNESSES)) {
     assert.deepEqual(usage?.usage, { usd: null, requests: 0, so_far_usd: 0, unpriced: 1 }, `its usage row: unknown: ${JSON.stringify(usage)}`);
     assert.equal(usage.summary, "Cost: unknown, its model's requests were not metered", "in words");
     // As a run still going reads it (no stored cost yet): unknown from its rows, never the $0 before any request.
-    assert.equal(costView(await runTimeline(server, RUN, ctx, { settled: true }), undefined), null, "its live view reads unknown too");
+    assert.equal(costWordsOfView(await runTimeline(server, RUN, ctx, { settled: true }), undefined).usd, null,"its live view reads unknown too");
     assert.equal((await metersOverStore(server, RUN, ctx)).tokens, null, "its /usage tokens meter is unknown, never $0");
     assert.equal(await spentOverStore(server, RUN, ctx), null, "and its spend as the cap reads it");
   });

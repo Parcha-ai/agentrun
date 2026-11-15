@@ -51,7 +51,7 @@ export function where(url: string): string {
 
 const ELIDED = "\u2026";
 // An apostrophe is part of a URL (a path's O'Reilly, a query's quoted word): a URL that stopped at one would leave the query
-// after it unscrubbed. One that closes a quote around the URL is in its tail, as a sentence's punctuation is (scrubOne).
+// after it unscrubbed. One that closes a quote around the URL is in its tail, as a sentence's punctuation is (scrubUrl).
 const TEXT_URL = /https?:\/\/[^\s"`<>\\]+/gi;
 const SCHEME = /https?:\/\//gi;
 const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i;
@@ -80,12 +80,15 @@ export function scrubUrls(text: string): string {
       for (let i = found.index - 1; i > starts.at(-1)! && !ALNUM.test(raw[i]!); i--) quoted ||= raw[i] === "'";
       if (quoted) starts.push(found.index);
     }
-    return starts.map((start, i) => scrubOne(raw.slice(start, starts[i + 1] ?? raw.length))).join("");
+    return starts.map((start, i) => scrubUrl(raw.slice(start, starts[i + 1] ?? raw.length))).join("");
   });
 }
 
-/** One URL found in text, scrubbed (scrubUrls), its trailing punctuation (a closing quote's among it) kept as it was. */
-function scrubOne(raw: string): string {
+/**
+ * One http(s) URL, as scrubUrls shows each it finds: its origin, its path and its query keys alone. Trailing punctuation
+ * (a closing quote's among it) is kept as it was, outside the URL.
+ */
+export function scrubUrl(raw: string): string {
   let end = raw.length;
   while (end > 0 && TAIL.includes(raw[end - 1]!)) end--;
   const parts = URL_PARTS.exec(raw.slice(0, end));

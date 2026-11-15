@@ -17,7 +17,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
-import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NestedCalls, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NestedCalls, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
@@ -41,6 +41,7 @@ const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" 
  *  its submission, a CLI's record writes it once, and a claim that finds it on the record never asks again. */
 const OUTPUT_RETRY_ORIGIN: MessageOrigin = { kind: "server", reason: "output_retry" };
 const OUTPUT_RETRY_REQUEST = "agentrun:output-retry";
+type EndCost = Required<Pick<EndData, "costUsd" | "costUpperBound">>;
 /** Whether the run had its one retry: the input entry the retry wrote (pi's submission, a CLI's record) with the model's
  *  answer after it. One written and never answered (a runner lost between a CLI's record and its send) is not had: the
  *  claim that opens the session again sends it, under the same request id, so it is written once. */
@@ -52,7 +53,7 @@ import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutco
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, REFLECT_PREFIX, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -194,8 +195,16 @@ export interface AdapterRunSpec {
    *  its commit. Bounded (endPatchMs): a reader that stalls gives no patch, and the end is still written, its cost and
    *  metrics unknown (END_PATCH_UNKNOWN). */
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">>;
+  /** The run's cost for its end, read apart from the end's patch and in place of the patch's own `costUsd`: one cheap
+   *  read of its booking (metrics.ts runCostOf), so a patch whose metrics run past endPatchMs never takes the cost with
+   *  them. Bounded by endPatchMs too: a read that fails is read again (END_COST_TRIES in all, within the bound), and
+   *  late or failing every time, the cost is unknown (null), the answer every reader of the ended run then gives. */
+  readonly endCost?: () => Promise<EndCost>;
   /** The most the end's patch may take before the end is written without it. Default END_PATCH_MS. */
   readonly endPatchMs?: number;
+  /** The most a booking whose write has begun is waited for before an answer's cost, a park or the end goes on without
+   *  it. Default BOOKING_WRITE_MS. */
+  readonly bookingWriteMs?: number;
   /** Handed the run's own Harness commit once it opens (and after each restart's re-open): what a mark of the run's
    *  commits through, so a commit after the claim is lost is refused by the fence like any other. */
   readonly harnessReady?: (commit: Harness["commit"]) => void;
@@ -218,8 +227,12 @@ export interface AdapterRunSpec {
   readonly held?: HeldSpec;
   /** Lets this spec's resources go once the loop writes nothing more through them: called once, after its Session and
    *  Harness are closed, when its pass ends (a restart's included) and at the run's end. Never throws out: a failure is
-   *  logged, and the end stands. */
-  readonly release?: () => Promise<void>;
+   *  logged, and the end stands. `parked`: the pass ended in a park, which keeps the run's desktop or phone (`keptWords`). */
+  readonly release?: (how?: { readonly parked?: boolean }) => Promise<void>;
+  /** A park of this pass keeps the run's desktop or phone for its resume (computer-for-claim.ts ClaimComputer.keeps): the
+   *  words the loop says so in on the run's timeline as it parks (computer-deps.ts computerKeptWords). Absent: a park lets
+   *  the computer go. */
+  readonly keptWords?: string;
   /** What the spec's tool host bindings registered (tools.ts ToolHost's onConversation, beforeResume, beforeRelease),
    *  run where main's per-run process runs them (app.ts): each agent conversation's creating commit, once the claim's
    *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
@@ -503,12 +516,13 @@ export function bookingOfAnswer(records: readonly SessionRecord[], given: Readon
   let usd: number | null | undefined;
   for (const record of records) {
     if (record.kind !== RUNNER_RECORDS.turn) continue;
-    const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown; rule?: unknown };
+    const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown; rule?: unknown; billing?: unknown };
     if (typeof turn.turn !== "number" || given.has(turn.turn)) continue;
     turns.push(turn.turn);
     if (side.has(turn.turn)) continue;
-    // An answer with no price of its own is unknown, never the hold it was booked at for the cap (answeredUnpriced).
-    const figure = answeredUnpriced(turn) ? null : turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+    // By the kernel's one rule (turnCostOf): an answer with no price of its own is unknown, never the hold it was booked at
+    // for the cap; one billed to a person's plan is $0 to the run.
+    const figure = turn.usd === undefined && turn.bookedUsd === undefined ? undefined : turnCostOf(turn).usd;
     usd = usd !== null && typeof figure === "number" && Number.isFinite(figure) ? (usd ?? 0) + figure : null;
   }
   return { turns, usd };
@@ -919,7 +933,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   };
   /** The current pass's spec's release, until it is called (closeSession). */
-  let releaseNow: (() => Promise<void>) | undefined;
+  let releaseNow: AdapterRunSpec["release"];
+  /** The current pass ended in a park that keeps its desktop or phone (keepAtPark), until its release reads it. */
+  let parkedNow = false;
   /** From the end-of-run step's start (or a claim that found its turn open: lookingBackOpen, from its session's open)
    *  until the claim ends: a steer is left for the end, writes and edits under work/.learning/ are refused
    *  (REFLECT_NOTE_ONLY), and every request is learning's, never the job's: the cap's wrap-up note is never told to it,
@@ -1010,6 +1026,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  fenced and lost, and its request read back at its hold. */
   let unbooked = 0;
   let bookedAll: (() => void)[] = [];
+  /** Of those, the ones whose booking has begun (the request answered or ended, its runner.turn on its way to the
+   *  store), and who waits for none: a booking under way is waited for past CLOSE_MS (bookingsSettled), so a busy store
+   *  never lets the end, or an answer's cost, go ahead of it. */
+  let bookingsWriting = 0;
+  let writtenAll: (() => void)[] = [];
   /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
    *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
@@ -1983,7 +2004,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const unsent = event.ended.end === "nothing" && event.ended.label === "never_left";
               // One on a free model (`free`: booked a known $0) is no cost unknown: its mark says so, and the usage row counts
               // it at $0, never cut.
-              const data = unsent ? { unsent: true } : event.usage.free ? { free: true } : {};
+              // One cut with no answer and booked at its hold (bookCut's CUT_AT_HOLD) is that figure, the most it can have
+              // cost: its mark says so, and the usage row counts it there, never as a cost no one knows.
+              const atMost = typeof event.usage.atMostUsd === "number" && Number.isFinite(event.usage.atMostUsd) ? { atMostUsd: event.usage.atMostUsd } : {};
+              const data = unsent ? { unsent: true } : event.usage.free ? { free: true } : atMost;
               // Not written when the journal sealed under it (the run's end landed first): a settled run reads its unanswered
               // mark cut all the same.
               await on.commit((tx) => tx.appendEntry(conversation.id, { kind: REQUEST_ENDED, data: data as unknown as JsonValue }), context).catch(() => undefined);
@@ -2170,6 +2194,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // session's proxy sees its upstream end, which can be after pi went idle).
         const port = booking.models;
         unbooked = 0;
+        bookingsWriting = 0;
         const counted: typeof port = {
           beforeRequest: async (request) => {
             // The CLI's next request of its main model after its question to the person: never admitted, it asks for the
@@ -2218,12 +2243,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // An answer the model gave, not the provider's error inside one (a stream ended in an error event, a translated
             // route's failure in words included: the client drops it and asks again).
             const row = held && ended?.end === "answered" && ended.label !== "error" ? tell(held) : undefined;
+            // Its booking has begun: waited for past CLOSE_MS, as long as its write takes (bookingsSettled).
+            bookingsWriting += 1;
             try {
               await hooks.beforeBooking?.();
               await port.afterRequest(usage, ticket, ended);
             } finally {
+              bookingsWriting = Math.max(0, bookingsWriting - 1);
               if (row) await row();
               unbooked = Math.max(0, unbooked - 1);
+              if (bookingsWriting === 0) for (const wake of writtenAll.splice(0)) wake();
               if (unbooked === 0) for (const wake of bookedAll.splice(0)) wake();
             }
           },
@@ -2649,6 +2678,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const cutBy = stopReason as StopReason | undefined;
             if (step === "park" && cutBy?.kind !== "command") {
               await releaseHost(harness);
+              await keepAtPark(harness);
               gate.seal(new Parked());
               return { state: "parked" };
             }
@@ -3399,9 +3429,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     mcp?.release();
     mcp = undefined;
     // The pass's resources go once nothing more is written through them (AdapterRunSpec.release), once each.
+    // A park's keeps the run's desktop or phone (keepAtPark).
     const release = releaseNow;
+    const parked = parkedNow;
     releaseNow = undefined;
-    await release?.().catch((error: unknown) => console.warn(`[runner] its run's release failed: ${said(error)}`));
+    parkedNow = false;
+    await release?.({ parked }).catch((error: unknown) => console.warn(`[runner] its run's release failed: ${said(error)}`));
   }
 
   /** What a round's first ask kept, read before the hook can skip or close its resumed turn: the CLI's record, or pi's
@@ -3556,21 +3589,41 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   /** The end's patch from the run's spec (AdapterRunSpec.endPatch), bounded (END_PATCH_MS): late or failing, the end says
    *  its cost and metrics are unknown (END_PATCH_UNKNOWN). */
-  async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">> {
-    if (!specNow?.endPatch) return {};
+  async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "costUpperBound" | "metrics">> {
+    const spec = specNow;
+    if (!spec?.endPatch && !spec?.endCost) return {};
     let timer: NodeJS.Timeout | undefined;
-    const boundMs = specNow.endPatchMs ?? END_PATCH_MS;
+    const boundMs = spec.endPatchMs ?? END_PATCH_MS;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), boundMs)));
-    try {
-      const patch = await Promise.race([specNow.endPatch(data), late]);
-      if (patch === "late") {
-        console.warn(`[runner] its end's patch gave no answer within ${boundMs / 1000} s; the end is written with its cost and metrics unknown`);
+    // The cost, read apart (AdapterRunSpec.endCost): a patch whose metrics run late or fail never takes it with them. A
+    // read that fails is read again within the same bound (END_COST_TRIES): the stored cost is every reader's answer
+    // (the list, the view, usage), so a null there is kept only when the booking could not be read at all.
+    const endCost = spec.endCost;
+    const cost = endCost
+      ? readAgain(endCost, late, (error, tries, last) =>
+          console.warn(last ? `[runner] its end's cost failed ${tries} times, last: ${said(error)}; the end is written with its cost unknown` : `[runner] its end's cost failed: ${said(error)}; read again`),
+        ).then((answer): EndCost => {
+          if (answer === "late") console.warn(`[runner] its end's cost gave no answer within ${boundMs / 1000} s; the end is written with its cost unknown`);
+          return answer === "late" || answer === "failed" ? { costUsd: null, costUpperBound: false } : answer;
+        })
+      : undefined;
+    const patched = async (): Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">> => {
+      if (!spec.endPatch) return {};
+      try {
+        const patch = await Promise.race([spec.endPatch(data), late]);
+        if (patch === "late") {
+          console.warn(`[runner] its end's patch gave no answer within ${boundMs / 1000} s; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
+          return END_PATCH_UNKNOWN;
+        }
+        return patch ?? {};
+      } catch (error) {
+        console.warn(`[runner] its end's patch failed: ${said(error)}; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
         return END_PATCH_UNKNOWN;
       }
-      return patch ?? {};
-    } catch (error) {
-      console.warn(`[runner] its end's patch failed: ${said(error)}; the end is written with its cost and metrics unknown`);
-      return END_PATCH_UNKNOWN;
+    };
+    try {
+      const [patch, read] = await Promise.all([patched(), cost]);
+      return read ? { ...patch, ...read } : patch;
     } finally {
       clearTimeout(timer);
     }
@@ -3658,8 +3711,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function parkClaim(on: Harness, theGate: Gate): Promise<LoopEnd> {
     await releaseHost(on);
     await bookingsSettled();
+    await keepAtPark(on);
     theGate.seal(new Parked());
     return { state: "parked" };
+  }
+
+  /** At a park, before its seal: a pass whose spec keeps its desktop or phone (AdapterRunSpec.keptWords) has it kept for
+   *  the resume at its release (closeSession), once the run's timeline says so, for the person deciding. A write that
+   *  fails (the fence's refusal: a lost claim, whose run a later claim may hold already) keeps nothing: the computer goes
+   *  as at the run's end. */
+  async function keepAtPark(on: Harness): Promise<void> {
+    const summary = specNow?.keptWords;
+    if (!summary) return;
+    parkedNow = await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary, at: Date.now() } as unknown as JsonValue }), context).then(() => true, () => false);
   }
 
   /** The run's pause at its cap: its agentrun.budget entry, in one commit with the run parked in the cap's words. */
@@ -3677,14 +3741,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** Waits, at most CLOSE_MS, until every paid request the session admitted is booked: a person's stop is booked at what
-   *  streamed once the session's proxy sees its upstream end. Past the bound the end is written anyway, and a request left
-   *  unbooked reads at its hold and bound, the worst it can have cost. */
+   *  streamed once the session's proxy sees its upstream end. Then, for a booking whose write has begun, as long as that
+   *  write takes (bookingWriteMs). Past the bounds the end is written anyway, and a request left unbooked reads at its
+   *  hold and bound, the worst it can have cost, and the run's cost unknown: never a known figure that leaves it out. */
   async function bookingsSettled(): Promise<void> {
     if (unbooked === 0) return;
     specNow?.hooks?.awaitingBookings?.();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+    // A booking whose write has begun (its request answered) is waited for as long as its write takes, bounded
+    // (BOOKING_WRITE_MS): written after the end, it would be fenced and lost, and the run's cost read unknown for good.
+    if (bookingsWriting === 0) return;
+    const boundMs = specNow?.bookingWriteMs ?? BOOKING_WRITE_MS;
+    const written = await Promise.race([new Promise<boolean>((resolve) => writtenAll.push(() => resolve(true))), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), boundMs)))]);
+    clearTimeout(timer);
+    if (!written) console.warn(`[runner] ${bookingsWriting} paid request booking(s) still being written after ${boundMs / 1000} s; going on without them: each reads at its hold, and the run's cost unknown`);
   }
 
   /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,
@@ -3729,7 +3801,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const late = stopReason as StopReason | undefined;
     const lateStop = late?.kind === "command" && !take.includes(late.commandId) ? late : undefined;
     if (lateStop) take = [...take, lateStop.commandId];
-    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop ? stopEnd(lateStop.cancel) : {}) };
+    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd, ...(patch.costUpperBound ? { costUpperBound: true } : {}) } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop ? stopEnd(lateStop.cancel) : {}) };
     const run = {
       state: data.state,
       // An end's summary is its own: with none, a wait's summary the row still says (a question's, a hand-over's: HELD_WAITS
@@ -3737,7 +3809,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       ...(data.summary ? { summary: data.summary } : {}),
       ...(!data.summary ? { summary: null } : {}),
       ...(data.outcome !== undefined ? { outcome: data.outcome } : {}),
-      ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
+      ...(data.costUsd !== undefined ? { costUsd: data.costUsd, costUpperBound: data.costUpperBound === true } : {}),
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
     };
     // A person's stop or cancel withdraws every call still waiting for its answer, in the end's own commit: the approval
