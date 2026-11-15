@@ -463,6 +463,9 @@ __all__ = [
     "HandBackRunComputerResponse",
     "HomeResource",
     "Id",
+    "ImportRemoteHistoryBody",
+    "ImportRemoteHistoryResponse",
+    "ImportRemoteHistoryResponseRunsItem",
     "ImportRemoteTargetBody",
     "ImportRemoteTargetBodyTarget",
     "ImportRemoteTargetBodyTargetCapabilities",
@@ -2520,12 +2523,30 @@ class EnrollRemoteConnectorBody(TypedDict, total=False):
 
 class EnrollRemoteConnectorBodyCapabilities(TypedDict, total=False):
     native_execution: bool
+    history_import: bool
 
 
 class EnrollRemoteConnectorResponse(TypedDict):
     enrollment_token: str
     expires_at: str
     workspace_id: Literal["local"]
+
+
+class ImportRemoteHistoryBody(TypedDict):
+    sessions: list[dict[str, Any]]
+
+
+class ImportRemoteHistoryResponse(TypedDict):
+    agent_id: str
+    runs: list[ImportRemoteHistoryResponseRunsItem]
+    imported: int
+    already: int
+
+
+class ImportRemoteHistoryResponseRunsItem(TypedDict):
+    session_id: str
+    run_id: str
+    already: bool
 
 
 class _ImportRemoteTargetBodyRequired(TypedDict):
@@ -2535,6 +2556,7 @@ class _ImportRemoteTargetBodyRequired(TypedDict):
 
 class ImportRemoteTargetBody(_ImportRemoteTargetBodyRequired, total=False):
     name: str
+    history_only: bool
 
 
 class _ImportRemoteTargetBodyTargetRequired(TypedDict):
@@ -2658,6 +2680,7 @@ class ListRemoteConnectorsResponseConnectorsItem(TypedDict):
 class ListRemoteConnectorsResponseConnectorsItemCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 class _PollRemoteConnectorBodyRequired(TypedDict):
@@ -2690,8 +2713,12 @@ class RegisterRemoteConnectorBody(_RegisterRemoteConnectorBodyRequired, total=Fa
     label: str
 
 
-class RegisterRemoteConnectorBodyCapabilities(TypedDict):
+class _RegisterRemoteConnectorBodyCapabilitiesRequired(TypedDict):
     native_execution: bool
+
+
+class RegisterRemoteConnectorBodyCapabilities(_RegisterRemoteConnectorBodyCapabilitiesRequired, total=False):
+    history_import: bool
 
 
 class RegisterRemoteConnectorResponse(TypedDict):
@@ -2714,6 +2741,7 @@ class RegisterRemoteConnectorResponseConnector(TypedDict):
 class RegisterRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 class RemoteCommandEventsBody(TypedDict):
@@ -2744,6 +2772,7 @@ class RevokeRemoteConnectorResponseConnector(TypedDict):
 class RevokeRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 CreateFileBody: TypeAlias = "FileCreate"
@@ -8231,6 +8260,7 @@ OPERATIONS: dict[str, Operation] = {
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteTarget": Operation(method="POST", path="/connectors/{connector_id}/import", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "listRemoteConnectors": Operation(method="GET", path="/connectors", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "pollRemoteConnector": Operation(method="POST", path="/connectors/{connector_id}/poll", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -8442,6 +8472,10 @@ class ConnectorsResource(Group):
         """Create a ten-minute one-use connection code (POST /connectors/enrollment)."""
         return self._call("enrollRemoteConnector", (), body, None, timeout=timeout)
 
+    def import_remote_history(self, connector_id: str, target_id: str, body: ImportRemoteHistoryBody, *, timeout: float | None = None) -> ImportRemoteHistoryResponse:
+        """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
+        return self._call("importRemoteHistory", (connector_id, target_id), body, None, timeout=timeout)
+
     def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse:
         """Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import)."""
         return self._call("importRemoteTarget", (connector_id,), body, None, timeout=timeout)
@@ -8563,7 +8597,7 @@ class LearningResource(Group):
         return self._call("recordLearningEval", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
-        """A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
+        """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
