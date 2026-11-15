@@ -26,7 +26,7 @@ import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeli
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
-import { type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type StartResult, type StartWhy, type TriggerAdapter, validZone } from "./trigger-adapter.js";
+import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type StartResult, type StartWhy, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
@@ -142,7 +142,8 @@ export type TriggerDeps = {
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
    *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
    *  refused. */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string): Promise<{ run_id: string }>;
+  /** `previous` false: the run is handed no previous result (its adapter's previousResult). */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string, previous?: boolean): Promise<{ run_id: string }>;
   /** Queues `input` for the target's run as a command row (answers false) under `key`, as the trigger's (`from`), within
    *  `bound` (store.triggers.message: at most `max` of this trigger's rows untaken for the run, else skipped with
    *  `reason`); ApiError when refused. */
@@ -843,7 +844,7 @@ export class Triggers {
       let started: { run_id: string };
       try {
         const attrs = firing.attrs as Record<string, string> | null | undefined;
-        started = await this.deps.start(now.target, this.inputOf(now, firing), { id: triggerId, firing_key: key, name: now.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, this.originOf(now), this.titleOf(now, firing));
+        started = await this.deps.start(now.target, this.inputOf(now, firing), { id: triggerId, firing_key: key, name: now.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, this.originOf(now), this.titleOf(now, firing), carriesPrevious(this.adapter(now.source)));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.

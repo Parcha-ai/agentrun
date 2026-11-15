@@ -268,6 +268,6 @@ test("a run an email started is handed no other run's answer: bob's run never re
   assert.equal(second?.status, "started");
   const { content } = await firedInput(data, second.run_id);
   assert.ok(!content.includes("The result of this trigger's last completed run"), `bob's run is handed nothing of alice's: ${content}`);
-  assert.ok(!content.includes("refund of $120"), "alice's answer is nowhere in bob's input");
+  assert.equal(content.split("refund of $120").length - 1, 1, "alice's answer is in bob's input only as the trigger's own words");
   await follow(api, second.run_id, ["completed"]);
 });

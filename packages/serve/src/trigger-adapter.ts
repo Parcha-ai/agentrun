@@ -7,6 +7,10 @@ import type { SettingsSpec } from "./sealed-settings-store.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
+/** Whether a run `adapter`'s firing starts is handed its trigger's last completed result: the one place it is decided
+ *  (its previousResult, by default true). */
+export const carriesPrevious = (adapter: Pick<TriggerAdapter, "previousResult">): boolean => adapter.previousResult ?? true;
+
 /** The most of a firing's payload passed on, in bytes of UTF-8 (triggers.ts cuts past it, at a character's start). A
  *  source that answers JSON fits its payload within it first (trigger-email.ts), so its JSON is never cut. */
 export const PAYLOAD_KEPT_BYTES = 16 * 1024;
@@ -31,6 +35,10 @@ export type TriggerAdapter = {
   /** `clock`: it fires on its own times, read by the engine's timer (a source that polls, on each). `push`: a request delivered to the server fires it,
    *  keyed by the sender's own id, which a retry repeats. */
   delivery: "clock" | "push";
+  /** Whether a run it starts is handed its trigger's last completed result (trigger-targets.ts previousResultOf). Default
+   *  true: a repeat run (a schedule's weekly digest) leaves out what the last one reported. false: each firing is a
+   *  different person's (an email's sender), so one run's answer is never handed to the next. */
+  previousResult?: boolean;
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
    *  it up; never for words that come from outside. */
   owner: boolean;

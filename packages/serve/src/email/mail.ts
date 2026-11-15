@@ -119,19 +119,35 @@ export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | 
   };
 }
 
-/** A message as a thread read first sees it: where it is, its ids, its date and its size, no body. */
-export type MailHead = Pick<MailMessage, "uid" | "mailbox" | "date" | "message_id" | "in_reply_to" | "references"> & { size: number };
+/** A message as a thread read first sees it: where it is, who it is between, its ids, its date and its size, no body. */
+export type MailHead = Pick<MailMessage, "uid" | "mailbox" | "from" | "to" | "cc" | "date" | "message_id" | "in_reply_to" | "references"> & { size: number };
 
-/** A header's value in `raw` (a message's header lines), folded lines joined; undefined when it has none. */
-const headerIn = (raw: string, name: string): string | undefined => new RegExp(`^${name}:[ \\t]*(.*)$`, "im").exec(raw.replace(/\r?\n[ \t]+/g, " "))?.[1]?.trim();
-
-/** A fetched row of `heads`: its ids and its date read from the headers (the Date header, else INTERNALDATE). */
-function headOf(row: Pick<FetchMessageObject, "uid" | "internalDate" | "size" | "headers">, mailbox: string): MailHead {
-  const raw = row.headers?.toString("utf8") ?? "";
-  const stated = headerIn(raw, "date");
-  const date = [stated ? new Date(stated) : undefined, row.internalDate ? new Date(row.internalDate) : undefined].find((d) => d && Number.isFinite(d.getTime()));
-  return { uid: row.uid, mailbox, size: typeof row.size === "number" ? row.size : 0, date: date ? date.toISOString() : null, message_id: firstId(headerIn(raw, "message-id")), in_reply_to: firstId(headerIn(raw, "in-reply-to")), references: idsOf(headerIn(raw, "references")) };
+/** A fetched row of `heads`: its few headers parsed as a whole message's are (messageOf), its date the Date header's, else
+ *  INTERNALDATE. */
+async function headOf(row: Pick<FetchMessageObject, "uid" | "internalDate" | "size" | "headers">, mailbox: string): Promise<MailHead> {
+  const parsed = await simpleParser(Buffer.concat([row.headers ?? Buffer.alloc(0), Buffer.from("\r\n")]), { skipImageLinks: true, skipTextLinks: true });
+  const [from] = addresses(parsed.from);
+  const internal = row.internalDate ? new Date(row.internalDate) : undefined;
+  const date = parsed.date ?? (internal && Number.isFinite(internal.getTime()) ? internal : undefined);
+  return {
+    uid: row.uid,
+    mailbox,
+    size: typeof row.size === "number" ? row.size : 0,
+    from: from?.address ?? "",
+    to: addresses(parsed.to).map((a) => a.address),
+    cc: addresses(parsed.cc).map((a) => a.address),
+    date: date ? date.toISOString() : null,
+    message_id: firstId(parsed.messageId),
+    in_reply_to: firstId(parsed.inReplyTo),
+    references: idsOf(parsed.references),
+  };
 }
+
+/** Whether `address` (bare, any case) is one of `m`'s From, To or Cc. */
+export const involves = (m: Pick<MailMessage, "from" | "to" | "cc">, address: string): boolean => {
+  const wanted = address.trim().toLowerCase();
+  return wanted !== "" && [m.from, ...m.to, ...m.cc].some((one) => one.trim().toLowerCase() === wanted);
+};
 
 /** The payload's fields (a trigger's firing, a read's message). */
 export const payloadOf = (m: MailMessage) => ({ from: m.from, from_name: m.from_name, to: m.to, cc: m.cc, subject: m.subject, date: m.date, message_id: m.message_id, in_reply_to: m.in_reply_to, text: m.text, attachments: m.attachments });
@@ -206,12 +222,12 @@ export class ImapSession {
     return messages.sort((a, b) => a.uid - b.uid);
   }
 
-  /** The open mailbox's messages of `uids`, read cheaply: their ids, their date and their size from a few headers,
+  /** The open mailbox's messages of `uids`, read cheaply: who they are between, their ids, their date and their size from a few headers,
    *  INTERNALDATE and RFC822.SIZE, never a body. What a thread read picks from before it fetches any message whole. */
   async heads(path: string, uids: readonly number[]): Promise<MailHead[]> {
     if (!uids.length) return [];
-    const rows = await this.client.fetchAll(uids.join(","), { uid: true, internalDate: true, size: true, headers: ["message-id", "in-reply-to", "references", "date"] }, { uid: true });
-    return rows.map((row) => headOf(row, path)).sort((a, b) => a.uid - b.uid);
+    const rows = await this.client.fetchAll(uids.join(","), { uid: true, internalDate: true, size: true, headers: ["message-id", "in-reply-to", "references", "date", "from", "to", "cc"] }, { uid: true });
+    return (await Promise.all(rows.map((row) => headOf(row, path)))).sort((a, b) => a.uid - b.uid);
   }
 
   /** Whether the server says it does `capability` (X-GM-EXT-1: Gmail's labels). */

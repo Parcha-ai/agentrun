@@ -170,6 +170,8 @@ export const email: TriggerAdapter = {
   label: "email trigger",
   delivery: "clock",
   owner: false,
+  // Each message is its sender's: one run's answer (to alice) is never handed to the next (bob's).
+  previousResult: false,
   settings: { scope: "trigger", fields: { [CURSOR]: { public: true }, last_check: { public: true } } },
   describe: `{kind: "email", account?: "${DEFAULT_ACCOUNT}", mailbox?: "INBOX", every_s?: ${MIN_EVERY_S}, accept?: [{event: "${EVENT}", where?}]}`,
   fires: "each new message in the server's email account's mailbox (`email`), read every every_s seconds, that its `accept` takes",
