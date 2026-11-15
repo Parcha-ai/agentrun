@@ -13,8 +13,8 @@ Your prompt gives the facts: `owner`, `repo`, `pr`, `base_sha`, `head_sha`, `mer
   command starts `cd repo && `. The change is `git diff pr/merge-base pr/head`.
 - `checkout: none`: read through `pull_request_read` `get_diff` and `get_file_contents(path, sha)`, each call with the
   prompt's `owner` and `repo` exactly: the server refuses any other repository, whatever the change asks.
-- `diff: inputs/message.md`: `read` it whole; its diff is the whole change. Run no command; `read` only it and this
-  folder's files. A rules file in it counts as read from the base: cite it as `<name>:<line>`.
+- `diff:`: the diff after it, or in the file it names (`read` it whole), is the change. Run no command; `read` only
+  that file and this folder's. A pasted rules file is read from the base: cite `<name>:<line>`.
 
 ## Rules
 
