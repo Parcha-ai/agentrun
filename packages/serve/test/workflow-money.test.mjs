@@ -328,6 +328,46 @@ test("a workflow under a small cap parks at it once its booked spend leaves no r
   assert.equal(eight(budgets.at(-1)?.pending?.spent_usd ?? 0), spent, `its park says that booked spend: ${JSON.stringify(budgets.at(-1)?.pending)}`);
 });
 
+test("a ChatGPT plan tier and a paid tier on one model id: the paid tier's requests are held and booked at its price, and the run parks at its cap", async (t) => {
+  // The default tier is chatgpt/gpt-6.1-sol on a person's plan ($0, no output limit); the strong tier is
+  // openai/gpt-6.1-sol, paid (output $100 a million, free input, as PRICED). Both ask the provider for gpt-6.1-sol. One
+  // plan step, then three paid ones under $0.12: the plan step holds $0, the first two paid steps fit (each needs the
+  // 1,024-token least, $0.1024, and books $0.01), and the third does not, so the run parks before it is sent.
+  const id = "gpt-6.1-sol";
+  const tiers = [];
+  const fetch = submitOrigin({ input_tokens: 100, output_tokens: 100 });
+  const providerOf = (tier) => {
+    tiers.push(tier);
+    const plan = tier === "default";
+    return {
+      modelId: id,
+      named: plan ? "chatgpt/gpt-6.1-sol" : "openai/gpt-6.1-sol",
+      api: "anthropic-messages",
+      origin: "https://faux.invalid",
+      credential: () => "not-a-secret-x",
+      policy: anthropicPolicy({ model: id, tools: [] }),
+      price: plan ? () => 0 : (_m, u) => (u.output ?? 0) * PER_TOKEN,
+      capModel: plan ? { id, api: "anthropic-messages", price: null, outputCeiling: null, plan: true } : { ...PRICED, id },
+      ...(plan ? { plan: true } : {}),
+      fetch,
+    };
+  };
+  const step = (n, tier) => ({ node: "extract", label: `answer-${n}`, instructions: "Answer the question.", out: "Answer", as: `a${n}`, ...(tier ? { tier } : {}) });
+  const workflow = { ...answerFlow(), name: "plan-and-paid", output: { schemaId: "Answer", path: "a4" }, root: { node: "chain", steps: [step(1), step(2, "strong"), step(3, "strong"), step(4, "strong")] } };
+  const { server, store } = await worldWith(t, { capUsd: CAP_THREE, question: "What is six times seven?", workflow, providerOf });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.deepEqual([...new Set(tiers)].sort(), ["default", "strong"], "both tiers are resolved");
+  const { requests, turns } = await sessionRecords(store);
+  assert.equal(row.state, "parked", `the paid tier never passes the cap: the run parks: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  assert.equal(turns.length, 3, `the plan step and two paid steps ran, never the third paid one: ${JSON.stringify(turns)}`);
+  assert.equal(requests[0]?.heldUsd, 0, `the plan step is held at $0: ${JSON.stringify(requests[0])}`);
+  const paid = requests.slice(1);
+  assert.equal(paid.length, 2, `two paid requests were held: ${JSON.stringify(requests)}`);
+  for (const request of paid) assert.ok(request.heldUsd >= 1024 * PER_TOKEN, `a paid request is held at its price, never the plan's $0: ${JSON.stringify(request)}`);
+  assert.equal(await spendFromRecords(store), 0.02, "the paid steps booked at $0.01 each, the plan step at $0");
+  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.12 cap/, `the park names the booked spend: ${row.summary}`);
+});
+
 test("a person's stop while a model node streams counts what it streamed and 1,024 tokens, never the hold", async (t) => {
   // A model node's request streams some text, then a person stops the run before it finishes: the stopped request's cost
   // is unknown, so the run books it at what it can have cost — its (free) input, each streamed byte as a token, and 1,024

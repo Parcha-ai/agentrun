@@ -265,6 +265,9 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const offered = nodeOffer(claimed.workflow);
     for (const [tier, provider] of providers) {
       const proxy = await startModelProxy({
+        // Each request names its tier's route (ModelRequest.route), so the cap prices it as that tier books it: two tiers
+        // on one model id (a plan's and a paid one) are held apart, never at the other's price (capModelOf).
+        route: providerId(tier),
         policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}), ...(provider.plan ? { plan: true } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
@@ -286,9 +289,21 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       if (!provider) throw new Error(`the workflow names tier ${String(tier)}, which this run has no model for`);
       return { provider: providerId(providers.has(resolved) ? resolved : "default"), modelId: provider.modelId, ...(provider.named ? { named: provider.named } : {}) };
     };
-    const capModelOf = (id: string): CapModel | undefined => {
-      for (const provider of providers.values()) if (provider.capModel.id === id) return provider.capModel;
-      return undefined;
+    // The cap's model of a request, by the route its tier's proxy names (the key its request is routed by), never by its
+    // bare id: a ChatGPT plan's tier and a paid tier of one model id are priced apart. A request read with no route takes
+    // the paid model of its id over a plan's, so a clash is never priced at the plan's $0.
+    const capModelOf = (id: string, route?: string): CapModel | undefined => {
+      if (route !== undefined) {
+        for (const [tier, provider] of providers) if (providerId(tier) === route) return provider.capModel.id === id ? provider.capModel : undefined;
+        return undefined;
+      }
+      let plan: CapModel | undefined;
+      for (const provider of providers.values()) {
+        if (provider.capModel.id !== id) continue;
+        if (!provider.capModel.plan) return provider.capModel;
+        plan ??= provider.capModel;
+      }
+      return plan;
     };
 
     // The cap read against every request: the run's cap, raised in place once harnessReady reads this claim's raise.

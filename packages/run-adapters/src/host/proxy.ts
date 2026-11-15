@@ -1350,8 +1350,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         const headers = new Headers(upstream.headers);
         headers.delete("content-encoding");
         headers.delete("content-length");
+        // The policy's answer keeps the provider's request ids (providerIdsOf reads them below), so the request's records
+        // still name it at the provider.
         upstream = final
-          ? new Response(JSON.stringify({ error: { message: final.message, type: "agentrun_proxy", code: final.code } }), { status: refusedStatus, headers: { "content-type": "application/json" } })
+          ? new Response(JSON.stringify({ error: { message: final.message, type: "agentrun_proxy", code: final.code } }), { status: refusedStatus, headers: { ...providerIdsOf(upstream.headers), "content-type": "application/json" } })
           : new Response(text, { status: upstream.status, headers });
         // The harness ends the turn in the policy's words, whatever its client makes of the answer.
         if (final) {
