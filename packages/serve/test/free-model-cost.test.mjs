@@ -76,8 +76,8 @@ async function rested(server) {
 }
 
 /** A pi run on `model` (MODELS) through the adapter loop, its first `fails` requests cut mid-answer (every one: Infinity),
- *  the rest answered by the script. */
-async function piRun(t, model, fails) {
+ *  the rest answered by the script; under a cap of `capUsd` when given (else uncapped). */
+async function piRun(t, model, fails, capUsd) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "free-model-cost-pi-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -96,7 +96,7 @@ async function piRun(t, model, fails) {
   const fetch = async (url, init) => (failed < fails ? ((failed += 1), cutMidAnswer()) : origin(url, init));
   const base = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch, price: MODELS[model].price });
   // The run's one cap, uncapped, pricing the session's model as MODELS says (the run's spec's capModelOf of its route).
-  const spec = async (claim, given) => ({ ...(await base(claim, given)), runCap: { capUsd: () => undefined, modelOf: () => MODELS[model].cap } });
+  const spec = async (claim, given) => ({ ...(await base(claim, given)), runCap: { capUsd: () => capUsd, modelOf: () => MODELS[model].cap } });
   runner = startRunner({ store, createLoop: createAdapterLoop(spec, { restartLimit: MAX_RESTARTS, retry: FAST }), name: "runner-a", ...TIMING });
   return rested(server);
 }
@@ -118,6 +118,13 @@ test("pi on a free model: a request cut mid-answer, then its retry answered: the
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
   assert.deepEqual({ usd: usage?.usage?.usd, free: usage?.usage?.free }, { usd: 0, free: true }, JSON.stringify(usage));
   assert.match(usage.summary, /^Cost: \$0 · free model over \d+ model requests?/, usage.summary);
+  assert.deepEqual({ usd: view?.cost?.usd, free: view?.cost?.free }, { usd: 0, free: true }, JSON.stringify(view?.cost));
+});
+
+test("pi on a free model under a $1 cap runs, never refused: a request cut mid-answer, then its retry answered, the run's cost a known $0, a free model", { timeout: 60_000 }, async (t) => {
+  const { row, usage, view } = await piRun(t, "free", 1, 1);
+  assert.equal(row.state, "ended", `the run ran to its end under the cap: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  assert.deepEqual({ usd: usage?.usage?.usd, free: usage?.usage?.free }, { usd: 0, free: true }, JSON.stringify(usage));
   assert.deepEqual({ usd: view?.cost?.usd, free: view?.cost?.free }, { usd: 0, free: true }, JSON.stringify(view?.cost));
 });
 

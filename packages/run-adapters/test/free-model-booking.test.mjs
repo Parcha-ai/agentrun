@@ -129,6 +129,15 @@ test('a guard: a paid model is unchanged: its answer at its price, its request c
   assert.deepEqual(lost.cost, { usd: null, soFarUsd: 0, unpriced: 1 });
 });
 
+test('a guard: a model whose price is partial (input or output missing) or $0 for one of them alone is never free: only $0 for both', async () => {
+  for (const price of [{ input: 0 }, { output: 0 }, { input: 0, output: 1 }, { input: 1, output: 0 }, { input: 0, output: 0, tiers: [{ inputTokensAbove: 200_000, input: 1, output: 0 }] }]) {
+    const model = { ...FREE, price };
+    const cap = runCap({ sessions: memorySessionStore(), capUsd: () => undefined, modelOf: () => model });
+    const verdict = await cap.before({ key: 'chat:b', label: 'chat:b', model: model.id, turn: 1, maxTurns: null, spentUsd: 0, inFlight: [], inputTokensMax: 100 });
+    assert.equal(verdict?.free, undefined, `${JSON.stringify(price)}: ${JSON.stringify(verdict)}`);
+  }
+});
+
 test('a guard: a free model whose request carries a fee (a native web search) is not free: the fee is a cost', async () => {
   const store = memorySessionStore();
   const cap = runCap({ sessions: store, capUsd: () => undefined, modelOf: () => FREE });
