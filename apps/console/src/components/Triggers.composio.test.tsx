@@ -79,11 +79,12 @@ function server({ triggers = [NIGHTLY, ISSUES], servers = SERVERS, create, updat
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof SchedulesPage>[0]["view"]) {
+type PageExtra = Omit<Partial<Parameters<typeof SchedulesPage>[0]>, "v2" | "view" | "go" | "agentName">;
+async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof SchedulesPage>[0]["view"], extra: PageExtra = {}) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const went: string[] = [];
-  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName: (id: string) => (id === "triage" ? "Triage" : id) })));
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName: (id: string) => (id === "triage" ? "Triage" : id), ...extra })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   // A button by its words, or by its aria-label when it shows an icon alone (Remove condition 1).
@@ -137,6 +138,35 @@ describe("Triggers: from an app (Composio)", () => {
     expect(t.text()).toContain("From an app");
     await t.click(/^New app trigger$/);
     expect(t.went).toEqual(["#/triggers/new-composio"]);
+  });
+
+  it("with no public address, New app trigger stays in sight but off, with the line that says how to give one; the other kinds stay on", async () => {
+    const LINE = "App triggers need this server's public address: set AGENTRUN_PUBLIC_URL and restart.";
+    const off = (t: Awaited<ReturnType<typeof open>>) => (t.button(/^New app trigger$/) as HTMLButtonElement).disabled;
+    let t = await open(server().v2, {}, { publicUrl: false });
+    expect(off(t)).toBe(true);
+    expect(t.text()).toContain(LINE);
+    expect((t.button(/^New webhook$/) as HTMLButtonElement).disabled).toBe(false);
+    await t.click(/^New app trigger$/);
+    expect(t.went).toEqual([]);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    // The first-trigger panel's card says it too.
+    t = await open(server({ triggers: [] }).v2, {}, { publicUrl: false });
+    expect(off(t)).toBe(true);
+    expect(t.text()).toContain(LINE);
+    expect((t.button(/^New webhook$/) as HTMLButtonElement).disabled).toBe(false);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    // Reached by its address all the same (Settings → MCP servers links it): the form says it, and Create stays off.
+    t = await open(server().v2, { trigger: null, kind: "composio" }, { publicUrl: false });
+    expect(t.text()).toContain(LINE);
+    expect((t.button(/^Create app trigger$/) as HTMLButtonElement).disabled).toBe(true);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    for (const triggers of [undefined, []]) {
+      t = await open(server(triggers ? { triggers } : {}).v2, {}, { publicUrl: true });
+      expect(off(t)).toBe(false);
+      expect(t.text()).not.toContain(LINE);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
   });
 
   it("offers the saved Composio servers, their events with each one's description, and its config's fields from the schema, the required ones marked", async () => {
@@ -197,8 +227,8 @@ describe("Triggers: from an app (Composio)", () => {
     await t.fill();
     await t.click(/^Create app trigger$/);
     const ask = t.host.querySelector('[role="alertdialog"][aria-label="Move the subscription here?"]')!;
-    expect(ask.textContent).toContain(ELSEWHERE);
-    expect(ask.textContent).toMatch(/every event of the project/i);
+    // Only another server or a tool of the person's can hold it: the question says what a move stops, in the server's words.
+    expect(ask.textContent).toContain(`Composio sends this project's events to ${ELSEWHERE} now. Moving them here stops them arriving there: anything listening at ${ELSEWHERE} (another AgentRun server, or a tool of yours) gets no more events.`);
     expect(t.went).toEqual([]);
     await t.click(/^Move it here$/);
     const [, moved] = s.posts();
