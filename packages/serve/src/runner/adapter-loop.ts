@@ -3652,13 +3652,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** At a park, before its seal: a pass whose spec keeps its desktop or phone (AdapterRunSpec.keptWords) has it kept for
-   *  the resume at its release (closeSession), and the run's timeline says so, for the person deciding. A write the fence
-   *  refuses (a lost claim) says nothing; the keep stands, its end at its time. */
+   *  the resume at its release (closeSession), once the run's timeline says so, for the person deciding. A write that
+   *  fails (the fence's refusal: a lost claim, whose run a later claim may hold already) keeps nothing: the computer goes
+   *  as at the run's end. */
   async function keepAtPark(on: Harness): Promise<void> {
     const summary = specNow?.keptWords;
     if (!summary) return;
-    parkedNow = true;
-    await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary, at: Date.now() } as unknown as JsonValue }), context).catch(() => undefined);
+    parkedNow = await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary, at: Date.now() } as unknown as JsonValue }), context).then(() => true, () => false);
   }
 
   /** The run's pause at its cap: its agentrun.budget entry, in one commit with the run parked in the cap's words. */

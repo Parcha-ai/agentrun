@@ -814,7 +814,8 @@ export async function computerForClaim(
         await revoke();
       }
     })());
-  // Only the computer the claim holds now is kept: one a person's take-over or a lost claim already let go is not.
+  // A park keeps the desktop or phone this claim made or took back, while the claim still holds it (park(): one its
+  // release already let go is not).
   const keeps = computer && keepable && store.settings ? keepable : undefined;
   const settings = store.settings;
   return {
