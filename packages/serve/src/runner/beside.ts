@@ -86,7 +86,10 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
     const line = runLine(event);
     if (line) (onLine ?? console.log)(line);
   };
-  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store), onEvent: said, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
+  const { runEndComputers } = await import("../workspace/run-end-computers.js");
+  const runEnded = runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`) });
+  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store), onEvent: said, runEnded, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
