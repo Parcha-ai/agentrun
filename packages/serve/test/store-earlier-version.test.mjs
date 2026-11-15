@@ -178,7 +178,7 @@ test("a store an earlier build of this version made (no runs.cost_upper_bound) o
       check.close();
     }
     const row = await store.runs.get("run-old");
-    assert.deepEqual([row.costUsd, row.costUpperBound], [0.5, false], "a run ended before reads its stored cost as exact, as it was read then");
+    assert.deepEqual([row.costUsd, row.costAtMostUsd], [0.5, null], "a run ended before reads its stored cost as exact, as it was read then");
   } finally {
     await store.close();
   }

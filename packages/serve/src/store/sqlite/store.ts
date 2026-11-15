@@ -31,7 +31,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
 };
 import { type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -1238,7 +1238,7 @@ class SqliteStore implements Store {
       spend: async ({ from, to }) => {
         type SpendRecord = { agent_id: string; proposal: string; created_at: number; learning_run_id: string | null; run_state: RunState | null; run_ended_at: number | null; run_cost_usd: number | null };
         const rows = await db.all<SpendRecord>(
-          `SELECT lp.agent_id, lp.proposal, lp.created_at, lp.learning_run_id, lr.state AS run_state, lr.ended_at AS run_ended_at, lr.cost_usd AS run_cost_usd
+          `SELECT lp.agent_id, lp.proposal, lp.created_at, lp.learning_run_id, lr.state AS run_state, lr.ended_at AS run_ended_at, ${EXACT_COST_USD("lr")} AS run_cost_usd
              FROM learning_proposals lp
              JOIN runs src ON src.id = lp.run_id
              LEFT JOIN runs lr ON lr.id = lp.learning_run_id
@@ -1258,7 +1258,7 @@ class SqliteStore implements Store {
       spentBeside: async (runId, { beforeRound } = {}) => {
         type BesideRecord = { state: RunState | null; cost_usd: number | null; body: string | null };
         const rows = await db.all<BesideRecord>(
-          `SELECT lr.state, lr.cost_usd, rl.body
+          `SELECT lr.state, ${EXACT_COST_USD("lr")} AS cost_usd, rl.body
              FROM learning_proposals lp
              LEFT JOIN runs lr ON lr.id = lp.learning_run_id
              LEFT JOIN run_launch rl ON rl.run_id = lp.learning_run_id

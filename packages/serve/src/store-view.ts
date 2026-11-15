@@ -451,6 +451,9 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // no stored cost (its column is written only at the end), so it reads undefined, which costView turns into 0 before any
   // request — never null.
   const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
+  // The most it can have cost, when that is what its end stored (RunRow.costAtMostUsd): the view is a reader that says
+  // "at most", so it shows that figure, marked upper_bound.
+  const storedAtMost = run.row.state === "running" ? null : run.runRow.costAtMostUsd;
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
   // An ended run that booked its requests reads the cost its end stored by its booking (runCostOf), the answer the list,
@@ -460,12 +463,12 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // are unknown. An end that wrote no cost (a spec that reads none) left the column alone: the booking is the answer then.
   const booked = run.endCost;
   const said = booked !== undefined && run.endSaidCost === true;
-  const usd = booked ? (said ? (stored ?? null) : booked.usd) : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
+  const usd = booked ? (said ? (stored ?? storedAtMost ?? null) : booked.usd) : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
   // A hold booked as a bound is never spend: while the total is unknown, each such request counts as not priced.
   const counted = booked ? (usd === null && booked.usd === null ? { so_far_usd: booked.known, unpriced: booked.unpriced } : undefined) : usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced + decisions.atMost } : undefined) : undefined;
   // Its figure counts a request cut with no answer at its hold (runner.ts CUT_AT_HOLD): the most it can have cost. An ended
   // run's says so as its end stored it beside the figure (cost_upper_bound), the bound the list and the column read too.
-  const upper = booked ? (usd !== null && (said ? run.runRow.costUpperBound : booked.atMost > 0) ? { upper_bound: true as const } : undefined) : imported ? undefined : boundOf(run.rows, usd, decisions?.atMost);
+  const upper = booked ? (usd !== null && (said ? storedAtMost !== null : booked.atMost > 0) ? { upper_bound: true as const } : undefined) : imported ? undefined : boundOf(run.rows, usd, decisions?.atMost);
   // A request billed to a ChatGPT plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
   // $0, so it is in no unpriced count; what it used on the plan is said beside the figure.
   const plan = run.plan;

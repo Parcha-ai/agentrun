@@ -43,5 +43,7 @@ export async function metersOverStore(store: Store, runId: string, context: Cont
   if (!costIsBooked(raw, isCliRecord(raw))) return figures;
   const model = bookedSpend(raw, "model");
   if (!model.requests) return unbookedCli(raw) ? { ...figures, tokens: null } : figures;
-  return { ...figures, tokens: model.usd, known: { ...figures.known, tokens: model.known } };
+  // /usage says no "at most": a request booked at its hold (`bounded`) is no spend there, so its meter is unknown, as for
+  // a request of no known cost, and its known dollars are the exact charges alone.
+  return { ...figures, tokens: model.bounded > 0 ? null : model.usd, known: { ...figures.known, tokens: model.known } };
 }

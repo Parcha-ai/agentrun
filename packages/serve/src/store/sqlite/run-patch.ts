@@ -31,9 +31,19 @@ export type RunRecord = {
 
 export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, started_at, ended_at";
 
+/** A run's exact cost in SQL, for a query that reads runs.cost_usd itself (`alias`: its runs table's): NULL when the
+ *  stored figure is only the most the run can have cost, as runOf reads it. Every raw read of the column goes through it. */
+export const EXACT_COST_USD = (alias: string): string => `CASE WHEN ${alias}.cost_upper_bound = 1 THEN NULL ELSE ${alias}.cost_usd END`;
+
+const costOf = (usd: number | null, bound: unknown): Pick<RunRow, "costUsd" | "costAtMostUsd"> =>
+  usd !== null && Number(bound) === 1 ? { costUsd: null, costAtMostUsd: usd } : { costUsd: usd, costAtMostUsd: null };
+
+/** The run row from its record. The stored cost splits here, once, for every reader: an exact cost (or null) is `costUsd`;
+ *  a cost stored as the most the run can have cost (cost_upper_bound 1) is `costAtMostUsd` alone, and `costUsd` reads null,
+ *  as for a cost no one knows. So a reader that sums or shows spend never reads a bound, with no check of its own. */
 export const runOf = (r: RunRecord): RunRow => ({
   id: r.id, agentId: r.agent_id, revisionId: r.revision_id, state: r.state, epoch: r.epoch, runner: r.runner, claimedUntil: r.claimed_until,
-  wakeAt: r.wake_at, backoffUntil: r.backoff_until, costUsd: r.cost_usd, costUpperBound: r.cost_usd !== null && Number(r.cost_upper_bound) === 1, metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
+  wakeAt: r.wake_at, backoffUntil: r.backoff_until, ...costOf(r.cost_usd, r.cost_upper_bound), metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
   signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), startedAt: r.started_at, endedAt: r.ended_at,
 });

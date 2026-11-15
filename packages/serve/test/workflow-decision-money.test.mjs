@@ -692,9 +692,10 @@ test("a decision whose booking a crash lost at its settle never reached its rece
   assert.deepEqual([records.filter((r) => r.kind === "runner.request").length, turns.map((d) => [d.cut === true, d.usd])], [1, [[true, null]]], `one booking, cut by the next claim: ${JSON.stringify(records)}`);
   near(sessionSpendOf(records).spentUsd, request.heldUsd, "the cap counts it at its hold, its worst case");
   // Booked cut at its hold, an upper bound (runner.ts CUT_AT_HOLD), as a pi run's cut request is: the stored cost is the
-  // booking's (runCostOf), so the run's cost is known, at most that hold, never blanked.
+  // booking's (runCostOf), stored as the most it can have cost: the row reads that hold apart, never as its cost.
   assert.deepEqual(turns.map((d) => [d.bookedUsd, d.rule, d.atMost]), [[request.heldUsd, "cut", true]], `booked at its hold, the most it can have cost: ${JSON.stringify(turns)}`);
-  near(row.costUsd, request.heldUsd, `its cost is that hold, read from the booking: ${JSON.stringify(row)}`);
+  assert.equal(row.costUsd, null, `its cost is unknown, never its hold: ${JSON.stringify(row)}`);
+  near(row.costAtMostUsd, request.heldUsd, `at most that hold, read from the booking: ${JSON.stringify(row)}`);
 });
 
 test("a decision whose receipt a crash lost after its settle counts at what it charged on the next claim, never at its larger hold", async (t) => {

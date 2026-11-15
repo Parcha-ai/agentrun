@@ -219,13 +219,11 @@ test("a request its runner was lost in, before any answer or usage, is booked at
   assert.ok(typeof held === "number" && held > 0, `the lost request was held for under the cap: ${JSON.stringify(entries.filter((e) => /^(runner\.|agentrun\.session)/.test(e.kind)).map((e) => [e.conversationId, e.kind, e.data]))}`);
   assert.deepEqual(first("runner.turn"), [{ usd: null, cut: true, turn: 1, bookedUsd: held, rule: "cut", atMost: true }], "booked once, cut, at its hold, marked an upper bound");
   const total = Math.round((held + REQUEST_USD) * 1e12) / 1e12;
-  assert.equal(row.costUsd, total, "the stored cost counts the cut at its hold, never unknown");
+  // The bound is stored beside the figure in the end's commit (the run row's cost_upper_bound), and the row reads it apart:
+  // its exact cost unknown, the figure the most it can have cost. No reader of costUsd takes the bound for its cost.
+  assert.deepEqual([row.costUsd, row.costAtMostUsd], [null, total], "the stored cost counts the cut at its hold, as the most the run can have cost, never as its cost");
   assert.deepEqual({ usd: view.cost.usd, upper_bound: view.cost.upper_bound, unpriced: view.cost.unpriced }, { usd: total, upper_bound: true, unpriced: undefined }, `the view says the same figure, as the most it can be: ${JSON.stringify(view.cost)}`);
-  assert.equal(listed.costUsd, total);
-  // The bound is stored beside the figure in the end's commit (the run row's cost_upper_bound), and the list says it as
-  // the view does: no reader of the stored cost takes the most it can have cost for its cost.
-  assert.equal(row.costUpperBound, true, "the stored cost is marked the most the run can have cost");
-  assert.equal(listed.costUpperBound, true, `the list row says at most: ${JSON.stringify(listed)}`);
+  assert.deepEqual([listed.costUsd, listed.costAtMostUsd], [undefined, total], `the list row says at most, apart: ${JSON.stringify(listed)}`);
   assert.equal(usage?.usage?.upper_bound, true, `the usage row marks it: ${JSON.stringify(usage)}`);
   assert.match(usage.summary, /at most \$/, "and says it in words");
 });
@@ -247,7 +245,7 @@ test("a ChatGPT plan request its runner was lost in, before any answer, is booke
   });
   const records = JSON.stringify(entries.filter((e) => /^runner\./.test(e.kind)).map((e) => [e.kind, e.data]));
   assert.deepEqual({ stored: row.costUsd, listed: listed.costUsd ?? null, view: view.cost.usd, unpriced: view.cost.unpriced, upper_bound: view.cost.upper_bound }, { stored: 0, listed: 0, view: 0, unpriced: undefined, upper_bound: undefined }, `the stored cost, the list and the view read a known $0, never unknown: ${JSON.stringify(view.cost)} ${records}`);
-  assert.deepEqual([row.costUpperBound, listed.costUpperBound], [false, undefined], "a cost the plan paid is exact, never stored as a bound");
+  assert.deepEqual([row.costAtMostUsd, listed.costAtMostUsd], [null, undefined], "a cost the plan paid is exact, never stored as a bound");
   assert.equal(first("runner.request")[0]?.plan, true, `its record says it is the plan's: ${records}`);
   assert.deepEqual(first("runner.turn"), [{ usd: null, cut: true, turn: 1, bookedUsd: 0, rule: "cut", billing: "plan" }], "booked once, cut, at $0, the plan's");
   assert.equal(view.cost.plan?.requests, 2, `what it used on the plan counts both requests, the cut one too: ${JSON.stringify(view.cost)}`);

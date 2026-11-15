@@ -5,7 +5,8 @@
 //   - any charge of no known cost: the cost is unknown, so_far_usd is the exact charges alone and the held request counts
 //     with the unpriced, so a ceiling never reads as known spend;
 //   - the view says the cost the run's end stored, the list's and the column's: one answer, never a figure the end did not
-//     write.
+//     write; the store's row reads a stored bound apart (costAtMostUsd), never as its cost (costUsd);
+//   - GET /usage says no "at most": a run whose stored cost is a bound counts there as one of unknown cost.
 // Each run's journal is written as its runner writes it (the booking's runner.request and runner.turn records in the
 // harness session, a pi run's request marks on its root) and ended as its end commit ends it.
 import assert from "node:assert/strict";
@@ -13,6 +14,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
+import { serve } from "./support.mjs";
 
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
@@ -39,8 +41,17 @@ function booking({ unpriced = false, side } = {}) {
 
 /** A run of `harness` ("pi" or "claude-agent") whose journal is `root` (kind, data, model) on its root and `records` in
  *  its harness session, ended with `costUsd` as its end stored it. Returns its view's cost, its usage row and its list row. */
-async function endedRun(t, { harness, root, records, costUsd, costUpperBound = false }) {
+async function endedRun(t, run) {
   const { store } = await storeOn(t);
+  await seeded(store, run);
+  const view = await viewOverStore(store, "run-1", deps);
+  const rows = await runTimeline(store, "run-1", ctx, { settled: true, ended: true });
+  const listed = (await listRuns(store, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
+  return { cost: view.cost, usage: rows.findLast((row) => row.kind === "usage"), listed };
+}
+
+/** Run-1 of agent-1 on `store`, its journal written and its end committed as endedRun's. */
+async function seeded(store, { harness, root, records, costUsd, costUpperBound = false }) {
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness === "pi" ? {} : { harness }) } });
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Hi" }, title: "t", place: { mode: "runner" } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
@@ -55,10 +66,6 @@ async function endedRun(t, { harness, root, records, costUsd, costUpperBound = f
   writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.end", data: { state: "ended", summary: "done", costUsd, ...(costUpperBound ? { costUpperBound } : {}) } } });
   await commitWrites(journal, writes, ctx);
   await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "done", costUsd, costUpperBound, endedAt: T0 + 10 });
-  const view = await viewOverStore(store, "run-1", deps);
-  const rows = await runTimeline(store, "run-1", ctx, { settled: true, ended: true });
-  const listed = (await listRuns(store, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
-  return { cost: view.cost, usage: rows.findLast((row) => row.kind === "usage"), listed };
 }
 
 /** A CLI harness's record: the person's message and the model's answers (its cost is its booking's). */
@@ -88,7 +95,7 @@ test("a CLI run whose every charge is counted, one at its hold: the usage row ke
   assert.deepEqual([cost.usd, cost.upper_bound], [0.26, true], `the view: ${JSON.stringify(cost)}`);
   assert.deepEqual(usage?.usage, { usd: 0.26, requests: 2, upper_bound: true }, `the usage row: ${JSON.stringify(usage)}`);
   assert.match(usage.summary, /at most \$0\.2600 over 2 model requests/);
-  assert.deepEqual([listed.costUsd, listed.costUpperBound], [0.26, true], `the list says at most from the stored bound: ${JSON.stringify(listed)}`);
+  assert.deepEqual([listed.costUsd, listed.costAtMostUsd], [undefined, 0.26], `the list says at most from the stored bound, never as its cost: ${JSON.stringify(listed)}`);
 });
 
 test("a pi run whose cut request is marked at its hold beside an answer of no known cost: the usage row's known part is the exact $0.01, both counted unpriced", async (t) => {
@@ -114,3 +121,18 @@ test("an ended run whose end stored its cost unknown (its read failed) while its
   assert.equal(listed.costUsd ?? null, null, "the list reads the column");
   assert.equal(cost.usd, null, `the view agrees with the list: ${JSON.stringify(cost)}`);
 });
+
+// GET /usage says no "at most": a ledger of what was spent. A run whose stored cost is a bound counts there as a run of
+// unknown cost does: unpriced, with only its exact charges in the total and its lines, by agent and by meter.
+for (const [harness, root] of [["claude-agent", cliRecord], ["pi", piRoot()]]) {
+  test(`GET /usage: an ended ${harness} run whose stored cost is the most it can have cost counts unpriced, its exact $0.01 alone spent, its hold in no total or line`, async (t) => {
+    const server = await serve(t, { runner: false });
+    await seeded(server.store, { harness, root, records: booking(), costUsd: 0.26, costUpperBound: true });
+    for (const group of ["agent", "meter"]) {
+      const usage = (await server.api("GET", `/usage?group_by=${group}`)).body;
+      assert.deepEqual([usage.total_usd, usage.unpriced_runs], [0.01, 1], `by ${group}, the total: ${JSON.stringify(usage)}`);
+      const line = usage.lines.find((one) => one.group === (group === "agent" ? "agent-1" : "tokens"));
+      assert.deepEqual([line?.usd, line?.unpriced_runs], [0.01, 1], `by ${group}, its line: ${JSON.stringify(usage.lines)}`);
+    }
+  });
+}

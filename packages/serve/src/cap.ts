@@ -272,7 +272,8 @@ export function meterFiguresFrom(rows: readonly { conversation: number; entry: E
   }
   const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
   const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
-  const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
+  // A hold is no charge here (/usage says no "at most"): read as a cost no one knows, beside the exact charges.
+  const usage = timelineOf(rest, { settled: true, holdsUnpriced: true }).find((row) => row.kind === "usage");
   const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
   known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
   const notMetered = usage?.usage?.not_metered;
