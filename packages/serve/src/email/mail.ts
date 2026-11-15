@@ -16,6 +16,13 @@ import { type Endpoint, type OpenedAccount, securityOf } from "./account.js";
 export const CONNECT_TIMEOUT_MS = 15_000;
 /** How long a connection may sit with no answer. */
 export const SOCKET_TIMEOUT_MS = 60_000;
+/** A test's IMAP socket timeout, in place of every other (setSocketTimeoutForTests). */
+let testSocketTimeoutMs: number | undefined;
+/** Tests only: every IMAP session's socket timeout made `ms` (undefined: each its own again), so a server that never
+ *  answers is given up on in a test's time. */
+export function setSocketTimeoutForTests(ms: number | undefined): void {
+  testSocketTimeoutMs = ms;
+}
 /** The most of a message a search reads: its headers and the start of its text, for the snippet. */
 export const SEARCH_BYTES = 256 * 1024;
 /** The most of a message a read or a poll takes. */
@@ -282,7 +289,7 @@ export async function withImap<T>(account: OpenedAccount, work: (session: ImapSe
     disableCompression: true,
     connectionTimeout: CONNECT_TIMEOUT_MS,
     greetingTimeout: CONNECT_TIMEOUT_MS,
-    socketTimeout: SOCKET_TIMEOUT_MS,
+    socketTimeout: testSocketTimeoutMs ?? SOCKET_TIMEOUT_MS,
   });
   // A socket error after a command is answered by the command that waits on it; one with none waiting must not throw.
   client.on("error", () => {});

@@ -19,14 +19,32 @@ const calls = (list) => `Email calls: ${JSON.stringify(list)}`;
 
 /** A thread of three in the account, and a message apart from it in INBOX and one in Archive: ana's first message, our
  *  reply in Sent, ana's answer; then the others. Each Message-ID fixed, so a run's calls can name them. */
-function thread(faux) {
+function thread(faux, archive = "Archive") {
   const first = faux.seed({ from: "Ana Díaz <ana@example.com>", to: [ADDRESS], subject: "Plan", text: "Shall we plan the launch?", date: "2026-05-01T10:00:00Z", messageId: "<m1@example.com>" });
   const reply = faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["ana@example.com"], subject: "Re: Plan", text: "Yes, Tuesday.", date: "2026-05-01T11:00:00Z", messageId: "<m2@faux.example>", inReplyTo: "<m1@example.com>", references: ["<m1@example.com>"], flags: ["\\Seen"] });
   const apart = faux.seed({ from: "Cy <cy@example.com>", to: [ADDRESS], subject: "Lunch", text: "Lunch on Friday?", date: "2026-05-01T12:00:00Z", messageId: "<u1@example.com>" });
-  const archived = faux.seed({ mailbox: "Archive", from: "Dee <dee@example.com>", subject: "Old news", text: "Archived.", date: "2026-04-01T12:00:00Z", messageId: "<a1@example.com>", flags: ["\\Seen"] });
+  const archived = faux.seed({ mailbox: archive, from: "Dee <dee@example.com>", subject: "Old news", text: "Archived.", date: "2026-04-01T12:00:00Z", messageId: "<a1@example.com>", flags: ["\\Seen"] });
   return { first, reply, apart, archived };
 }
 const answer = (faux) => faux.seed({ from: "Ana Díaz <ana@example.com>", to: [ADDRESS], cc: ["Bo <bo@example.com>"], subject: "Re: Plan", text: "Tuesday works. Bring the slides.", date: "2026-05-01T13:00:00Z", messageId: "<m3@example.com>", inReplyTo: "<m2@faux.example>", references: ["<m1@example.com>", "<m2@faux.example>"], attachments: [{ name: "slides.txt", type: "text/plain", content: "one two" }] });
+
+const { setSocketTimeoutForTests } = await import("../dist/email/mail.js");
+
+/** The fake account for a layout: "standard", a plain account's; "gmail", Gmail's (X-GM-EXT-1), whose search by In-Reply-To
+ *  never answers, as Gmail's on a large mailbox, with every IMAP socket timeout 3 s so a search by it fails in a test's
+ *  time. */
+async function account(t, layout, options = {}) {
+  if (layout === "standard") return mailbox(t, options);
+  return slowSearch(t, { layout: "gmail", ...options });
+}
+/** A fake account whose search by In-Reply-To never answers, every IMAP socket timeout 3 s. */
+async function slowSearch(t, options = {}) {
+  setSocketTimeoutForTests(3_000);
+  t.after(() => setSocketTimeoutForTests(undefined));
+  return mailbox(t, { slowInReplyTo: true, ...options });
+}
+/** Where an archived message is on a layout. */
+const archiveOf = (layout) => (layout === "gmail" ? "[Gmail]/All Mail" : "Archive");
 
 /** Agent `id` on pi with the four email tools (or `tools`), told nothing of its own. */
 const mailAgent = (id, extra = {}) => agent(id, { harness: "pi", tools: TOOLS, ...extra });
@@ -161,11 +179,11 @@ test("email_send asks, saying to whom and what; a deny sends nothing; an allow s
   }
 });
 
-test("a run an email started sees its thread alone, in any mailbox; `scope: \"mailbox\"` on the agent's tools widens it; a scheduled run sees the whole account", { timeout: 150_000 }, async (t) => {
+for (const layout of ["standard", "gmail"]) test(`${layout}: a run an email started sees its thread alone, in any mailbox; \`scope: "mailbox"\` on the agent's tools widens it; a scheduled run sees the whole account`, { timeout: 150_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:30Z");
   const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });
-  const faux = await mailbox(t);
-  thread(faux);
+  const faux = await account(t, layout);
+  thread(faux, archiveOf(layout));
   await saved(api, faux);
   const list = [
     ["email_read", { message_id: "<m1@example.com>" }],
@@ -297,10 +315,10 @@ test("email_read of a long thread reads the newest 20 at most: the bodies fetche
   assert.ok(bodies.length <= 21, `at most 20 bodies and the asked-for message's: ${bodies.length}`);
 });
 
-test("a sender's References grant nothing alone: a run mallory's mail started can't read, find or file carol's conversation it names; bob's reply to our mail to him still reads it", { timeout: 150_000 }, async (t) => {
+for (const layout of ["standard", "gmail"]) test(`${layout}: a sender's References grant nothing alone: a run mallory's mail started can't read, find or file carol's conversation it names; bob's reply to our mail to him still reads it`, { timeout: 150_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:30Z");
   const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });
-  const faux = await mailbox(t);
+  const faux = await account(t, layout);
   // Carol's conversation with the account, and its reply from her: nothing to do with mallory.
   faux.seed({ from: "Carol <carol@example.com>", to: [ADDRESS], subject: "Contract", text: "The signed contract is attached.", date: "2026-05-01T10:00:00Z", messageId: "<x1@example.com>" });
   faux.seed({ from: "Carol <carol@example.com>", to: [ADDRESS], subject: "Re: Contract", text: "And the invoice.", date: "2026-05-01T11:00:00Z", messageId: "<x2@example.com>", inReplyTo: "<x1@example.com>", references: ["<x1@example.com>"] });
@@ -336,7 +354,7 @@ test("a sender's References grant nothing alone: a run mallory's mail started ca
   assert.deepEqual(search.messages?.map((m) => m.message_id), ["<mal1@example.net>"], `a search finds mallory's own, none of carol's: ${JSON.stringify(search)}`);
   assert.match(String(file), /outside this run's thread/, `email_file of carol's message: ${JSON.stringify(file)}`);
   assert.match(String(b0), /outside this run's thread/, "the account's mail to bob is not mallory's");
-  assert.deepEqual(faux.messages("INBOX").find((m) => m.messageId === "<x1@example.com>")?.labels ?? [], [], "carol's message filed nowhere");
+  assert.deepEqual(faux.messages("INBOX").find((m) => m.messageId === "<x1@example.com>")?.labels ?? [], layout === "gmail" ? ["\\Inbox"] : [], "carol's message filed nowhere");
   assert.ok(!faux.mailboxes().includes("Kept"), "no folder made for it");
 
   const [, , , , bobB0] = await sawFor(bob.messageId);
@@ -362,4 +380,65 @@ test("on a thread run, email_search's limit counts only what the sender may read
   await follow(api, fired.run_id, ["completed"], { deadlineMs: 55_000 });
   const [search] = sawOf((await api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer);
   assert.deepEqual(search.messages?.map((m) => m.message_id), ["<al1@example.com>"], `limit 1 finds alice's own message, not nothing: ${JSON.stringify(search)}`);
+});
+
+/** A thread run of agent `id` (`tools`) with `list` as its calls, started by message `trigger` seeded once the trigger is
+ *  made, to its end: what its calls were answered. */
+async function threadRun({ api, clock }, faux, id, list, trigger, tools = TOOLS) {
+  assert.equal((await api("POST", "/agents", mailAgent(id, { tools }))).status, 201);
+  const made = await api("POST", "/triggers", emailTrigger(id, { every_s: 60 }, calls(list)));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = faux.seed({ date: "2026-06-01T00:00:40Z", ...trigger });
+  clock.to("2026-06-01T00:01:00Z");
+  await checked(api, made.body.id, "2026-06-01T00:01:00Z");
+  const fired = (await firings(api, made.body.id, 2)).find((f) => f.key === keyOf("email", made.body.id, started.messageId));
+  assert.equal(fired?.status, "started");
+  await follow(api, fired.run_id, ["completed"], { deadlineMs: 55_000 });
+  return sawOf((await api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer);
+}
+/** The server with a fake trigger clock. */
+async function served(t) {
+  const clock = fakeClock("2026-06-01T00:00:30Z");
+  const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });
+  return { api, clock };
+}
+/** Ana's answer to our reply, the message that starts the run: m3 of thread(). */
+const ANSWER = { from: "Ana Díaz <ana@example.com>", to: [ADDRESS], subject: "Re: Plan", text: "Tuesday works.", messageId: "<m3@example.com>", inReplyTo: "<m2@faux.example>", references: ["<m1@example.com>", "<m2@faux.example>"] };
+
+test("on Gmail, which searches by In-Reply-To for minutes on a large mailbox: a thread run's search, thread read and file all answer, and no search by In-Reply-To is ever sent", { timeout: 150_000 }, async (t) => {
+  const server = await served(t);
+  const faux = await account(t, "gmail");
+  thread(faux, archiveOf("gmail"));
+  await saved(server.api, faux);
+  const [search, whole, file] = await threadRun(server, faux, "gmailer", [
+    ["email_search", {}],
+    ["email_read", { message_id: "<m3@example.com>", thread: true }],
+    ["email_file", { message_id: "<m3@example.com>", to: "Handled" }],
+  ], ANSWER, [...TOOLS, "email_file"]);
+  assert.deepEqual(search.messages?.map((m) => m.message_id), ["<m3@example.com>", "<m1@example.com>"], `search: ${JSON.stringify(search)}`);
+  assert.deepEqual(whole.messages?.map((m) => m.message_id), ["<m1@example.com>", "<m2@faux.example>", "<m3@example.com>"], `thread read: ${JSON.stringify(whole)}`);
+  assert.equal(file?.filed, true, `file: ${JSON.stringify(file)}`);
+  assert.deepEqual(faux.messages("INBOX").find((m) => m.messageId === "<m3@example.com>")?.labels, ["\\Inbox", "Handled"]);
+  assert.deepEqual(faux.commands().filter((c) => /HEADER\s+"?In-Reply-To/i.test(c)), [], "no search by In-Reply-To");
+});
+
+test("elsewhere a thread is still found by In-Reply-To too: our reply that names ana's message by In-Reply-To alone is in her thread", { timeout: 150_000 }, async (t) => {
+  const server = await served(t);
+  const faux = await mailbox(t);
+  faux.seed({ from: "Ana Díaz <ana@example.com>", to: [ADDRESS], subject: "Plan", text: "Shall we plan the launch?", date: "2026-05-01T10:00:00Z", messageId: "<m1@example.com>" });
+  faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["ana@example.com"], subject: "Re: Plan", text: "Yes, Tuesday.", date: "2026-05-01T11:00:00Z", messageId: "<m2@faux.example>", inReplyTo: "<m1@example.com>", flags: ["\\Seen"] });
+  await saved(server.api, faux);
+  const [whole] = await threadRun(server, faux, "linked", [["email_read", { message_id: "<m3@example.com>", thread: true }]], { ...ANSWER, inReplyTo: "<m1@example.com>", references: ["<m1@example.com>"] });
+  assert.deepEqual(whole.messages?.map((m) => m.message_id), ["<m1@example.com>", "<m2@faux.example>", "<m3@example.com>"], JSON.stringify(whole));
+  assert.ok(faux.commands().some((c) => /HEADER\s+"?In-Reply-To/i.test(c)), "searched by In-Reply-To");
+});
+
+test("elsewhere, a search the mail server takes too long to answer says so, not that the server couldn't be reached", { timeout: 150_000 }, async (t) => {
+  const server = await served(t);
+  const faux = await slowSearch(t);
+  thread(faux);
+  await saved(server.api, faux);
+  const [search] = await threadRun(server, faux, "patient", [["email_search", {}]], ANSWER);
+  assert.match(String(search), /took too long to search/, JSON.stringify(search));
+  assert.doesNotMatch(String(search), /Couldn't reach/);
 });
