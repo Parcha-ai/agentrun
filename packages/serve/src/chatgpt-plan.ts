@@ -38,8 +38,10 @@ const REFRESH_MARGIN_MS = 5 * 60_000;
 /** The longest one refresh call at OpenAI may take: its holder gives it up by then. */
 const REFRESH_CALL_MS = 15_000;
 /** A refresh lease's length: the call, the write back (STORE_WRITE_DEADLINE_MS) and 5 s spare, so a lease never lapses
- *  while its holder may still spend the token. Judged on each reader's own clock: a reader whose clock runs ahead of the
- *  holder's by more than the spare could take a live lease. */
+ *  while its holder may still spend the token. Its end is written on the holder's clock and judged on each reader's own:
+ *  sealed_keys has no store clock to lease by, so a reader whose clock runs more than the 5 s spare ahead of the holder's
+ *  can take a lease still live, and send a refresh token the holder may be spending (which OpenAI answers by revoking
+ *  the sign-in). Hosts that share a store keep their clocks in step (NTP) for this. */
 const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 5_000;
 /** How often a reader waiting on a peer's renewal reads the row again. */
 const LEASE_WAIT_MS = 200;
@@ -114,6 +116,14 @@ function whoOf(token: string): { email?: string; plan?: string } {
 /** Whether a renewal's refusal is for good: the refresh token spent, expired or revoked (a 400 or 401 from the token
  *  endpoint, as pi-ai words it), not a network fault or a 5xx. */
 const refusedForGood = (error: unknown): boolean => /\((400|401)\)|invalid_grant|refresh_token_(reused|expired|invalidated)/.test(String((error as Error)?.message ?? ""));
+
+/** Whether a renewal that failed surely left its refresh token unspent: OpenAI answered with a fault (a 5xx, a 429), or
+ *  the request never reached it (no address, no connection). A timeout, or a fault once it was sent, may have spent it. */
+function unspent(error: unknown): boolean {
+  if (/token request failed \((?!400|401)\d{3}\)/.test(String((error as Error)?.message ?? ""))) return true;
+  const code = (error as { cause?: { code?: unknown } })?.cause?.code;
+  return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN";
+}
 
 /** The renewals in flight in this process, by the refresh token they spend: two readers of one sign-in share one. */
 const flights = new Map<string, Promise<string>>();
@@ -396,8 +406,10 @@ export class ChatGPTPlan implements PlanReader {
       next = (await openaiProvider().auth.oauth!.refresh(bare.credential, AbortSignal.timeout(REFRESH_CALL_MS))) as Credential;
     } catch (error) {
       if (!refusedForGood(error)) {
-        // No answer, or a fault at OpenAI: the token may be unspent, so the lease is given back for the next try.
-        await this.swap(bytes, bare).catch(() => undefined);
+        // A fault at OpenAI, or none reached: the token is unspent, so the lease is given back for the next try. Sent
+        // with no answer read (a timeout, a lost connection): it may be spent, so the lease is held to its end, and no
+        // one sends it again sooner.
+        if (unspent(error)) await this.swap(bytes, bare).catch(() => undefined);
         throw new PlanUnavailable(RENEW_LATER);
       }
       const expired: Row = { ...bare, state: "expired" };
@@ -405,8 +417,9 @@ export class ChatGPTPlan implements PlanReader {
         this.snapshot = expired;
         this.deps.log?.({ chatgpt: "expired" });
         await this.deps.changed?.();
+        throw new PlanUnavailable(EXPIRED);
       }
-      throw new PlanUnavailable(EXPIRED);
+      return this.adopt();
     }
     const renewed: Row = { ...bare, credential: { ...bare.credential, ...next } };
     this.hold(renewed.credential);
@@ -414,7 +427,12 @@ export class ChatGPTPlan implements PlanReader {
       this.snapshot = renewed;
       return renewed.credential.access;
     }
-    // The owner signed out or in again while it renewed: the row's state wins.
+    return this.adopt();
+  }
+
+  /** After a renewal whose write back lost its compare-and-set (the owner signed out or in again meanwhile): its result
+   *  is dropped, and the row's state wins. */
+  private async adopt(): Promise<string> {
     const now = await this.read();
     this.snapshot = now;
     if (!now) throw new PlanUnavailable(SIGNED_OUT);
