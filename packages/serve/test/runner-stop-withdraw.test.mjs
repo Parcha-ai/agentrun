@@ -107,8 +107,11 @@ function watched(store, { onEnd = async () => {}, onRead = () => {} }) {
 
 /** One pi run whose model calls `add`, which its gate asks about (or, `permission` "allow", runs), on a runner whose
  *  store is `watched` with `hooks`, on the store's clock. Parked on the call unless `parks` is false; `before` is done
- *  to the queued run before its runner starts. */
-async function runOf(t, hooks = {}, { permission = "ask", parks = true, before } = {}) {
+ *  to the queued run before its runner starts. `sibling`: the same answer also calls `slow`, allowed, which runs until
+ *  its signal aborts, and `add` is asked about only once slow runs: the park waits for slow (siblingsSettled, bounded
+ *  by the hang guard here), so the run reads parked while the claim it parked under still holds it, for as long as the
+ *  test needs, never on a timer. */
+async function runOf(t, hooks = {}, { permission = "ask", parks = true, before, sibling = false } = {}) {
   // Only explicit skew steps expire these retry backoffs; wall-clock assertion deadlines and polling still run normally.
   // The store's wait for another connection's write lock is a wall-clock budget too (10 s by default): a hang guard here.
   const at = Date.now();
@@ -134,10 +137,25 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
   const sent = [];
   const requests = [];
   const tools = { add: { name: "add", replaySafe: false, ask: false, run: async () => (sent.push("add"), "5") } };
-  const script = [{ call: "add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  let slowRuns = () => {};
+  const slowRunning = new Promise((resolve) => (slowRuns = resolve));
+  if (sibling) {
+    tools.slow = {
+      name: "slow", replaySafe: false, ask: false,
+      run: (_args, signal) => {
+        slowRuns();
+        return new Promise((_, reject) => {
+          const cut = () => reject(new Error("aborted"));
+          if (signal?.aborted) return cut();
+          signal?.addEventListener("abort", cut, { once: true });
+        });
+      },
+    };
+  }
+  const script = [sibling ? { calls: [{ call: "slow" }, { call: "add", args: { a: 2, b: 3 } }] } : { call: "add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
-  const gate = Object.assign(() => permission, { askedAs: (tool) => tool });
-  const loop = createAdapterLoop(async (claim, run) => ({ ...(await base(claim, run)), gate }));
+  const gate = Object.assign(sibling ? async (call) => (call.tool === "slow" ? "allow" : (await slowRunning, permission)) : () => permission, { askedAs: (tool) => tool });
+  const loop = createAdapterLoop(async (claim, run) => ({ ...(await base(claim, run)), gate, ...(sibling ? { parkSiblingsMs: HANG_MS } : {}) }));
   const events = [];
   const now = opened.now;
   // Each claim whose loop started: a claim that only ends the run starts none.
@@ -318,6 +336,33 @@ test("a refused stopped end of a run claimed from parked is not claimed again be
   const polledAgain = beats.count;
   await upon(() => beats.count >= polledAgain + 20, "20 more polls");
   assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [2, 1], "one claim (and its release) and one refusal for the step");
+});
+
+test("a stop that reaches a run while it parks, under the claim it parked under, whose end is refused: released running with its backoff, not claimed again before it, the tries counted one per step", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, clock, events, beats, starts } = await runOf(t, { onEnd: async () => {
+    throw new Error("the journal refused the end (a test's refusal)");
+  } }, { sibling: true });
+  // Parked (its ask landed with the run parked) and still held by the claim it parked under: the park waits for slow.
+  const parking = await server.runs.get("run-1");
+  assert.deepEqual([parking.state, parking.runner], ["parked", "runner-a"], "parked under its claim");
+  await server.command("run-1", { kind: "stop" });
+  const epoch = async () => (await server.runs.get("run-1")).epoch;
+  // The first refusal, said and released, by the runner's own signals.
+  await upon(async () => waitsSaid(events).length >= 1 && (await server.runs.get("run-1")).runner === null, "the first refused end released");
+  const [at, polled] = [await epoch(), beats.count];
+  await upon(() => beats.count >= polled + 20, "20 more polls");
+  const row = await server.runs.get("run-1");
+  const stop = (await server.commands("run-1", 0)).find((one) => one.kind === "stop");
+  // Inside its backoff on an unmoved clock: one refusal, one try, no claim; it reads running while its end retries (the
+  // branch of claimable that honours backoff_until), not parked (whose stop branch admits it at once).
+  assert.deepEqual({ waits: waitsSaid(events), tries: stop.tries, claims: (await epoch()) - at, state: row.state }, { waits: [BACKOFF_MS], tries: 1, claims: 0, state: "running" }, "no claim inside the backoff");
+  // Past the backoff: exactly one more claim and one more refusal, at the next step's wait.
+  clock.skewMs += BACKOFF_MS;
+  await releasedAfter(server, 2);
+  const polledAgain = beats.count;
+  await upon(() => beats.count >= polledAgain + 20, "20 more polls");
+  assert.deepEqual({ waits: waitsSaid(events), claims: (await epoch()) - at }, { waits: [BACKOFF_MS, 2 * BACKOFF_MS], claims: 2 }, "one claim (and its release) and one refusal for the step");
+  assert.deepEqual(starts, ["runner-a"], "the retried claim started no loop");
 });
 
 test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: LONG_TEST_MS }, async (t) => {

@@ -586,7 +586,10 @@ export function startRunner(options: RunnerOptions): Runner {
     const wait = Math.min(endRetryBackoffMs * 2 ** (tries - 1), endRetryCapMs);
     emit({ type: "error", runId: claim.runId, step: "end", message: `run ${claim.runId}: its end with a withdrawal was refused (try ${tries}); retrying in ${wait} ms: ${why}` });
     await store.flush();
-    await release(claim, { backoffUntil: now() + wait });
+    // Running, said: a stop that reached the loop while it parked (its ask landed with the run parked, under this claim)
+    // leaves the row parked, and a release with no state keeps it so; the store's parked rule admits an untaken stop
+    // whatever its backoff (a person's stop never waits on a failed resume's), so the run would be claimed again at once.
+    await release(claim, { state: "running", backoffUntil: now() + wait });
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "interrupted" });
   };
 
