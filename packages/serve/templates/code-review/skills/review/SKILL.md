@@ -21,7 +21,8 @@ once: your previous findings are your own comments ending in `<!-- fp: <fingerpr
 (a reply that declines one dismisses it). The last head you reviewed is in your last review's
 `<!-- code-review ... head:<sha> -->`.
 
-A diff pasted in the message with no PR number is the whole change: skip to step 3, run no command.
+A diff pasted in the message with no PR number is the whole change (AgentRun saved the message as
+`inputs/message.md`): skip to step 3, run no command.
 
 ## 2. Checkout
 
@@ -62,8 +63,8 @@ previous_findings: <one line each: fingerprint, active or dismissed, priority, t
 focus: <the owner's focus, or none>
 ```
 
-For a pasted diff, the prompt is the first line, then all the message says of the change (`last_reviewed_sha`,
-`previous_findings`, any rules file), then `diff:` and the diff whole.
+For a pasted diff, the prompt is the first line, then `diff: inputs/message.md`: AgentRun saved your message there,
+diff and all, and each reviewer reads the change there. Never copy the diff or the message into a call or a file.
 
 Each reviewer answers with one `json` block in `findings.schema.json`'s shape. One that fails or gives no JSON counts as
 no answer. With no answer at all, say so in `summary` and post no finding.

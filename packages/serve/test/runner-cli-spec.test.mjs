@@ -477,6 +477,11 @@ test("a CLI's absolute path under its working directory is the run's folder: a w
   assert.deepEqual(built.session.tools.map((tool) => tool.name).filter((name) => ["read", "write"].includes(name)).sort(), ["read", "write"], "the file tools stay");
 });
 
+test("a CLI run's opening message is saved as inputs/message.md in the run's folder, as on pi", async (t) => {
+  const { dir } = await specOn(t, "opencode");
+  assert.equal(readFileSync(join(runFolder(dir, "agent-1", RUN), "inputs", "message.md"), "utf8"), "Write a file.");
+});
+
 test("Mode 2 (the server's Archil settings saved): the CLI still works in the run's scratch on this machine, a write to <cwd>/x.txt lands as x.txt in the run's folder on the Archil disk, and bash runs as Archil exec, at most 295 s", async (t) => {
   const disk = new FakeArchilDisk();
   const { spec: built, cwd, control, outbound } = await specOn(t, "opencode", { archil: disk });
