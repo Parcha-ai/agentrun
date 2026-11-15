@@ -2,7 +2,8 @@
 // phone). The viewer comes first: a run's open viewer is served even when its computer would resolve off here now (the
 // run holds the keys it started with). With none open, the run's computer says `none` with its kind and where its session
 // is (never opened, opening, closed), or `off` with why there is no computer here. `hold` is who drives now. A parked
-// run's desktop or phone kept at its park is closed and `kept` until its time, then `ended` in the timeout's words.
+// run's desktop or phone kept at its park is `closed` (the run's timeline says until when), then `ended` in the timeout's
+// words once its time passed.
 
 import type { JournalEntry } from "./computer-commands.js";
 import { KINDS } from "./runner/journal-kinds.js";
@@ -24,21 +25,17 @@ export type ComputerOf = { kind: ComputerKind } | { off: string };
 /** The answer, as openapi.ts getRunComputer documents it. */
 export type ComputerAnswer =
   | { state: "off"; hold: ComputerHold; why?: string }
-  | { state: "none"; kind: ComputerKind; hold: ComputerHold; session: ComputerSession; ended?: { at: string; why: string }; kept?: { until: string } }
+  | { state: "none"; kind: ComputerKind; hold: ComputerHold; session: ComputerSession; ended?: { at: string; why: string } }
   | { state: "live"; kind: ComputerKind; viewer: string; hold: ComputerHold };
 
-/** A parked run's desktop or phone, as its keep's row has it (keptOrLapsed): kept until a time, or not kept, its time
- *  passed (`ended`, in the timeout's words, at that time). */
-export type ParkedComputer = { kept: { until: string } } | { ended: { at: string; why: string } };
-
-/** What GET /computer says of a parked run's kept computer of `kind`, from its keep's row (computer-kept.ts): kept until
- *  its time; ended once its time passed or its end began, in the timeout's words; nothing with no row, or one of
+/** Why a parked run's kept computer of `kind` is not kept any more, from its keep's row (computer-kept.ts): its time
+ *  passed or its end began, in the timeout's words, at that time; nothing while it is kept, with no row, or with one of
  *  another kind (a sandbox's: it has no screen). Only for a run still parked: a resumed run's row, taken or left ended,
  *  says nothing. */
-export function keptOrLapsed(kind: ComputerKind, kept: Kept | undefined, now: number): ParkedComputer | undefined {
+export function lapsedOf(kind: ComputerKind, kept: Kept | undefined, now: number): { at: string; why: string } | undefined {
   if (!kept || kept.kind !== kind) return undefined;
-  if (kept.ended || kept.ending || now >= kept.until) return { ended: { at: new Date(kept.until).toISOString(), why: lapsedWords(kind) } };
-  return { kept: { until: new Date(kept.until).toISOString() } };
+  if (kept.ended || kept.ending || now >= kept.until) return { at: new Date(kept.until).toISOString(), why: lapsedWords(kind) };
+  return undefined;
 }
 
 export async function computerView(deps: {
@@ -53,18 +50,16 @@ export async function computerView(deps: {
   /** Why the run's browser is not up, read only for a `none` browser: let go while the run waited for its person, and none
    *  opened since (browser-wait-ended.ts), with when; undefined otherwise. */
   ended?(): Promise<{ at: string; why: string } | undefined>;
-  /** A parked run's desktop or phone kept at its park, or not kept any more (keptOrLapsed), read only for a `none`
-   *  desktop or phone: its screen is closed while the run waits, never one being opened. */
-  parked?(kind: ComputerKind): Promise<ParkedComputer | undefined>;
+  /** Why a parked run's desktop or phone kept at its park is not kept any more (lapsedOf), read only for a `none` desktop
+   *  or phone; undefined while it is kept or the run is not parked. */
+  lapsed?(kind: ComputerKind): Promise<{ at: string; why: string } | undefined>;
 }): Promise<ComputerAnswer> {
   const hold = deps.hold?.() ?? "agent";
   const open = await deps.viewer();
   if (open) return { state: "live", kind: open.kind, viewer: open.viewer, hold };
   const computer = deps.computer();
   if ("off" in computer) return { state: "off", hold: "agent", why: computer.off };
-  const parked = computer.kind !== "browser" ? await deps.parked?.(computer.kind) : undefined;
-  if (parked) return { state: "none", kind: computer.kind, hold, session: "closed", ...parked };
-  const ended = computer.kind === "browser" ? await deps.ended?.() : undefined;
+  const ended = computer.kind === "browser" ? await deps.ended?.() : await deps.lapsed?.(computer.kind);
   if (ended) return { state: "none", kind: computer.kind, hold, session: "closed", ended };
   return { state: "none", kind: computer.kind, hold, session: deps.session(computer.kind) };
 }

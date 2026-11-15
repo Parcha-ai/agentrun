@@ -2,10 +2,10 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "./RunDetail";
-import { useRunScreen, type ScreenView } from "./RunScreen";
+import { keptUntilOf, useRunScreen, type ScreenView } from "./RunScreen";
 import { messageFeatures, runFixture } from "@/fixtures";
 import { ClientError } from "@/lib/client";
-import type { Run, RunComputer } from "@/lib/v2";
+import type { Run, RunComputer, TimelineRow } from "@/lib/v2";
 
 // The run page's Screen tab, over GET /v2/runs/{id}/computer (owner session only, no-store): `off` (no browser, or it
 // resolves unavailable) hides it; `none` (one, with no session open) waits only while its session is opening, and says
@@ -436,7 +436,7 @@ describe("the run page's Screen tab, for a browser", () => {
 // the metered line for a metered provider of every kind but the browser; and the agent's ask at its computer, answered
 // Done or Cancel through the one hand-back.
 describe("the Screen tab for every kind, and the agent's ask", () => {
-  type Extra = { onTakeOver?: unknown; onHandBack?: unknown; readComputers?: unknown; tab?: "screen" };
+  type Extra = { onTakeOver?: unknown; onHandBack?: unknown; readComputers?: unknown; tab?: "screen"; rows?: unknown };
   async function screen(read: () => Promise<RunComputer>, run: Run, extra: Extra = {}) {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
@@ -494,14 +494,17 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
   });
 
-  it("a desktop kept at the run's park says what the run waits for and until when, never released or ended; past that time, that it wasn't kept", async () => {
+  it("a desktop kept at the run's park says what the run waits for and until when (its park's row's time and minutes), never released or ended; past that time, that it wasn't kept", async () => {
+    const PARKED = "2026-11-05T09:10:00Z";
     const UNTIL = "2026-11-05T09:20:00Z";
     const at = new Date(UNTIL).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const phase = (seq: number, summary: string, timestamp: string) => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    const rows = [phase(1, "The desktop is ready: Linux (amd64), from E2B.", "2026-11-05T09:00:00Z"), phase(2, "The desktop is kept for 10 minutes while you decide.", PARKED)];
     let read: RunComputer = DESKTOP_LIVE();
-    const p = await screen(async () => read, desktop, { tab: "screen" });
+    const p = await screen(async () => read, desktop, { tab: "screen", rows });
     expect(p.panel()!.querySelector("iframe")).not.toBeNull();
-    // Parked on a tool's approval: its viewer closed, the desktop kept for the resume.
-    read = { state: "none", kind: "desktop", hold: "agent", session: "closed", kept: { until: UNTIL } };
+    // Parked on a tool's approval: its viewer closed, the desktop kept for the resume (GET /computer: closed, no more).
+    read = { state: "none", kind: "desktop", hold: "agent", session: "closed" };
     const waiting = (kind: string) => ({ ...desktop, status: "input_required", state: "waiting", pending: { kind } } as unknown as Run);
     await p.show(waiting("approval"));
     await settle(100);
@@ -520,6 +523,15 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     await settle(100);
     expect(p.panel()!.textContent).toContain("The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on.");
     expect(p.panel()!.textContent).not.toContain("released");
+  });
+
+  it("keptUntilOf reads the newest park's row of the kind, and nothing once that computer is ready again or for another kind", () => {
+    const phase = (seq: number, summary: string, timestamp = "2026-11-05T09:10:00Z") => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp }) as unknown as TimelineRow;
+    const kept = phase(2, "The phone is kept for 10 minutes while you decide.");
+    expect(keptUntilOf([phase(1, "The phone is ready: Android."), kept], "phone")).toBe("2026-11-05T09:20:00.000Z");
+    expect(keptUntilOf([kept, phase(3, "The phone is ready: Android. It's the same phone, as the wait left it.")], "phone")).toBeUndefined();
+    expect(keptUntilOf([kept], "desktop")).toBeUndefined();
+    expect(keptUntilOf([], "desktop")).toBeUndefined();
   });
 
   it("a stopped run's desktop never reads as waited for; the follow-up's new desktop, booting while the run is queued, is waited for", async () => {

@@ -5,7 +5,7 @@
 // viewer link's own.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { computerView, keptOrLapsed, sessionIn } from "../dist/computer-view.js";
+import { computerView, lapsedOf, sessionIn } from "../dist/computer-view.js";
 
 const LINK = "/v2/runs/run-1/computer/live/v/AbCdEfGhIjKlMnOpQrStUv#t=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const opening = () => "opening";
@@ -35,24 +35,24 @@ test("none's session is read for the computer's own kind", async () => {
   assert.deepEqual(asked, ["desktop"]);
 });
 
-test("a parked run's desktop or phone kept at its park is none, closed and kept until its time; past it, or its end begun, ended in the timeout's words; a sandbox's row or none says nothing", () => {
+test("a parked run's desktop or phone kept at its park says nothing while kept; past its time, or its end begun, ended in the timeout's words; a sandbox's row or none says nothing", () => {
   const until = Date.parse("2026-11-15T12:10:00.000Z");
   const row = { provider: "e2b", kind: "desktop", id: "c1", name: "c1", epoch: 3, until };
-  assert.deepEqual(keptOrLapsed("desktop", row, until - 1), { kept: { until: "2026-11-15T12:10:00.000Z" } });
-  const lapsed = { ended: { at: "2026-11-15T12:10:00.000Z", why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." } };
-  assert.deepEqual(keptOrLapsed("desktop", row, until), lapsed);
-  assert.deepEqual(keptOrLapsed("desktop", { ...row, ending: true }, until - 1), lapsed);
-  assert.deepEqual(keptOrLapsed("desktop", { ...row, ended: true }, until - 1), lapsed);
-  assert.equal(keptOrLapsed("desktop", undefined, until), undefined);
-  assert.equal(keptOrLapsed("desktop", { ...row, kind: "sandbox" }, until - 1), undefined, "a sandbox's row: no screen to say it of");
+  assert.equal(lapsedOf("desktop", row, until - 1), undefined, "kept: the run's timeline says until when");
+  const lapsed = { at: "2026-11-15T12:10:00.000Z", why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." };
+  assert.deepEqual(lapsedOf("desktop", row, until), lapsed);
+  assert.deepEqual(lapsedOf("desktop", { ...row, ending: true }, until - 1), lapsed);
+  assert.deepEqual(lapsedOf("desktop", { ...row, ended: true }, until - 1), lapsed);
+  assert.equal(lapsedOf("desktop", undefined, until), undefined);
+  assert.equal(lapsedOf("desktop", { ...row, kind: "sandbox" }, until), undefined, "a sandbox's row: no screen to say it of");
 });
 
-test("computerView reads a parked desktop's keep before its session: none, closed, kept; never opening", async () => {
-  const kept = { kept: { until: "2026-11-15T12:10:00.000Z" } };
-  assert.deepEqual(await computerView({ viewer: async () => undefined, computer: () => ({ kind: "desktop" }), session: opening, parked: async () => kept }), { state: "none", kind: "desktop", hold: "agent", session: "closed", ...kept });
-  assert.deepEqual(await computerView({ viewer: async () => undefined, computer: () => ({ kind: "desktop" }), session: opening, parked: async () => undefined }), { state: "none", kind: "desktop", hold: "agent", session: "opening" });
+test("computerView reads a parked desktop's lapse as ended; a browser's is its own", async () => {
+  const ended = { at: "2026-11-15T12:10:00.000Z", why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." };
+  assert.deepEqual(await computerView({ viewer: async () => undefined, computer: () => ({ kind: "desktop" }), session: () => "closed", lapsed: async () => ended }), { state: "none", kind: "desktop", hold: "agent", session: "closed", ended });
+  assert.deepEqual(await computerView({ viewer: async () => undefined, computer: () => ({ kind: "desktop" }), session: opening, lapsed: async () => undefined }), { state: "none", kind: "desktop", hold: "agent", session: "opening" });
   let asked = 0;
-  await computerView({ viewer: async () => undefined, computer: () => ({ kind: "browser" }), session: opening, parked: async () => (asked++, kept) });
+  await computerView({ viewer: async () => undefined, computer: () => ({ kind: "browser" }), session: opening, lapsed: async () => (asked++, ended) });
   assert.equal(asked, 0, "a browser's is its own (ended)");
 });
 

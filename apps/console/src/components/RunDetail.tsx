@@ -6,7 +6,7 @@ import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, listedFiles, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
-import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
+import { keptUntilOf, ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
@@ -252,7 +252,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
-          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" ? run.pending?.kind : undefined}
+          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" && machine ? keptUntilOf(rows, machine.kind) : undefined}
             onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}
         </div>
       </div>}

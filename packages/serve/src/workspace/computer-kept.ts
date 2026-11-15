@@ -20,7 +20,8 @@
 //
 // While the run is parked, its owner's live view says what it waits for and that the computer is kept, until when, then
 // that it wasn't kept once its time passed (parkedWords, lapsedWords): the viewer's page, as the claim's park closes it
-// (computer-live.ts), and the console's Screen tab, from GET /v2/runs/{id}/computer (computer-view.ts keptOrLapsed).
+// (computer-live.ts), and the console's Screen tab, until when from the park's row on the run's timeline
+// (computerKeptWords) and its lapse from GET /v2/runs/{id}/computer (computer-view.ts lapsedOf).
 import type { ComputerProvider } from "@parcha/agentrun-computer";
 import { FINAL_STATES, type Settings, type Store } from "../store/index.js";
 
