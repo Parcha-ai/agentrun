@@ -71,10 +71,10 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, computerReadyWords, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { ScriptDecide } from "../workspace/computer-script.js";
-import type { RunComputerHold } from "./computer-journal.js";
+import { earlierUp, type RunComputerHold } from "./computer-journal.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -112,6 +112,8 @@ export interface ClaimComputer {
   readonly hold?: unknown;
   /** The run's desktop or phone and the person's hold on it: the spec's `computer` (AdapterRunSpec.computer). */
   readonly held?: RunComputerHold;
+  /** It replaced an earlier claim's computer (computer-for-claim.ts Replaced). */
+  readonly replaced?: { readonly folderKept: boolean };
   release(): Promise<void>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
@@ -440,7 +442,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
     // became of the agent's own computer (a persistent setting) is said on the run's timeline.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp), asked only of a claim
+    // that took the run over while it was running (a server's stop): a parked run's resume is no lost runner.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(claim.from === "running" ? { earlierUp: () => earlierUp(deps.journal(claim), context) } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -453,8 +457,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv).
   const bashPolicy = bashPolicyOf(body.toolSettings);
   // The computer's tools are the run's own host tools, as on every harness: the host's codemode (meta-tools.ts) calls them
-  // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is.
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
+  // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is. A computer that replaced an
+  // earlier claim's holds its acts to what it showed.
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   holds.hold({ tools });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
@@ -777,6 +782,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
     // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
     ...(loopComputer ? { computer: loopComputer } : {}),
+    // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
+    ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     workRoot: root,
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).

@@ -21,7 +21,7 @@ import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRe
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
-import { CAP_WRAPUP, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
+import { CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 
@@ -203,6 +203,11 @@ export interface AdapterRunSpec {
    *  (workspace/computer-hold.ts): the loop commits the hold's changes to the run's journal, which the server reads
    *  (computer-routes.ts), and applies the person's take-over and hand-back rows to it (runner/computer-journal.ts). */
   readonly computer?: LoopComputer;
+  /** What the model is told once its claim gave it a computer in place of an earlier claim's (computer-deps.ts
+   *  computerReplacedNote): placed in this pass's first main-model request that can carry a note, as the cap's wrap-up
+   *  is (ModelPort.note), so it reaches every harness mid-turn, and written as the server's row (COMPUTER_NOTE) once that
+   *  request is admitted with it. Absent: the computer is the run's first, or the same one. */
+  readonly computerNote?: string;
   /** The run's computer held for its owner (a run started with `hold: true`, computer-held.ts): the agent's first input
    *  waits for the owner's start, and the run's end waits for the owner's release (runner/held-run.ts). */
   readonly held?: HeldSpec;
@@ -1796,6 +1801,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return reserveOf(requestFigures(asked));
         };
         let bookingNow: ModelBooking | undefined;
+        // The replaced computer's note (spec.computerNote): `words` until a request carrying it is admitted, `offered`
+        // while one has taken it. It goes before the wrap-up: one note per request, so the wrap-up waits a request.
+        const computerNote: { words?: string; offered?: number } = spec.computerNote !== undefined ? { words: spec.computerNote } : {};
+        const takeNote = (model: string, asked?: NoteRequest): string | undefined => {
+          if (computerNote.words === undefined || reflecting) return wrapUpNote(model, asked);
+          // One request at a time carries it, as the wrap-up (below); WRAP_UP_OFFER_MS is the same backstop.
+          if (computerNote.offered !== undefined && Date.now() - computerNote.offered < WRAP_UP_OFFER_MS) return undefined;
+          if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
+          computerNote.offered = Date.now();
+          return computerNote.words;
+        };
         const wrapUpNote = (model: string, asked?: NoteRequest): string | undefined => {
           // The end-of-run turn comes after the run's answer: "finish now with your answer" is the job's note, never its.
           if (reflecting) return undefined;
@@ -1839,9 +1855,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           key: spec.session.key,
           label: spec.session.label,
           beforeRequest,
-          note: wrapUpNote,
+          note: takeNote,
           // A request that took it and left before its admission gives it back: the next request may take it at once.
           noteReturned: (note) => {
+            if (computerNote.words === note) computerNote.offered = undefined;
             if (capNote.offered?.words === note) capNote.offered = undefined;
           },
           onEvent: async (event) => {
@@ -2064,11 +2081,30 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               mcpStale = false;
               await mcp.fresh();
             }
-            // The wrap-up this request carries, taken off the offer now: its admission tells it; a refusal (the throw below)
-            // or a dropped note leaves it untold, to be offered to a later request.
-            const offer = (request as { noted?: boolean }).noted ? capNote.offered : undefined;
+            // The note this request carries: the replaced computer's when it took that one (only one is offered at a time,
+            // takeNote), else the wrap-up, taken off the offer now. Its admission tells it; a refusal (the throw below) or a
+            // dropped note leaves it untold, to be offered to a later request. The replaced computer's stays on offer until
+            // this admission ends, so no request that starts meanwhile carries it too.
+            const noted = (request as { noted?: boolean }).noted === true;
+            const computerTold = noted && computerNote.offered !== undefined ? computerNote.words : undefined;
+            const offer = noted && computerTold === undefined ? capNote.offered : undefined;
             if (offer) capNote.offered = undefined;
-            const ticket = await port.beforeRequest(request);
+            let ticket: Awaited<ReturnType<typeof port.beforeRequest>>;
+            try {
+              ticket = await port.beforeRequest(request);
+            } finally {
+              if (computerTold !== undefined) computerNote.offered = undefined;
+            }
+            // The replaced computer's note, told: once, its row the server's, made durable before the request leaves.
+            if (computerTold !== undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped) {
+              computerNote.words = undefined;
+              try {
+                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: COMPUTER_NOTE, data: { words: computerTold } as unknown as JsonValue }), context);
+                await deps.flush();
+              } catch (error) {
+                console.warn(`[runner] the replaced computer's note row was not written (the note went with the request): ${said(error)}`);
+              }
+            }
             unbooked += 1;
             // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
             if (ticket && (request as { side?: boolean }).side) notOwn.add(ticket.turn);
