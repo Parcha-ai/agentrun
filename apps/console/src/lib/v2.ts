@@ -109,6 +109,9 @@ export type RunPath = CostRun["path"];
  *  workflow.json, oldest first, each with the text it had then. */
 export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
 export type WorkflowRevision = WorkflowRevisions["revisions"][number];
+/** POST .../revisions/{digest}/replays' answer (a replay started), and GET .../replays/{replay_id}'s (it as it stands). */
+export type ReplayStarted = Answer<"startLearnedWorkflowReplay">;
+export type ReplayRead = Answer<"getLearnedWorkflowReplay">;
 /** GET /v2/agents/{id}/learning/promotions: each learned workflow revision's promotion records, oldest first. */
 export type Promotions = Answer<"listLearningPromotions">;
 export type Promotion = Promotions["promotions"][number];

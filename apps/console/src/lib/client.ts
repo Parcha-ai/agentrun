@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -97,6 +97,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
+  const replays = (id: string, name: string, digest: string) => `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions/${encodeURIComponent(digest)}/replays`;
   const mcpServer = (name: string) => `/settings/mcp-servers/${encodeURIComponent(name)}`;
   const trigger = (id: string) => `/triggers/${encodeURIComponent(id)}`;
   // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
@@ -176,6 +177,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     learningPromotions: (id: string) => call<Promotions>("GET", `${agent(id)}/learning/promotions`),
     learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
     learnedWorkflowRevisions: (id: string, name: string, limit?: number) => call<WorkflowRevisions>("GET", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions${limit ? `?limit=${limit}` : ""}`),
+    /** Starts a replay of one revision of a learned workflow on the server's default inputs (POST .../revisions/{digest}/replays):
+     *  the owner's session only; 409 replay_conflict, agent_not_runnable or fewer graded runs than a replay needs. */
+    startLearnedWorkflowReplay: (id: string, name: string, digest: string) => call<ReplayStarted>("POST", `${replays(id, name, digest)}`, { body: {} }),
+    /** A replay as it stands, and decided once its runs ended (GET .../replays/{replay_id}). */
+    learnedWorkflowReplay: (id: string, name: string, digest: string, replay: string) => call<ReplayRead>("GET", `${replays(id, name, digest)}/${encodeURIComponent(replay)}`),
     learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
     learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
     /** A note's whole text and its version, for the If-Match of an edit or a retire. */
