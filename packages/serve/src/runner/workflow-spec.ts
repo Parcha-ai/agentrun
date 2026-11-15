@@ -18,7 +18,7 @@ import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailur
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type SessionWriter, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeModelRequestsOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeCeilingMessage, freeModelRequestsOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
 // The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
 // parity tests hold this cap's figures to.
@@ -463,8 +463,11 @@ export function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHoo
     const verdict = await before(request);
     // A refusal parks the run, as main's does, unless the request is a call node's (an `llm` call's) in flight: that
     // effect is admitted, and parked unfinished it would be left unknown; refused unsent, its call fails in the cap's
-    // words instead (the net under the call's hold, holdAtEffects).
-    if (verdict && "refuse" in verdict && flight.count === 0) {
+    // words instead (the net under the call's hold, holdAtEffects). The limit on free-model requests (freeCeilingEnd)
+    // ends the run even there: it is for good, every free request after it is refused too, and the run never resumes,
+    // so no effect is left to resume; its call's failure would end the run as the call's ("failed at <node>"), not in
+    // the limit's words and code.
+    if (verdict && "refuse" in verdict && (flight.count === 0 || freeCeilingMessage((verdict as Refusal).refuse) !== undefined)) {
       const refusal = verdict as Refusal;
       // Its node: the one workflow step under way (every model request goes through the run's one port, which names no
       // node); none when several run at once, as a map's items do.
