@@ -221,6 +221,10 @@ export interface ModelRequest {
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
   route?: string;
+  /** The reasoning effort its body asks its model at, as its provider names it (the proxy's policy reads it:
+   *  ProviderPolicy.effortOf), when the body names one. What its least output was read at, so words that name its
+   *  figures can name it too. */
+  effort?: string;
   /** Aborted when the request's client goes (a stop, a cancel, a lost claim): a request still waiting for room under the
    *  run's cap (runBooking) leaves its line then, admitted for nothing and holding nothing. */
   signal?: AbortSignal;
@@ -493,6 +497,12 @@ export interface AdapterFacts {
   /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
    *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
   readonly nativeTools?: Readonly<Record<string, string>>;
+  /** The input tokens its first model request carries before the agent's own prompt and the person's message: its own
+   *  system prompt and tool definitions, as measured on its pinned build (the constant beside its pin says how). A host
+   *  prices a cap's least step on it before any run (a save's warning that a cap is below one step and an answer). A
+   *  count of what was measured, with o200k_base or from billing (the constant says which). Absent: not measured, read
+   *  as 0 (a floor). */
+  readonly baseInputTokens?: number;
   /** The policy its model proxy applies, for a host that serves the same route itself (a test's faux harness). */
   policy(options: { model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
 }

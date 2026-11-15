@@ -72,7 +72,7 @@ export function codexGrown(k, { miss = false } = {}) {
   const cacheRead = k === 0 || miss ? 0 : prompt(k - 1);
   const tokens = miss ? { input: 0, output: 300, cacheRead: 0, cacheWrite: prompt(k) * 4 } : { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
   const usd = (tokens.input * 2 + tokens.output * 10 + tokens.cacheRead * 0.1 + tokens.cacheWrite * 2.5) / 1e6;
-  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens, usd };
+  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, effort: "low", tokens, usd };
 }
 
 export function script(spec, session = {}) {

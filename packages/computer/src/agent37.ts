@@ -360,7 +360,8 @@ class Agent37Host implements MachineHost {
 
 	/**
 	 * POST /v1/instances: the template, the type and region, the size when the spec asks one, the request's name as the
-	 * instance's name, the labels as metadata, deny-all (or allow-all for an Archil computer's root), auto-sleep off and
+	 * instance's name, the labels as metadata, deny-all (or allow-all where the adapter asks egress: an Archil computer's root, or the
+	 * egress proxy of a network open or a list), auto-sleep off and
 	 * no public port. It answers once the instance runs (docs: instances/create, Defaults).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {

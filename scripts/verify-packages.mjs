@@ -112,6 +112,12 @@ const allowedEndpoints = {
     // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.
     ['dist/chrome.js',
       'http://127.0.0.1:${port}/json/version'], // key-gate: loopback-rule the local Chrome's own DevTools socket
+    // The network-open conformance case asks a hosted computer's egress proxy for metadata, a private address and the
+    // vendor agent's loopback port, each of which it must refuse: addresses the case sends to be refused, never reached.
+    ['dist/conformance/cases/provider.js', 'http://169.254.169.254/latest/meta-data/'],
+    ['dist/conformance/cases/provider.js', 'https://169.254.169.254/'],
+    ['dist/conformance/cases/provider.js', 'https://10.0.0.1/'],
+    ['dist/conformance/cases/provider.js', 'http://127.0.0.1:${port}/'], // key-gate: loopback-rule the vendor agent's port, which the case's proxy must refuse
   ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.

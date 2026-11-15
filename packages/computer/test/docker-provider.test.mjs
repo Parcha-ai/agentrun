@@ -16,8 +16,8 @@ let requests = 0;
 const req = () => ({ requestId: `docker-provider-${++requests}` });
 const NO_LIST = 'an allowlist needs at least one name or CIDR; for no network ask for "none"';
 /** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 when its uid or gid is 0. */
-/** docker run's argv: create reads the host with docker info first. */
-const runOf = (all) => all.find((args) => args[0] === "run");
+/** The computer's docker run argv (not an egress proxy's): create reads the host with docker info first. */
+const runOf = (all) => all.find((args) => args[0] === "run" && valuesOf(args, "--entrypoint")[0] !== "node");
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
 test("capabilities: a linux container with computerd as PID 1, whose lifetime the janitor enforces up to 30 days, network none, open or an allowlist, exec, files and processes, and a bind mount", () => {
@@ -165,7 +165,8 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 	const result = await provider.create({ ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64, workdir: "/app" }, req());
 	assert.equal(result.ok, true);
 	const run = runOf(calls());
-	assert.deepEqual(valuesOf(run, "--network"), ["bridge"]);
+	assert.deepEqual(valuesOf(run, "--network"), ["none"], "open goes through the egress proxy; the computer is on no network of Docker's");
+	assert.deepEqual(run.slice(-2), ["--egress", "/opt/agentrun/egress/egress.sock"]);
 	assert.deepEqual(valuesOf(run, "--cpu-period"), ["100000"]);
 	assert.deepEqual(valuesOf(run, "--cpu-quota"), ["150000"]);
 	assert.equal(run.includes("--cpus"), false, "a quota, never --cpus, which Docker refuses above its own CPU count");

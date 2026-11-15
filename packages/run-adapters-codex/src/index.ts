@@ -10,4 +10,4 @@ export { CODEX_VERSION, codexBinary, codexTarget } from "./binary.js";
 /** The shapes of a tool's schema Codex 0.164 drops or retypes (schema.ts): a host may refuse them sooner (an MCP grant, at its save). */
 export { codexSchemaProblems } from "./schema.js";
 export { verifyCodex, verifyCodexAsync, verifyCodexBinary, verifyCodexBinaryAsync } from "./verify.js";
-export { CODEX_BINARY_SHA256, CODEX_INSTALL, CODEX_NPM_INTEGRITY, CodexNotInstalled, CodexPinMismatch } from "./versions.js";
+export { CODEX_BASE_INPUT_TOKENS, CODEX_BINARY_SHA256, CODEX_INSTALL, CODEX_NPM_INTEGRITY, CodexNotInstalled, CodexPinMismatch } from "./versions.js";

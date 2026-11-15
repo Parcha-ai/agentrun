@@ -193,6 +193,27 @@ test("close ends the viewer and drops the row; a computer that goes ends the vie
   await assert.rejects(new Promise((resolve, reject) => tcp(b.row.port, "127.0.0.1").once("connect", resolve).once("error", reject)), "nothing listens after close");
 });
 
+test("a park's close tells the viewer what the run waits for and that the computer is kept, how long, and what to say after: never that it ended", async (t) => {
+  for (const [kind, input, cause, waits] of [
+    ["desktop", "desktop", "approval", "Waiting for your approval. The desktop is kept for 10 minutes."],
+    ["desktop", "desktop", "answer", "Waiting for your answer. The desktop is kept for 10 minutes."],
+    ["phone", "android", "cap", "Waiting for you to raise the spend cap. The phone is kept for 10 minutes."],
+    ["desktop", "desktop", "refusal", "Paused: the next step doesn't fit the spend cap. Waiting for you to raise it. The desktop is kept for 10 minutes."],
+    ["desktop", "desktop", "workflow", "Waiting for your approval of the workflow's step. The desktop is kept for 10 minutes."],
+  ]) {
+    const store = fakeLiveViewersStore();
+    const one = await opened(t, { store, kind, input, tag: `cmp-${cause}` });
+    const ws = await viewerOf(one.row);
+    const until = Date.now() + 600_000;
+    await one.view.close({ parked: cause, until });
+    const said = await next(ws, "ended");
+    assert.deepEqual({ ...said, keptMs: undefined }, { type: "ended", reason: "parked", message: waits, keptMs: undefined, lapsed: `The ${kind} wasn't kept: 10 minutes passed. A new one starts when the run goes on.` });
+    assert.ok(said.keptMs > 590_000 && said.keptMs <= 600_000, `kept for the rest of the 10 minutes: ${said.keptMs}`);
+    assert.doesNotMatch(said.message, /ended/);
+    assert.deepEqual(await readLiveViewers(store, KEY, RUN), [], "the row is dropped: no take-over while parked");
+  }
+});
+
 /** Resolves once the run has no viewer row (the view closed): each look waits a turn of the event loop, never a clock. */
 async function rowGone(store) {
   for (let turn = 0; turn < 1_000; turn += 1) {

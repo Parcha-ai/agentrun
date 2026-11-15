@@ -166,3 +166,30 @@ test("under a $0.05 cap on Sonnet, a small first turn straight to Anthropic is s
   assert.notEqual(refused.status, 200, 'its 24 KB of bytes read as 24,000 tokens do not fit $0.05');
   assert.match(refused.text, /needs at least/);
 });
+
+test("a model on o200k_base that Anthropic does not count (gpt-6.1-sol through a gateway) is bounded by its local count, never its bytes; with the hosted search offered, its bytes", async (t) => {
+  const SOL = 'openai/gpt-6.1-sol';
+  const held = async (policyOptions, body) => {
+    const asked = [];
+    const p = await startModelProxy({
+      policy: anthropicPolicy(policyOptions), model: SOL, origin: 'https://gateway.example/anthropic', credential: () => 'provider-secret', price: () => 0.001, log: () => {},
+      hooks: { beforeRequest: async (r) => { asked.push(r.inputTokensMax); }, afterRequest: async () => {} },
+      fetch: async () => new Response(ANSWER, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    }, 'session-key');
+    t.after(() => p.close());
+    assert.equal((await send(p.url, body)).status, 200);
+    return asked;
+  };
+  const solOptions = { ...options, model: SOL };
+  const solTurn = { ...firstTurn, model: SOL };
+  const sent = applyAnthropic(solTurn, MESSAGES, solOptions);
+  const local = await host.messagesLocalInputTokens(sent);
+  assert.ok(local * 3 < Buffer.byteLength(JSON.stringify(sent), 'utf8'), `${local} tokens counted, of ${Buffer.byteLength(JSON.stringify(sent), 'utf8')} bytes`);
+  assert.deepEqual(await held(solOptions, solTurn), [local]);
+  // The hosted search's pages are an allowance on its byte bound, which a count of the body does not carry: the bytes stand.
+  const searching = { ...solOptions, webSearch: true, webSearchAllowance: 1_000 };
+  const withSearch = { ...solTurn, tools: [tool, { type: 'web_search_20250305', name: 'web_search', max_uses: 1 }] };
+  const searchSent = applyAnthropic(withSearch, MESSAGES, searching);
+  const [searchHeld] = await held(searching, withSearch);
+  assert.ok(searchHeld > Buffer.byteLength(JSON.stringify(searchSent), 'utf8'), `${searchHeld}: its bytes and the search's allowance`);
+});

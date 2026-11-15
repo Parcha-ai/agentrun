@@ -109,14 +109,15 @@ function sandbox(fields = {}) {
 	};
 }
 
-test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none probed from inside, a container, delete only, no mount, and the toolbox's port", () => {
+test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none, open and a list probed from inside, a container, delete only, no mount, and the toolbox's port", () => {
 	const { provider, rec } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
 		kind: "linux",
 		lifetime: "vendor",
-		network: ["none"],
+		network: ["none", "open", "allow"],
+		allow: { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true },
 		networkReadBack: false,
 		isolation: "container",
 		os: "linux",
@@ -169,7 +170,8 @@ test("check() refuses in words, field by field, before any request", () => {
 		assert.deepEqual(provider.check({ ...SPEC, lifetimeMs }), checkLifetime(lifetimeMs, provider.capabilities()), `${String(lifetimeMs)}: the shared rule, in its words`);
 	}
 	assert.match(words({ ...SPEC, lifetimeMs: 30 * 24 * 3600 * 1000 + 1 }), /at most 30 days \(2592000000 ms\)/);
-	for (const network of ["wifi", "open", { allow: [] }, { allow: ["example.com"] }, { allow: ["208.80.154.232/32"] }]) assert.deepEqual(refused({ ...SPEC, network }), ["network"], JSON.stringify(network));
+	for (const network of ["wifi", { allow: [] }, { allow: ["10.0.0.0/8"] }]) assert.deepEqual(refused({ ...SPEC, network }), ["network"], JSON.stringify(network));
+	for (const network of ["open", { allow: ["example.com"] }, { allow: ["208.80.154.232/32"] }]) assert.deepEqual(refused({ ...SPEC, network }), [], JSON.stringify(network));
 	for (const field of ["cpus", "memoryMb"]) assert.match(words({ ...SPEC, [field]: 2 }), new RegExp(`a Daytona computer has the size of its snapshot: name a snapshot of the size you need, not ${field}`));
 	assert.match(words({ ...SPEC, pids: 2 }), /size of its image/);
 	assert.match(words({ ...SPEC, user: "0" }), /daemon user \(2510:2510\)/);
@@ -389,9 +391,9 @@ test("a redirect is never followed, and a toolbox URL that is not https is refus
 	assert.deepEqual([...new Set(rec.requests.map((r) => r.host))], ["api.daytona.test"], "nothing went to the toolbox");
 });
 
-test("network(): refuses any change, with refused and no request: a Daytona computer's network is fixed at create (the read is the adapter's probe from inside)", async () => {
+test("network(): refuses a form Daytona never makes, with refused and no request: a Daytona computer's network is fixed at create (the read is the adapter's probe from inside)", async () => {
 	const { rec, provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { body: sandbox() } });
-	for (const policy of ["open", { allow: ["example.com"] }, { allow: ["198.51.100.0/24"] }, "wifi"]) {
+	for (const policy of [{ allow: [] }, { allow: ["198.51.100.0/24"] }, "wifi"]) {
 		const changed = await provider.network(REF, policy);
 		assert.equal(changed.error?.code, "refused", JSON.stringify(policy));
 		assert.match(changed.error.message, /fixed at create/);
@@ -555,12 +557,27 @@ test("exec is a session command of its own: argv as one shell line, async, no in
 	assert.equal(await run(["sh", "-c", 'echo "$1"', "sh", "it's"]), `sh -c 'echo "$1"' sh 'it'\\''s'`, "every word but a plain one quoted");
 });
 
-test("the loopback block: network none only, the toolbox's port declared, and open and allowlists refused in words", () => {
+test("the loopback block: the toolbox's port declared, and open and allowlists taken, through init's egress proxy alone (it refuses the toolbox's port)", () => {
 	const { provider } = setup();
 	const { network, vendorAgentPorts } = provider.capabilities();
-	assert.deepEqual(network, ["none"]);
+	assert.deepEqual(network, ["none", "open", "allow"]);
 	assert.deepEqual(vendorAgentPorts, [2280]);
-	for (const policy of ["open", { allow: ["example.com"] }]) assert.match(provider.check({ ...SPEC, network: policy }).map((r) => r.message).join(" "), /network of their own/);
+	for (const policy of ["open", { allow: ["example.com"] }]) assert.deepEqual(provider.check({ ...SPEC, network: policy }), [], JSON.stringify(policy));
+});
+
+test("create() under open or a list asks Daytona for the sandbox's network (networkBlockAll false) for init's egress proxy, and records the form in a label; under none it blocks it", async () => {
+	for (const [network, blocked, form] of [
+		["none", true, undefined],
+		["open", false, "open"],
+		[{ allow: ["Example.com"] }, false, "allow:example.com"],
+	]) {
+		const rec = refusedCreate();
+		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS });
+		await provider.create({ ...SPEC, network }, { requestId: `r-net-${JSON.stringify(network)}` });
+		const body = posted(rec);
+		assert.equal(body.networkBlockAll, blocked, JSON.stringify(network));
+		assert.equal(body.labels[`${COMPUTER}.network`], form, JSON.stringify(network));
+	}
 });
 
 test("the provider writes nowhere but its results, and reads no environment: its source has no console, no stdio and no process.env", () => {

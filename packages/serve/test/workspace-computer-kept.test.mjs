@@ -2,8 +2,8 @@
 // re-attach): the claim that parks keeps the machine running for 10 minutes, its row in the server's settings; a resume
 // within that time attaches the same one (no create, nothing of the run's let go, not called a new one), and a resume
 // after it makes a new one, said so with why. The janitor's pass over the rows (sweepKept) ends one past its time, or
-// whose run ended, whatever process parked it: a server's restart keeps it found, and ended, on time. A sandbox, a
-// paired computer and --faux's desktop are never kept. Every provider is a loopback fake that keeps its computers across
+// whose run ended, whatever process parked it: a server's restart keeps it found, and ended, on time. A sandbox is kept
+// the same way; a paired computer and --faux's desktop are never kept. Every provider is a loopback fake that keeps its computers across
 // claims, as a vendor's account does; the clock is the test's.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -17,8 +17,8 @@ import { getSealedKey, putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
-import { computerKeptWords, computerReadyWords } from "../dist/workspace/computer-deps.js";
-import { endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
+import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
+import { computerLapsedWords, endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -329,15 +329,78 @@ test("the janitor's wake at a kept computer's time, come while a provider sweep 
   }
 });
 
-test("a sandbox, a paired computer and --faux's desktop are never kept: their park lets them go as the run's end does", async () => {
-  const sandbox = await server({ setting: { kind: "sandbox", provider: "docker" }, groups: ["exec", "files", "processes"], keys: {} });
-  const box = await sandbox.claim(3);
-  assert.equal(box.keeps, undefined);
-  assert.equal(await box.park(), false);
-  assert.deepEqual(deletes(sandbox.account), ["c1"]);
-  assert.equal(sandbox.mounts.revoked, 1);
-  assert.equal(sandbox.store.settings.rows.size, 0);
+const SANDBOX = { setting: { kind: "sandbox", provider: "docker" }, groups: ["exec", "files", "processes"], keys: {} };
 
+test("a sandbox parked and resumed within 10 minutes is the same sandbox: no create, a file outside the run folder still there, never called a new one", async () => {
+  const one = await server(SANDBOX);
+  const said = [];
+  const first = await one.claim(3);
+  assert.equal(first.keeps, "sandbox", "the claim's sandbox is one a park keeps");
+  // What the run left in the sandbox outside its folder before the park (/tmp/outside-1), as the vendor's machine holds it.
+  one.account.computers.get("c1").outside = "/tmp/outside-1";
+  assert.equal(await first.park("approval"), true, "kept");
+  assert.deepEqual(deletes(one.account), [], "nothing deleted at the park");
+  assert.equal(one.mounts.revoked, 0);
+  assert.deepEqual(await readKept(one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS });
+
+  one.clock.now = T0 + 60_000;
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) });
+  assert.deepEqual(creates(one.account), ["c1"], "no create");
+  assert.equal(resumed.computer.kind, "sandbox");
+  assert.deepEqual([resumed.replaced, resumed.keeps], [undefined, "sandbox"], "not replaced (no replaced line, no note); kept again at a later park");
+  assert.equal(one.account.computers.get("c1").outside, "/tmp/outside-1", "the file outside the run folder is still there");
+  assert.equal(said.length, 1);
+  assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. It's the same sandbox, as the wait left it.");
+  await resumed.release();
+  assert.deepEqual(deletes(one.account), ["c1"], "the run's end lets it go");
+});
+
+test("a sandbox resumed after 10 minutes is a new one: the kept one let go, said once with why, its note says what is gone", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3)).park("approval");
+  one.clock.now = T0 + KEEP_MS;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) });
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(deletes(one.account), ["c1"], "the kept one let go before it");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lapsed: true });
+  assert.equal(said.length, 1, "said once");
+  assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: 10 minutes passed. It's a new sandbox: the one before is gone, with what was on it.");
+  assert.equal(computerReplacedNote(resumed.replaced), "AgentRun server note: your computer was replaced. The earlier one is gone, with its files and processes. Check its files again before relying on them.");
+  await resumed.release();
+});
+
+test("a server's restart during a sandbox's keep: the janitor leaves it within 10 minutes and ends it past them", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3)).park("answer");
+  one.clock.now = T0 + 5 * 60_000;
+  assert.deepEqual(await one.janitor(), { ended: [], failed: [], next: T0 + KEEP_MS });
+  assert.deepEqual(deletes(one.account), []);
+  one.clock.now = T0 + KEEP_MS;
+  assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] });
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  assert.equal((await readKept(one.store.settings, "run-1")).ended, true);
+});
+
+test("a sandbox's park hold words and timeout words", () => {
+  assert.equal(computerKeptWords("sandbox"), "The sandbox is kept for 10 minutes while you decide.");
+  assert.equal(computerLapsedWords("sandbox"), "The sandbox wasn't kept: 10 minutes passed.");
+});
+
+test("a park closes the desktop's live view with what the run waits for and until when it is kept, never `ended`", async () => {
+  for (const cause of ["approval", "answer", "cap", "refusal", "workflow"]) {
+    const one = await server();
+    const closes = [];
+    const openComputerView = async () => ({ ok: true, view: { close: (why) => void closes.push(why) } });
+    const first = await one.claim(3, { openComputerView });
+    assert.equal(await first.park(cause), true);
+    assert.deepEqual(closes, [{ parked: cause, until: T0 + KEEP_MS }], cause);
+    await first.release();
+    assert.equal(closes.length, 1, "the release after the park closes nothing more");
+  }
+});
+
+test("a paired computer and --faux's desktop are never kept: their park lets them go as the run's end does", async () => {
   const faux = fauxComputers();
   const store = memoryStore();
   const fauxDesk = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: "faux-desktop" } }, store, { mode: 1, kinds: faux.kinds, keyTable: faux.keyTable, launch: faux.launch, providers: {}, spec: () => ({ image: "faux", lifetimeMs: 60_000, network: "open" }), check: { readBackOf }, workspace: localWorkspace(scratch()) });
