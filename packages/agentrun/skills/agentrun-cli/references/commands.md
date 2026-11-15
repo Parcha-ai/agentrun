@@ -12,6 +12,17 @@ Archive the agent: hidden from the lists, kept with its history.
 
 Route: `POST /agents/{agent_id}/archive`.
 
+### `agentrun agents connect-native`
+
+Connect a native project using ordinary agent and revision storage.
+
+Route: `POST /native/connect`.
+
+- `--project STRING` (string, required)
+- `--runtime claude-code|codex` (string, one of these, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun agents create`
 
 Create an agent home.
@@ -28,6 +39,23 @@ Route: `POST /agents`.
 Remove an agent's own Archil disk, and everything on it.
 
 Route: `DELETE /agents/{agent_id}/archil`.
+
+### `agentrun agents disconnect-native AGENT_ID`
+
+Disconnect future native jobs while retaining source configuration and history.
+
+Route: `POST /agents/{agent_id}/native/disconnect`.
+
+### `agentrun agents discover-native`
+
+Discover existing native projects on this source machine without running a model.
+
+Route: `POST /native/discover`.
+
+- `--project STRING` (string, required)
+- `--runtime claude-code|codex` (string, one of these)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun agents forget-sign-in AGENT_ID KEY`
 
@@ -52,6 +80,12 @@ Route: `GET /agents/{agent_id}/archil`.
 The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows.
 
 Route: `GET /agents/{agent_id}/learning/loop`.
+
+### `agentrun agents get-native AGENT_ID`
+
+Read a native connection.
+
+Route: `GET /agents/{agent_id}/native`.
 
 ### `agentrun agents list`
 
@@ -96,6 +130,12 @@ Route: `PUT /agents/{agent_id}/definition`.
 - `--if-match STRING` (string): The home's current ETag (`homeRevision`), as `GET /agents/{agent_id}` returned it. Required with the contract's body; this server's own body (`{definition, skills?, note?}`) may leave it out.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun agents verify-native AGENT_ID`
+
+Check native CLI and sign-in without a paid model call.
+
+Route: `POST /agents/{agent_id}/native/verify`.
 
 ## files
 

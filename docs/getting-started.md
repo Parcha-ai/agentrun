@@ -25,8 +25,10 @@ The open-source platform runs on macOS or Linux with Node 24.22.3 or newer:
 npx @parcha/agentrun
 ```
 
-It opens a console on your machine and keeps its data in `~/.agentrun`. Set a password, add a model key, and apply a
-template to run your first agent. The [three-step local quickstart](../README.md#run-locally-in-three-steps) walks
+It opens a console on your machine and keeps its data in `~/.agentrun`. Set a password, then Continue with ChatGPT
+(Settings → Model keys, or the first screen) or add a model key, and apply a template to run your first agent. Codex
+and pi agents run on your ChatGPT plan; Claude Agent, OpenCode, Jev decisions and paid tools need their own keys.
+The [three-step local quickstart](../README.md#run-locally-in-three-steps) walks
 through a due diligence agent and its results.
 
 To have your coding agent handle local setup, tell it:
@@ -37,7 +39,10 @@ To have your coding agent handle local setup, tell it:
 
 Deploy the open-source platform when you want to operate it on your own infrastructure. Start with
 [Render or Docker Compose](../README.md#deploy-it), then use the [deployment guide](../deploy/README.md) for runners,
-storage, health checks and upgrades. You manage the deployment, its credentials and persistent data.
+storage, health checks and upgrades. You manage the deployment, its credentials and persistent data. None of them
+needs a model key: once it's up, Continue with ChatGPT (Settings → Model keys, or the first screen), then run your
+first agent, or add a model key instead. A ChatGPT sign-in is for the person who runs the server: don't share it or let
+others run agents on it.
 
 ## Embed workflows in an application
 

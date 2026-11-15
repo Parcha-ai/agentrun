@@ -20,10 +20,12 @@ if (wanted !== "" && !/^[1-9][0-9]*$/.test(wanted)) throw new Error(`VITEST_MAX_
 const workers = wanted === "" ? undefined : Number(wanted);
 const alias = {
   "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
-  // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
+  // The timeline library's tool names, pi-browser's tool list and serve's tool-name grammar, from their sources (each
+  // imports nothing of Node; tool-names.ts imports nothing at all, as serve's test/tool-names.test.mjs holds it).
   "@timeline": fileURLToPath(new URL("../../packages/serve/src/timeline", import.meta.url)),
   "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
-  "@": fileURLToPath(new URL("./src", import.meta.url)),
+  "@agentrun/tool-names": fileURLToPath(new URL("../../packages/serve/src/tool-names.ts", import.meta.url)),
+  "@":fileURLToPath(new URL("./src", import.meta.url)),
 };
 // Story tests run from this file through @storybook/addon-vitest: with VITEST_STORYBOOK=true (`npm run test-storybook`, or
 // Storybook's own process) the only project is .storybook/vitest.project.ts's. Every other run, `npm test` among them,
