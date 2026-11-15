@@ -9,7 +9,7 @@ import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, type HarnessCapability, harnessOffers } from "./harness.js";
 import { harnessOf, onAdapter } from "./harness-table.js";
 import { chooseModel } from "./model.js";
-import { llmTiers, MODEL_NODES, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
+import { llmTiers, MODEL_NODES, type ModelNeeds, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./place-offers.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, shellTools, toolOf, workflowTools } from "./tools.js";
@@ -50,7 +50,7 @@ export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?
  * its own, and the harness says why. A save, a run and capabilities' `harnesses[].default_model` all ask this, so they
  * cannot drift.
  */
-export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean } | { refused: string } | undefined> {
+export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean; needs?: ModelNeeds } | { refused: string } | undefined> {
   // Its entry chooses (harness-table.ts): one whose model is its own (its facts' ownModel: claude-agent's, never routed
   // through the other harnesses' gateway) is none where it does not run here; one on the Responses API takes the run's
   // usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (provider.ts modelOn); pi's is

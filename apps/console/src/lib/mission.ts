@@ -1,5 +1,5 @@
 import { byName } from "./agents";
-import { cost } from "./format";
+import { compact, cost } from "./format";
 import type { Run } from "./v2";
 
 /** What Mission Control shows: counts from the server's store, the cost said with its basis, and the latest runs. */
@@ -89,12 +89,7 @@ export const groupCost = (g: AnalyticsGroup, basis: MissionView["cost"]["basis"]
 /** What a token sum leaves out, said so a partial figure never reads as complete: "tokens from 3 of 5 runs". */
 export const coverage = (g: Pick<AnalyticsGroup, "runs" | "runs_with_metrics">) => (g.runs_with_metrics < g.runs ? `tokens from ${g.runs_with_metrics} of ${g.runs} runs` : undefined);
 
-/** 1,284 / 12.9K / 4.2M. */
-export function compact(n: number): string {
-  if (n < 10_000) return n.toLocaleString("en-US");
-  const [v, unit] = n < 1e6 ? [n / 1e3, "K"] : n < 1e9 ? [n / 1e6, "M"] : [n / 1e9, "B"];
-  return `${v < 100 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)}${unit}`;
-}
+export { compact };
 export const percent = (share: number | null) => (share === null ? "—" : `${Math.round(share * 100)}%`);
 /** A time as hours (one decimal), or minutes or seconds under an hour. */
 export function duration(ms: number): string {
