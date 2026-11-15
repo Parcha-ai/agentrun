@@ -29,7 +29,7 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  An agentic agent's Spend cap box caps this run alone (`max_cost_usd`); empty sends none, so the agent's default cap
  *  applies (its definition's `max_cost_usd`, shown as the placeholder). A workflow run takes no cap (the server refuses
  *  one), so it has no box. A cap the server refuses (a 422 naming max_cost_usd) is said at the box, in the server's words.
- *  `freeNote`, for a model each of whose requests costs $0 (a free one or a ChatGPT plan's), is said under the box: the
+ *  `freeNote`, for a free model (each request $0 in the catalog), is said under the box: the
  *  server's limit on those requests, which no dollar cap reaches (lib/models.ts freeRequestsNote).
  *  An agentic agent with an input_schema takes its typed fields under the message (lib/inputForm.ts), and a refusal's
  *  issue at one is said at that field. */

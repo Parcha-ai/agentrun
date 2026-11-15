@@ -155,34 +155,39 @@ test("a capped codex run and a capped pi run on a ChatGPT plan model are admitte
   }
 });
 
-// A plan's requests cost no dollars, so no dollar cap stops a plan run stuck in a loop: the server's limit on requests
-// priced $0 does (AGENTRUN_FREE_MODEL_REQUESTS, here 3), on codex and pi alike, capped or not. Its paid searches never
-// count toward it.
-test("a plan run looping on a tool stops at the limit on requests priced $0, on codex and on pi, in the limit's words", { timeout: 240_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_FREE_MODEL_REQUESTS: "3" });
+// The server's limit on free-model requests (AGENTRUN_FREE_MODEL_REQUESTS, 60 by default) is for $0 catalog models alone:
+// a ChatGPT plan's requests don't count. A Codex run on a plan makes 100 requests and more, and the plan has OpenAI's own
+// usage limits (the 429 below). So a plan run past 60 requests runs on, on codex and on pi, capped or not; its paid
+// searches count against its cap as before.
+test("a plan run past 60 requests is not stopped by the free-model limit, on codex and on pi, capped or not", { timeout: 300_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_FREE_MODEL_REQUESTS"]);
   const { openai, run } = await planServer(t);
-  openai.answer = (body) => (offers(body, "web_search") ? { call: "web_search", args: { query: `widgets ${outputsIn(body)}` } } : {});
+  const SEARCHES = 61;
+  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < SEARCHES ? { call: "web_search", args: { query: `widgets ${outputsIn(body)}` } } : {});
   for (const [harness, capUsd] of [["codex", undefined], ["pi", undefined], ["pi", 5]]) {
+    const searches = openai.parallel.length;
     const done = await run(harness, capUsd, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } });
-    assert.equal(done.view?.status, "failed", `${harness}: ${said(done)}`);
-    assert.deepEqual({ code: done.view?.error?.code, message: done.view?.error?.message }, { code: "spend_cap_reached", message: "Not sent: this run reached its 3-request limit for free models." }, `${harness}: ${said(done)}`);
-    assert.equal(done.asked, 3, `${harness}: three requests reached the plan, the fourth refused before it was sent`);
+    assert.equal(done.view?.status, "completed", `${harness}: ${said(done)}`);
+    assert.equal(done.asked, SEARCHES + 1, `${harness}: every request reached the plan, the 61st and 62nd included`);
+    assert.equal(openai.parallel.length - searches, SEARCHES, `${harness}: each search was sent`);
     const held = requests(done.journal);
-    assert.deepEqual(held.map((request) => request.zeroPriced), ["plan", "plan", "plan"], `${harness}: each counted as a plan's request: ${JSON.stringify(held)}`);
-    assert.equal(done.view?.pending ?? null, null, `${harness}: no raise-the-cap prompt: no raise lifts it`);
+    assert.equal(held.length, SEARCHES + 1, `${harness}: each request booked`);
+    assert.ok(held.every((request) => request.freeRequest === undefined && request.zeroPriced === undefined), `${harness}: none counted toward the limit: ${JSON.stringify(held.slice(0, 2))}`);
   }
 });
 
-// One plan rule for the cap: a CLI runner's plan model and pi's plan route are the same cap model, so the limit on
-// requests priced $0 counts both alike.
-test("a CLI runner's plan model and pi's plan route are one cap model, counted as a plan's", () => {
+// One plan rule for the cap: a CLI runner's plan model and pi's plan route are the same cap model, and neither is a free
+// model, so the free-model limit counts neither.
+test("a CLI runner's plan model and pi's plan route are one cap model, and no free model", () => {
   const zeros = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   assert.equal(typeof cliSpec.capModelOf, "function", "the CLI runners' cap model rule is exported, beside pi's");
   const cli = cliSpec.capModelOf("gpt-6.1-sol", "openai-responses", { cost: zeros, maxTokens: 128_000 }, false, true);
   const pi = capModelOfRoute({ model: "gpt-6.1-sol", provider: { api: "openai-responses", plan: true }, cost: zeros, unpriced: true, outputCeiling: 128_000 });
   assert.deepEqual(cli, pi);
   assert.deepEqual(cli, { id: "gpt-6.1-sol", api: "openai-responses", price: null, outputCeiling: 128_000, plan: true });
-  assert.deepEqual([cap.zeroPricedOf(cli), cap.zeroPricedOf(pi)], ["plan", "plan"]);
+  assert.equal(typeof cap.freeModel, "function", "the kernel's free-model rule is exported");
+  assert.deepEqual([cap.freeModel(cli), cap.freeModel(pi)], [false, false]);
+  assert.equal(cap.freeModel({ ...cli, price: zeros }), false, "a plan's model is no free model, even at a $0 listing");
 });
 
 // (An unpriced model that is no plan's is still refused a cap: unpriced-said.test.mjs, a gateway default with no price.)

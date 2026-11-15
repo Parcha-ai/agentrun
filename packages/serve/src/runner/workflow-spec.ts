@@ -409,7 +409,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         // refusal's figures are the run's. Wired now the Harness is open; the proxies' hooks forward to the model booking.
         const sessions = journalSessions(harness, context, { flush: () => deps.store.flush(), ...(claim.runner === undefined ? {} : { claim: { runId: claim.runId, runner: claim.runner } }) });
         const writer = await sessions.open(SESSION);
-        // Its model nodes' requests priced $0 (a free model's, a plan's) count toward the run's limit of them, capped or not.
+        // Its model nodes' requests on free models count toward the run's limit of them, capped or not.
         const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeModelRequestsOf(deps.env ?? process.env) });
         booking = await modelPortFor(writer, {
           key: SESSION,

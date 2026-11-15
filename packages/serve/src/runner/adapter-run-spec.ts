@@ -573,7 +573,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     },
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
-    // The most requests priced $0 it makes (a free model's, a plan's), capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
+    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
     freeRequests: freeModelRequestsOf(deps.env),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run

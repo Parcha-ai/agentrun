@@ -9,7 +9,7 @@ import { runBooking, type RunSessions } from "../../run-booking.js";
 import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from "../../runner.js";
 import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
 import { overCapEnd, SPEND_CAP_REACHED } from "./words.js";
-import { freeCeilingEnd, zeroPricedRequestOf } from "./free.js";
+import { freeCeilingEnd, freeRequest } from "./free.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf, capRequestOf, type PricedRequest } from "./port.js";
@@ -36,8 +36,8 @@ export interface RunCapOptions {
   /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
    *  view of the cap, a test's record). */
   judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
-  /** The most model requests priced $0 (a free model's, a plan's: free.ts zeroPricedOf) the run makes, capped or not:
-   *  the next one past it is refused for good, in freeCeilingEnd's words. Its paid tool calls and its decisions never
+  /** The most model requests on free models (free.ts freeModel) the run makes, capped or not: the next one past it is
+   *  refused for good, in freeCeilingEnd's words. Its paid tool calls, its decisions and ChatGPT-plan requests never
    *  count. Undefined: no such limit. */
   freeRequests?: number;
 }
@@ -109,21 +109,22 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
     ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
-  // A request priced $0 (zeroPricedRequestOf: a free model's, or a plan's), under a cap or none. The dollar cap cannot
-  // stop such requests, so a model request of the run's own sessions past the run's limit of them (`freeRequests`) is
-  // refused for good, before the dollar rule; one within it goes to the rule, and its admission says it is priced $0
-  // (`zeroPriced`, written on its runner.request, so the next count holds it in any process). A paid tool call and a
-  // decision book under their own sessions and never count. A free model's request is also admitted `free`: the runner
-  // books it a known $0 however it ends (runner.ts Admitted), never unknown. One the rule refused stays refused.
+  // A request on a free model (freeRequest), under a cap or none. The dollar cap cannot stop such requests, so a model
+  // request of the run's own sessions past the run's limit of them (`freeRequests`) is refused for good, before the
+  // dollar rule; one within it goes to the rule, and its admission says it counts (`freeRequest`, written on its
+  // runner.request, so the next count holds it in any process). A paid tool call and a decision book under their own
+  // sessions and never count; nor does a ChatGPT plan's request (no free model). A free model's request is also admitted
+  // `free`: the runner books it a known $0 however it ends (runner.ts Admitted), never unknown. One the rule refused stays
+  // refused.
   const limit = options.freeRequests;
   const judge: BeforeRequest = async (request) => {
-    const zeroPriced = zeroPricedRequestOf(request, pricing.modelOf);
-    const counted = zeroPriced && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION ? zeroPriced : undefined;
-    if (counted && limit !== undefined && (request.zeroPricedRequests ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
+    const free = freeRequest(request, pricing.modelOf);
+    const counted = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
+    if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
     if (answer && "refuse" in answer) return answer;
-    if (!zeroPriced) return answer;
-    return { ...(answer ?? {}), ...(counted ? { zeroPriced: counted } : {}), ...(zeroPriced === "free" ? { free: true as const } : {}) };
+    if (!free) return answer;
+    return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), free: true as const };
   };
   const before = runBooking(options.sessions, options.judged ? async (request) => {
     const answer = await judge(request);

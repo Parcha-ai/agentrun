@@ -275,7 +275,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // A server signed in to a ChatGPT plan (a harness offers its models): the cap says it counts dollars, which the plan's
   // requests are not.
   const onPlan = caps.harnesses.some((h) => isPlanModel(h.default_model) || h.models?.some(isPlanModel));
-  // The model this agent runs on, picked or the default, costs $0 a request (free, or a plan's): no dollar cap stops it, and
+  // The model this agent runs on, picked or the default, is a free one ($0 a request): no dollar cap stops it, and
   // the cap's note says the server's limit on its requests (capabilities' limits.free_model_requests).
   const freeNote = freeRequestsNote(f.model ?? fallback, f.harness ?? "pi", caps.harnesses, caps.freeRequests);
   // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.

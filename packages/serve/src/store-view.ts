@@ -137,7 +137,7 @@ export const answerOf = (timeline: readonly TimelineEvent[]): string | null => {
  *  the code, as main served it; a provider's content-filter stop is `moderated`, in words a person can act on
  *  (content-filter.ts); every other failure is run_failed. */
 const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => {
-  // A run that reached its limit of requests priced $0 (the kernel cap's freeCeilingEnd) ends as its cap ends one: code
+  // A run that reached its limit of requests on free models (the kernel cap's freeCeilingEnd) ends as its cap ends one: code
   // spend_cap_reached, its message the words after the code.
   const over = overCapMessage(summary) ?? freeCeilingMessage(summary);
   if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };

@@ -9,8 +9,8 @@
 // - what was spent beside its sessions on the run's behalf (`sessions.beside`: a run's learning, graded by runs of its
 //   own), read with them at each admission and added to `spentUsd`, so a run and what it pays for elsewhere never pass
 //   its cap together. Unknown (null) makes the run's spend unknown.
-// - `zeroPricedRequests`: the run's requests priced $0 so far (each runner.request marked `zeroPriced`, and each admitted
-//   here not yet recorded), which the cap's ceiling on such requests reads (runCap, free.ts).
+// - `freeRequestsMade`: the run's requests on free models so far (each runner.request marked `freeRequest`, and each
+//   admitted here not yet recorded), which the cap's ceiling on such requests reads (runCap, free.ts).
 // Admissions run one at a time across the run's sessions. The priced tools' charges and holds are not here: they are the
 // host's spentUsd and heldUsd hooks (beforeRequestOf), read beside these.
 import { type BeforeRequest, type InFlight, RUNNER_RECORDS, sessionSpendOf } from "./runner.js";
@@ -36,14 +36,14 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest): Before
   return (request) => {
     const asked = queue.then(async () => {
       let spentUsd: number | null = 0;
-      // The run's requests priced $0 (a free model's, a plan's) so far, each counted once: every one whose runner.request
-      // says so, answered, in flight or cut, in any session and any process, and below, each admitted here not yet recorded.
-      let zeroPricedRequests = 0;
+      // The run's requests on free models so far, each counted once: every one whose runner.request says so, answered, in
+      // flight or cut, in any session and any process, and below, each admitted here not yet recorded.
+      let freeRequestsMade = 0;
       const recorded = new Set<string>();
       for (const key of await sessions.keys()) {
         const records = await sessions.read(key);
         const spend = sessionSpendOf(records);
-        for (const r of records) if (r.kind === RUNNER_RECORDS.request && typeof (r.data as { zeroPriced?: unknown } | undefined)?.zeroPriced === "string") zeroPricedRequests += 1;
+        for (const r of records) if (r.kind === RUNNER_RECORDS.request && (r.data as { freeRequest?: unknown } | undefined)?.freeRequest === true) freeRequestsMade += 1;
         spentUsd = spentUsd === null || spend.spentUsd === null ? null : spentUsd + spend.spentUsd;
         // A hold-only step still open is no spend in its records: this booking keeps counting the one it admitted, in
         // flight at its hold, until it is answered (a lost claim's, admitted by no booking here, counts nothing).
@@ -54,11 +54,11 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest): Before
         spentUsd = spentUsd === null || beside === null || !Number.isFinite(beside) ? null : spentUsd + beside;
       }
       for (const id of [...admitted.keys()]) if (recorded.has(id)) admitted.delete(id);
-      for (const flight of admitted.values()) if (flight.zeroPriced) zeroPricedRequests += 1;
-      const verdict = await before({ ...request, spentUsd, inFlight: [...admitted.values()], zeroPricedRequests });
+      for (const flight of admitted.values()) if (flight.freeRequest) freeRequestsMade += 1;
+      const verdict = await before({ ...request, spentUsd, inFlight: [...admitted.values()], freeRequestsMade });
       if (!(verdict && "refuse" in verdict)) {
         const holdUsd = verdict && "holdUsd" in verdict ? verdict.holdUsd : undefined;
-        const zeroPriced = verdict && "zeroPriced" in verdict ? verdict.zeroPriced : undefined;
+        const freeRequest = !!verdict && "freeRequest" in verdict && verdict.freeRequest === true;
         const outputTokensMax = verdict && "outputTokensMax" in verdict ? verdict.outputTokensMax : request.outputTokensAsked;
         admitted.set(idOf(request.key, request.turn), {
           turn: request.turn,
@@ -67,7 +67,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest): Before
           ...(outputTokensMax === undefined ? {} : { outputTokensMax }),
           ...(typeof holdUsd === "number" ? { holdUsd } : {}),
           ...(request.host === undefined ? {} : { host: request.host }),
-          ...(zeroPriced ? { zeroPriced } : {}),
+          ...(freeRequest ? { freeRequest: true as const } : {}),
         });
       }
       return verdict;

@@ -619,10 +619,10 @@ test("a capped run with a request cut by a crash goes on: on a model listed at $
   assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
   assert.equal(ended.cost.usd, 0.006, "the cut request on a free model costs nothing, a known $0: the shown cost is the other two's");
   // What the cap held for each request, on the run's one ledger (its journal in the store): the model's $0 worst case,
-  // each marked priced $0, and the cut one booked as cut at a known $0, marked free.
+  // each counted as a free model's request, and the cut one booked as cut at a known $0, marked free.
   const entries = journalOf(data, runId);
   const requests = entries.filter((entry) => entry.kind === "runner.request" && !String(entry.data?.model ?? "").startsWith("paid:"));
-  assert.deepEqual(requests.map((entry) => [entry.data.heldUsd, entry.data.zeroPriced]), [[0, "free"], [0, "free"], [0, "free"]], "the first, the cut one, and the one after it, each held at $0");
+  assert.deepEqual(requests.map((entry) => [entry.data.heldUsd, entry.data.freeRequest]), [[0, true], [0, true], [0, true]], "the first, the cut one, and the one after it, each held at $0");
   const turns = entries.filter((entry) => entry.kind === "runner.turn" && requests.some((request) => request.conversationId === entry.conversationId && request.data.turn === entry.data.turn));
   assert.deepEqual(turns.map((entry) => entry.data.cut === true), [false, true, false], `the cut one booked as cut, once: ${JSON.stringify(turns.map((entry) => entry.data))}`);
   const cut = turns.find((entry) => entry.data.cut === true).data;

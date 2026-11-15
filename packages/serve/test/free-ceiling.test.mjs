@@ -1,5 +1,5 @@
-// A run's requests priced $0 stop at the server's limit of them (60, or AGENTRUN_FREE_MODEL_REQUESTS): the dollar cap
-// cannot stop a free model, every request costing $0. A free model stuck on a failing tool (fixtures/faux-loop.mjs, the
+// A run's requests on free models stop at the server's limit of them (60, or AGENTRUN_FREE_MODEL_REQUESTS): the dollar
+// cap cannot stop a free model, every request costing $0 (ChatGPT-plan requests don't count: cap-chatgpt-plan.test.mjs). A free model stuck on a failing tool (fixtures/faux-loop.mjs, the
 // faux model at its $0 listing, calling a tool the run does not have) makes its 60th request and is refused its 61st: the
 // run ends failed as the cap ends one, error spend_cap_reached, in the limit's words. One that needs 60 requests finishes.
 // The same loop on a paid model is not stopped by the limit: dollars govern it. The capabilities report the limit.
@@ -37,7 +37,7 @@ test("a free model looping on a failing tool is refused its 61st request: the ru
   assert.equal(stopped.view.status, "failed", JSON.stringify(stopped.view));
   assert.deepEqual(stopped.view.error && { code: stopped.view.error.code, message: stopped.view.error.message }, { code: "spend_cap_reached", message: words(60) });
   assert.equal(stopped.requests.length, 60, "60 requests left; the 61st was refused before it was sent");
-  assert.ok(stopped.requests.every((request) => request.zeroPriced === "free"), "each is counted as priced $0");
+  assert.ok(stopped.requests.every((request) => request.freeRequest === true), "each is counted toward the limit");
 
   const finished = await run("Loop 59");
   assert.equal(finished.view.status, "completed", JSON.stringify(finished.view.error));
@@ -51,7 +51,7 @@ test("a paid model in the same loop is not stopped by the limit", { timeout: 300
   const done = await run("Loop 65", { max_cost_usd: 50 });
   assert.equal(done.view.status, "completed", JSON.stringify(done.view.error));
   assert.equal(done.requests.length, 66, "every request of the loop was sent");
-  assert.ok(done.requests.every((request) => request.zeroPriced === undefined), "none counted as priced $0");
+  assert.ok(done.requests.every((request) => request.freeRequest === undefined), "none counted toward the limit");
 });
 
 test(`${ENV} moves the limit, and the capabilities say it`, { timeout: 120_000 }, async (t) => {

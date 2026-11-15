@@ -1,8 +1,8 @@
-// A run's requests priced $0 have a ceiling of their own (kernel/cap/free.ts): the dollar cap cannot stop them, every one
-// costing $0. Counted over every session of the run, from each runner.request marked `zeroPriced`, answered, in flight or
-// cut: past the run's limit the next one is refused for good, in the cap's code and words, capped or not. A paid request
-// never counts and is never refused by it; neither are the run's paid tool calls. A free request a crash cut is booked at
-// $0, a known cost, never unknown.
+// A run's requests on free models have a ceiling of their own (kernel/cap/free.ts): the dollar cap cannot stop them, every
+// one costing $0. Counted over every session of the run, from each runner.request marked `freeRequest`, answered, in
+// flight or cut: past the run's limit the next one is refused for good, in the cap's code and words, capped or not. A paid
+// request never counts and is never refused by it; neither are the run's paid tool calls, nor ChatGPT-plan requests. A
+// free request a crash cut is booked at $0, a known cost, never unknown.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { modelPortFor, RUNNER_RECORDS, sessionSpendOf } from "@parcha/agentrun-kernel";
@@ -47,20 +47,33 @@ test("a free model's requests stop at the run's limit, across its sessions, in t
   assert.ok(refused instanceof Error, "the fourth is refused");
   assert.equal(refused.message, LIMIT_WORDS(3));
   assert.deepEqual([refused.reason, refused.code], ["refused", "spend_cap_reached"]);
-  assert.deepEqual([...(await requestsOf(store, MAIN)), ...(await requestsOf(store, CHILD))].map((r) => r.zeroPriced), ["free", "free", "free"], "each sent one is marked on its record; the refused one never left");
+  assert.deepEqual([...(await requestsOf(store, MAIN)), ...(await requestsOf(store, CHILD))].map((r) => r.freeRequest), [true, true, true], "each sent one is marked on its record; the refused one never left");
 });
 
-test("a paid model is never stopped by the ceiling, nor counted toward it; a plan's requests count as a free model's", async () => {
+test("a paid model is never stopped by the ceiling, nor counted toward it", async () => {
   const store = memorySessionStore();
   const run = runOf(store, { freeRequests: 2 });
   const main = await bookingOf(store, run, MAIN);
   for (let i = 0; i < 6; i++) assert.equal(await ask(main, PAID.id, 0.001), "sent", `paid request ${i + 1}`);
-  assert.equal(await ask(main, PLAN.id), "sent");
   assert.equal(await ask(main, FREE.id), "sent");
-  const refused = await ask(main, PLAN.id);
-  assert.equal(refused?.message, LIMIT_WORDS(2), "the plan's and the free model's requests share the one limit");
+  assert.equal(await ask(main, FREE.id), "sent");
+  assert.equal((await ask(main, FREE.id))?.message, LIMIT_WORDS(2));
   assert.equal(await ask(main, PAID.id, 0.001), "sent", "a paid request past it still goes");
-  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => r.zeroPriced ?? null), [null, null, null, null, null, null, "plan", "free", null]);
+  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => r.freeRequest ?? null), [null, null, null, null, null, null, true, true, null]);
+});
+
+// A ChatGPT plan's requests don't count: a Codex run on a plan makes 100 requests and more, and the plan has its own
+// usage limits. The ceiling is for free models alone.
+test("a ChatGPT plan's requests never count toward the limit and are never refused by it", async () => {
+  const store = memorySessionStore();
+  const run = runOf(store, { freeRequests: 2 });
+  const main = await bookingOf(store, run, MAIN);
+  for (let i = 0; i < 5; i++) assert.equal(await ask(main, PLAN.id), "sent", `plan request ${i + 1}, past the limit of 2`);
+  assert.equal(await ask(main, FREE.id), "sent", "the limit is still whole");
+  assert.equal(await ask(main, FREE.id), "sent");
+  assert.equal((await ask(main, FREE.id))?.message, LIMIT_WORDS(2));
+  assert.equal(await ask(main, PLAN.id), "sent", "a plan's request past the limit still goes");
+  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => r.freeRequest ?? null), [null, null, null, null, null, true, true, null]);
 });
 
 test("a router's $0 listing is no free model: never counted toward the limit, never refused by it", async () => {
@@ -69,7 +82,7 @@ test("a router's $0 listing is no free model: never counted toward the limit, ne
   const main = await bookingOf(store, run, MAIN);
   for (let i = 0; i < 4; i++) assert.equal(await ask(main, ROUTER.id), "sent", `router request ${i + 1}`);
   assert.equal(await ask(main, FREE.id), "sent", "the limit is still whole");
-  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => r.zeroPriced ?? null), [null, null, null, null, "free"]);
+  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => r.freeRequest ?? null), [null, null, null, null, true]);
 });
 
 test("under a dollar cap the ceiling holds the same, and the run's paid tool calls never count toward it", async () => {

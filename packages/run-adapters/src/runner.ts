@@ -82,9 +82,9 @@ export type BeforeRequest = (request: {
    *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
    *  admitted one at a time, so each check sees every request admitted before it. */
   inFlight: readonly InFlight[];
-  /** The run's requests priced $0 so far (runBooking, over every session of the run): each whose runner.request says so
-   *  (`zeroPriced`), answered, in flight or cut, and each admitted that no record shows yet. Absent: not counted here. */
-  zeroPricedRequests?: number;
+  /** The run's requests on free models so far (runBooking, over every session of the run): each whose runner.request says
+   *  so (`freeRequest`), answered, in flight or cut, and each admitted that no record shows yet. Absent: not counted here. */
+  freeRequestsMade?: number;
 }) => void | Refusal | Admitted | Promise<void | Refusal | Admitted>;
 
 /** A host's refusal of a request: its words, and, from a spend cap, whether no raise could send it (`forGood`) and, for
@@ -97,19 +97,17 @@ export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd:
 
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
  *  one. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string; zeroPriced?: ZeroPriced };
-/** Why a request costs the run no dollars (Admission.zeroPriced): its model's price is all zeros, or a ChatGPT plan bills it. */
-export type ZeroPriced = "free" | "plan";
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string; freeRequest?: true };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
  *  streamed, in tokens (one a byte), never more than `holdUsd`; without it, at `holdUsd`. `withoutNote`: a request that
  *  carries its host's note is admitted only as it was without it (the note's bytes did not fit): it goes without it.
  *  `note`: the host's record of the note this request carries, written on the request's `runner.turn` record once it
- *  ends, beside how it was booked, so a later process reads whether the note reached an answer. `zeroPriced`: the request
- *  costs the run no dollars, and why: written on its runner.request (as `zeroPriced`), so the run's ceiling on such
- *  requests counts it in every process, and a cut one on a free model books at $0 (bookCut). */
-export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue }; zeroPriced?: ZeroPriced };
+ *  ends, beside how it was booked, so a later process reads whether the note reached an answer. `freeRequest`: one of
+ *  the run's requests on a free model, which its ceiling on such requests counts: written on its runner.request (as
+ *  `freeRequest`), so the count holds it in every process, and a cut one books at $0 (bookCut). */
+export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue }; freeRequest?: true };
 
 /** An admission as a host gives it: with `free` when the request is on a free model (its known price is $0 for every
  *  token, with no fee beside), so it costs nothing however it ends: booked a known $0 (booking.ts), its own cost 0, its
@@ -411,8 +409,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    const zeroPriced = verdict && "zeroPriced" in verdict && (verdict.zeroPriced === "free" || verdict.zeroPriced === "plan") ? verdict.zeroPriced : undefined;
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(zeroPriced ? { zeroPriced } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }) } }]);
+    const freeRequest = !!verdict && "freeRequest" in verdict && verdict.freeRequest === true;
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(freeRequest ? { freeRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }) } }]);
     turns = turn;
     if (host !== undefined) hosts.set(turn, host);
     if (hold !== undefined) held.set(turn, hold);
@@ -592,13 +590,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       return data.owed === true && data.hold !== true ? [inherited[i]!] : [];
     }));
     const owed = left.filter((t) => !read.openHolds.has(t) && owedTurns.has(t) && (held.get(t) ?? 0) > 0);
-    // A request on a free model (its runner.request says `zeroPriced: "free"`, as the run's cap admitted it Admitted.free)
-    // an earlier process left open costs nothing whatever reached the provider: booked cut at a known $0 and marked `free`,
-    // as this process books its own (bookRequest's free), never unknown. A plan's keeps the rule below: the plan bills it,
-    // and its cost here stays as a plan's request reads.
+    // A request on a free model (its runner.request says `freeRequest`, as the run's cap admitted it) an earlier process
+    // left open costs nothing whatever reached the provider: booked cut at a known $0 and marked `free`, as this process
+    // books its own (bookRequest's free), never unknown. Any other keeps the rule below.
     const freeTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => {
-      const data = (r.data ?? {}) as { turn?: unknown; zeroPriced?: unknown };
-      return data.zeroPriced === "free" ? [typeof data.turn === "number" ? data.turn : i + 1] : [];
+      const data = (r.data ?? {}) as { turn?: unknown; freeRequest?: unknown };
+      return data.freeRequest === true ? [typeof data.turn === "number" ? data.turn : i + 1] : [];
     }));
     const free = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && freeTurns.has(t));
     const numbers = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && !free.includes(t));

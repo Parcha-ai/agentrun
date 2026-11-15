@@ -314,7 +314,7 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
     drainMs = durationMs(given || RUNNER_DRAIN_TIMEOUT);
     if (drainMs === undefined) throw new RunnerRefused(`${RUNNER_DRAIN_ENV} is a duration such as 6s, 500ms or 1m, not ${JSON.stringify(given)}`);
   }
-  // The limit on each run's $0-priced requests (AGENTRUN_FREE_MODEL_REQUESTS), read again at each claim: a bad one refuses
+  // The limit on each run's requests on free models (AGENTRUN_FREE_MODEL_REQUESTS), read again at each claim: a bad one refuses
   // the runner here, never a run at its claim.
   try {
     freeModelRequestsOf(env);
