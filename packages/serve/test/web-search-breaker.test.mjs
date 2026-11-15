@@ -276,7 +276,8 @@ test("keyless Exa's daily cap: busy for 60 s after its first RATE_LIMITED, the c
   assert.equal(breaker.held()?.error, "search is busy; try again in 60 s, or answer from what you have");
   now += 61_000;
   assert.equal(breaker.held(), undefined, "61 s on, the next call reaches Exa");
-  breaker.read({ answer: fail, limit: EXA_RATE() });
+  // The call that turns search off answers so itself, never Exa's "try again in a minute".
+  assert.deepEqual(breaker.read({ answer: { error: RATE_LIMITED }, limit: EXA_RATE() }), { error: UNAVAILABLE }, "the second RATE_LIMITED after the wait answers search is unavailable");
   assert.equal(breaker.held()?.error, UNAVAILABLE, "a second RATE_LIMITED after the wait: off for the run, unsent");
   now += 200_000;
   assert.equal(breaker.held()?.error, UNAVAILABLE, "200 s on, still off");
@@ -307,15 +308,22 @@ test("keyless Exa: two RATE_LIMITED answers within one open wait (in flight toge
   // With no success since, the next one past that wait is the daily count.
   now += 61_000;
   assert.equal(transient.held(), undefined);
-  transient.read({ answer: fail, limit: EXA_RATE() });
+  assert.deepEqual(transient.read({ answer: { error: RATE_LIMITED }, limit: EXA_RATE() }), { error: UNAVAILABLE });
   assert.equal(transient.held()?.error, UNAVAILABLE, "the next RATE_LIMITED after a completed wait, no success since, turns it off");
   // A failure that is no limit (a 5xx) is no success: it does not reset the count.
   const failed = webSearch.searchBreaker(() => now);
   failed.read({ answer: fail, limit: EXA_RATE() });
   now += 61_000;
   failed.read({ answer: fail });
-  failed.read({ answer: fail, limit: EXA_RATE() });
+  assert.deepEqual(failed.read({ answer: { error: RATE_LIMITED }, limit: EXA_RATE() }), { error: UNAVAILABLE });
   assert.equal(failed.held()?.error, UNAVAILABLE, "a failed search between is no success");
+});
+
+test("a quota answer keeps the call's own answer: its words name no retry, and a hosted search's results found before it stay", () => {
+  const breaker = webSearch.searchBreaker(() => Date.parse("2026-11-15T19:00:00Z"));
+  const found = { provider: "native", query: "q", results: [{ url: "https://example.com/", title: "t", snippet: "s" }] };
+  assert.deepEqual(breaker.read({ answer: found, limit: { kind: "quota" } }), found);
+  assert.equal(breaker.held()?.error, UNAVAILABLE);
 });
 
 test("a rate limit not keyless Exa's (Parallel's 429, a hosted search's) that repeats after its wait still just waits again", () => {
