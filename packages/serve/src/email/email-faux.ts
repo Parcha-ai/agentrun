@@ -2,8 +2,10 @@
 // the email trigger's and the email tools' tests and for a template's eval (template-eval.ts), as github-faux.ts fakes
 // GitHub. Hand-written, the IMAP subset a mail client library uses (imapflow): CAPABILITY, LOGIN, LIST and LSUB with
 // special-use flags, STATUS, SELECT and EXAMINE with UIDVALIDITY and UIDNEXT, SEARCH and UID SEARCH, FETCH and UID FETCH
-// (BODY[] and BODY.PEEK[], a part of one, HEADER.FIELDS), STORE, APPEND, NOOP, CLOSE, UNSELECT, LOGOUT; and SMTP's EHLO,
-// AUTH PLAIN and LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT. A fetch of BODY[] without PEEK marks the message \Seen, as a
+// (BODY[] and BODY.PEEK[], a part of one, HEADER.FIELDS), STORE, APPEND, CREATE (and SUBSCRIBE), UID MOVE, NOOP, CLOSE,
+// UNSELECT, LOGOUT; on the Gmail layout also X-GM-EXT-1's labels (FETCH and STORE of X-GM-LABELS: a message in INBOX
+// carries \Inbox, and one whose \Inbox is taken off leaves INBOX for [Gmail]/All Mail); and SMTP's EHLO, AUTH PLAIN and
+// LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT. A fetch of BODY[] without PEEK marks the message \Seen, as a
 // real server does, so a test can tell a read that changes the inbox from one that does not. The test seeds the
 // mailboxes, reads them back and what SMTP received, and switches the sign-in off or the UIDVALIDITY to another. Plaintext
 // on the loopback address only: never a server anyone else reaches.
@@ -37,7 +39,7 @@ export type FauxMessage = {
 };
 
 /** A message as the fake keeps it. */
-export type FauxStored = { uid: number; flags: string[]; raw: string; messageId: string | undefined; subject: string | undefined; internalDate: Date };
+export type FauxStored = { uid: number; flags: string[]; raw: string; messageId: string | undefined; subject: string | undefined; internalDate: Date; /** Its Gmail labels (X-GM-LABELS), on the Gmail layout only. */ labels?: string[] };
 /** A message SMTP received: its envelope and its data, as sent. */
 export type FauxSent = { from: string; to: string[]; raw: string };
 
@@ -50,6 +52,8 @@ export type EmailFaux = {
   seed(message: FauxMessage): { uid: number; messageId: string | undefined; mailbox: string };
   /** A mailbox's messages, oldest first: "Drafts" and "Sent" are the layout's special-use folders. */
   messages(mailbox?: string): FauxStored[];
+  /** Every mailbox's name, a CREATEd one among them, in order. */
+  mailboxes(): string[];
   /** Every message SMTP received, in order. */
   sent(): FauxSent[];
   /** Every IMAP command the fake was sent, tag left out (a LOGIN's password too). */
@@ -65,7 +69,12 @@ type Box = { name: string; flags: string[]; selectable: boolean; uidValidity: nu
 
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the fake mail servers bind loopback only
 const CRLF = "\r\n";
-const CAPABILITIES = "IMAP4rev1 LITERAL+ SPECIAL-USE UIDPLUS";
+/** What each layout's IMAP server says it does: Gmail's labels (X-GM-EXT-1) on its own. */
+const CAPABILITIES = "IMAP4rev1 LITERAL+ SPECIAL-USE UIDPLUS MOVE";
+const GMAIL_CAPABILITIES = `${CAPABILITIES} X-GM-EXT-1`;
+/** The label a Gmail message in INBOX carries; the mailbox a message whose label is taken off goes to. */
+const INBOX_LABEL = "\\Inbox";
+const ALL_MAIL = "[Gmail]/All Mail";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** The folders of a layout: a plain account's (Drafts, Sent, Trash at the top), or Gmail's (under [Gmail]/, each with its
@@ -227,6 +236,8 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
   let refusing = false;
   const commandLog: string[] = [];
   const delivered: FauxSent[] = [];
+  const gmail = options.layout === "gmail";
+  const capabilities = gmail ? GMAIL_CAPABILITIES : CAPABILITIES;
   const boxes: Box[] = layoutOf(options.layout ?? "standard").map((box, i) => ({ name: box.name, flags: box.flags, selectable: box.selectable !== false, uidValidity: 1000 + i, uidNext: 1, messages: [] }));
   const boxNamed = (name: string): Box | undefined => boxes.find((box) => (name.toUpperCase() === "INBOX" ? box.name === "INBOX" : box.name === name));
   /** "Drafts" and "Sent" name the layout's special-use folder; any other name its folder. */
@@ -237,9 +248,16 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
 
   const store = (box: Box, raw: string, flags: readonly string[], internalDate: Date): FauxStored => {
     const fields = headersOf(raw);
-    const stored = { uid: box.uidNext++, flags: [...flags], raw, messageId: fields.get("message-id"), subject: fields.get("subject"), internalDate };
+    const stored: FauxStored = { uid: box.uidNext++, flags: [...flags], raw, messageId: fields.get("message-id"), subject: fields.get("subject"), internalDate, ...(gmail ? { labels: box.name === "INBOX" ? [INBOX_LABEL] : [] } : {}) };
     box.messages.push(stored);
     return stored;
+  };
+  /** `message` taken out of `from` and put in `to`, a new uid there, all else kept. */
+  const moved = (from: Box, message: FauxStored, to: Box): FauxStored => {
+    from.messages.splice(from.messages.indexOf(message), 1);
+    const kept: FauxStored = { ...message, uid: to.uidNext++, flags: [...message.flags], ...(message.labels ? { labels: [...message.labels] } : {}) };
+    to.messages.push(kept);
+    return kept;
   };
 
   // ---- IMAP --------------------------------------------------------------------------------------------------------------
@@ -252,7 +270,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     // A command being read across literals: its text so far (each literal's place marked), and the literals.
     let pending: { text: string; literals: string[]; need: number } | undefined;
     const send = (line: string) => void socket.write(`${line}${CRLF}`);
-    send(`* OK [CAPABILITY ${CAPABILITIES}] AgentRun's fake IMAP is ready`);
+    send(`* OK [CAPABILITY ${capabilities}] AgentRun's fake IMAP is ready`);
 
     const fetchItem = (box: Box, message: FauxStored, seq: number, items: Token[], byUid: boolean): string => {
       const parts: string[] = [];
@@ -266,6 +284,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         else if (upper === "INTERNALDATE") parts.push(`INTERNALDATE ${quoted(imapDate(message.internalDate))}`);
         else if (upper === "RFC822.SIZE") parts.push(`RFC822.SIZE ${Buffer.byteLength(message.raw, "utf8")}`);
         else if (upper === "MODSEQ") parts.push("MODSEQ (1)");
+        else if (upper === "X-GM-LABELS" && gmail) parts.push(`X-GM-LABELS (${(message.labels ?? []).map(quoted).join(" ")})`);
         else if (/^BODY(\.PEEK)?\[/.test(upper)) {
           const peek = upper.startsWith("BODY.PEEK");
           const section = /\[(.*)\]/.exec(name)?.[1] ?? "";
@@ -356,13 +375,13 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       const verb = command.toUpperCase();
       const ok = (text = "done") => send(`${tag} OK ${text}`);
       const bad = (text: string) => send(`${tag} BAD ${text}`);
-      if (verb === "CAPABILITY") return send(`* CAPABILITY ${CAPABILITIES}`), ok();
+      if (verb === "CAPABILITY") return send(`* CAPABILITY ${capabilities}`), ok();
       if (verb === "NOOP") return ok();
       if (verb === "LOGOUT") return send("* BYE signing off"), ok(), void socket.end();
       if (verb === "LOGIN") {
         if (refusing || word(args[0]) !== user || word(args[1]) !== password) return send(`${tag} NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)`);
         signedIn = true;
-        return ok(`[CAPABILITY ${CAPABILITIES}] signed in`);
+        return ok(`[CAPABILITY ${capabilities}] signed in`);
       }
       if (!signedIn) return bad("sign in first");
       if (verb === "LIST" || verb === "LSUB" || verb === "XLIST") {
@@ -391,6 +410,13 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         return ok(`[${verb === "EXAMINE" ? "READ-ONLY" : "READ-WRITE"}] selected`);
       }
       if (verb === "CLOSE" || verb === "UNSELECT") return (selected = undefined), ok();
+      if (verb === "SUBSCRIBE" || verb === "UNSUBSCRIBE") return ok();
+      if (verb === "CREATE") {
+        const name = word(args[0]).replace(/\/$/, "");
+        if (!name || boxNamed(name)) return send(`${tag} NO [ALREADYEXISTS] the mailbox is there`);
+        boxes.push({ name, flags: ["\\HasNoChildren"], selectable: true, uidValidity: 1000 + boxes.length, uidNext: 1, messages: [] });
+        return ok("created");
+      }
       if (verb === "APPEND") {
         const box = boxNamed(word(args[0]));
         if (!box || !box.selectable) return send(`${tag} NO [TRYCREATE] no such mailbox`);
@@ -423,6 +449,21 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         if (selected.readOnly) return send(`${tag} NO the mailbox is read-only`);
         const how = word(rest[1]).toUpperCase();
         const flags = rest[2] && "list" in rest[2] ? rest[2].list.map(word) : rest.slice(2).map(word);
+        if (how.replace(/^[+-]/, "").startsWith("X-GM-LABELS")) {
+          if (!gmail) return bad("this account has no labels");
+          // A label is a mailbox of its own: one not there is refused, as Gmail's own names a label it does not have.
+          const missing = flags.find((label) => label !== INBOX_LABEL && !boxNamed(label));
+          if (missing !== undefined) return send(`${tag} NO [TRYCREATE] no label ${missing}`);
+          for (const { m, seq } of [...chosen].reverse()) {
+            const before = m.labels ?? [];
+            m.labels = how.startsWith("+") ? [...new Set([...before, ...flags])] : how.startsWith("-") ? before.filter((label) => !flags.includes(label)) : [...flags];
+            if (box.name === "INBOX" && !m.labels.includes(INBOX_LABEL)) {
+              moved(box, m, boxNamed(ALL_MAIL)!);
+              send(`* ${seq} EXPUNGE`);
+            } else if (!how.includes(".SILENT")) send(`* ${seq} FETCH (${uid ? `UID ${m.uid} ` : ""}X-GM-LABELS (${m.labels.map(quoted).join(" ")}))`);
+          }
+          return ok();
+        }
         for (const { m, seq } of chosen) {
           if (how.startsWith("+")) m.flags = [...new Set([...m.flags, ...flags])];
           else if (how.startsWith("-")) m.flags = m.flags.filter((flag) => !flags.includes(flag));
@@ -430,6 +471,20 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
           if (!how.includes(".SILENT")) send(`* ${seq} FETCH (${uid ? `UID ${m.uid} ` : ""}FLAGS (${m.flags.join(" ")}))`);
         }
         return ok();
+      }
+      if (inner === "MOVE") {
+        if (selected.readOnly) return send(`${tag} NO the mailbox is read-only`);
+        const set = word(rest[0]);
+        const to = boxNamed(word(rest[1]));
+        if (!to || !to.selectable) return send(`${tag} NO [TRYCREATE] no such mailbox`);
+        const test = inSet(set, uid ? box.uidNext - 1 : box.messages.length);
+        const chosen = box.messages.map((m, i) => ({ m, seq: i + 1 })).filter(({ m, seq }) => test(uid ? m.uid : seq));
+        if (!chosen.length) return ok("nothing moved");
+        const from = chosen.map(({ m }) => m.uid);
+        const into = chosen.map(({ m }) => moved(box, m, to).uid);
+        send(`* OK [COPYUID ${to.uidValidity} ${from.join(",")} ${into.join(",")}] moved`);
+        for (const { seq } of [...chosen].reverse()) send(`* ${seq} EXPUNGE`);
+        return ok("moved");
       }
       return bad(`this fake answers no ${verb}`);
     };
@@ -601,8 +656,9 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     messages(mailbox = "INBOX") {
       const box = resolve(mailbox);
       if (!box) throw new Error(`the fake account has no mailbox ${mailbox}`);
-      return box.messages.map((m) => ({ ...m, flags: [...m.flags] }));
+      return box.messages.map((m) => ({ ...m, flags: [...m.flags], ...(m.labels ? { labels: [...m.labels] } : {}) }));
     },
+    mailboxes: () => boxes.map((box) => box.name),
     sent: () => delivered.map((m) => ({ ...m, to: [...m.to] })),
     commands: () => [...commandLog],
     refuseLogin(on) {

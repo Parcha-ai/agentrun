@@ -3,7 +3,10 @@
 // fetches a seeded message (its flags, its arrival and its source; the fake answers no ENVELOPE) with BODY.PEEK so it
 // stays unread, and APPENDs to Drafts with \Draft; nodemailer's SMTP send lands in sent(), envelope and data.
 // refuseLogin refuses both sign-ins as a wrong password is; setUidValidity rebuilds INBOX, its uids starting again from
-// 1. Loopback and plaintext only, as only the fakes are.
+// 1. Both layouts CREATE a folder and UID MOVE a message into it (one not there is refused with TRYCREATE); the Gmail
+// layout advertises X-GM-EXT-1 and MOVE, fetches and stores X-GM-LABELS (a label not there refused, \Inbox taken off
+// moving the message to [Gmail]/All Mail), and messages() carries each message's labels. Loopback and plaintext only, as
+// only the fakes are.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ImapFlow } from "imapflow";
@@ -114,4 +117,66 @@ test("setUidValidity rebuilds INBOX: a new UIDVALIDITY, its uids from 1 again", 
   assert.notEqual(after.validity, before.validity);
   assert.equal(after.uids[0], 1, `uids start again from 1: ${after.uids}`);
   assert.equal(third.uid, after.uids.at(-1));
+});
+
+test("both layouts CREATE a folder and UID MOVE a message into it; a folder not there is refused with TRYCREATE", { timeout: 30_000 }, async (t) => {
+  for (const layout of ["standard", "gmail"]) {
+    const faux = await account(t, { layout });
+    const seeded = faux.seed({ subject: "Invoice", messageId: "<i1@example.com>" });
+    faux.seed({ subject: "Other" });
+    const result = await withImap(faux, async (client) => {
+      assert.ok(client.capabilities.has("MOVE"), `${layout} advertises MOVE`);
+      const created = await client.mailboxCreate("Receipts");
+      const again = await client.mailboxCreate("Receipts");
+      await client.mailboxOpen("INBOX");
+      const missing = await client.messageMove(String(seeded.uid), "Nowhere", { uid: true });
+      const moved = await client.messageMove(String(seeded.uid), "Receipts", { uid: true });
+      return { created: created.created, again: again.created, missing, moved };
+    });
+    assert.deepEqual([result.created, result.again, result.missing], [true, false, false], layout);
+    assert.equal(result.moved.uidMap.size, 1, `${layout}: COPYUID names the moved uid`);
+    assert.ok(faux.mailboxes().includes("Receipts"), `${layout}: ${faux.mailboxes()}`);
+    assert.deepEqual(faux.messages().map((m) => m.subject), ["Other"], `${layout}: it left INBOX`);
+    assert.deepEqual(faux.messages("Receipts").map((m) => [m.subject, m.messageId, m.uid]), [["Invoice", "<i1@example.com>", 1]], layout);
+    assert.ok(faux.commands().some((c) => /^UID MOVE \d+ "?Receipts"?$/i.test(c)), faux.commands().join("\n"));
+  }
+});
+
+test("a read-only mailbox moves nothing", { timeout: 30_000 }, async (t) => {
+  const faux = await account(t);
+  const seeded = faux.seed({ subject: "Stays" });
+  const moved = await withImap(faux, async (client) => {
+    await client.mailboxOpen("INBOX", { readOnly: true });
+    return client.messageMove(String(seeded.uid), "Archive", { uid: true });
+  });
+  assert.equal(moved, false);
+  assert.deepEqual([faux.messages().length, faux.messages("Archive").length], [1, 0]);
+});
+
+test("the Gmail layout advertises X-GM-EXT-1 and stores and fetches X-GM-LABELS; taking \\Inbox off moves to All Mail", { timeout: 30_000 }, async (t) => {
+  const plain = await account(t);
+  assert.equal(plain.seed({ subject: "plain" }).labels, undefined);
+  assert.equal(plain.messages()[0].labels, undefined, "labels are the Gmail layout's alone");
+  assert.equal(await withImap(plain, async (client) => client.capabilities.has("X-GM-EXT-1")), false);
+
+  const faux = await account(t, { layout: "gmail" });
+  const one = faux.seed({ subject: "Invoice", messageId: "<g1@example.com>" });
+  const two = faux.seed({ subject: "Newsletter", messageId: "<g2@example.com>" });
+  assert.deepEqual(faux.messages().map((m) => m.labels), [["\\Inbox"], ["\\Inbox"]]);
+  const seen = await withImap(faux, async (client) => {
+    assert.ok(client.capabilities.has("X-GM-EXT-1"));
+    await client.mailboxOpen("INBOX");
+    const missing = await client.messageFlagsAdd(String(one.uid), ["Receipts"], { uid: true, useLabels: true });
+    await client.mailboxCreate("Receipts");
+    await client.mailboxOpen("INBOX");
+    const added = await client.messageFlagsAdd(String(one.uid), ["Receipts"], { uid: true, useLabels: true });
+    const fetched = await client.fetchOne(String(one.uid), { uid: true, labels: true }, { uid: true });
+    const archived = await client.messageFlagsRemove(String(two.uid), ["\\Inbox"], { uid: true, useLabels: true });
+    return { missing, added, labels: [...fetched.labels], archived };
+  });
+  assert.deepEqual([seen.missing, seen.added, seen.archived], [false, true, true]);
+  assert.deepEqual(seen.labels.sort(), ["Receipts", "\\Inbox"].sort());
+  assert.deepEqual(faux.messages().map((m) => [m.subject, m.labels]), [["Invoice", ["\\Inbox", "Receipts"]]], "labelled, still in INBOX");
+  assert.deepEqual(faux.messages("[Gmail]/All Mail").map((m) => [m.subject, m.labels]), [["Newsletter", []]], "out of the inbox, in All Mail");
+  assert.ok(faux.commands().some((c) => /^UID STORE \d+ \+X-GM-LABELS/i.test(c)), faux.commands().join("\n"));
 });

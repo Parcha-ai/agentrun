@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, call, clientOwnerSession, follow, serve } from "./support.mjs";
 import { fakeClock, firings, made } from "./trigger-support.mjs";
-import { ADDRESS, emailTrigger, FAUX_EMAIL, launchText, mailbox, saved, sawOf } from "./email-support.mjs";
+import { ADDRESS, checked, emailTrigger, FAUX_EMAIL, launchText, mailbox, saved, sawOf } from "./email-support.mjs";
 
 const TOOLS = ["email_search", "email_read", "email_draft", "email_send"];
 const calls = (list) => `Email calls: ${JSON.stringify(list)}`;
@@ -180,6 +180,7 @@ test("a run an email started sees its thread alone, in any mailbox; `scope: \"ma
   const wide = await api("POST", "/triggers", emailTrigger("wide", { every_s: 60 }, calls(list)));
   for (const made of [narrow, wide]) assert.equal(made.status, 201, JSON.stringify(made.body));
   clock.to("2026-06-01T00:01:00Z");
+  for (const made of [narrow, wide]) await checked(api, made.body.id, "2026-06-01T00:01:00Z");
   await firings(api, narrow.body.id, 1);
   await firings(api, wide.body.id, 1);
   answer(faux);

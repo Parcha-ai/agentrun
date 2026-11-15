@@ -95,6 +95,7 @@ test("the same Message-ID twice fires once; a restart goes on from the cursor, f
   await made(first.api, "mail");
   const { id } = await trigger(first.api, emailTrigger("mail", { every_s: 60 }));
   clock.to(minute(1));
+  await checked(first.api, id, minute(1));
   await firings(first.api, id, 1);
   const once = faux.seed({ from: "a@example.com", subject: "Once", messageId: "<once@example.com>" });
   faux.seed({ from: "a@example.com", subject: "Once, again", messageId: "<once@example.com>" });
@@ -125,6 +126,7 @@ test("a changed UIDVALIDITY replays nothing and says so; what comes after it fir
   await made(api, "mail");
   const { id } = await trigger(api, emailTrigger("mail", { every_s: 60 }));
   clock.to(minute(1));
+  await checked(api, id, minute(1));
   await firings(api, id, 1);
   faux.seed({ from: "a@example.com", subject: "One" });
   faux.setUidValidity(777);
@@ -147,6 +149,7 @@ test("25 new messages: a poll takes the oldest 20, the next poll the other 5; a 
   await made(api, "mail");
   const { id } = await trigger(api, emailTrigger("mail", { every_s: 60, accept: [{ event: "message", where: [{ pointer: "/subject", prefix: "Invoice" }] }] }));
   clock.to(minute(1));
+  await checked(api, id, minute(1));
   await firings(api, id, 1);
   const seeded = Array.from({ length: 25 }, (_, i) => faux.seed({ from: "c@example.com", subject: i === 24 ? "Invoice 25" : `Note ${i + 1}` }));
   clock.to(minute(2));
