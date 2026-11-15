@@ -5,8 +5,10 @@
 //
 // A process that is killed, or is blocked in a synchronous docker call when the signal comes, cannot clean up after itself,
 // so a watchdog does: a detached process that holds the names this one logs, waits for this process to be gone, and then
-// removes each, three passes a second apart (a `docker run` the process started before it went may still be finishing in
-// Docker). It outlives this process by a few seconds.
+// removes each, a pass a second, until each is confirmed absent and nothing can still make it: a `docker run` the process
+// started before it went can live on and create its container late, so the watchdog also waits for the docker children this
+// process logged by pid (async calls) and for any running docker command that names the item (read from `ps`, which covers
+// the sync calls, whose pid is unknown until they return). At least three passes, and 2 minutes at most.
 //
 // What it removes: the name after `--name` in each `docker run` and `docker create`, and the name `docker volume create`
 // ends with, in the commands this process runs itself (execFile, execFileSync, spawn, spawnSync), logged before the
@@ -24,34 +26,68 @@ const WATCHDOG = `
 const { execFileSync } = require("node:child_process");
 const { readFileSync, rmSync } = require("node:fs");
 const [parent, file] = process.argv.slice(1);
-const gone = () => {
+const BOUND = 120000;
+const alive = (pid) => {
 	try {
-		process.kill(Number(parent), 0);
-		return false;
+		process.kill(Number(pid), 0);
+		return true;
 	} catch (error) {
-		return error.code !== "EPERM";
+		return error.code === "EPERM";
 	}
 };
-const quietly = (args) => {
+const docker = (args) => {
 	try {
 		execFileSync("docker", args, { stdio: "ignore", timeout: 30000 });
-	} catch {}
+		return true;
+	} catch {
+		return false;
+	}
 };
-const timer = setInterval(() => {
-	if (!gone()) return;
-	clearInterval(timer);
-	let lines = [];
+const entries = () => {
 	try {
-		lines = readFileSync(file, "utf8").split("\\n").filter(Boolean).reverse();
-	} catch {}
+		return readFileSync(file, "utf8").split("\\n").filter(Boolean);
+	} catch {
+		return [];
+	}
+};
+// Every process now running, as "pid args": a docker command that names an item may still be about to make it.
+const processes = () => {
+	try {
+		return execFileSync("ps", ["-A", "-o", "pid=,args="], { encoding: "utf8", timeout: 30000, maxBuffer: 1 << 26 }).split("\\n");
+	} catch {
+		return [];
+	}
+};
+const isDocker = (word) => /(^|\\/)docker$/.test(word || "");
+const naming = (name, lines) =>
+	lines.some((line) => {
+		const [pid, ...words] = line.trim().split(/\\s+/);
+		if (Number(pid) === process.pid) return false;
+		// The program is docker, or a script named docker that runs it.
+		if (!isDocker(words[0]) && !isDocker(words[1])) return false;
+		return words.includes(name) || words.includes("--name=" + name);
+	});
+const timer = setInterval(() => {
+	if (alive(parent)) return;
+	clearInterval(timer);
+	const deadline = Date.now() + BOUND;
 	let pass = 0;
+	// An item is forgotten only once it is confirmed absent and nothing can still make it: no docker child the process
+	// logged is alive, and no running docker command names it. Bounded, so the watchdog always ends.
 	const sweep = () => {
-		for (const line of lines) {
-			if (line.startsWith("c ")) quietly(["rm", "--force", "--volumes", line.slice(2)]);
-			else if (line.startsWith("v ")) quietly(["volume", "rm", "--force", line.slice(2)]);
+		const lines = entries().reverse();
+		const items = lines.filter((line) => line.startsWith("c ") || line.startsWith("v "));
+		for (const line of items) {
+			if (line.startsWith("c ")) docker(["rm", "--force", "--volumes", line.slice(2)]);
+			else docker(["volume", "rm", "--force", line.slice(2)]);
 		}
-		if (++pass < 3) setTimeout(sweep, 1000);
-		else rmSync(file, { force: true });
+		const absent = items.every((line) => !docker(line.startsWith("c ") ? ["inspect", "--type", "container", line.slice(2)] : ["volume", "inspect", line.slice(2)]));
+		const children = lines.filter((line) => line.startsWith("p ")).some((line) => alive(line.slice(2)));
+		const running = processes();
+		const making = items.some((line) => naming(line.slice(2), running));
+		pass++;
+		if ((pass >= 3 && absent && !children && !making) || Date.now() >= deadline) rmSync(file, { force: true });
+		else setTimeout(sweep, 1000);
 	};
 	sweep();
 }, 250);
@@ -71,14 +107,18 @@ function note(kind, name) {
 
 /** Logs the container or volume a docker command is about to make. */
 function record(args) {
-	if (!Array.isArray(args)) return;
+	if (!Array.isArray(args)) return false;
 	if (args[0] === "run" || args[0] === "create") {
 		const at = args.indexOf("--name");
 		if (at !== -1) note("c", args[at + 1]);
 		for (const arg of args) if (typeof arg === "string" && arg.startsWith("--name=")) note("c", arg.slice("--name=".length));
-	} else if (args[0] === "volume" && args[1] === "create") {
-		note("v", args.at(-1));
+		return true;
 	}
+	if (args[0] === "volume" && args[1] === "create") {
+		note("v", args.at(-1));
+		return true;
+	}
+	return false;
 }
 
 /** Whether a command is Docker's: a program named docker, so a `run` of something else is never read as one. */
@@ -88,8 +128,11 @@ for (const name of ["execFile", "execFileSync", "spawn", "spawnSync"]) {
 	const real = childProcess[name];
 	childProcess[name] = function (command, ...rest) {
 		// (file, args, options, callback): the args may be left out, and are then the options.
-		if (isDocker(command)) record(rest[0]);
-		return real.call(this, command, ...rest);
+		const making = isDocker(command) && record(rest[0]);
+		const result = real.call(this, command, ...rest);
+		// An async call returns its child: the watchdog waits for it too, as it may make the item after this process is gone.
+		if (making && typeof result?.pid === "number") appendFileSync(file, `p ${result.pid}\n`);
+		return result;
 	};
 }
 syncBuiltinESMExports();

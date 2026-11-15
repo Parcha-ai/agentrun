@@ -13,10 +13,15 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
+import { VOLUME_SUBPATH_ENGINE } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const real = (...args) => execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+/** The Docker Engine's major version, 0 when unknown; only read on a live run. */
+const ENGINE = LIVE ? Number(/^(\d+)\./.exec(real("version", "--format", "{{.Server.Version}}").trim())?.[1] ?? 0) : 0;
+/** How long the slowed `docker run` of the early case takes to make its container. */
+const SLOW_SECONDS = 8;
 const exists = (name) => {
 	try {
 		real("inspect", "--type", "container", name);
@@ -59,6 +64,8 @@ if [ "\${1:-}" = "run" ] || [ "\${1:-}" = "create" ]; then
     if [ "$prev" = "--name" ]; then printf 'c %s\\n' "$arg" >> "\${DOCKER_NAME_LOG:?}"; fi
     prev=$arg
   done
+  # A slowed create: the container comes into being this long after the name is logged.
+  sleep "\${DOCKER_SLOW_SECONDS:-0}"
 elif [ "\${1:-}" = "volume" ] && [ "\${2:-}" = "create" ]; then
   printf 'v %s\\n' "\${@: -1}" >> "\${DOCKER_NAME_LOG:?}"
 fi
@@ -131,7 +138,8 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 	/** Runs `file` as `node --test` does, cuts it off once one of its containers exists, and answers what is left. */
 	async function cutOff(file, how) {
 		const log = join(dir, `${file}-${how}.log`);
-		const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, DOCKER_NAME_LOG: log, REAL_DOCKER: realDocker, AGENTRUN_COMPUTER_LIVE_DOCKER: "1" };
+		const early = how === "early";
+		const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, DOCKER_NAME_LOG: log, REAL_DOCKER: realDocker, AGENTRUN_COMPUTER_LIVE_DOCKER: "1", DOCKER_SLOW_SECONDS: early ? String(SLOW_SECONDS) : "0" };
 		// This file runs under `node --test`: with its marker left in, the nested one runs the file as a child and skips it.
 		delete env.NODE_TEST_CONTEXT;
 		const flags = how === "crash" ? ["--import", join(dir, "crash.mjs")] : [];
@@ -143,36 +151,52 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 		});
 		const bound = Date.now() + 240_000;
 		let seen = false;
+		let notYet = false;
 		while (!finished && Date.now() < bound) {
-			if (namesIn(log).containers.some(exists)) {
+			const names = namesIn(log).containers;
+			// Early: cut off as soon as a name is logged, while the slowed `docker run` has not made its container yet.
+			if (early ? names.length > 0 : names.some(exists)) {
 				seen = true;
+				notYet = !names.some(exists);
 				break;
 			}
 			await sleep(200);
 		}
 		for (const name of namesIn(log).containers) everything.containers.add(name);
-		if (seen && how === "sigterm") run.kill("SIGTERM");
-		const exit = await Promise.race([ended, sleep(120_000).then(() => undefined)]);
+		if (seen && how !== "crash") run.kill("SIGTERM");
+		const exit = await Promise.race([ended, sleep(120_000, undefined, { ref: false }).then(() => undefined)]);
 		if (exit === undefined) run.kill("SIGKILL");
 		const made = namesIn(log);
 		for (const name of made.containers) everything.containers.add(name);
 		for (const name of made.volumes) everything.volumes.add(name);
 		// `node --test` ends on the signal at once, and the file's own process, which got it from there, is still removing
 		// what it made: look again for up to 30 s before calling what is there left behind.
+		// A slowed create finishes after the cut-off: wait until it has, so a container made late is looked for.
+		if (early) await sleep((SLOW_SECONDS + 6) * 1000);
 		const gone = () => made.containers.every((name) => !exists(name)) && made.volumes.every((name) => !volumeExists(name));
 		for (const until = Date.now() + 30_000; !gone() && Date.now() < until; ) await sleep(500);
 		// A file that exits by itself may be over before a look finds its container: what it logged it made.
-		return { seen: seen || (how === "crash" && made.containers.length > 0), exit, made, left: { containers: made.containers.filter(exists), volumes: made.volumes.filter(volumeExists) } };
+		return { notYet, seen: seen || (how === "crash" && made.containers.length > 0), exit, made, left: { containers: made.containers.filter(exists), volumes: made.volumes.filter(volumeExists) } };
 	}
 
 	for (const file of FILES) {
-		it(`${file}: after SIGTERM to node --test, none of its containers or volumes remains`, async () => {
+		// The volume file skips below the Docker Engine its subpath mount needs, and makes nothing there.
+		const skip = file === "volume" && ENGINE < VOLUME_SUBPATH_ENGINE ? `Docker Engine <${VOLUME_SUBPATH_ENGINE} cannot mount a volume's subpath` : false;
+		it(`${file}: after SIGTERM to node --test, none of its containers or volumes remains`, { skip }, async () => {
 			const { seen, exit, made, left } = await cutOff(file, "sigterm");
 			assert.equal(seen, true, `${file} made no container that existed within the bound (exit ${JSON.stringify(exit)}); it names ${JSON.stringify(made)}`);
 			assert.notEqual(exit, undefined, `${file} did not end within 120 s of the SIGTERM`);
 			assert.deepEqual(left, { containers: [], volumes: [] }, `left behind by ${file} (made ${JSON.stringify(made)})`);
 		});
 	}
+
+	it("run-command: cut off before its container exists, the container made late is removed too", async () => {
+		const { notYet, seen, exit, made, left } = await cutOff("run-command", "early");
+		assert.equal(seen, true, `run-command logged no container name within the bound; it names ${JSON.stringify(made)}`);
+		assert.equal(notYet, true, "the container existed at the cut-off, so the case did not cut off a create in progress");
+		assert.notEqual(exit, undefined, "run-command did not end within 120 s of the SIGTERM");
+		assert.deepEqual(left, { containers: [], volumes: [] }, `made after the cut-off and left behind (made ${JSON.stringify(made)})`);
+	});
 
 	for (const file of ["run-command", "provider"]) {
 		it(`${file}: after its process exits outside a test, none of its containers or volumes remains`, async () => {
