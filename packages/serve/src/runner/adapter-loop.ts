@@ -231,6 +231,10 @@ export interface AdapterRunSpec {
    *  logged, and the end stands. `parked`: the pass ended in a park, for that cause, which keeps the run's computer
    *  (`keptWords`) and says the cause on its owner's live view. */
   readonly release?: (how?: { readonly parked?: ParkCause }) => Promise<void>;
+  /** The run's pull request checkout removed from its folder (pr-checkout.ts), once; the release finds it done. The run's
+   *  end calls it before its commit, so no run reads final while its folder still holds the pull request's code. Never
+   *  throws out: a failure is logged. Absent: the run has no checkout. */
+  readonly endCheckout?: () => Promise<void>;
   /** A park of this pass keeps the run's desktop, phone or sandbox for its resume (computer-for-claim.ts ClaimComputer.keeps): the
    *  words the loop says so in on the run's timeline as it parks (computer-deps.ts computerKeptWords). Absent: a park lets
    *  the computer go. */
@@ -3823,6 +3827,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
     await releaseHost(on);
     await bookingsSettled();
+    // The pull request's checkout goes before the end is committed: a run that reads final never still holds its code.
+    await specNow?.endCheckout?.();
     const patch = await endPatchOf(base);
     // A person's stop that came while the end waited (its host's release, its bookings, its patch's reads, up to
     // END_PATCH_MS on a busy store) is this end's, as a stop during any earlier await of the end path is: the run ends

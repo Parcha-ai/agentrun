@@ -1068,8 +1068,11 @@ length, and no `original_chars`, its text is the start of the page, and the last
 1,000,000 characters of HTML before reading; the rest wasn't read.` `converted: "text"` says the text is the page's
 plain text, its conversion to markdown having run out of time. A page is read to its first 1,000,000 characters: an
 `offset` at or past them is refused, and the last part a read reaches of a longer page has `beyond_read`. The links,
-absolute http(s) only, come with the part at offset 0: at most 200, in 20,000 characters, with `links_omitted`
-counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
+absolute http(s) only, each once without its fragment, are the page's link targets and the URLs written out in its
+text (a JSON body's: those of its string values, so an API's `url` or `shortlink` field is one; an XML body's, an Atom
+or RSS feed's, read with its entities undone, so an entry's `<link href>` is one); an HTML page fetched
+directly gives its link targets alone. They come with the part at offset 0: at most 200, in 20,000 characters, with
+`links_omitted` counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
 run keeps what it read of its last 8 pages by the URL asked for: every later part of that URL comes from it, with no
 request, so a page's parts are always one read's. Through Parallel that is one billed extract a page a run, asked for
 its first 1,000,001 characters (the extract has no offset: its text always starts at the page's start). A refusal or a
@@ -3155,19 +3158,23 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 step is sent only when the run's spend plus that step's least (its whole input bound at the cache-write price, and a
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
-write, edit, the desktop's and `codemode`), five requests (four screenshots, then the answer), spending about $0.04 in
-all. Through a gateway the first request's byte bound is 9,121 tokens, so it needs $0.050 and the whole run $0.108;
+write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
+tokens, so it needs $0.052 and the whole run $0.110;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
 $0.030 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
-| Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
 | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the five-step figure parks before its last step by either route, its words naming that figure.
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the
+five-step figure does not get every step: straight to Anthropic it parks before its last step, its words naming that
+figure; through a gateway ($0.11, a fraction of a cent under the $0.110 it needs) the wrap-up refuses its last screenshot
+and it answers.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself

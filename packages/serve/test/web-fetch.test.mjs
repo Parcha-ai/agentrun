@@ -41,7 +41,7 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   const { sent, send } = parallel();
   const net = network();
   const page = await webFetch(PUBLIC, { ...net, parallel: parallelExtract(CANARY, send) });
-  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, without fragments");
+  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["http://public.example/", "https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, the URL its text writes out among them, without fragments");
   assert.match(page.text, /^# Read by Parallel\n\nThe page at http:\/\/public\.example\//);
   assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 } } } }], "the most of a page web_fetch reads and one character, so a page Parallel cut there shows as cut");
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
@@ -52,6 +52,13 @@ test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, 
   const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   const page = await parallelExtract(CANARY, send).read(PUBLIC);
   assert.deepEqual(page.links, ["https://en.wikipedia.org/wiki/Function_(mathematics)", "https://other.example/y"]);
+}));
+
+test("a page Parallel reads lists the URLs written in its markdown as well as its link targets, in the page's order", inCall(async () => {
+  const full_content = "```json\n{\"shortlink\":\"https://stspg.io/abc\"}\n```\nSee [https://a.example/x](https://a.example/x), <https://b.example/y> and **https://c.example/z**.";
+  const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  const page = await parallelExtract(CANARY, send).read(PUBLIC);
+  assert.deepEqual(page.links, ["https://stspg.io/abc", "https://a.example/x", "https://b.example/y", "https://c.example/z"], "a link written as its own text is one link");
 }));
 
 test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", inCall(async (t) => {
