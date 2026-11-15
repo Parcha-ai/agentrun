@@ -318,8 +318,10 @@ export async function costRunOf(store: Store, run: RunRecord, n: number): Promis
   // Its figures are what the batch reads: a run with no path named is placed as the agent's here, and left out by the series.
   const { path, workflow } = pathOfRow(run.metrics, started) ?? { path: "agent" as const, workflow: null };
   const { cost_usd, learning_usd, total_usd } = await allInOf(store, run);
-  // TODO(#2911): read the run row's stored upper-bound marker beside cost_usd once the end stores it; no row has one yet.
-  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, cost_usd, cost_upper_bound: false, learning_usd, total_usd };
+  // The run row's stored marker (the end writes it with cost_usd): its cost counts a request cut at what its cap held.
+  // The cast goes when #2911 merges: RunRecord then types `costUpperBound`.
+  const cost_upper_bound = (run as { costUpperBound?: boolean }).costUpperBound === true;
+  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, cost_usd, cost_upper_bound, learning_usd, total_usd };
 }
 
 /** The runs the money rule reads for agent `agentId` (runner/workflow-first.ts costLineOf), one set for the run's launch
