@@ -308,7 +308,21 @@ export function waitResumedText(cell: string, resumed: readonly NestedFact[]): s
 /** waitResumedText, and the calls whose outcome it tells. */
 export function waitResumed(cell: string, resumed: readonly NestedFact[]): Recovered {
   const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  return fitted(told, (cap) => `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
+  return fitted(told, (cap) => `${waitCutOpener(cell)}${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
+}
+
+/** The words a resumed `wait`'s output opens with (waitResumed): the model is told its cell's script went with the session. */
+const waitCutOpener = (cell: string): string => `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n`;
+/** The words a cut-off `exec`'s output opens with when it lists its own calls (execRecovery). */
+const EXEC_CUT_OPENER = "The exec was cut short after these calls (the session stopped), and nothing was run again. Their outcomes, in order:\n";
+
+/** What the host's row of an `exec` a recovery answered shows: the model is told its script was cut short, but on the record
+ *  those words belong to an exec that failed (recoveredFailed). One that ended ok shows its calls' outcomes alone. */
+export function recoveredRowText(output: string, failed: boolean): string {
+  if (failed) return output;
+  const cell = /^The session stopped while waiting on cell (\S+);/.exec(output)?.[1];
+  const opener = cell === undefined ? EXEC_CUT_OPENER : waitCutOpener(cell);
+  return output.startsWith(opener) ? output.slice(opener.length) : output;
 }
 
 /** Whether a cut-off `exec` answered with its recovered output (execRecovery) failed, by the rule a codemode script stopped
@@ -337,7 +351,7 @@ export function execRecovery(facts: readonly NestedFact[], loose: readonly Neste
       ? `\n${others.length} ${others.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${others.map((t) => lineOf(t, cap)).join("\n")}`
       : "";
     if (own.length === 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}`;
-    return `The exec was cut short after these calls (the session stopped), and nothing was run again. Their outcomes, in order:\n${own.map((t) => lineOf(t, cap)).join("\n")}${apart}`;
+    return `${EXEC_CUT_OPENER}${own.map((t) => lineOf(t, cap)).join("\n")}${apart}`;
   });
 }
 
