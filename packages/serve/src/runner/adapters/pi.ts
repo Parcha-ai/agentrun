@@ -318,6 +318,26 @@ function mandatoryThinking(own: Parameters<typeof getSupportedThinkingLevels>[0]
   return clampThinkingLevel(own, "off") as SessionSpec["thinking"];
 }
 
+/** The reasoning settings of the first request a pi session on `route` sends at thinking `level` (the run's effort; none,
+ *  pi's default): on Messages its `thinking` block (budgeted where the session's model reasons, which puts Claude's
+ *  thinking minimum in its least output) and any `output_config`, on Responses its `reasoning`. Read from the body pi-ai
+ *  builds for the session's own model (sessionOn's, at the same level), which is never sent: its payload hook stops it
+ *  before any request. A save under a cap prices its least output on these (cap-short.ts). */
+export async function piReasoningOf(route: { readonly provider: { readonly api: Wire }; readonly model: string; readonly like?: PiAdapterOptions["like"] }, level: string | undefined): Promise<Record<string, unknown>> {
+  const models = createModels();
+  models.setProvider(sessionProvider(route.provider.api, { url: "http://127.0.0.1:9", key: "unsent" }, route.model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
+  const model = models.getModel(PROVIDER, route.model);
+  if (!model) throw new Error(`no session model ${route.model}`);
+  // A run's spec carries its level as the session's thinking (adapter-run-spec.ts), as here.
+  const thinking = mandatoryThinking(model, level as SessionSpec["thinking"]);
+  let built: Record<string, unknown> | undefined;
+  const unsent = new Error("built, never sent");
+  const options = { ...(thinking && (thinking as string) !== "off" ? { reasoning: thinking } : {}), onPayload: (payload: unknown) => { built = payload as Record<string, unknown>; throw unsent; } };
+  await models.completeSimple(model, { messages: [{ role: "user", content: "", timestamp: 0 }] } as never, options as never).catch(() => undefined);
+  if (!built) throw new Error(`pi-ai built no request for ${route.model}`);
+  return Object.fromEntries(["thinking", "output_config", "reasoning"].filter((key) => built![key] !== undefined).map((key) => [key, built![key]]));
+}
+
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
 async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context, tiers: TierProxies): Promise<AdapterSession> {
   const { run, model, like } = options;

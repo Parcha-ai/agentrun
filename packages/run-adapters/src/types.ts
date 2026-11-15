@@ -487,7 +487,7 @@ export interface AdapterFacts {
    *  as 0 (a floor). */
   readonly baseInputTokens?: number;
   /** The policy its model proxy applies, for a host that serves the same route itself (a test's faux harness). */
-  policy(options:{ model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
+  policy(options: { model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
 }
 
 /** A session's model proxy, as the host reaches it for its own requests beside the harness's (AdapterSession.port). */

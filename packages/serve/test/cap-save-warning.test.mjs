@@ -57,6 +57,26 @@ test("with no effort saved or set on the host, the warning names the model alone
   assert.deepEqual(capWarnings(short.body).map((w) => w.message), ["This agent's cap of $0.10 is below what gpt-6.1-sol needs for one more step and an answer, about $0.16: a run will wrap up at its first tool call."]);
 });
 
+test("pi on Claude Sonnet 5.5 through a gateway thinks with a budget, so its least output carries Claude's 1,024-token thinking minimum: a $0.075 cap, above the $0.064 of an answer alone and below the $0.084 with the minimum, warns", { timeout: 60_000 }, async (t) => {
+  // The gateway is never reached: a save prices the first request, it sends nothing. Sonnet 5.5 at the gateway's $2/$10:
+  // pi's 280 tokens in, and its least output a 1,024-token answer plus the 1,024-token thinking minimum its budgeted
+  // thinking adds; with a step-0 step, $0.08402 in all (an answer alone, $0.06354). pi sends that model no
+  // output_config, so the words name no effort. Sonnet 5.5 cannot stop reasoning, so with no effort saved pi thinks at
+  // its lowest level, budgeted too.
+  withEnv(t, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/api/v1", AGENT_MODEL_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-5.5" }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  const words = "This agent's cap of $0.075 is below what anthropic/claude-sonnet-5.5 needs for one more step and an answer, about $0.09: a run will wrap up at its first tool call.";
+  for (const [id, thinking] of [["sonnet-medium", "medium"], ["sonnet-default", undefined]]) {
+    const saved = await api("POST", "/agents", agent(id, { ...(thinking ? { thinking } : {}), max_cost_usd: 0.075 }));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.deepEqual(capWarnings(saved.body).map((w) => w.message), [words], `${id}: ${JSON.stringify(saved.body.warnings)}`);
+  }
+  // A cap past the minimum's figure holds it.
+  const held = await api("POST", "/agents", agent("sonnet-held", { thinking: "medium", max_cost_usd: 0.09 }));
+  assert.equal(held.status, 201, JSON.stringify(held.body));
+  assert.deepEqual(capWarnings(held.body), [], JSON.stringify(held.body.warnings));
+});
+
 const sse = (events) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 /** A Responses answer of one message, as OpenAI streams it. */
 function answered() {
