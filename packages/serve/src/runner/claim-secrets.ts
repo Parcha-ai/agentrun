@@ -8,12 +8,12 @@
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
 import { decisionKeysFor, providersNamed } from "../decisions.js";
 import type { LearnedWorkflow } from "../learning.js";
-import { GATEWAY_KEY_ENV, modelKeys, PROVIDER_KEYS, type Tier, workflowNodes } from "../model.js";
+import { GATEWAY_KEY_ENV, hostModel, modelKeys, PROVIDER_KEYS, type Tier, tierModelOf, TIERS, workflowNodes } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
-import { keysFor, needsOf, RUN_SECRETS } from "../run-secrets.js";
+import { keysFor, needsOf, RUN_SECRETS, type RunNeeds } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
-import { planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
+import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
 import type { SealedKeys } from "../store/store.js";
 import { handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
@@ -25,8 +25,9 @@ const CANDIDATES: readonly string[] = [...new Set([...RUN_SECRETS, ...DECISION_K
 /** What claimSecrets reads the keys from: the one store (its sealed keys) and the runner's seal key, and the runner's base
  *  environment (its own, with no server secret in it: those are the store's). */
 export interface ClaimSecretsDeps {
-  /** `put`, `replaceIf` and `remove` for the ChatGPT sign-in alone, which a run renews and seals again (chatgpt-plan.ts). */
-  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove" | "replaceIf"> };
+  /** `put`, `replaceIf`, `removeIf` and `clock` for the ChatGPT sign-in alone, which a run renews and seals again under a
+   *  lease on the store's clock (chatgpt-plan.ts). */
+  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "replaceIf" | "removeIf" | "clock"> };
   /** The runner's seal key: with none, no saved key is opened, and only the environment's values are read. */
   readonly sealKey: Buffer | undefined;
   readonly env?: NodeJS.ProcessEnv;
@@ -48,8 +49,26 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
   // The server's ChatGPT sign-in, read from the store for this claim: its token is asked at each request the run's model
-  // proxy sends (chatgpt-plan.ts), never put on the environment its tools run under (a symbol no spawn copies).
-  return withPlan(env, await planReaderOf(deps.store, deps.sealKey));
+  // proxy sends (chatgpt-plan.ts), never put on the environment its tools run under (a symbol no spawn copies). Only for
+  // a run that can reach a plan model: one pinned to a key's model (and its tiers on keys) never holds the sign-in, which
+  // renews and spends the person's plan for any process that holds it.
+  const plan = await planReaderOf(deps.store, deps.sealKey);
+  return plan && reachesPlan(withPlan({ ...working }, plan), scoped, revision) ? withPlan(env, plan) : env;
+}
+
+const onPlan = (model: string | undefined): boolean => model?.startsWith(`${PLAN_PROVIDER}/`) === true;
+
+/** Whether a run of `revision`, with `needs` scoped to its chosen model, can reach a model on the ChatGPT plan, by `env`
+ *  (the claim's working environment carrying the sign-in's reader, so the host's defaults read as they would on the
+ *  run): its own model (pinned, chosen at its start, or the host's default for its harness), a workflow's tiers' host
+ *  models, or an agentic run's subagent tiers (its modelTiers, else the host's tier variables). A learned workflow's
+ *  tiers are read once its seed chose them (tierModelKeys). */
+function reachesPlan(env: NodeJS.ProcessEnv, needs: RunNeeds, revision: Revision): boolean {
+  const own = needs.tiers ? needs.tiers.map((tier) => hostModel(env, tier)) : [needs.model ?? hostModel(env, "default", needs.harness)];
+  // The claim's revision row carries the stored body whole (store/agent-body.ts AgenticBody), modelTiers with it.
+  const named = revision.kind === "agentic" ? Object.values((revision.body as { modelTiers?: Record<string, unknown> }).modelTiers ?? {}) : [];
+  const tiers = revision.kind === "agentic" ? [...named, ...TIERS.map((tier) => tierModelOf(env, tier))] : [];
+  return [...own, ...tiers].some((model) => onPlan(typeof model === "string" ? model : undefined));
 }
 
 /** Every candidate secret in a working environment over the runner's base, read for one claim and scoped by its caller, so
@@ -107,7 +126,11 @@ export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier
   const working = await workingEnv(deps);
   const out: NodeJS.ProcessEnv = {};
   for (const name of modelKeys(working, undefined, tiers)) if (working[name] !== undefined) out[name] = working[name];
-  return out;
+  // The ChatGPT sign-in, when a host model of those tiers is on the plan (claimSecrets gives it only to a run whose own
+  // models reach it), as a symbol withModelKeys reads, never a key.
+  const plan = await planReaderOf(deps.store, deps.sealKey);
+  const probe = withPlan({ ...working }, plan);
+  return plan && tiers.some((tier) => onPlan(hostModel(probe, tier))) ? withPlan(out, plan) : out;
 }
 
 /** Every model key a model route reads by name: each of pi-ai's providers' (model.ts PROVIDER_KEYS) and the gateway's. */

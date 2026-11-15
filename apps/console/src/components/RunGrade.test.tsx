@@ -109,6 +109,8 @@ describe("a run's page, the Grade control", () => {
     const t = await open(run());
     await t.click("Wrong");
     const [words, expected] = t.boxes();
+    // The fields are found by position (copy-independent), so a broken label link is checked here: each has a name.
+    for (const box of [words!, expected!]) expect([...(box.labels ?? [])].map((l) => l.textContent?.trim()).join("") || box.getAttribute("aria-label"), "a textbox's accessible name").toBeTruthy();
     await t.type(words!, "  The account is 6400 Shipping: Northwind is a freight vendor.  ");
     await t.type(expected!, '{"account": "6400"}');
     await t.click("Send grade");

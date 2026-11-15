@@ -165,8 +165,8 @@ export interface TimelinePage {
 /** What the timeline reader needs beyond the store: a context, the run's timeline rows and its view (status/state/cost). */
 export interface TimelineDeps {
   readonly context: Context;
-  /** The run's timeline rows over the store (store-reads/journal.ts runTimeline). */
-  timelineRows(store: Store, runId: string, context: Context): Promise<TimelineEvent[]>;
+  /** The run's timeline rows over the store (store-reads/journal.ts runTimeline); `calls`, each call's whole (TimelineOptions.calls). */
+  timelineRows(store: Store, runId: string, context: Context, calls: boolean): Promise<TimelineEvent[]>;
   /** The run's view (viewOverStore), for its status, state, cost and whether it is final. */
   runView(store: Store, runId: string): Promise<Record<string, unknown> | undefined>;
   /** How often the store is re-read while a page waits (default 1000 ms, the old poll). */
@@ -181,27 +181,28 @@ export interface TimelineDeps {
  *
  *  Not folded in here: the learning row's freshness (the old rowsNow re-read of a learning row approved or retired since) —
  *  the switch/store-view applies it to the rows, as it owns the learning view. */
-export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: string, after: number, waitMs: number, limit: number): Promise<TimelinePage> } {
+export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: string, after: number, waitMs: number, limit: number, calls?: boolean): Promise<TimelinePage> } {
   const clock = new ChangeClock();
+  // A `calls` read's rows (each call's arguments and output's head too) are another log of the run's: a cursor is its own.
   const logs = new Map<string, RowLog>();
-  const logOf = (runId: string): RowLog => {
-    let log = logs.get(runId);
-    if (!log) logs.set(runId, (log = new RowLog(clock)));
+  const logOf = (key: string): RowLog => {
+    let log = logs.get(key);
+    if (!log) logs.set(key, (log = new RowLog(clock)));
     return log;
   };
   const pollMs = deps.pollMs ?? 1_000;
 
-  async function once(store: Store, runId: string, after: number, limit: number): Promise<TimelinePage> {
+  async function once(store: Store, runId: string, after: number, limit: number, calls: boolean): Promise<TimelinePage> {
     // The view first, then the rows, never both at once: the journal only grows, so the rows read after the view hold
     // every entry its status was read from. Read together, a message committed between the two reads gave a page that
     // said working before the message row it works on (#2307), or a waiting status with its parked call's row still
     // missing. The rows may run ahead of the status, never behind it.
     const view = await deps.runView(store, runId);
     if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
-    const rows = await deps.timelineRows(store, runId, deps.context);
+    const rows = await deps.timelineRows(store, runId, deps.context, calls);
     const status = String(view.status);
     const state = String(view.state);
-    const log = logOf(runId);
+    const log = logOf(calls ? `${runId}\0calls` : runId);
     // The run's rows as they stand now, then its status: a change to either is one more change the page carries.
     log.sync(rows);
     log.setState(`${status}:${state}`);
@@ -215,10 +216,10 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
   }
 
   return {
-    async page(store, runId, after, waitMs, limit) {
+    async page(store, runId, after, waitMs, limit, calls = false) {
       const deadline = Date.now() + waitMs;
       for (;;) {
-        const page = await once(store, runId, after, limit);
+        const page = await once(store, runId, after, limit, calls);
         if (!page.unchanged || page.final || Date.now() >= deadline) return page;
         await sleep(Math.min(pollMs, deadline - Date.now()));
       }

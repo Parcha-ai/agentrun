@@ -964,6 +964,13 @@ export interface SealedKeys {
   replaceIf(name: string, was: Uint8Array, sealed: Uint8Array): Promise<boolean>;
   /** The key's row goes. */
   remove(name: string): Promise<void>;
+  /** The key's row goes only while it still holds `was` (the bytes as get read them), in one statement: true when it
+   *  went; false, removing nothing, when it changed since or is gone. */
+  removeIf(name: string, was: Uint8Array): Promise<boolean>;
+  /** The deadlines' clock now, in ms: the database's on Postgres, the store's own on SQLite (fence.ts storeNow). A lease
+   *  kept inside a sealed key's bytes (the ChatGPT sign-in's renewal) is stamped and judged by it, so every process
+   *  sharing the store judges it by one clock, whatever its own says. */
+  clock(): Promise<number>;
   /** Every saved key, by name (its bytes never opened here). */
   all(): Promise<SealedKeyRow[]>;
 }

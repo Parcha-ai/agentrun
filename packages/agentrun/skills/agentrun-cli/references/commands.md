@@ -273,6 +273,12 @@ Route: `POST /agents/{agent_id}/learning/evals`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun learning replay AGENT_ID NAME DIGEST REPLAY_ID`
+
+A replay of a learned workflow's revision: running, done or failed, its counts and its score.
+
+Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
+
 ### `agentrun learning retire AGENT_ID FILE`
 
 Retire a note, a skill or a workflow draft: out of every later run, kept in history.
@@ -689,6 +695,7 @@ Route: `GET /runs/{run_id}/timeline`.
 - `--after INTEGER` (integer): The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.
 - `--wait-ms INTEGER` (integer): JSON only. How long to hold the request for a change after `after`.
 - `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500); has_more says when another waits.
+- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
 
