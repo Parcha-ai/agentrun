@@ -157,6 +157,18 @@ test("a learned call's card leads with its MCP fields and names each ask-gated a
   assert.equal(learnedApprovedTools({ mcp_calls: ["mcp:fake/add"] }).size, 0);
 });
 
+test("a tool the card cannot show every action of is not on the card at all: its approval covers by tool, so naming one of its actions would pass the unseen others", () => {
+  const first = { tool: "mcp:fake/add", args: { a: "{a}", b: 1 } };
+  const later = { tool: "mcp:fake/add", args: { a: "{a}", b: "{b}" } };
+  const filler = Array.from({ length: 120 }, (_, i) => ({ tool: `mcp:server-${i}/tool-with-a-long-name-${i}`, args: { id: "{id}" } }));
+  const shown = learnedAskShown([first, ...filler, later]);
+  assert.ok(shown.mcp_calls.length > 0, "the card shows a first part of the filler");
+  assert.ok(!learnedApprovedTools(shown).has("mcp:fake/add"), `add's later action is past the cut, so add is not named: ${JSON.stringify(shown.mcp_calls.slice(0, 2))}`);
+  assert.ok(shown.mcp_calls.every((action) => action.tool !== "mcp:fake/add"), "nor any action of it");
+  // A tool whose every action is shown stays named.
+  assert.ok(learnedApprovedTools(learnedAskShown([first, later])).has("mcp:fake/add"));
+});
+
 /** Run `runId`'s pending approval of `tool`, once it waits on one: a call other than `after`'s (an earlier card the run
  *  read before its answer was taken). */
 async function pendingOf(api, runId, tool, after) {
@@ -347,6 +359,20 @@ test("one allow of the card runs every MCP action it named, each once, with no s
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
   assert.match(await answerOf(api, runId) ?? "", /5/);
   assert.deepEqual([calls(fake, "add").length, calls(fake, "paid").length], [1, 1], "each named action ran once");
+});
+
+test("each check of a polled MCP node is a call of its own: the server is asked again at every check, never answered the first check's record", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/paid": { permission: "allow" } })).status, 200);
+  const polled = { ...step("look", "mcp:fake/paid", { query: "{q}" }, "found"), out: "Paid", deadline_s: 1, poll: { until: { predicate: "field_equals", path: "text", value: "never" }, interval_s: 0.2, deadline_s: 2 } };
+  const base = chain("poll-look", [polled], "found");
+  const flow = { ...base, schemas: { ...base.schemas, Paid: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } } };
+  const runId = await learnedRun(server, "poller", ["mcp:fake/paid"], [flow], runOf("poll-look", { a: 0, b: 0, q: "ada" }));
+  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.match(`${learnedResult(rows)?.text ?? ""} ${learnedResult(rows)?.tool_result_preview ?? ""}`, /poll/i, "the poll ran out, never met");
+  assert.ok(calls(fake, "paid").length >= 2, `every check reached the server: ${calls(fake, "paid").length}`);
 });
 
 test("an MCP action the approved card did not name asks on its own: the run parks on it as a call nested in the workflow's, and its allow runs it once while the actions already run are never sent again", { timeout: 200_000 }, async (t) => {
