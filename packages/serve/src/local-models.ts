@@ -66,14 +66,17 @@ const added = <M extends { id: string }>(list: readonly M[], adds: typeof ADDED_
  *  model's price, so none of them is free. */
 const ROUTERS: ReadonlySet<string> = new Set(["auto", "openrouter/auto", "openrouter/auto-beta", "openrouter/auto-code", "openrouter/free", "openrouter/fusion", "openrouter/pareto-code", "typesafe/jev-router"]);
 
+const PRICE_FIELDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
+
 /** Whether a catalog entry runs at $0: its price is all zeros, every price tier's too. Read from the price alone, never
  *  from the id (a `:free` id at a price is not free), except an OpenRouter router (ROUTERS), whose zeros are no price. */
 export function isFree(model: { provider: string; id: string; cost?: Partial<Model<Api>["cost"]> }): boolean {
   if (model.provider === "openrouter" && ROUTERS.has(model.id)) return false;
   if (!model.cost) return false;
-  const { tiers = [], ...flat } = model.cost as Record<string, unknown> & { tiers?: readonly Record<string, unknown>[] };
-  const zero = (price: Record<string, unknown>) => Object.values(price).every((v) => typeof v !== "number" || v === 0);
-  return flat.input === 0 && flat.output === 0 && zero(flat) && tiers.every(zero);
+  // The price fields alone: a tier's `inputTokensAbove` is where it starts, a token count, not a price. A field left out is $0.
+  const zero = (price: Record<string, unknown>) => PRICE_FIELDS.every((k) => (price[k] ?? 0) === 0);
+  const { tiers = [] } = model.cost as { tiers?: readonly Record<string, unknown>[] };
+  return model.cost.input === 0 && model.cost.output === 0 && zero(model.cost as Record<string, unknown>) && tiers.every(zero);
 }
 
 /** `models` (pi-ai's built-in catalog, or one built on it) with PRICE_OVERRIDES set on their providers' own entries and

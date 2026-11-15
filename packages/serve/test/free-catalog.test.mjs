@@ -61,6 +61,7 @@ test("free is the price: all zeros, every tier too; a paid price, a tier above z
   assert.equal(isFree({ provider: "openrouter", id: "x/y", cost: ZERO }), true);
   assert.equal(isFree({ provider: "openrouter", id: "x/y:free", cost: { ...ZERO, output: 0.1 } }), false, "a :free id at a price is not free");
   assert.equal(isFree({ provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [{ inputTokensAbove: 1, input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }] } }), false);
+  assert.equal(isFree({ provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [{ inputTokensAbove: 200_000, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }] } }), true, "a tier's threshold is no price");
   for (const id of ["openrouter/auto", "openrouter/free", "auto", "typesafe/jev-router"]) assert.equal(isFree({ provider: "openrouter", id, cost: ZERO }), false, id);
 });
 
