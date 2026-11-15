@@ -61,7 +61,7 @@ import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
-import { piShaped } from "../store-reads/journal.js";
+import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
 import { laidFor, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
@@ -797,9 +797,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const total = runEndCost({ model: booked.usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
+      // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
+      const catalog = await hashedMcpOf(deps.store, claim.runId);
       const { metrics } = servedOf(entries as never)
-        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model }) }
-        : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model, catalog }) }
+        : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), catalog });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
       return { costUsd: total, metrics: { ...metrics, ...path } };
     },

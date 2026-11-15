@@ -1,7 +1,8 @@
 // An MCP tool whose `mcp__<server>__<tool>` is past the 52 characters every harness's tool names share (Composio's Slack
 // tool SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION: mcp__slack__SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION, 58)
 // is granted like any other: the save keeps it, each harness is offered it under its wire name (catalog.ts wireName,
-// hashed to 52), a call of that name reaches the server's tool, and the timeline names it by its catalog name. Two grants
+// hashed to 52), a call of that name reaches the server's tool, and the timeline and the analytics' top tools name it by
+// its catalog name. Two grants
 // whose wire names are one name are refused by name. A fake MCP server on loopback; no key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -58,6 +59,15 @@ function assertCatalogRow(rows) {
   assert.ok(!tools.some((row) => row.tool_name === WIRE), "no row names the wire name");
 }
 
+/** The analytics' top tools (GET /stats) count the run's call of the long tool under its catalog name, said
+ *  `slack · <tool>`, as its timeline row reads: never under the hashed name the harness called it by. */
+async function assertCatalogAnalytics(api) {
+  const stats = await api("GET", "/stats");
+  assert.equal(stats.status, 200, JSON.stringify(stats.body));
+  const tools = stats.body.analytics.tools;
+  assert.deepEqual(tools.filter((row) => row.label.includes("SLACK_")), [{ tool: CATALOG, label: `slack · ${LONG}`, calls: 1, errors: 0 }], JSON.stringify(tools));
+}
+
 test("the wire name of a 58-character MCP name is 52 characters, its own, and every harness's prefix keeps it within 64", () => {
   assert.equal(`mcp__slack__${LONG}`.length, 58);
   assert.ok(WIRE.length <= 52, WIRE);
@@ -84,6 +94,7 @@ test("pi: a grant of the long Slack tool saves, the model is offered it under a 
   assert.deepEqual(names.filter((name) => name.length > 52), [], "no name the model is offered is past 52");
   assert.deepEqual(callsOf(fake), [LONG], "one call, of the server's own tool");
   assertCatalogRow(rows);
+  await assertCatalogAnalytics(api);
 });
 
 test("claude-agent: the Claude CLI is offered the long Slack tool as mcp__hands__<wire name>, within 64, and its call reaches the tool", { timeout: 180_000, skip: process.platform !== "linux" ? "Linux only" : !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
@@ -106,6 +117,7 @@ test("claude-agent: the Claude CLI is offered the long Slack tool as mcp__hands_
   assert.deepEqual(offered.filter((name) => name.length > 64), [], "no name the model is offered is past 64");
   assert.deepEqual(callsOf(fake), [LONG], "one call, of the server's own tool");
   assertCatalogRow(rows);
+  await assertCatalogAnalytics(api);
 });
 
 /** serve's gateway on loopback: each Responses request answered with the text it carries. */
@@ -146,6 +158,7 @@ test("codex: Codex is given the long Slack tool as mcp_<wire name>, its call rea
   assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, `${given} returned: ${ANSWER}`);
   assert.deepEqual(callsOf(fake), [LONG], "one call, of the server's own tool");
   assertCatalogRow(rows);
+  await assertCatalogAnalytics(api);
 });
 
 test("two grants whose wire names are one name are refused by name; either alone saves", async (t) => {
