@@ -10,9 +10,9 @@ import { CAP_REFUSAL_CODE, money, SPEND_CAP_REACHED, suggestedRaise } from "./wo
 
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
 
-/** A run parked at its cap waits on a raise: its cap, what the cap counted as taken, the least the refused step needs, the
- *  least cap that sends it, and the raise it is offered. */
-export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd: number; needs_usd: number; least_cap_usd: number; suggested_cap_usd: number };
+/** A run parked at its cap waits on a raise: its cap, what it had spent (never a hold), what it held for steps still
+ *  running when it was refused, the least the refused step needs, the least cap that sends it, and the raise it is offered. */
+export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd: number; held_usd: number; needs_usd: number; least_cap_usd: number; suggested_cap_usd: number };
 
 export type Park =
   | { outcome: "parked"; pending: BudgetPending; words: string; event: { kind: "pause"; text: string }; error?: undefined }
@@ -21,13 +21,15 @@ export type Park =
 /** The run's end for `refusal` under `capUsd`. */
 export function parkOf(refusal: CapRefused, capUsd: number): Park {
   if (refusal.forGood || !refusal.figures) return { outcome: "failed", error: refusal.message };
-  const { spentUsd, needsUsd, leastCapUsd } = refusal.figures;
+  const { spentUsd, heldUsd = 0, needsUsd, leastCapUsd } = refusal.figures;
   // Its words without the refusal's code: a model request's ("spend_cap_reached (out of budget): ") or a paid step's
   // ("spend_cap_reached: "), so a pause reads its sentence alone, whichever step was refused.
   const words = [CAP_REFUSAL_CODE, `${SPEND_CAP_REACHED}: `].reduce((said, code) => (said.startsWith(code) ? said.slice(code.length) : said), refusal.message);
   return {
     outcome: "parked",
-    pending: { kind: "budget", cap_usd: capUsd, spent_usd: micro(spentUsd), needs_usd: micro(needsUsd), least_cap_usd: leastCapUsd, suggested_cap_usd: suggestedRaise(capUsd, spentUsd, needsUsd) },
+    // What it spent is what it spent, never a hold of a step still running (those settle at what they cost); the raise it
+    // is offered counts the holds too, so it covers them whatever they settle at.
+    pending: { kind: "budget", cap_usd: capUsd, spent_usd: micro(spentUsd), held_usd: micro(heldUsd), needs_usd: micro(needsUsd), least_cap_usd: leastCapUsd, suggested_cap_usd: suggestedRaise(capUsd, spentUsd + heldUsd, needsUsd) },
     words,
     event: { kind: "pause", text: words },
   };

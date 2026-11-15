@@ -865,6 +865,7 @@ export interface components {
       kind: "budget";
       cap_usd: number;
       spent_usd?: number;
+      held_usd?: number;
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
@@ -1083,6 +1084,7 @@ export interface components {
       kind: "budget";
       cap_usd: number;
       spent_usd?: number;
+      held_usd?: number;
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;

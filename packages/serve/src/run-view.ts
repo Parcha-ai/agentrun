@@ -242,7 +242,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
 
 /** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
  *  as the run row's summary says them. */
-type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
@@ -306,16 +306,17 @@ export const raiseFollowUpId = (pause: string): string => `agentrun:raise:${paus
 
 /** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
  *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
- *  the park's), what the cap counted as taken and the least the refused step needs, the raise offered (recomputed from
- *  those by the view's one formula), and the cap's words at the run's last meaningful row. Undefined when no park is
- *  active. */
+ *  the park's), what it had spent, what it held for steps still running and the least the refused step needs, the raise
+ *  offered (recomputed from those by the view's one formula, the holds counted with the spend so it covers them), and the
+ *  cap's words at the run's last meaningful row. Undefined when no park is active. */
 export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "meta" | "rows" | "updatedAt">): Pending | undefined {
   const mark = activeBudget(entries);
   if (!mark) return undefined;
   const p = mark.pending;
   const cap = run.meta.max_cost_usd ?? p.cap_usd;
+  const held = p.held_usd ?? 0;
   const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
-    ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd) }
+    ? { spent_usd: micro(p.spent_usd), held_usd: micro(held), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd + held, p.needs_usd) }
     : {};
   // A workflow's pause names the node whose step waits (null when not known); an agentic run's names none.
   return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt, ...(mark.node !== undefined ? { node: mark.node } : {}) };
@@ -463,7 +464,7 @@ export const raisedToGo = (run: RunView): boolean => raisedSince(run) && continu
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
+export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
 export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;

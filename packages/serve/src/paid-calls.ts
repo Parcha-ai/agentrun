@@ -87,8 +87,9 @@ const pauseOn = async (error: unknown, pause: Ledger["pause"] = ledgers.getStore
 /** The kernel cap's booking of a run's paid calls (RunTools), as a paid request uses it. */
 export type PaidBooking = {
   /** `chargedBy`: who charges for it (the charge's `charged_by` on main's records: parallel, monid, an MCP server, a
-   *  browser vendor), named on its runner.request. */
-  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string }): Promise<unknown>;
+   *  browser vendor), named on its runner.request. `under`: the model session whose tool call it runs in (RunTools.admit),
+   *  whose requests in flight it is judged beside and never waits on. */
+  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string }): Promise<unknown>;
   /** `givenBack`: the hold let go unused, nothing sent (RunTools.settle). */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<unknown>;
 };

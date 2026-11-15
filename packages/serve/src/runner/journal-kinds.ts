@@ -186,10 +186,11 @@ export function capNowOf(launchCapUsd: number | undefined, entries: readonly { r
   return raised ? (raised.data as RaiseData).capUsd : launchCapUsd;
 }
 
-/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
- *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
+/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what it had spent, what it held for steps
+ *  still running, the least the refused request needs, the least cap that sends it and the raise offered, in the run's
+ *  money units (dollars). */
 export interface BudgetData {
-  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
+  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly held_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
   /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
