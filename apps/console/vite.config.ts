@@ -20,10 +20,10 @@ if (wanted !== "" && !/^[1-9][0-9]*$/.test(wanted)) throw new Error(`VITEST_MAX_
 const workers = wanted === "" ? undefined : Number(wanted);
 const alias = {
   "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
-  // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
+  // The timeline library's tool names, pi-browser's tool list and serve's tool-name grammar, from their sources (each
+  // imports nothing of Node; tool-names.ts imports nothing at all, as serve's test/tool-names.test.mjs holds it).
   "@timeline": fileURLToPath(new URL("../../packages/serve/src/timeline", import.meta.url)),
   "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
-  // The catalog-name grammar the server reads a grant by (it imports nothing, as serve's tool-names test holds it).
   "@agentrun/tool-names": fileURLToPath(new URL("../../packages/serve/src/tool-names.ts", import.meta.url)),
   "@":fileURLToPath(new URL("./src", import.meta.url)),
 };

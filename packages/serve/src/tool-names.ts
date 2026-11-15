@@ -9,8 +9,7 @@
 // A monid provider's slug and an endpoint's path are monid's own (its listing, GET /v1/endpoints): a slug is lowercase
 // letters, digits, `.` and `-` (`apollo`, `api.strale.io`); an endpoint is its path less the leading `/`, in letters,
 // digits and `-._:{}/` (`people/match`, `people/{id}`). Its wire name is catalog.ts wireName's, hashed when long.
-// This file imports nothing: the console bundles it from its source (its `@agentrun/tool-names` alias), so it holds the
-// one grammar without pulling in the server (test/tool-names.test.mjs holds it to that).
+// It imports nothing (its test holds it to that): the console bundles it from source, as `@agentrun/tool-names`.
 
 /** A wire name: at most 52 characters, not the adapter's 64. One CLI gives the model the name with a 12-character
  *  `mcp__hands__` prefix, and the model API's 64-character limit is on the name the model sees, so 52 is the budget that
