@@ -211,7 +211,9 @@ export interface CallStartData {
    *  so no waiting result shows for it, as on pi. */
   readonly parked?: true;
   /** A tool that only nests calls (tools_call, codemode; HostTool.nests): its calls start after it, each its own, and it
-   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). */
+   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). A call of
+   *  a harness's own that calls nest in (Codex's code-mode `exec`, SessionIO.ownCalls) is marked so too: its harness ends
+   *  it after the resume, from its CLI's answer to it. */
   readonly nests?: true;
   /** The call of the harness's own this one runs inside (Codex's code-mode `exec`, SessionIO.ownCalls): its rows sit under
    *  that call's, as a call a host tool that `nests` made sits under it by its id (`<callId>/<key>`). */

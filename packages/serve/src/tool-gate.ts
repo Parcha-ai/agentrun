@@ -35,7 +35,7 @@ import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
 import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
-import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
+import { CANT_BE_CALLED, DENIED_OPENING, deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { settingOfDefinition } from "./computer-setting.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
@@ -219,12 +219,12 @@ function bothOf(own: PinValue, theirs: PinValue): PinValue | undefined {
 export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no", declared?: ReadonlySet<string>): { text: string; mismatched: string[] } | undefined {
   if (!mcpNameOf(name)) return undefined;
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
-  if (server[name]?.brokenPin) return { text: `${name} can't be called: its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
+  if (server[name]?.brokenPin) return { text: `${name}${CANT_BE_CALLED}its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
   const own = agent[name]?.pin ?? {};
   const theirs = server[name]?.pin ?? {};
   // Both layers hold: an argument both pin takes what holds both (bothOf), and one where nothing does refuses every call.
   const clash = Object.keys(own).filter((arg) => Object.hasOwn(theirs, arg) && bothOf(own[arg]!, theirs[arg]!) === undefined);
-  if (clash.length) return { text: `${name} can't be called: this agent's settings fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, own[arg]!])))} and this server's fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, theirs[arg]!])))}, so no call can satisfy both. ${what} Don't retry it: the owner makes the two agree.`, mismatched: clash };
+  if (clash.length) return { text: `${name}${CANT_BE_CALLED}this agent's settings fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, own[arg]!])))} and this server's fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, theirs[arg]!])))}, so no call can satisfy both. ${what} Don't retry it: the owner makes the two agree.`, mismatched: clash };
   const pin: Pin = { ...theirs, ...Object.fromEntries(Object.entries(own).map(([arg, value]) => [arg, Object.hasOwn(theirs, arg) ? bothOf(value, theirs[arg]!)! : value])) };
   const given = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
   const undeclared = declared && Object.keys(pin).length ? Object.keys(given).filter((arg) => !declared.has(arg) && !Object.hasOwn(pin, arg)) : [];
@@ -374,7 +374,7 @@ export type PendingApproval = {
 // refusal-words.ts, shared with the runner's loops.
 export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
-export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `${DENIED_OPENING}${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
@@ -559,7 +559,7 @@ export class RunGate {
     // Its own name for a background tool (bash_background);bash for bash and
     // a CLI's own shell (codex's shell, claude-agent's Bash).
     const tool = shellToolOf(name) ?? "bash";
-    if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool} can't be called: this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
+    if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool}${CANT_BE_CALLED}this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
     const reason = readOnlyReason(tool, args, [this.where.work, COMPUTER_ROOT]);
     return reason === undefined ? undefined : readOnlyText(tool, reason, NOT_RUN);
   }

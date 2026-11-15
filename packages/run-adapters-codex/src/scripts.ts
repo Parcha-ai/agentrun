@@ -85,6 +85,11 @@ export class Scripts {
     return { kind: "finished", exec, output: textOf(output), failed: FAILED.test(statusOf(output)) };
   }
 
+  /** The unfinished `exec` that yielded on cell `cell`, if any. */
+  execOn(cell: string): string | undefined {
+    return this.open.find((x) => x.cell === cell)?.exec;
+  }
+
   /** The script of an unfinished `exec` whose line the rollout holds; none for any other. */
   inputOf(exec: string): string | undefined {
     return this.open.find((x) => x.exec === exec)?.input;
@@ -304,6 +309,18 @@ export function waitResumedText(cell: string, resumed: readonly NestedFact[]): s
 export function waitResumed(cell: string, resumed: readonly NestedFact[]): Recovered {
   const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
   return fitted(told, (cap) => `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
+}
+
+/** Whether a cut-off `exec` answered with its recovered output (execRecovery) failed, by the rule a codemode script stopped
+ *  and run again follows on every other harness (serve's runner/meta-tools.ts endedWith): it failed when its last call did
+ *  not run (a person refused it, or a park was never answered), was cut off before it reported, or failed; or when it made
+ *  no call of its own. A script whose last call ran and answered (one that parked and was allowed, too) was stopped and
+ *  resumed, not failed. `own`: its calls, in order. */
+export function recoveredFailed(own: readonly NestedFact[]): boolean {
+  const last = own.at(-1);
+  if (!last) return true;
+  if (last.resumed) return !last.resumed.ran || last.resumed.isError;
+  return settle(last).kind !== "completed";
 }
 
 export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): string {
