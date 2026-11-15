@@ -1,6 +1,6 @@
-export { answeredUnpriced, createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
+export { answeredUnpriced, costOfParts, createHarnessRunner, CUT_AT_HOLD, modelPortFor, rebooked, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS, turnCostOf } from "./runner.js";
 export { RECORD_WAIT_MS, runBooking, type RunBookingOptions, type RunSessions, WAIT_POLL_FIRST_MS, WAIT_POLL_MOST_MS, WAIT_STALL_MS } from "./run-booking.js";
-export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, SessionCost } from "./runner.js";
+export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, CostParts, SessionCost } from "./runner.js";
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 export { CODEMODE, DEFER_CATALOG_OVER, defersCatalog, isCatalogWire, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "./tool-deferral.js";
 export { toolSchemaProblems } from "./schema-check.js";
