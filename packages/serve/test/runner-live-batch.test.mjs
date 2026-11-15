@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { suiteTools } from "../dist/runner/conformance/harness.js";
@@ -66,24 +67,41 @@ test("a runner writes held states in one store transaction per tick, as many for
 });
 
 test("a held-state write is never in a run's journal: no commit, no seq", async (t) => {
-  const { server, release } = await heldWrites(t, 3, 1_000);
-  const row = await server.runs.get("run-0");
-  const journal = server.journal({ runId: "run-0", runner: "reader", epoch: row.epoch, until: 0, from: row.state });
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-live-journal-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  let ticker, end, started;
+  t.after(async () => {
+    end?.();
+    await started;
+    await ticker?.close();
+    await store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await store.agents.create({ id: "agent-1", name: "Held" }, { id: "rev-1", kind: "agentic", body: {} });
+  await store.runs.create({ id: "run-0", agentId: "agent-1", revisionId: "rev-1" });
+  const claim = await store.claim("run-0", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], ctx);
   const seqs = async () => (await journal.commitsAfter(0, 10_000, ctx)).commits.map((commit) => commit.seq);
-  // pi's own last write as the tool starts (its pi.live document marking it running) can land just after the held row is
-  // seen: the count starts once the journal has been still for longer than two ticks, which a tick that wrote to the
-  // journal would never allow.
-  let before = await seqs();
-  await until(async () => {
-    await sleep(TICK_MS * 2 + 100);
-    const now = await seqs();
-    const still = now.length === before.length;
-    before = now;
-    return still;
-  }, "the run's journal still for two ticks", 10_000);
-  await sleep(1_000);
+  const before = await seqs();
+  assert.ok(before.length > 0, "a real committed journal exists before the held-state writes");
+  const rowBefore = await store.runs.get("run-0");
+  // Isolate live writes from Pi's legitimate startup commits; a quiet interval cannot prove that Pi has finished.
+  // The batching case above still exercises real Pi loops. Here each observed update must come from the ticker.
+  let report;
+  ticker = withLiveTicker(store, (deps) => ({
+    start: () => new Promise(resolve => { report = deps.live; end = () => resolve({ state: "ended" }); }),
+    command: async () => ({ refused: "not in this test" }),
+    stop: async () => end(),
+  }), { tickMs: TICK_MS });
+  const redact = Object.assign(text => text, { heldValues: () => [] });
+  started = ticker.createLoop({ journal: () => journal, flush: async () => {}, signal: new AbortController().signal, redact }).start(claim);
+  for (let tick = 1; tick <= 4; tick++) {
+    const output = `held chunk ${tick}`;
+    report(() => ({ tools: [{ callId: "slow-1", name: "slow", output }] }));
+    await until(async () => (await store.live.read(["run-0"]))[0]?.state.tools[0]?.output === output, `held update ${tick} stored`, 3_000);
+  }
   const after = await seqs();
-  assert.ok((await server.live.read(["run-0"])).length === 1, "the run's held row was written meanwhile");
-  assert.deepEqual(after, before, "a second of held-state ticks added no commit to the run's journal");
-  release();
+  assert.deepEqual(after, before, "four actual held-state ticks added no commit to the run's journal");
+  assert.deepEqual(await store.runs.get("run-0"), rowBefore, "held-state ticks leave the durable run row unchanged");
 });

@@ -47,6 +47,22 @@ export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): strin
   return [...plan, ...PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)))];
 }
 
+/** A model a person may pick that runs at $0 (local-models.ts isFree: its catalog price is all zeros), in the form it
+ *  takes, with its context window in tokens. */
+export type FreeModel = { id: string; context_window: number };
+
+/** The free models offered for `harness` on this server, besides pickerCandidates' (harness.ts harnessOffers drops those
+ *  it does not run): OpenRouter's chat models whose catalog price is all zeros (pi-ai's own and serve's ADDED_MODELS), on
+ *  pi with OpenRouter's key, by id. None for an adapter harness (each runs its own wire's vendor), behind a gateway (its
+ *  ids are its own) or with the faux model. */
+export async function freeCandidates(env: NodeJS.ProcessEnv, harness: string): Promise<FreeModel[]> {
+  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || !env.OPENROUTER_API_KEY || ADAPTER_FACTS.some((f) => f.id === harness)) return [];
+  const [{ builtinModels }, { withLocalModels, isFree }] = await Promise.all([import("@earendil-works/pi-ai/providers/all"), import("./local-models.js")]);
+  return withLocalModels(builtinModels()).getModels("openrouter").filter(isFree)
+    .map((model) => ({ id: `openrouter/${model.id}`, context_window: model.contextWindow }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /** A model id with its spelling taken out (case, spaces, dots, dashes), and the provider's segments off. */
 const spelled = (given: string): string => (given.split("/").pop() ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 

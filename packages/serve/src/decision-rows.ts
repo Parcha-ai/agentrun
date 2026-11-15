@@ -128,6 +128,6 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
   const soFar = usd === null && modelsSoFar && unpriced > 0 ? { so_far_usd: Math.round((modelsSoFar.known + costs.reduce<number>((a, b) => a + (b ?? 0), 0)) * 1e6) / 1e6, unpriced } : undefined;
   const dollars = (n: number) => (n === 0 ? "$0" : n < 0.0001 ? "<$0.0001" : `$${n.toFixed(4)}`);
   const said = usd !== null ? dollars(usd) : soFar ? `${dollars(soFar.so_far_usd)} known, ${soFar.unpriced} not priced,` : "unknown";
-  const summary = `${label}: ${said} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
-  return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests + decisions.length, ...(soFar ?? {}) } }];
+  const summary = `${label}: ${said} over ${models.requests === null ? 'an unavailable model request count' : plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
+  return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests === null ? null : models.requests + decisions.length, ...(soFar ?? {}) } }];
 }

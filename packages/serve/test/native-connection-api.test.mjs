@@ -1,0 +1,62 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { serve, follow, journalOf, withEnv } from './support.mjs';
+import {nativeFixture} from './native-fixtures/setup.mjs';
+import {nativeSourceInstructions} from '../dist/runner/native-loop.js';
+test('connect existing project is idempotent and normal learning edits retain its native reference', async t=>{
+ const project=await mkdtemp(join(tmpdir(),'agentrun-native-api-')); t.after(()=>rm(project,{recursive:true,force:true}));
+ await writeFile(join(project,'AGENTS.md'),'Keep the original project instructions.\n');
+ const {api}=await serve(t,{runner:false});
+ const connect=()=>api('POST','/native/connect',{project,runtime:'codex',selector:{kind:'project'}});
+ const first=await connect(); assert.equal(first.status,200,JSON.stringify(first.body));
+ const id=first.body.agent.agent_id;
+ const connectedRevision=first.body.agent.revision;assert.equal(typeof connectedRevision,'string');
+ assert.equal((await connect()).body.agent.agent_id,id);
+ const edited=await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:'notes'}});
+ assert.equal(edited.status,200,JSON.stringify(edited.body));
+ assert.equal(edited.body.definition.native.project,project);
+ assert.equal(edited.body.definition.learning,'notes');
+ const unchanged={...edited.body.definition.native,selector:{...edited.body.definition.native.selector}};
+ assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',native:Object.fromEntries(Object.entries(unchanged).reverse())}})).status,200,'native equality is semantic, not object key order');
+ assert.equal((await api('POST','/agents',{definition:{id:'forged',instructions:'',native:unchanged}})).status,422,'generic create cannot introduce a native host binding');
+ assert.equal((await api('POST','/runs',{external:{source:'fixture',kind:'native',id:'forged',version:1},definition:{instructions:'',native:unchanged},input:{content:'No native dispatch.'}})).status,422,'inline definition cannot bypass native registration');
+ assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',native:{...unchanged,project:'/another/source'}}})).status,422);
+ for(const extra of [{effort:'high'},{file_ids:['file-native-not-copied']}])assert.equal((await api('POST',`/agents/${id}/runs`,{input:{content:'No ignored native controls.'},...extra})).status,422);
+ assert.equal((await api('POST',`/agents/${id}/native/disconnect`,{})).body.native.connected,false);
+ assert.equal((await api('POST',`/agents/${id}/current`,{revision:connectedRevision})).status,422,'ordinary revision restore cannot undo disconnect');
+ assert.equal((await api('POST',`/agents/${id}/runs`,{revision:connectedRevision,input:{content:'Old revision cannot reconnect.'}})).status,409);
+ const refused=await api('POST',`/agents/${id}/runs`,{input:{content:'Do not run disconnected.'}});
+ assert.equal(refused.status,409,JSON.stringify(refused.body));
+ assert.equal(await readFile(join(project,'AGENTS.md'),'utf8'),'Keep the original project instructions.\n');
+});
+
+test('native source discovery rejects invalid directories and hosted servers explicitly',async t=>{
+ const local=await serve(t,{runner:false});assert.equal((await local.api('POST','/native/discover',{project:'/missing/agentrun-native-project'})).status,422);
+ const hosted=await serve(t,{runner:false,publicUrl:'https://example.test'});assert.equal((await hosted.api('POST','/native/discover',{project:'/tmp'})).status,403);
+});
+
+for(const imports of [true,false])test(`Claude ${imports?'imported':'direct AGENTS'} policy disables automatic learning but preserves ordinary native task dispatch`, {timeout:30_000},async t=>{
+ const f=await nativeFixture(t);const policy=join(f.project,'CLAUDE.md'),imported=join(f.project,'AGENTS.md');
+ if(imports)await f.put(policy,'@AGENTS.md');await f.put(imported,'Never remove the owner review gate.');
+ withEnv(t,Object.fromEntries(['PATH','HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','NATIVE_TEST_LOG'].map(key=>[key,f.env[key]])),['NATIVE_TEST_AUTH','NATIVE_TEST_EVENTS','NATIVE_TEST_HOLD']);
+ const {api,store,data}=await serve(t,{faux:undefined,harnesses:false});
+ const connected=await api('POST','/native/connect',{project:f.project,runtime:'claude-code',selector:{kind:'project'}});
+ assert.equal(connected.status,200,JSON.stringify(connected.body));const id=connected.body.agent.agent_id;
+ const verified=await api('POST',`/agents/${id}/native/verify`,{});
+ assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.launch,true);
+ assert.equal(verified.body.native.capabilities.notes,false);assert.equal(verified.body.native.capabilities.skills,false);
+ assert.match(verified.body.native.issues.join(' '),/Claude.*(import|policy)/i);
+ assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:false}})).status,200);
+ const started=await api('POST',`/agents/${id}/runs`,{input:{content:'Follow the original project policy.'}});
+ assert.equal(started.status,202,JSON.stringify(started.body));const run=started.body.run_id;
+ assert.equal((await follow(api,run,['completed','failed'])).last.status,'completed');
+ const snapshot=journalOf(data,run).find(row=>row.kind==='agentrun.native.instructions').data;
+ assert.match(snapshot.incomplete,/Claude.*(import|policy)/i);assert.equal(snapshot.claudePolicySourcesChecked,true);
+ await assert.rejects(nativeSourceInstructions(store,run),/Claude.*(import|policy)/i);
+ const calls=(await f.calls()).filter(call=>call.args.includes('--print'));
+ assert.equal(calls.length,1);assert.equal(calls[0].cwd,f.project);
+ if(imports)assert.equal(await readFile(policy,'utf8'),'@AGENTS.md');assert.equal(await readFile(imported,'utf8'),'Never remove the owner review gate.');
+});
