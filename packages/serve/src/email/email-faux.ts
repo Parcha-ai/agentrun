@@ -6,7 +6,7 @@
 // AUTH PLAIN and LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT. A fetch of BODY[] without PEEK marks the message \Seen, as a
 // real server does, so a test can tell a read that changes the inbox from one that does not. The test seeds the
 // mailboxes, reads them back and what SMTP received, and switches the sign-in off or the UIDVALIDITY to another. Plaintext
-// on 127.0.0.1 only: never a server anyone else reaches.
+// on the loopback address only: never a server anyone else reaches.
 import { randomBytes } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -63,7 +63,7 @@ export type EmailFaux = {
 
 type Box = { name: string; flags: string[]; selectable: boolean; uidValidity: number; uidNext: number; messages: FauxStored[] };
 
-const LOOPBACK = "127.0.0.1";
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the fake mail servers bind loopback only
 const CRLF = "\r\n";
 const CAPABILITIES = "IMAP4rev1 LITERAL+ SPECIAL-USE UIDPLUS";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
