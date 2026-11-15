@@ -411,9 +411,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
   // An ended run's cost by the one rule its end stored it by (metrics.ts runCostOf), read in the same snapshot as its
-  // state: never a view of the run ended with a figure its end did not write. A native run's end reads its own, and a
-  // workflow's end stores its cap's figures (workflow-spec.ts), so both keep the reading below.
-  const bookedCost = terminal && row.kind === "agentic" && !native && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
+  // state: never a view of the run ended with a figure its end did not write. A workflow's end stores it by the same rule
+  // (workflow-spec.ts); a native run's end reads its own, so it keeps the reading below.
+  const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
   const endCost = bookedCost?.requests ? bookedCost : undefined;
   return { ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, ...(endCost ? { endCost } : {}) };
 }
@@ -444,18 +444,16 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // An ended run that booked its requests reads its booking (runCostOf), the one rule its end stored its cost by, in the
   // snapshot that read its state: never an answer's own price that its booking committed after, never ended without it.
   const booked = run.endCost;
-  const priced = booked ? booked.usd : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
-  const counted = booked ? (booked.usd === null ? { so_far_usd: booked.known, unpriced: booked.unpriced } : undefined) : priced === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
+  const usd = booked ? booked.usd : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
+  const counted = booked ? (booked.usd === null ? { so_far_usd: booked.known, unpriced: booked.unpriced } : undefined) : usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
   // Its figure counts a request cut with no answer at its hold (runner.ts CUT_AT_HOLD): the most it can have cost.
   const upper = booked && booked.atMost > 0 ? { upper_bound: true as const } : undefined;
-  // A request billed to a ChatGPT plan has no price here (its meter strips one) and costs no dollars: the usage row counts
-  // it unpriced, so it leaves that count, and a run whose only unpriced requests were on the plan costs what it knows.
+  // A request billed to a ChatGPT plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
+  // $0, so it is in no unpriced count; what it used on the plan is said beside the figure.
   const plan = run.plan;
-  const left = counted && plan ? counted.unpriced - plan.requests : counted?.unpriced;
-  const usd = counted && left !== undefined && left <= 0 ? counted.so_far_usd : priced;
   // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
   // decision of its own), that it is free.
-  const soFar = counted && left !== undefined && left > 0 ? { so_far_usd: counted.so_far_usd, unpriced: left } : imported || decisions?.requests ? undefined : freeOf(run.rows, usd);
+  const soFar = counted ?? (imported || decisions?.requests ? undefined : freeOf(run.rows, usd));
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
   return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };

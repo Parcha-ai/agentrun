@@ -17,7 +17,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
-import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
@@ -483,12 +483,13 @@ export function bookingOfAnswer(records: readonly SessionRecord[], given: Readon
   let usd: number | null | undefined;
   for (const record of records) {
     if (record.kind !== RUNNER_RECORDS.turn) continue;
-    const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown; rule?: unknown };
+    const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown; rule?: unknown; billing?: unknown };
     if (typeof turn.turn !== "number" || given.has(turn.turn)) continue;
     turns.push(turn.turn);
     if (side.has(turn.turn)) continue;
-    // An answer with no price of its own is unknown, never the hold it was booked at for the cap (answeredUnpriced).
-    const figure = answeredUnpriced(turn) ? null : turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+    // By the kernel's one rule (turnCostOf): an answer with no price of its own is unknown, never the hold it was booked at
+    // for the cap; one billed to a person's plan is $0 to the run.
+    const figure = turn.usd === undefined && turn.bookedUsd === undefined ? undefined : turnCostOf(turn).usd;
     usd = usd !== null && typeof figure === "number" && Number.isFinite(figure) ? (usd ?? 0) + figure : null;
   }
   return { turns, usd };

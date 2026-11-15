@@ -117,8 +117,8 @@ export function runCostOf(entries: readonly EntryLike[], { unbooked = false }: {
 }
 
 /** The run's model requests billed to a ChatGPT plan (runner.turn `billing` "plan", booked at no price, chatgpt-plan.ts):
- *  how many and their tokens (input, output and cache, as each booking reported them). Each is one of bookedSpend's
- *  `unpriced` (and of a pi run's usage row's): a plan request has no price here, and none is owed here either. */
+ *  how many and their tokens (input, output and cache, as each booking reported them). Each is $0 to the run by the
+ *  kernel's one rule (turnCostOf), however it ended: the plan pays for it, so no reader counts it unpriced. */
 export function planSpend(entries: readonly EntryLike[]): { readonly requests: number; readonly tokens: number } {
   let requests = 0;
   let tokens = 0;

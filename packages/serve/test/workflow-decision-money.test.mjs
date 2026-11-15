@@ -681,7 +681,7 @@ const near = (actual, expected, what) => assert.ok(typeof actual === "number" &&
 // A decision's settle commits before its receipt (runner/workflow-spec.ts decisionJudging: `admitted` settles before the
 // driver saves the answer), so a crash never leaves a receipt that names a charge beside a booking it lost: lost at the
 // settle, the receipt is lost too, and the provider may have billed its worst case.
-test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold, asks it no more, and sends the run to review", async (t) => {
+test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold, asks it no more, and sends the run to review; the run's cost is that hold, the most it can have cost", async (t) => {
   const { row, records, requests, asked } = await lostAround(t, { at: "settle", price: feeOnly(0.4), costUsd: 0.1 });
   assert.equal(asked, 1, "asked once, by runner A; never again by runner B");
   assert.deepEqual([row.state, row.outcome, row.epoch > 1], ["ended", "escalated", true], `runner B finds the decision asked and never answered, and escalates it: ${JSON.stringify(row)}`);
@@ -691,7 +691,10 @@ test("a decision whose booking a crash lost at its settle never reached its rece
   const turns = records.filter((r) => r.kind === "runner.turn").map((r) => r.data);
   assert.deepEqual([records.filter((r) => r.kind === "runner.request").length, turns.map((d) => [d.cut === true, d.usd])], [1, [[true, null]]], `one booking, cut by the next claim: ${JSON.stringify(records)}`);
   near(sessionSpendOf(records).spentUsd, request.heldUsd, "the cap counts it at its hold, its worst case");
-  assert.equal(row.costUsd, null, `its cost is unknown, never its hold: ${JSON.stringify(row)}`);
+  // Booked cut at its hold, an upper bound (runner.ts CUT_AT_HOLD), as a pi run's cut request is: the stored cost is the
+  // booking's (runCostOf), so the run's cost is known, at most that hold, never blanked.
+  assert.deepEqual(turns.map((d) => [d.bookedUsd, d.rule, d.atMost]), [[request.heldUsd, "cut", true]], `booked at its hold, the most it can have cost: ${JSON.stringify(turns)}`);
+  near(row.costUsd, request.heldUsd, `its cost is that hold, read from the booking: ${JSON.stringify(row)}`);
 });
 
 test("a decision whose receipt a crash lost after its settle counts at what it charged on the next claim, never at its larger hold", async (t) => {

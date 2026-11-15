@@ -46,14 +46,15 @@ import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, NODE_LOG_SESSION, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
 import type { NodeLine } from "../pause.js";
 import { cutStrings } from "../key-refusal.js";
-import { CLOSE_MS, entriesOf } from "./loop.js";
+import { CLOSE_MS } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
-import { bookedSpend } from "./metrics.js";
+import { runCostOf } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = WORKFLOW_SESSION;
@@ -363,7 +364,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
-      endPatch: async () => endPatchOf(booking, decisionCap, paidTools, run?.journal),
+      endPatch: async () => endPatchOf(booking, run?.journal),
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -843,31 +844,15 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
   }) as never;
 }
 
-/** The end's cost and metrics: what every model request of the run cost (the booking) plus what its decisions and its
- *  call nodes' paid requests cost (the decision cap, the paid tools), one spend for the run. Unknown (no figure) once any
- *  part is unknown. */
-/** What the run's decisions cost by their booking (bookedSpend, "decisions"), read from only what that needs: the root's
- *  session keys (journalSessions writes them there) and the decisions session's own conversation, never the run's model
- *  or tool records, so the read stays small within the end patch's bound. No decisions session: none, $0. */
-async function decisionsBooked(journal: Journal): Promise<number | null> {
-  const root = await entriesOf(journal, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
-  const key = root.find((entry) => entry.kind === KINDS.sessionKey && (entry.data as { key?: unknown } | undefined)?.key === DECISION_SESSION);
-  const conversation = (key?.data as { conversation?: unknown } | undefined)?.conversation;
-  if (conversation == null) return 0;
-  const decisions = await entriesOf(journal, conversation as never, BACKGROUND_CONTEXT);
-  return bookedSpend([key!, ...decisions] as never, "decisions").usd;
-}
-
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined, paidTools: RunTools | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
+/** The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf, as the
+ *  pi and CLI specs store it): every model request of its sessions, its call nodes' paid requests and its decisions, each
+ *  at what it was booked at, never the cap's figure for it (an answer with no price of its own is unknown, never its
+ *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
+ *  before a response). With no journal to read, unknown. */
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
   if (!booking) return {};
-  const model = booking.spentUsd();
-  // A decision's cost is what its booking says it charged (bookedSpend over the decisions session's records, as the pi and
-  // CLI specs read it): one its provider reported no cost for is unknown, never the hold the cap counts it at
-  // (decisionCap.spentUsd, which stays the cap's own figure). With no journal to read, any decision is unknown.
-  const decision = !decisionCap ? 0 : journalOf ? await decisionsBooked(journalOf()) : null;
-  const paid = paidTools ? paidTools.spentUsd() : 0;
-  // Unknown is written as null, never left out (an end that says nothing leaves the $0 the run read before a response).
-  return { costUsd: model === null || decision === null || paid === null ? null : model + decision + paid };
+  if (!journalOf) return { costUsd: null };
+  return { costUsd: runCostOf((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never).usd };
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a

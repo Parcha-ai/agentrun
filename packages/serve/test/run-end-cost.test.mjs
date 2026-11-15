@@ -24,6 +24,7 @@ const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { listRuns } = await import("../dist/store-reads/runs.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { withPlan } = await import("../dist/chatgpt-plan.js");
 after(closeOpenSessions);
 
 const TIMING = { leaseMs: 30_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -129,7 +130,24 @@ test("a booking slower than the end's bound on its write: the end goes on and sa
   assert.ok(warned.some((line) => /booking\(s\) still being written after 0\.3 s/.test(line)), `the end says it went on without it: ${JSON.stringify(warned)}`);
 });
 
-test("a request its runner was lost in, before any answer or usage, is booked at its hold as an upper bound: the run's cost stays known, said at most, never blanked", { timeout: 120_000 }, async (t) => {
+/** A Responses API answer, in text, of `usage` (ChatGPT's plan route's wire). */
+const responsesAnswer = (usage) => {
+  const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "done", annotations: [] }] };
+  const events = [
+    { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
+    { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_1", delta: "done" },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage } },
+  ];
+  return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+};
+
+/** run-1, a pi run on `route` (its fetch, its model and wire, given as `routeOf(hung)`: its first model request waits on
+ *  `hung`, the next answers) under a $5 cap, whose runner is lost with its first request out once that request's record
+ *  is durable; a second runner takes the claim and ends it. Returns the store, the run's row once it rests and its
+ *  journal's entries. */
+async function lostMidRequest(t, { model, provider, routeOf, env = () => ({}) }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-end-cost-cut-"));
   const clock = { skewMs: 0 };
   const now = () => Date.now() + clock.skewMs;
@@ -145,19 +163,18 @@ test("a request its runner was lost in, before any answer or usage, is booked at
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say done.", tools: [] } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say done." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: MODEL }, max_cost_usd: 5 } });
-  // The first request hangs (its runner is lost with it out); the next answers.
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say done." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider, modelId: model }, max_cost_usd: 5 } });
+  // The first model request hangs (its runner is lost with it out); the next answers.
   let sent = 0;
-  const answer = scriptedOrigin([{ say: "done" }]);
-  const route = {
-    model: MODEL, provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
-    // Only a model request counts (a cap may count a request's tokens first, at another path).
-    fetch: async (url, init) => (new URL(String(url)).pathname.endsWith("/messages") && (sent += 1) === 1 ? (await hung, new Response("", { status: 500 })) : answer(url, init)),
-    price: () => REQUEST_USD,
-    cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 16_000,
-  };
+  const route = routeOf(async () => {
+    sent += 1;
+    if (sent === 1) {
+      await hung;
+      return new Response("", { status: 500 });
+    }
+  });
   const loopOn = (store) => {
-    const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
+    const deps = { env: env(), data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
     return createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) });
   };
   runners.push(startRunner({ store: stores[0], name: "runner-a", ...TIMING, createLoop: loopOn(stores[0]) }));
@@ -165,7 +182,7 @@ test("a request its runner was lost in, before any answer or usage, is booked at
   // one makes): a request whose record never landed was never sent, as far as the next claim can know.
   let seen = [];
   const recorded = async () => (seen = await inCommitOrder(server, await server.runs.get("run-1")).catch((error) => [{ kind: String(error) }])).some((e) => e.kind === "runner.request");
-  for (const from = Date.now(); !(sent >= 1 && (await stores[0].flush(), await recorded())); await sleep(20)) if (Date.now() - from > 30_000) assert.fail(`the first request never left: sent ${sent}, ${JSON.stringify(seen.map((e) => e.kind))}`);
+  for (const from = Date.now(); !(sent >= 1 && (await stores[0].flush(), await recorded())); await sleep(20)) if (Date.now() - from > 30_000) assert.fail(`the first request never left: sent ${sent}, ${JSON.stringify(seen.map((e) => e.kind))}, ${JSON.stringify(await server.runs.get("run-1").then(async (one) => [one.state, one.summary, (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: one.epoch, until: 0, from: one.state }), ctx)).entries.map((e) => [e.kind, e.data])]))}`);
   runners[0].kill();
   clock.skewMs = TIMING.leaseMs * 2;
   runners.push(startRunner({ store: stores[1], name: "runner-b", ...TIMING, createLoop: loopOn(stores[1]) }));
@@ -178,19 +195,57 @@ test("a request its runner was lost in, before any answer or usage, is booked at
   assert.equal(row.state, "ended", JSON.stringify(row.summary));
   const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx)).entries;
   const conv = Number(entries.find((e) => e.kind === "runner.request")?.conversationId);
-  const held = entries.find((e) => Number(e.conversationId) === conv && e.kind === "runner.request" && e.data?.turn === 1)?.data?.heldUsd;
+  // The first request's records, in its model session.
+  const first = (kind) => entries.filter((e) => Number(e.conversationId) === conv && e.kind === kind && e.data?.turn === 1).map((e) => e.data);
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  const listed = (await listRuns(server, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
+  const usage = (await runTimeline(server, "run-1", ctx, { settled: true })).find((one) => one.kind === "usage");
+  return { row, entries, first, view, listed, usage };
+}
+
+test("a request its runner was lost in, before any answer or usage, is booked at its hold as an upper bound: the run's cost stays known, said at most, never blanked", { timeout: 120_000 }, async (t) => {
+  const answer = scriptedOrigin([{ say: "done" }]);
+  const { row, entries, first, view, listed, usage } = await lostMidRequest(t, {
+    model: MODEL, provider: "anthropic",
+    routeOf: (hang) => ({
+      model: MODEL, provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
+      // Only a model request counts (a cap may count a request's tokens first, at another path).
+      fetch: async (url, init) => (new URL(String(url)).pathname.endsWith("/messages") ? ((await hang()) ?? answer(url, init)) : answer(url, init)),
+      price: () => REQUEST_USD,
+      cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 16_000,
+    }),
+  });
+  const held = first("runner.request")[0]?.heldUsd;
   assert.ok(typeof held === "number" && held > 0, `the lost request was held for under the cap: ${JSON.stringify(entries.filter((e) => /^(runner\.|agentrun\.session)/.test(e.kind)).map((e) => [e.conversationId, e.kind, e.data]))}`);
-  const cut = entries.filter((e) => Number(e.conversationId) === conv && e.kind === "runner.turn" && e.data?.turn === 1).map((e) => e.data);
-  assert.deepEqual(cut, [{ usd: null, cut: true, turn: 1, bookedUsd: held, rule: "cut", atMost: true }], "booked once, cut, at its hold, marked an upper bound");
+  assert.deepEqual(first("runner.turn"), [{ usd: null, cut: true, turn: 1, bookedUsd: held, rule: "cut", atMost: true }], "booked once, cut, at its hold, marked an upper bound");
   const total = Math.round((held + REQUEST_USD) * 1e6) / 1e6;
   assert.equal(row.costUsd, total, "the stored cost counts the cut at its hold, never unknown");
-  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
   assert.deepEqual({ usd: view.cost.usd, upper_bound: view.cost.upper_bound, unpriced: view.cost.unpriced }, { usd: total, upper_bound: true, unpriced: undefined }, `the view says the same figure, as the most it can be: ${JSON.stringify(view.cost)}`);
-  const listed = (await listRuns(server, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
   assert.equal(listed.costUsd, total);
-  const usage = (await runTimeline(server, "run-1", ctx, { settled: true })).find((one) => one.kind === "usage");
   assert.equal(usage?.usage?.upper_bound, true, `the usage row marks it: ${JSON.stringify(usage)}`);
   assert.match(usage.summary, /at most \$/, "and says it in words");
+});
+
+test("a ChatGPT plan request its runner was lost in, before any answer, is booked cut at $0, the plan's: the run's cost is a known $0 on the view, the list and the stored cost, never unknown", { timeout: 120_000 }, async (t) => {
+  const PLAN_MODEL = "gpt-6.1-sol";
+  const { row, entries, first, view, listed } = await lostMidRequest(t, {
+    // The plan's route as its sign-in resolves it (provider.ts billing "plan"), given here with no sign-in: its Responses
+    // wire, its requests billed to the plan, never priced.
+    model: PLAN_MODEL, provider: "openai",
+    // A server signed in to the plan (its reader: a token, never a network sign-in).
+    env: () => withPlan({}, { state: "signed_in", models: [PLAN_MODEL], token: async () => KEY, refused: async () => {}, watch: () => {} }),
+    routeOf: (hang) => ({
+      model: PLAN_MODEL, named: `chatgpt/${PLAN_MODEL}`, provider: { api: "openai-responses", origin: "https://api.openai.com", credential: () => KEY, auth: "bearer", plan: true },
+      fetch: async (url) => (new URL(String(url)).pathname.endsWith("/responses") ? ((await hang()) ?? responsesAnswer({ input_tokens: 120, output_tokens: 12, total_tokens: 132 })) : new Response("not served", { status: 404 })),
+      price: () => null, unpriced: true, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 128_000,
+      like: { reasoning: true, contextWindow: 400_000, maxTokens: 128_000, input: ["text"], developerRole: true },
+    }),
+  });
+  const records = JSON.stringify(entries.filter((e) => /^runner\./.test(e.kind)).map((e) => [e.kind, e.data]));
+  assert.deepEqual({ stored: row.costUsd, listed: listed.costUsd ?? null, view: view.cost.usd, unpriced: view.cost.unpriced, upper_bound: view.cost.upper_bound }, { stored: 0, listed: 0, view: 0, unpriced: undefined, upper_bound: undefined }, `the stored cost, the list and the view read a known $0, never unknown: ${JSON.stringify(view.cost)} ${records}`);
+  assert.equal(first("runner.request")[0]?.plan, true, `its record says it is the plan's: ${records}`);
+  assert.deepEqual(first("runner.turn"), [{ usd: null, cut: true, turn: 1, bookedUsd: 0, rule: "cut", billing: "plan" }], "booked once, cut, at $0, the plan's");
+  assert.equal(view.cost.plan?.requests, 2, `what it used on the plan counts both requests, the cut one too: ${JSON.stringify(view.cost)}`);
 });
 
 test("the end's metrics read past its bound: the cost, read apart from them, is still stored", { timeout: 120_000 }, async (t) => {

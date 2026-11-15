@@ -105,10 +105,12 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
   // A request on a free model is admitted marked so, under a cap or none: the runner books it a known $0 however it ends
-  // (runner.ts Admitted), never unknown. One the rule refused stays refused.
+  // (runner.ts Admitted), never unknown. One on a person's plan (CapModel.plan) is admitted marked so: $0 to the run however
+  // it ends, cut by a crash included, and never free (its listing's price is no price). One the rule refused stays refused.
   const judge: BeforeRequest = async (request) => {
     const answer = await rule(request);
     if (answer && "refuse" in answer) return answer;
+    if (!request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
     return freeRequest(request, pricing.modelOf) ? { ...answer, free: true } : answer;
   };
   const before = runBooking(options.sessions, options.judged ? async (request) => {
