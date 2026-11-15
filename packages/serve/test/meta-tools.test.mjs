@@ -101,6 +101,29 @@ test("a script reads a nested call's value: its structured value, else its one t
   assert.equal(direct.text, answers.write_file.text, "the text the model reads is the call's text, unchanged");
 });
 
+test("a script stopped by a parked call lists each earlier call's result as the script read it: unescaped JSON where it parsed, a quoted string where not", async () => {
+  // The run again after the person's answer (its start's memo is the first run's): the recorded calls answer from their
+  // records, and the first call that runs now (send_email) ends the script with every call before it listed.
+  const answers = {
+    write_file: { text: JSON.stringify({ default_branch: "main", stars: 0 }) },
+    web_search: { text: "plain words" },
+    read_file: { text: "sent", structured: { id: "m-1" } },
+  };
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { ...answers[name], fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "const r = await tools.write_file({});\nawait tools.web_search({});\nawait tools.read_file({});\nawait tools.send_email({});\nreturn r.stars;";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.match(answer.text, /^The script was stopped/, answer.text);
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.deepEqual(lines, [
+    `1. write_file completed: {"default_branch":"main","stars":0}. Its effect is done; it was not run again.`,
+    `2. web_search completed: "plain words". Its effect is done; it was not run again.`,
+    `3. read_file completed: {"id":"m-1"}. Its effect is done; it was not run again.`,
+    `4. send_email completed: "mailed". Its effect is done; it was not run again.`,
+  ], answer.text);
+});
+
 /** A pi run of `script` over the suite's tools, its gate `gate(call)`: what each suite tool ran, and the last tool result. */
 async function gatedRun(t, script, gate) {
   const opened = await stores({ runners: 1 });
