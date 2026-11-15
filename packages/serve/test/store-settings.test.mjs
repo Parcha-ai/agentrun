@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
+import { dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
 test("settings: a value reads back as it was put, replaced in place, removed; a key with no row reads undefined", async (t) => {
   const { store, clock } = await storeOn(t);
@@ -62,4 +63,57 @@ test("sealed keys: the bytes in are the bytes out, replaced in place, removed; t
   await store.sealedKeys.remove("ANTHROPIC_API_KEY");
   assert.equal(await store.sealedKeys.get("ANTHROPIC_API_KEY"), undefined, "removed");
   assert.deepEqual((await store.sealedKeys.all()).map((row) => row.name), ["OPENAI_API_KEY"]);
+});
+
+test("sealed keys: replaceIf writes only while the row still holds the bytes read, so of two writers that read one row only one replaces it", async (t) => {
+  const { store } = await storeOn(t);
+  const first = Uint8Array.from([1, 2, 3]);
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", first, SEALED), false, "no row: nothing replaced");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined, "and none made");
+  await store.sealedKeys.put("chatgpt:plan", first);
+  const read = await store.sealedKeys.get("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", Uint8Array.from([1, 2]), SEALED), false, "other bytes: nothing replaced");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, SEALED), true, "the bytes as read: replaced");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, Uint8Array.from([4])), false, "the same read again: the row changed since");
+  assert.deepEqual([...(await store.sealedKeys.get("chatgpt:plan"))], [...SEALED]);
+  await store.sealedKeys.remove("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", SEALED, first), false, "a removed row is not made again");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined);
+});
+
+test("sealed keys: removeIf removes only while the row still holds the bytes read, so a write since it was read stays", async (t) => {
+  const { store } = await storeOn(t);
+  const first = Uint8Array.from([1, 2, 3]);
+  assert.equal(await store.sealedKeys.removeIf("chatgpt:plan", first), false, "no row: nothing removed");
+  await store.sealedKeys.put("chatgpt:plan", first);
+  const read = await store.sealedKeys.get("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, SEALED), true, "another writer replaced it since");
+  assert.equal(await store.sealedKeys.removeIf("chatgpt:plan", read), false, "the bytes read are not the row's now: it stays");
+  assert.deepEqual([...(await store.sealedKeys.get("chatgpt:plan"))], [...SEALED]);
+  assert.equal(await store.sealedKeys.removeIf("chatgpt:plan", await store.sealedKeys.get("chatgpt:plan")), true, "the bytes as read: removed");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined);
+});
+
+test("sealed keys: the store's clock is what a lease in a sealed key is judged by: the store's own on SQLite, the database's on Postgres whatever the process's own clock says", async (t) => {
+  const { store, clock } = await storeOn(t);
+  // storeOn runs the deadlines on its test clock on either database (Postgres's testClock).
+  assert.equal(await store.sealedKeys.clock(), clock.now);
+  clock.now += 61_000;
+  assert.equal(await store.sealedKeys.clock(), clock.now, "it moves with the store's clock");
+});
+
+test("sealed keys on Postgres: two processes whose own clocks are a minute apart read one clock, the database's", postgresOnly("the database's clock"), async (t) => {
+  const { openPostgresStore } = await import("../dist/store/postgres/store.js");
+  const schema = await freshSchema();
+  let runner;
+  const server = await openPostgresStore({ url: PG_URL, schema, role: "server" });
+  t.after(async () => {
+    await runner?.close();
+    await server.close();
+    await dropSchema(schema);
+  });
+  runner = await openPostgresStore({ url: PG_URL, schema, role: "runner", now: () => Date.now() + 61_000 });
+  const [fromServer, fromRunner] = [await server.sealedKeys.clock(), await runner.sealedKeys.clock()];
+  assert.ok(Math.abs(fromRunner - fromServer) < 5_000, `one clock for both: ${fromServer} and ${fromRunner}`);
+  assert.ok(Math.abs(fromRunner - Date.now()) < 30_000, "the database's, not the runner's own (61 s ahead)");
 });

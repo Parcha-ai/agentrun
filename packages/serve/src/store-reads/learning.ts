@@ -14,6 +14,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
+import { feedbackStatus } from "../runner/feedback-round.js";
 import { PAST_RUNS, type PastRun, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
@@ -27,7 +28,7 @@ import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
 import { promotedOf } from "../learn/compile.js";
-import { gradesOf, promotionsOf } from "../learn/promote.js";
+import { gradesOf, gradeView, promotionsOf } from "../learn/promote.js";
 import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
@@ -334,7 +335,7 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. Both
  *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string }> {
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number }> {
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
   if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
@@ -348,7 +349,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
     const answer = servedAnswerOf(entries)?.answer ?? "";
     const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact ? redact(answer) : undefined);
-    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}) };
+    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}) };
   }
   const path = runPathOf(rows);
   // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
@@ -642,8 +643,20 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const learning = withNotes(end, started, read) as Learning;
   const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
   const body = runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries), laidOf(entries), nativeSkillLoads(entries)) }, shown, secrets);
-  // The run's own grade (PUT /runs/{id}/grade), as its agent keeps it: right or wrong, who gave it and when. Never its
-  // `expected` (a person's words, uncut), nor its label (not kept).
+  // The run's own grade (PUT /runs/{id}/grade), as its agent keeps it and the PUT answered it, with the round it opened.
+  // Never its `expected` (a person's words, uncut), nor its label (not kept). Its workflow's name is cut as every other
+  // learning name is (`shown.name`): a secret registered after the grade never shows here.
   const grade = row ? (await gradesOf(store.settings, row.agentId).catch(() => [])).find((one) => one.run === runId) : undefined;
-  return grade ? { ...body, graded: { correct: grade.correct, source: grade.source, graded_at: grade.at } } : body;
+  if (!grade) return body;
+  const { expected: _, ...graded } = gradeView(grade);
+  // How that round stands, from the run's journal and its steer's row (feedbackStatus: its words taken, then the run's
+  // end; or the steer refused by an end that came first), never the API server's `graded_at` against the runner's
+  // `ended_at`. A journal or a row that can't be read fails the read (the console retries it), never says running.
+  // null for a grade that opened none.
+  const command = grade.feedback ? grade.feedbackCommand : undefined;
+  const status = command === undefined ? null : feedbackStatus(
+    used ? entries : await runEntries(store, runId, BACKGROUND_CONTEXT),
+    await store.commands(runId, command - 1).then((rows) => rows.find((one) => one.id === command)),
+  );
+  return { ...body, graded: { ...graded, workflow: graded.workflow === null ? null : shown.name(graded.workflow), feedback_status: status } };
 }

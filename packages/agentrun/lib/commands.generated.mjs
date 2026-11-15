@@ -991,6 +991,31 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
+      "replay"
+    ],
+    "operationId": "getLearnedWorkflowReplay",
+    "method": "GET",
+    "path": "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}",
+    "pathParams": [
+      "agent_id",
+      "name",
+      "digest",
+      "replay_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A replay of a learned workflow's revision: running, done or failed, its counts and its score"
+  },
+  {
+    "command": [
+      "learning",
       "retire"
     ],
     "operationId": "retireLearningFile",
@@ -2365,6 +2390,15 @@ export const COMMANDS = [
         "type": "integer",
         "required": false,
         "description": "At most this many rows in a page (1 to 500, default 500); has_more says when another waits."
+      },
+      {
+        "name": "calls",
+        "type": "string",
+        "enum": [
+          "whole"
+        ],
+        "required": false,
+        "description": "`whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`."
       }
     ],
     "headers": [

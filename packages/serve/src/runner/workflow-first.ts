@@ -46,6 +46,10 @@ export interface WorkflowFirst {
   readonly name: string;
   /** The workflow's digest (workflowDigest): which revision of it served, kept on the run's record (metrics.workflow_digest). */
   readonly digest: string;
+  /** The promotion of that digest that serves it (its record's since, learn/promote.ts PromotionRecord.since), kept on
+   *  the run's record (metrics.workflow_promotion): its serving checks count the run's grade for that promotion alone.
+   *  Absent: one with no since, or none (no promotion gate). */
+  readonly promotion?: number;
   readonly input: Readonly<Record<string, unknown>>;
   readonly revision: string | null;
   /** A replay run's (RunLaunch.replay): the workflow runs alone, a hand-back ends the run with no agent turn. */
@@ -58,7 +62,7 @@ export interface WorkflowFirst {
 /** What WORKFLOW_FIRST keeps: the step's end (its call, and whether it answered or handed back), or why the workflow did
  *  not run first (`needs_revision`: the money rule's two numbers, over its last `runs` served runs). */
 export type WorkflowFirstData =
-  | { readonly workflow: string; readonly digest: string; readonly revision: string | null; readonly call: string; readonly outcome: "answered" | "handed_back" }
+  | { readonly workflow: string; readonly digest: string; readonly promotion?: number; readonly revision: string | null; readonly call: string; readonly outcome: "answered" | "handed_back" }
   | ({ readonly workflow: string; readonly digest: string; readonly revision: string | null; readonly outcome: "needs_revision" } & Omit<Revise, "workflow" | "digest">);
 
 /** A workflow the money rule stopped from running first: its digest, and its all-in cost a run over its last `runs`
@@ -144,10 +148,14 @@ export interface FirstChoice {
 export const laidFor = (laid: readonly LearnedWorkflow[], choice: FirstChoice): LearnedWorkflow[] =>
   choice.champion ? laid.map((one) => (one.name === choice.champion!.name ? choice.champion! : one)) : [...laid];
 
-/** The promotion a run's first choice asks (runner/promotion.ts promotionGate): the workflow that serves in place of the
- *  laid one at `digest` (it, its champion, or none); `champion`, its champion alone, for a laid one that does not take
- *  the run's input (nothing replays). */
-export type Promoted = ((workflow: LearnedWorkflow, digest: string) => Promise<LearnedWorkflow | undefined>) & { readonly champion?: (workflow: LearnedWorkflow, digest: string) => Promise<LearnedWorkflow | undefined> };
+/** What serves a run in place of its laid workflow: the workflow (the laid one itself, or its champion's text), and the
+ *  promotion it serves under (WorkflowFirst.promotion). */
+export type Serving = { readonly workflow: LearnedWorkflow; readonly promotion?: number };
+
+/** The promotion a run's first choice asks (runner/promotion.ts promotionGate): what serves in place of the laid one at
+ *  `digest` (it, its champion, or none); `champion`, its champion alone, for a laid one that does not take the run's
+ *  input (nothing replays). */
+export type Promoted = ((workflow: LearnedWorkflow, digest: string) => Promise<Serving | undefined>) & { readonly champion?: (workflow: LearnedWorkflow, digest: string) => Promise<Serving | undefined> };
 
 /** A workflow the money rule stopped, with the learned revision the run was laid from: what the run's WORKFLOW_FIRST
  *  entry keeps (outcome needs_revision). */
@@ -221,10 +229,13 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   if (fitting.length > 1) return {};
   let chosen: LearnedWorkflow | undefined;
   let laid: LearnedWorkflow | undefined;
+  let promotion: number | undefined;
   if (fitting.length === 1) {
     laid = fitting[0]!;
-    chosen = promoted ? await promoted(laid, workflowDigest(laid)) : laid;
-    if (!chosen) return {};
+    const serving = promoted ? await promoted(laid, workflowDigest(laid)) : { workflow: laid };
+    if (!serving) return {};
+    chosen = serving.workflow;
+    promotion = serving.promotion;
     if (chosen !== laid && !fits(chosen, launch.input, resolveSchemaForWorkflow as never)) {
       log?.(`workflow-first: ${laid.name}'s champion does not take this run's input; the agent takes it`);
       return {};
@@ -232,19 +243,20 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   } else {
     // None laid fits: a champion serving in place of its revision may (the revision changed its input).
     if (!promoted?.champion) return {};
-    const champions: LearnedWorkflow[] = [];
+    const champions: Serving[] = [];
     for (const one of workflows) {
       const champion = await promoted.champion(one, workflowDigest(one));
-      if (champion && fits(champion, launch.input, resolveSchemaForWorkflow as never)) champions.push(champion);
+      if (champion && fits(champion.workflow, launch.input, resolveSchemaForWorkflow as never)) champions.push(champion);
     }
     if (champions.length > 1) log?.(`workflow-first: ${champions.length} learned workflows' champions fit this run's input; the agent takes it`);
     if (champions.length !== 1) return {};
-    chosen = champions[0]!;
+    chosen = champions[0]!.workflow;
+    promotion = champions[0]!.promotion;
     log?.(`workflow-first: ${chosen.name}'s revision does not take this run's input; its champion at ${workflowDigest(chosen)} does, and serves it`);
   }
   const champion = chosen !== laid ? { champion: chosen } : {};
   const digest = workflowDigest(chosen);
-  const serve = { ...champion, serve: { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
+  const serve = { ...champion, serve: { name: chosen.name, digest, ...(promotion !== undefined ? { promotion } : {}), input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
   if (!past) return serve;
   const line = costLineOf(await past().catch(() => []), chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return serve;
@@ -259,13 +271,13 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   return { ...champion, revise };
 }
 
-/** What a run's workflow-first step did, from its root entries (the WORKFLOW_FIRST entry): the workflow, its digest, and
- *  whether it answered or handed back; undefined when it served none. The run's path is the run-end classifier's
- *  (store-reads/learning.ts runPathOverStore), which reads this first. */
-export function servedOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { outcome: "answered" | "handed_back"; workflow: string; digest?: string } | undefined {
-  const served = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST && ((entry.data as { outcome?: unknown } | undefined)?.outcome === "answered" || (entry.data as { outcome?: unknown } | undefined)?.outcome === "handed_back"))?.data as { workflow?: unknown; digest?: unknown; outcome: "answered" | "handed_back" } | undefined;
+/** What a run's workflow-first step did, from its root entries (the WORKFLOW_FIRST entry): the workflow, its digest, the
+ *  promotion it served under (WorkflowFirst.promotion), and whether it answered or handed back; undefined when it served
+ *  none. The run's path is the run-end classifier's (store-reads/learning.ts runPathOverStore), which reads this first. */
+export function servedOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { outcome: "answered" | "handed_back"; workflow: string; digest?: string; promotion?: number } | undefined {
+  const served = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST && ((entry.data as { outcome?: unknown } | undefined)?.outcome === "answered" || (entry.data as { outcome?: unknown } | undefined)?.outcome === "handed_back"))?.data as { workflow?: unknown; digest?: unknown; promotion?: unknown; outcome: "answered" | "handed_back" } | undefined;
   if (!served || typeof served.workflow !== "string") return undefined;
-  return { outcome: served.outcome, workflow: served.workflow, ...(typeof served.digest === "string" ? { digest: served.digest } : {}) };
+  return { outcome: served.outcome, workflow: served.workflow, ...(typeof served.digest === "string" ? { digest: served.digest } : {}), ...(typeof served.promotion === "number" ? { promotion: served.promotion } : {}) };
 }
 
 /** Why a run's learned workflow did not run first, from its root entries: the money rule's WORKFLOW_FIRST entry
@@ -278,12 +290,13 @@ export function reviseOf(entries: readonly { readonly kind: string; readonly dat
 
 /** The run-record fields a learning run's metrics carry, from the run-end classifier's `classified` path
  *  (runPathOverStore): the path it took, the learned revision it ran on, the learned workflow it ran (served first, or
- *  called by its agent) and, for one served first, its digest; and from its root `entries`, each step guard's check of
- *  its learned workflows' calls (`guards`, learned-nodes.ts guardsOf), when one ran. learning-cost reads path and
- *  workflow from here. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; guards?: GuardRow[]; replay?: ReplayMetrics } {
+ *  called by its agent) and, for one served first, its digest and the promotion it served under (`workflow_promotion`,
+ *  which its grade keeps); and from its root `entries`, each step guard's check of its learned workflows' calls
+ *  (`guards`, learned-nodes.ts guardsOf), when one ran. learning-cost reads path and workflow from here. None for a run
+ *  that does not learn. */
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; guards?: GuardRow[]; replay?: ReplayMetrics } {
   if (!launch.learning) return {};
-  const { path, workflow, digest } = classified ?? { path: "agent" as const, workflow: null };
+  const { path, workflow, digest, promotion } = classified ?? { path: "agent" as const, workflow: null };
   const guards = guardsOf(entries);
   if (launch.replay) {
     // A replay run (runner/promotion.ts): path `replay`, whatever its workflow did, so the money rule and the agent's
@@ -297,7 +310,7 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
     return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...(guards.length ? { guards } : {}), replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
   }
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(guards.length ? { guards } : {}) };
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(guards.length ? { guards } : {}) };
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */

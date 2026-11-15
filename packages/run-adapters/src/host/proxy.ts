@@ -47,7 +47,13 @@ export interface ProxyUsage {
   output: number;
   cacheRead: number;
   cacheWrite?: number;
+  /** `plan`: the policy's route bills a person's subscription plan, not the tokens (ModelUsage.billing). */
+  billing?: "plan";
 }
+
+/** A provider credential its host can't give now, for good until a person acts (a sign-in signed out or expired): thrown
+ *  by `ModelProxyOptions.credential`, its message (words for a person, never a credential) is the request's refusal. */
+export class CredentialUnavailable extends Error {}
 
 /** What one provider-native web search costs, in USD, beside the tokens: $10 per 1,000 searches (Anthropic's "Web search tool"
  *  and OpenAI's "Web search (all models)" list the same price). The one figure every fee reads: the proxy policies of the
@@ -562,6 +568,9 @@ export interface ModelProxyOptions {
   /** Told each forwarded request's route and the provider's status once it answers: what a route does on this
    *  provider (a free route it may not serve), as a status code only, never a body or a key. */
   onResponse?: (response: { method: string; path: string; free: boolean; status: number }) => void;
+  /** Told the credential a request was sent with when the provider answered 401 to it, so a host whose credential
+   *  renews (a sign-in's token) can renew it before the next request. Never logged. */
+  credentialRefused?: (credential: string) => void | Promise<void>;
   /** Headers the host adds to every request it forwards (a gateway's spend tags, LiteLLM's `x-litellm-tags`, say):
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
@@ -1085,6 +1094,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       credential = await options.credential();
     } catch (error) {
       say(`model proxy (${policy.id}): the provider credential could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      // A credential its host says is gone (signed out, expired) is refused in the host's words, which the client does
+      // not try again.
+      if (error instanceof CredentialUnavailable) return refuse(res, refusedStatus, error.message, req, "credential_unavailable");
     }
     if (!credential) return refuse(res, 500, "the session has no provider credential", req);
     try {
@@ -1315,6 +1327,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         options.onResponse?.({ method: route.method, path: route.path, free: route.free === true, status: upstream.status });
       } catch (error) {
         say(`model proxy (${policy.id}): onResponse threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+      if (upstream.status === 401 && options.credentialRefused) {
+        try {
+          await options.credentialRefused(credential);
+        } catch {
+          say(`model proxy (${policy.id}): the host could not renew a refused credential`);
+        }
       }
       // Its ids are kept before its body is read: from here the provider has seen it, whatever cuts it off.
       ids = route.free ? undefined : providerIdsOf(upstream.headers);

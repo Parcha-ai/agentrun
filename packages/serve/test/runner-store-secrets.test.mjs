@@ -189,6 +189,29 @@ const PLANES = [
   }],
 ];
 
+/** A ChatGPT sign-in as another process renewed and sealed it (chatgpt-plan.ts' row): its tokens, read by no one here. */
+const plantPlan = async (server) => {
+  const [access, refresh] = [planted("planaccess"), planted("planrefresh")];
+  const credential = { type: "oauth", access, refresh, expires: Date.now() + 3_600_000, clientId: "fake-client" };
+  await putSealedKey(server, SEAL_KEY, "chatgpt:plan", JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6.1-sol"] }));
+  return [access, refresh];
+};
+PLANES.push(["the ChatGPT sign-in's tokens, renewed by another process (sealed_keys chatgpt:plan)", plantPlan]);
+
+test("the store's list holds the ChatGPT sign-in's access and refresh tokens each on its own, not only its row whole", async (t) => {
+  const { storeSecrets } = await import("../dist/runner/store-secrets.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-store-secrets-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const [access, refresh] = await plantPlan(server);
+  const listed = await storeSecrets(server, SEAL_KEY);
+  assert.ok(listed.includes(access), "the access token");
+  assert.ok(listed.includes(refresh), "the refresh token");
+});
+
 for (const [plane, plant] of PLANES) {
   test(`${plane} is cut from a run's records`, { timeout: 120_000 }, async (t) => {
     await runQuoting(t, plant);

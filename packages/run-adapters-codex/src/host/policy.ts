@@ -112,7 +112,15 @@ export interface CodexPolicyOptions {
    *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
    *  latest answer, which is known here before Codex can run anything of it. */
   announce?: { response(): void; exec(callId: string): void; failed(): void; end(): void };
+  /** The route is a person's ChatGPT plan (its access token the credential), whose Responses API keeps rules of its own:
+   *  no `max_output_tokens` is sent (none is clamped or added: the proxy limits no output and counts no input on it), the
+   *  keys it does not take are dropped (PLAN_DROPPED_KEYS), a system-role message is refused in words, each request names
+   *  its originator (`agentrun`), and its usage is booked as the plan's (`billing: "plan"`). */
+  plan?: boolean;
 }
+
+/** What a ChatGPT plan's Responses API does not take: dropped from a request on it. */
+const PLAN_DROPPED_KEYS = new Set(["max_output_tokens", "temperature", "top_p", "metadata", "user", "safety_identifier", "truncation", "background", "prompt_cache_retention"]);
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -562,6 +570,16 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
   const search = options.webSearch === "live";
+  const plan = options.plan === true;
+  const tokensOf: ProviderPolicy["usageOf"] = search ? (text, body): CodexUsage | undefined => {
+    const usage = usageOf(text);
+    // A request that offered no search (`body`, the one it was sent with: a host's side request through the session's
+    // port, a learned workflow's node that offers only `submit`) ran none: 0, read from the request, never an unknown
+    // count that would make its whole known cost unknown (withWebSearches). One that offered it reads its answer.
+    const offered = Array.isArray(body?.tools) && (body.tools as unknown[]).some((tool) => typeof tool === "object" && tool !== null && isLiveSearch(tool as Record<string, unknown>));
+    if (usage && body && !offered) return { ...usage, webSearches: 0 };
+    return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
+  } : usageOf;
   return {
     id: "codex",
     routes: CODEX_RESPONSES_ROUTES,
@@ -570,7 +588,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";
     },
-    authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
+    authHeaders: (credential) => ({ authorization: `Bearer ${credential}`, ...(plan ? { originator: "agentrun" } : {}) }),
     apply(body, _route, context) {
       // The live search, offered by the request, goes only while the host says web_search may run now: read before this
       // request is shaped, never once for the session. A read that fails offers none.
@@ -578,15 +596,10 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (!asking) return shaped(body, context, search);
       return options.searchAllowed!().then((now) => shaped(body, context, now === true), () => shaped(body, context, false));
     },
-    usageOf: search ? (text, body): CodexUsage | undefined => {
-      const usage = usageOf(text);
-      // A request that offered no search (`body`, the one it was sent with: a host's side request through the session's
-      // port, a learned workflow's node that offers only `submit`) ran none: 0, read from the request, never an unknown
-      // count that would make its whole known cost unknown (withWebSearches). One that offered it reads its answer.
-      const offered = Array.isArray(body?.tools) && (body.tools as unknown[]).some((tool) => typeof tool === "object" && tool !== null && isLiveSearch(tool as Record<string, unknown>));
-      if (usage && body && !offered) return { ...usage, webSearches: 0 };
-      return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
-    } : usageOf,
+    usageOf: plan ? (text, body) => {
+      const usage = tokensOf(text, body);
+      return usage && { ...usage, billing: "plan" as const };
+    } : tokensOf,
     filtered,
     cut,
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
@@ -597,7 +610,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
     contentBytesOf: responsesContentBytes,
-    limitOutput: limitResponsesOutput,
+    ...(plan ? {} : { limitOutput: limitResponsesOutput, countInput: OPENAI_INPUT_COUNTER }),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured (and never
     // counted into a number).
@@ -605,7 +618,6 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;
       return responsesInputOverhead(body);
     } : responsesInputOverhead,
-    countInput: OPENAI_INPUT_COUNTER,
   };
 
   /** The body the provider gets, the live search offered only when `searchNow`. */
@@ -616,7 +628,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     const own = context?.host !== undefined ? sideToolNames(body.tools) : allowed;
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(body)) {
-      if (DROPPED_KEYS.has(key)) continue;
+      if (DROPPED_KEYS.has(key) || (plan && PLAN_DROPPED_KEYS.has(key))) continue;
       if (!BODY_KEYS.has(key) && !(context?.host !== undefined && SIDE_KEYS.has(key))) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
       out[key] = value;
     }
@@ -638,6 +650,10 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
       if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
       out.parallel_tool_calls = false;
+    }
+    if (plan) {
+      if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.role === "system")) throw new ProxyRefusal(400, "A ChatGPT plan takes no system-role message: give those words as instructions or a developer message.");
+      return { ...out, model: options.model, store: false };
     }
     const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
     return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };

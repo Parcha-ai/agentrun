@@ -8,6 +8,7 @@
 // orchestration is runner/promotion.ts, the threshold refit learn/refit.ts.
 import type { GuardRow } from "../learned-nodes.js";
 import type { RunPath } from "../learning-cost.js";
+import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { workflowNodes } from "./workflow-nodes.js";
@@ -46,6 +47,17 @@ export interface Grade {
   /** Its place among the agent's grades, one more than the grade put before it (a re-grade takes a new one): a cursor a
    *  serving digest's check counts new grades from (PromotionRecord.checked) that the GRADES_KEPT trim never moves back. */
   readonly seq?: number;
+  /** The promotion of `digest` that served the run (its record's `since`, PromotionRecord.since), read from the run's
+   *  record when it was graded: a serving check counts the grade only for that promotion. Absent: one with no since (the
+   *  digest's first), or none served it. Not in the API's view. */
+  readonly promotion?: number;
+  /** The feedback round the grade opened its run again on, null for none (runner/feedback-round.ts keepGrade). Set only
+   *  once the round opened, so a kept grade never names a round that didn't. */
+  readonly feedback?: FeedbackRound | null;
+  /** The steer command that round opened the run again on (store.runs.reopen's id), set with `feedback`: the run's journal
+   *  and that steer's row say how that round stands (runner/feedback-round.ts feedbackStatus), never a clock. Not in the
+   *  API's view. */
+  readonly feedbackCommand?: number;
 }
 
 /** What a replay says (learn/refit.ts scoreRows), the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
@@ -74,9 +86,13 @@ export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boo
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
  *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown) and how many of its inputs were
  *  skipped (`skipped_write`: each needed a write the graded run's recording does not have, learn/replay-calls.ts; never
- *  run, never scored) and at which tools (`skipped_tools`, SkippedTool). `refit`: the guards a refit
+ *  run, never scored) and at which tools (`skipped_tools`, SkippedTool), and its runs' outcomes (`outcomes`,
+ *  ReplayOutcomes). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
- *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). */
+ *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). `since`: on a replay's
+ *  promote, the agent's newest grade (its seq) when this promotion began: which promotion of the digest it is (a run it
+ *  serves keeps it, Grade.promotion, and its checks count only those runs' grades). `held_on`: the
+ *  served runs graded wrong a revision was held on, owed by its next replay (heldOn). */
 export interface PromotionRecord {
   readonly workflow: string;
   readonly digest: string;
@@ -84,13 +100,35 @@ export interface PromotionRecord {
   readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
-  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number; readonly skipped_tools?: readonly SkippedTool[] };
+  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
   readonly runs?: readonly string[];
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
    *  launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
   readonly inputs?: readonly string[];
+  /** The replay's id, minted when it was reserved (a claim's, or a person's POST .../replays) and kept on the record that
+   *  decides it: what GET .../replays/{replay_id} reads. */
+  readonly replay_id?: string;
+  /** A replaying record's launch, chosen once when it was reserved (runner/promotion.ts reserve): every replay run of it,
+   *  whoever creates it (the reserving claim or person, or a later claim finishing an interrupted launch), runs at
+   *  `revision` from `body` (a run launch body; each run sets its own input, title and replay), handed the per_run MCP
+   *  credentials run `handed_from` was handed (a claim's claimed run), else none (an owner's replay). One replay runs on
+   *  one set of settings. Never in the promotions read (promotionsShown). */
+  readonly launch?: ReplayLaunch;
   readonly refit?:{ readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
+  /** A promote record's start (a replay's promote): the agent's newest grade's seq when it was written, which names this
+   *  promotion of the digest: a run it serves keeps it (metrics.workflow_promotion, then Grade.promotion), and its checks
+   *  count only the grades of those runs, never a run served under an earlier promotion and graded after this one, nor
+   *  the ones it was held on. Two promotions of a digest never share it: one is promoted again only after a graded hold,
+   *  which counts runs served (and graded, each at a newer seq) under the one before. Its checks' writes are kept only
+   *  while it is still the digest's promotion (the same since), so a check that read an older promotion writes nothing.
+   *  Absent: the digest's first record (a dry run's or a refit's promote), whose runs keep none. */
+  readonly since?: number;
+  /** The runs a revision served that were graded wrong when its graded check held it (newest first, at most REPLAY_INPUTS),
+   *  kept on that hold, on the replay of it its owner starts (those of them still graded and fitting it, each one of its
+   *  inputs), and on a replay's hold: a replay of the revision promotes it only once it answered (or handed back) on every
+   *  one (heldOn). */
+  readonly held_on?: readonly string[];
   /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
   readonly superseded_by?: string;
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
@@ -98,6 +136,18 @@ export interface PromotionRecord {
    *  is on the folder's main. */
   readonly commit?: string;
 }
+
+/** What a replay's runs are launched with (PromotionRecord.launch). */
+export interface ReplayLaunch {
+  readonly revision: string;
+  readonly body: unknown;
+  readonly handed_from?: string;
+}
+
+/** What a replay of a revision owes before it may promote it: the served runs graded wrong it was held on
+ *  (PromotionRecord.held_on), none when `record` owes none. The one reading of it: the owner's replay puts each among its
+ *  inputs (runner/promotion.ts askReplay), and its settle holds a replay that did not answer or hand back on each. */
+export const heldOn = (record: PromotionRecord | undefined): readonly string[] => record?.held_on ?? [];
 
 /** A tool that stopped a replay's inputs (each a skipped_write row): its catalog name, how many inputs it stopped, and
  *  whether it is an MCP tool its server listed with no readOnlyHint (`no_read_only_hint`: replay may only lack the hint,
@@ -166,6 +216,15 @@ export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | 
   return kept;
 };
 
+/** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened and
+ *  that round's steer, in place: its `seq` stays, so a serving digest's check never counts it twice. A newer grade of the
+ *  run is left as it is, one given in the same millisecond too (its `seq` is another). The grade, marked. */
+export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade, opened: OpenedRound): Promise<Grade> => {
+  const mark = { feedback: opened.round, feedbackCommand: opened.command };
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at && one.seq === grade.seq ? { ...one, ...mark } : one)));
+  return { ...grade, ...mark };
+};
+
 /** The agent's promotion records, oldest first. */
 export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> => itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)));
 
@@ -173,26 +232,37 @@ export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: str
 export const promotionOf = (records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined =>
   records.findLast((one) => one.workflow === workflow && one.digest === digest);
 
-/** The champion of `workflow`: the newest record of the digest promoted last (a digest's place is its first promote
- *  record's), while that digest's newest record still says promote. A newer revision replaying or held never stops it; a
+/** The champion of `workflow`: the newest record of the digest promoted last (a digest's place is its latest win's,
+ *  winsOf), while that digest's newest record still says promote. A newer revision replaying or held never stops it; a
  *  wrong served grade asks for a revision and never stops it; it stops when a newer revision's replay promotes that one
- *  (then the champion), or its own graded runs hold it (source graded: no champion until a revision is promoted). The
- *  money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
+ *  (then the champion), or its own graded runs hold it (source graded: no champion until a revision is promoted). A held
+ *  revision its owner replays (runner/promotion.ts askReplay) and the replay promotes wins again: the champion from then.
+ *  The money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
 export function championOf(records: readonly PromotionRecord[], workflow: string): PromotionRecord | undefined {
   const last = lastPromotedOf(records, workflow);
   const now = last === undefined ? undefined : promotionOf(records, workflow, last);
   return now?.decided === "promote" ? now : undefined;
 }
 
-/** The digest of `workflow` promoted last: the one whose first promote record is the newest of every digest's first. */
+/** Each promote record's win, by index: the index of the promote record that began its digest's run of promote records
+ *  (its first, or the first after a record of that digest that was not promote: a replay that promoted a held revision).
+ *  A graded check's mark (a promote after a promote, runner/promotion.ts stillServing) is never a win of its own. */
+function winsOf(records: readonly PromotionRecord[]): Map<number, number> {
+  const wins = new Map<number, number>();
+  const streak = new Map<string, number>();
+  records.forEach((one, i) => {
+    const at = JSON.stringify([one.workflow, one.digest]);
+    if (one.decided !== "promote") return void streak.delete(at);
+    if (!streak.has(at)) streak.set(at, i);
+    wins.set(i, streak.get(at)!);
+  });
+  return wins;
+}
+
+/** The digest of `workflow` promoted last: the one whose latest win (winsOf) is the newest of every digest's. */
 function lastPromotedOf(records: readonly PromotionRecord[], workflow: string): string | undefined {
-  const seen = new Set<string>();
   let last: string | undefined;
-  for (const one of records) {
-    if (one.workflow !== workflow || one.decided !== "promote" || seen.has(one.digest)) continue;
-    seen.add(one.digest);
-    last = one.digest;
-  }
+  for (const [i, win] of winsOf(records)) if (i === win && records[i]!.workflow === workflow) last = records[i]!.digest;
   return last;
 }
 
@@ -222,14 +292,15 @@ export function servingOf(records: readonly PromotionRecord[]): { workflow: stri
 /** The promotions list as it leaves (GET /agents/{id}/learning/promotions): the records and what serves (servingOf), every
  *  text in them cut by `shown` (learning.ts secretsShown, as the other learning reads cut theirs), at any depth and under
  *  any field, so a field added later is cut too: a workflow's name whole (`shown.name`), any other text of its part
- *  (`shown.text`: a reason, a refit guard's label, a digest, a run id). Numbers and the rest as they are. */
+ *  (`shown.text`: a reason, a refit guard's label, a digest, a run id). Numbers and the rest as they are. A replaying
+ *  record's `launch` (a run launch: its notes, model and plane) never leaves: aggregates only. */
 export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
   const cut = (value: unknown, key?: string): unknown =>
     typeof value === "string" ? (key === "workflow" ? shown.name(value) : shown.text(value))
     : Array.isArray(value) ? value.map((one) => cut(one))
     : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([field, one]) => [field, cut(one, field)]))
     : value;
-  return { promotions: records.map((one) => cut(one) as PromotionRecord), serving: servingOf(records).map((one) => cut(one) as ReturnType<typeof servingOf>[number]) };
+  return { promotions: records.map(({ launch: _, ...one }) => cut(one) as PromotionRecord), serving: servingOf(records).map((one) => cut(one) as ReturnType<typeof servingOf>[number]) };
 }
 
 /** What a guarded promotion write did:`won`, whether this write kept its record (else `still` did not hold when it
@@ -257,23 +328,23 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
 
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as
  *  before, whatever was dropped. championOf reads two things, and the trim keeps both: the place of every digest it can
- *  still see promoted (a promote record kept keeps its digest's first promote record beside it, so an older revision's
- *  late graded check never reads as a newer promotion), and the digest promoted last, its first promote record and its
- *  newest record (so a held last revision is never trimmed into handing the champion back). */
+ *  still see promoted (a promote record kept keeps its win, winsOf, beside it, so an older revision's late graded check
+ *  never reads as a newer promotion), and the digest promoted last, its latest win and its newest record (so a held last
+ *  revision is never trimmed into handing the champion back). The kept records are a run of the newest plus those wins,
+ *  and a win's own run reaches no further back than it: a record that ended an older run of the same digest is newer
+ *  than every record of that run, so a run is never joined to an older one by the trim. */
 export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
-  const firstPromote = new Map<string, number>();
-  items.forEach((one, i) => {
-    const at = JSON.stringify([one.workflow, one.digest]);
-    if (one.decided === "promote" && !firstPromote.has(at)) firstPromote.set(at, i);
-  });
-  const placeOf = (i: number): number | undefined => (items[i]!.decided === "promote" ? firstPromote.get(JSON.stringify([items[i]!.workflow, items[i]!.digest])) : undefined);
+  const wins = winsOf(items);
+  const placeOf = (i: number): number | undefined => wins.get(i);
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     const last = lastPromotedOf(items, workflow);
     if (last === undefined) continue;
-    keep.add(firstPromote.get(JSON.stringify([workflow, last]))!);
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last));
+    const newest = items.findLastIndex((one) => one.workflow === workflow && one.digest === last);
+    // Its latest win: the newest win of that digest.
+    keep.add(Math.max(...[...wins].filter(([i, win]) => i === win && items[i]!.workflow === workflow && items[i]!.digest === last).map(([i]) => i)));
+    keep.add(newest);
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
     if (keep.has(i)) continue;
@@ -302,6 +373,11 @@ export interface ReplayRow {
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
 }
+
+/** How many of a replay's own runs ended each way (a run not ended past its deadline is failed): what each run did,
+ *  never the serving thresholds' reading of it (a run that answered below its guard's threshold is answered here, handed
+ *  back in its score). A replay record keeps them as it was decided on. */
+export type ReplayOutcomes = Readonly<Record<ReplayRow["outcome"], number>>;
 
 /** The text inside an answer that is one unlabelled fence and nothing else, or undefined. */
 const WHOLE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n([\s\S]*?)\r?\n {0,3}\1[`~]*[ \t]*$/;
@@ -406,8 +482,8 @@ export function recordOnly(workflowText: string): string {
  *  alone on at least one input (one that hands back every input scores the agent's own accuracy, and would never serve). */
 export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && answersAlone(score);
 
-/** A grade as the API answers it (PUT /runs/{id}/grade). */
+/** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({
   run_id: grade.run, correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}), source: grade.source, graded_at: grade.at,
-  path: grade.path, workflow: grade.workflow ?? null, workflow_digest: grade.digest ?? null,
+  path: grade.path, workflow: grade.workflow ?? null, workflow_digest: grade.digest ?? null, feedback: grade.feedback ?? null,
 });

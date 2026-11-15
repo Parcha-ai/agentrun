@@ -79,6 +79,9 @@ export interface LocalMachineOptions {
     tools: readonly string[];
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
+    /** On a person's ChatGPT plan: its rules (CodexPolicyOptions.plan). */
+    plan?: boolean;
+    credentialRefused?: ModelProxyOptions["credentialRefused"];
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
@@ -259,6 +262,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         model: route.models.model,
         tools: options.proxy.tools,
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
+        ...(options.proxy.plan ? { plan: true } : {}),
         ...(search ? { webSearch: "live" as const, ...(options.searchAllowed ? { searchAllowed: options.searchAllowed } : {}) } : {}),
         announce: {
           // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
@@ -278,6 +282,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       model: route.models.model,
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
+      ...(options.proxy.credentialRefused ? { credentialRefused: options.proxy.credentialRefused } : {}),
       ...(price ? { price } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),

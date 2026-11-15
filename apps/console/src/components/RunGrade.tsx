@@ -8,27 +8,18 @@ import { underWay } from "@/lib/learning";
 import { problem } from "@/lib/problem";
 import type { GradeAnswer, GradeBody, Run, RunGraded } from "@/lib/v2";
 
-/** The reviewer's words' longest, as the server takes them (`label`). */
+/** The reviewer's words' longest, as the server takes them (`label`). A copy of serve's LABEL_MAX (learn/promote.ts): the generated types carry no maxLength. */
 export const WORDS_MAX = 4000;
 
 /** Whether a grade teaches the run's agent: the run learns, and not as a run that only uses what was learned (`use`: it
  *  keeps nothing, so a grade opens no round on it). */
-export const gradable = (run: Pick<Run, "learning">): boolean => !!run.learning && run.learning.reason !== "use";
+const gradable = (run: Pick<Run, "learning">): boolean => !!run.learning && run.learning.reason !== "use";
 
 /** What "What was wrong?" is for, and the hint while it is empty: a look-back needs words. */
-export const WORDS_NOTE = "The agent looks back on your words: what was wrong, and what a right answer does.";
+const WORDS_NOTE = "The agent looks back on your words: what was wrong, and what a right answer does.";
 export const NO_WORDS = "A look-back needs words. Without them the grade is still kept.";
 const EXPECTED_NOTE = 'A JSON object of the fields a right answer holds, like {"total": 42}. Replays of a learned workflow are scored against it.';
 const NOT_AN_OBJECT = 'Write it as a JSON object, like {"total": 42}, or leave it empty.';
-
-/** A grade this page sent, with the server's answer: the round it opened the run again on (`feedback`, null for none),
- *  the learned workflow a `revise` round revises, and the run's end before it, so the page knows that round has ended
- *  once the run ends at another time. The run page keeps it (not the Grade control), so a tab switch never loses it. */
-export type SentGrade = { correct: boolean; feedback: GradeAnswer["feedback"]; workflow: string | null; at: string; endedBefore: string | null; words: boolean };
-
-/** The grade a page sent, from the server's answer, the body it sent and the run's end when it sent it. */
-export const sentGrade = (answer: GradeAnswer, body: GradeBody, endedBefore: string | null): SentGrade =>
-  ({ correct: answer.correct, feedback: answer.feedback, workflow: answer.workflow, at: answer.graded_at, endedBefore, words: !!body.label });
 
 /** The correct answer box: nothing, a JSON object (the API's `expected`), or why it is neither. */
 export function expectedOf(text: string): { value?: Record<string, unknown>; error?: string } {
@@ -45,32 +36,32 @@ function refusal(e: unknown): string {
   return e instanceof ClientError && e.status < 500 && p.said ? p.said : `${p.why} ${p.next}`;
 }
 
-/** What came of the grade, in words: the round it opened (running or done), or that it was kept with none. A grade read
- *  back from the server says only that the run is open again on it: which round it opened is not kept. A finished
- *  `revise` round says "revised" only when the run's learning kept the workflow's revision (its newest round merged with
- *  that workflow); a draft that failed its checks, a `No change.` or a grader that kept nothing of it changed nothing. */
-function outcome(sent: SentGrade | null, reviewing: boolean, learning: Run["learning"]): string | null {
-  if (!sent) return reviewing ? "The run is open again on your grade." : null;
-  if (sent.feedback === "look_back") return reviewing ? "The agent is looking back on your words." : "The agent looked back on your words.";
-  if (sent.feedback === "revise") {
+/** What a round says when its run ended before it took the grade's words (`feedback_status` `not_run`). */
+export const NOT_RUN = "The review could not run.";
+
+/** What came of the grade, in words: the round it opened (`feedback`, running, done or never run), or that it was kept with none
+ *  (the form's NO_WORDS says before sending that a wrong grade without words opens none). A finished `revise` round says
+ *  "revised" only when the run's learning kept the workflow's revision (its newest round merged with that workflow); a
+ *  draft that failed its checks, a `No change.` or a grader that kept nothing of it changed nothing. */
+function outcome(graded: RunGraded, reviewing: boolean, learning: Run["learning"]): string {
+  if (graded.feedback && graded.feedback_status === "not_run") return NOT_RUN;
+  if (graded.feedback === "look_back") return reviewing ? "The agent is looking back on your words." : "The agent looked back on your words.";
+  if (graded.feedback === "revise") {
     if (reviewing) return "The learned workflow that answered is being revised with your grade.";
-    const kept = learning?.state === "merged" ? learning.workflows?.find((w) => !sent.workflow || w.name === sent.workflow) : undefined;
+    const kept = learning?.state === "merged" ? learning.workflows?.find((w) => !graded.workflow || w.name === graded.workflow) : undefined;
     if (!kept) return "The agent looked back at your grade; nothing changed.";
     return kept.pending ? "The learned workflow that answered was revised with your grade. The revision waits for your OK." : "The learned workflow that answered was revised with your grade.";
   }
-  if (sent.correct) return "Kept for this agent.";
-  return sent.words ? "Kept for this agent. This run can't be opened again for a look-back." : "Kept for this agent. A look-back needs words.";
+  return "Kept for this agent.";
 }
 
 export type RunGradeProps = {
-  run: Pick<Run, "status" | "learning" | "ended_at">;
-  /** The run's grade as its learning read gives it back (`graded`), a grade this page sent taken into it: null when it
-   *  has none, or before the read. */
+  run: Pick<Run, "status" | "learning">;
+  /** The run's grade as its learning read gives it back (`graded`, with the round it opened and how that stands), a
+   *  grade this page sent taken into it: null when it has none, or before the read. */
   graded: RunGraded | null;
-  /** The grade this page sent and what the server answered, as the run page keeps it: null for none. */
-  sent: SentGrade | null;
-  /** Sends the grade (PUT /v2/runs/{id}/grade), keeps it on the page and reads the run again; rejects when it was not
-   *  taken. */
+  /** Sends the grade (PUT /v2/runs/{id}/grade), reads the run again and takes the answer into the learning read; rejects
+   *  when it was not taken. */
   onGrade?: (body: GradeBody) => Promise<GradeAnswer>;
   /** Opens the run's Timeline, where a grade's round shows; absent on the Timeline itself. */
   onOpenTimeline?: () => void;
@@ -79,7 +70,7 @@ export type RunGradeProps = {
 /** The Grade control on an ended run that learns: Right, or Wrong with the reviewer's words and, optionally, the fields
  *  a right answer holds. A graded run shows its grade (and "Reviewing" while the round it opened runs) and takes a new
  *  grade, which replaces it. Nothing for a run a grade doesn't teach, nor for one under way that has no grade. */
-export function RunGrade({ run, graded, sent, onGrade, onOpenTimeline }: RunGradeProps) {
+export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps) {
   // "auto": the choice while ungraded, closed once graded (the read can bring a grade after the first render).
   const [open, setOpen] = useState<"auto" | "closed" | "choose" | "wrong">("auto");
   const [words, setWords] = useState("");
@@ -90,17 +81,18 @@ export function RunGrade({ run, graded, sent, onGrade, onOpenTimeline }: RunGrad
   // Held outside React's state, so two clicks in the same tick are still one grade.
   const sending = useRef(false);
   const ended = runEnded(run.status);
-  // The newest grade: this page's, unless the read names a later one (another tab, an eval).
-  const mine = sent && (!graded || graded.graded_at <= sent.at) ? sent : null;
-  const shown = mine ? { correct: mine.correct, at: mine.at } : graded ? { correct: graded.correct, at: graded.graded_at } : null;
-  // The round this page asked for runs until the run has ended again and its learning settled; a grade read back, while
-  // the run is open again.
-  const reviewing = mine ? mine.feedback !== null && (!ended || run.ended_at === mine.endedBefore || underWay(run.learning ?? undefined)) : !!shown && !ended;
-  if (!gradable(run) || (!ended && !shown)) return null;
-  const form = open === "auto" ? (shown ? "closed" : "choose") : open;
+  // The round the grade opened runs until the learning read says it settled (`feedback_status`, from the run's journal and
+  // its steer's row): `ended` once the run's learning settled too; `not_run` at once (its run ended before it took the
+  // words, so no learning of it is under way). Never the API server's `graded_at` against the runner's `ended_at`: two
+  // hosts' clocks. A grade this page sent says running until a read after it says otherwise, so a read that failed never
+  // shows it ended.
+  const status = graded?.feedback ? graded.feedback_status : null;
+  const reviewing = status === "running" || (status === "ended" && underWay(run.learning ?? undefined));
+  if (!gradable(run) || (!ended && !graded)) return null;
+  const form = open === "auto" ? (graded ? "closed" : "choose") : open;
   const canGrade = ended && !reviewing;
   const exp = expectedOf(expected);
-  const said = outcome(mine, reviewing, run.learning);
+  const said = graded ? outcome(graded, reviewing, run.learning) : null;
 
   const send = async (correct: boolean) => {
     if (sending.current || !onGrade) return;
@@ -120,16 +112,16 @@ export function RunGrade({ run, graded, sent, onGrade, onOpenTimeline }: RunGrad
     <section className="border" aria-label="Grade">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-3">
         <h2 className="caps text-small font-semibold">Grade</h2>
-        {shown && <Chip tone={shown.correct ? "success" : "error"}>Graded {shown.correct ? "right" : "wrong"}</Chip>}
+        {graded && <Chip tone={graded.correct ? "success" : "error"}>Graded {graded.correct ? "right" : "wrong"}</Chip>}
         {reviewing && <Chip tone="active">Reviewing</Chip>}
         <span className="flex-1" />
-        {shown && <span className="font-mono text-label text-muted-foreground">{when(shown.at)}</span>}
+        {graded && <span className="font-mono text-label text-muted-foreground">{when(graded.graded_at)}</span>}
       </div>
       <div className="space-y-3 px-4 py-3">
         {said && (
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <p className="text-body" role="status">{said}</p>
-            {onOpenTimeline && (reviewing || !!mine?.feedback) && <Button type="button" size="xs" variant="ghost" onClick={onOpenTimeline}>Open the Timeline</Button>}
+            {onOpenTimeline && !!graded?.feedback && <Button type="button" size="xs" variant="ghost" onClick={onOpenTimeline}>Open the Timeline</Button>}
           </div>
         )}
         {canGrade && form === "closed" && (
@@ -144,7 +136,7 @@ export function RunGrade({ run, graded, sent, onGrade, onOpenTimeline }: RunGrad
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" size="sm" variant="primary" disabled={busy || !onGrade} onClick={() => void send(true)}>Right</Button>
               <Button type="button" size="sm" disabled={busy || !onGrade} onClick={() => { setOpen("wrong"); setRefused(null); }}>Wrong</Button>
-              {shown && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen("closed")}>Cancel</Button>}
+              {graded && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen("closed")}>Cancel</Button>}
               {busy && <span className="font-mono text-small text-muted-foreground">Sending…</span>}
             </div>
           </>
@@ -159,7 +151,7 @@ export function RunGrade({ run, graded, sent, onGrade, onOpenTimeline }: RunGrad
             </Field>
             <div className="flex flex-wrap items-center gap-2">
               <Button type="submit" size="sm" variant="solid" disabled={busy}>Send grade</Button>
-              <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { setOpen(shown ? "closed" : "choose"); setTried(false); }}>Cancel</Button>
+              <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { setOpen(graded ? "closed" : "choose"); setTried(false); }}>Cancel</Button>
               {busy && <span className="font-mono text-small text-muted-foreground">Sending…</span>}
             </div>
           </form>

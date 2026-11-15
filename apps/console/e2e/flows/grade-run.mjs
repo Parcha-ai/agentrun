@@ -3,7 +3,8 @@
 // words and the correct answer. The server answers the grade with a look-back round (`feedback: look_back`); the control
 // says the agent is looking back, then that it looked back once the run has ended again; the Timeline shows the grade's
 // words as "Your grade" and the round's learning row, which kept the reviewer's note (faux-learn keeps a "Review: "
-// message as reviewed.md). Reading the page again shows the grade read back, with Grade again. E2E_SHOTS=<dir> saves the
+// message as reviewed.md). Reading the page again shows the grade read back with the round it opened, so the round's
+// outcome is still said, with Grade again. E2E_SHOTS=<dir> saves the
 // control and the Timeline at two widths.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -44,15 +45,18 @@ export default {
 
       await page.goto(`${base}/#/runs/${encodeURIComponent(runId)}`);
       const grade = page.getByRole("region", { name: "Grade" });
-      await grade.getByText("Was the answer right?").waitFor({ timeout: 15_000 });
+      await grade.getByRole("button", { name: "Right", exact: true }).waitFor({ timeout: 15_000 });
       await shoot(grade, `grade-choose-${width}.png`);
 
-      // Wrong: the form, with the hint while the words are empty.
+      // Wrong: the form, its two fields (the words, then the correct answer). The control's wording is vitest's.
       await grade.getByRole("button", { name: "Wrong", exact: true }).click();
-      await grade.getByText("A look-back needs words.").waitFor();
-      await grade.getByRole("textbox", { name: "What was wrong?" }).fill(WORDS);
-      await grade.getByRole("textbox", { name: /Correct answer/ }).fill(EXPECTED);
-      check(!(await grade.getByText("A look-back needs words.").isVisible()), `${width}px: the hint stays with words typed`);
+      const fields = grade.getByRole("form", { name: "Grade wrong" }).getByRole("textbox");
+      await fields.first().waitFor();
+      // Found by position, so copy changes don't break the flow; each field must still have a nonempty accessible name.
+      const names = await fields.evaluateAll((els) => els.map((el) => (el.labels ? [...el.labels].map((l) => l.textContent.trim()).join("") : "") || el.getAttribute("aria-label") || ""));
+      check(names.length === 2 && names.every((n) => n.length > 0), `${width}px: the grade fields' accessible names are ${JSON.stringify(names)}`);
+      await fields.nth(0).fill(WORDS);
+      await fields.nth(1).fill(EXPECTED);
       await shoot(grade, `grade-wrong-form-${width}.png`);
       const put = page.waitForResponse((r) => r.request().method() === "PUT" && new URL(r.url()).pathname === `/v2/runs/${encodeURIComponent(runId)}/grade`);
       await grade.getByRole("button", { name: "Send grade" }).click();
@@ -62,26 +66,24 @@ export default {
       check(body.correct === false && body.feedback === "look_back", `${width}px: the grade's answer is ${JSON.stringify(body)}`);
       const sent = JSON.parse(answered.request().postData() ?? "{}");
       check(sent.label === WORDS && sent.expected?.account === "6400" && sent.correct === false, `${width}px: the grade sent ${JSON.stringify(sent)}`);
-      await grade.getByText("Graded wrong").waitFor();
+      await grade.getByRole("status").waitFor();
 
       // Files and back: the Grade control comes back with the grade it sent, never the choice again.
       const tabSwitch = async () => {
         await page.getByRole("tab", { name: /^Files/ }).click();
         await grade.waitFor({ state: "detached" });
         await page.getByRole("tab", { name: "Report", exact: true }).click();
-        await grade.getByText("Graded wrong").waitFor();
-        check(!(await grade.getByText("Was the answer right?").isVisible()), `${width}px: the choice is back after a tab switch`);
+        await grade.getByRole("status").waitFor();
+        check(!(await grade.getByRole("button", { name: "Right", exact: true }).isVisible()), `${width}px: the choice is back after a tab switch`);
       };
       await tabSwitch();
 
       // The round ends: the run ended again and its learning settled.
       await settled(runId);
-      await grade.getByText("The agent looked back on your words.").waitFor({ timeout: 30_000 });
-      check(!(await grade.getByText("Reviewing", { exact: true }).isVisible()), `${width}px: still reviewing after the round ended`);
+      await grade.getByRole("button", { name: "Grade again" }).waitFor({ timeout: 30_000 });
       await shoot(grade, `grade-reviewed-${width}.png`);
-      // And once it ended: the round's outcome is still said.
+      // And once it ended: the outcome is still said.
       await tabSwitch();
-      await grade.getByText("The agent looked back on your words.").waitFor();
 
       // The Timeline: the grade's words as "Your grade", and the round's learning row.
       await grade.getByRole("button", { name: "Open the Timeline" }).click();
@@ -93,10 +95,12 @@ export default {
       check(learning.graded?.correct === false && learning.learned?.some((n) => n.file === "reviewed.md"), `${width}px: the run's learning after the round: ${JSON.stringify(learning)}`);
       await shoot(page.locator("main"), `grade-timeline-${width}.png`);
 
-      // Read again: the grade read back, with Grade again.
+      // Read again: the grade read back with the round it opened (`graded.feedback`) and that it ended
+      // (`graded.feedback_status`), so the round's outcome is still said (role="status"), with Grade again.
+      check(learning.graded?.feedback === "look_back" && learning.graded?.feedback_status === "ended", `${width}px: the learning read's grade: ${JSON.stringify(learning.graded)}`);
       await page.reload();
       const again = page.getByRole("region", { name: "Grade" });
-      await again.getByText("Graded wrong").waitFor({ timeout: 15_000 });
+      await again.getByRole("status").waitFor({ timeout: 15_000 });
       await again.getByRole("button", { name: "Grade again" }).waitFor();
       check(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)), `${width}px: the page scrolls sideways`);
     }

@@ -4,7 +4,7 @@
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { TRIGGER_SOURCES } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
@@ -17,7 +17,7 @@ import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
-import { FEEDBACK_ROUNDS } from "./runner/feedback-round.js";
+import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { LOOP_COMPILES_MAX, LOOP_POINTS_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
@@ -193,6 +193,17 @@ const VALIDATED = {
     ok: { type: "boolean" },
     issues: { type: "array", items: { type: "object", additionalProperties: false, required: ["path", "code", "message"], properties: { path: { type: "string", description: "A JSON Pointer into the workflow; empty for its root." }, code: { type: "string" }, message: { type: "string" } } } },
     warnings: { type: "array", items: { type: "string" } },
+  },
+};
+/** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
+const CHATGPT_SIGN_IN = {
+  type: "object", additionalProperties: false, required: ["state"],
+  properties: {
+    state: { enum: ["signed_out", "pending", "signed_in", "expired"], description: "`pending`: a sign-in waits for its address (POST /settings/chatgpt/sign-in/finish); `expired`: OpenAI refused to renew it, so nothing runs on the plan until a sign-in again." },
+    email: { type: "string", description: "The ChatGPT account's email, for display." },
+    plan: { type: "string", description: "The account's ChatGPT plan (`plus`, `pro`, ...), for display." },
+    authorize_url: { type: "string", format: "uri", description: "With `pending`: the link that sign-in opens." },
+    models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
   },
 };
 /** GET /settings/tool-keys's answer (tool-keys.ts): each key's fields by name and where each is set, never a value. */
@@ -1082,6 +1093,18 @@ const TEMPLATE_APPLIED = closedWith({
   },
 });
 const TRIGGER_ERRORS = "The triggers are rows in the server's store, read as they are now. A store busy with another write answers 409 home_busy, retryable: send it again.";
+/** A run's grade (learn/promote.ts gradeView): what PUT /runs/{run_id}/grade answers (GRADE, with `expected`) and GET
+ *  /runs/{run_id}/learning reads back (`graded`, never `expected`). */
+const GRADE_FIELDS = {
+  run_id: { type: "string" },
+  correct: { type: "boolean", description: "Whether the run's answer was right." },
+  source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." },
+  graded_at: DATE_TIME,
+  path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
+  workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
+  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
+  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
+};
 const RUN_LEARNING = {
   oneOf: [
     closedWith({
@@ -1108,7 +1131,7 @@ const RUN_LEARNING = {
       }, "What the run's job did with the learned skills and workflows it was offered, apart from `skills` and `workflows`, the ones it learned."),
     }, {
       ...LEARNING_NOTES,
-      graded: { ...closed({ correct: { type: "boolean", description: "Whether the grade said its answer was right." }, source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." }, graded_at: DATE_TIME }), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it: the newest, since a later grade replaces it. Absent when it has none kept." },
+      graded: { ...closedWith({ ...GRADE_FIELDS, feedback_status: { enum: [...FEEDBACK_STATUSES, null], description: "How the round the grade opened (`feedback`) stands, read from its run's journal and its steer's row (no clock compared): `running` until it settles; `ended`, its run took the grade's words and ended after them; `not_run`, its run ended before it took them (its claim refused, say), so the round never ran: grade it again to ask once more. null for a grade that opened none." } }, {}), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it and the PUT answered it, never its `expected`: the newest, since a later grade replaces it, and how the round it opened stands. Absent when it has none kept." },
     }),
     { type: "null" },
   ],
@@ -1198,16 +1221,7 @@ const LEARNING_EVAL = closed({
   recorded_at: { type: "string", format: "date-time" },
 }, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
-const GRADE = closedWith({
-  run_id: { type: "string" },
-  correct: { type: "boolean", description: "Whether the run's answer was right." },
-  source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." },
-  graded_at: DATE_TIME,
-  path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
-  workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
-  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
-  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again." },
-}, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
+const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The graded inputs it was decided on." },
   agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's recorded answer." },
@@ -1221,14 +1235,17 @@ const PROMOTION = closedWith({
   digest: { type: "string", description: "The revision the record decides: the first 16 hex of its workflow.json's sha256." },
   at: DATE_TIME,
   decided: { enum: ["promote", "hold", "replaying", "superseded"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. `replaying`: its replay runs are at work; the champion serves meanwhile, else the agent. `superseded`: a newer revision (`superseded_by`) came while it replayed; one revision replays at a time, so its replay runs were cancelled (what they spent stays on them) and it never serves." },
-  source: { enum: ["replay", "dry_run", "refit", "graded"], description: `\`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits. \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`graded\`: the graded runs it served fell more than ${PROMOTE_BAR * 100} points under the agent's accuracy by hand.` },
+  source: { enum: ["replay", "dry_run", "refit", "graded"], description: `\`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits, or those its owner asked for (POST .../revisions/{digest}/replays). \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`graded\`: the graded runs it served fell more than ${PROMOTE_BAR * 100} points under the agent's accuracy by hand.` },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
-  replay: { ...closedWith(REPLAY_SCORE, { of: { type: "array", items: { type: "string" }, description: "The graded runs replayed." }, cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." }, skipped_write: { ...COUNT, description: "How many of its graded inputs were skipped: the workflow needed a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments. A replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." }, skipped_tools: { type: "array", items: closed({ tool: { type: "string", description: "The tool's catalog name." }, inputs: { ...COUNT, description: "How many skipped inputs it stopped." }, no_read_only_hint: { type: "boolean", description: "An MCP tool its server lists with no `readOnlyHint` (and not `destructiveHint`): replay treats it as a write only because nothing says it reads. The hold's `reason` names these: if they only read, mark them read-only in the MCP server and the next replay runs them." } }), description: "The tools that stopped its skipped inputs, most inputs first." } }), description: "The numbers it was decided on. A replay runs each read live (through a cache seeded from the graded run's recorded calls) and answers each write from that recording, never sending one." },
+  replay: { ...closedWith(REPLAY_SCORE, { of: { type: "array", items: { type: "string" }, description: "The graded runs replayed." }, cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." }, skipped_write: { ...COUNT, description: "How many of its graded inputs were skipped: the workflow needed a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments. A replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." }, skipped_tools: { type: "array", items: closed({ tool: { type: "string", description: "The tool's catalog name." }, inputs: { ...COUNT, description: "How many skipped inputs it stopped." }, no_read_only_hint: { type: "boolean", description: "An MCP tool its server lists with no `readOnlyHint` (and not `destructiveHint`): replay treats it as a write only because nothing says it reads. The hold's `reason` names these: if they only read, mark them read-only in the MCP server and the next replay runs them." } }), description: "The tools that stopped its skipped inputs, most inputs first." }, outcomes: closed({ answered: COUNT, handed_back: COUNT, failed: COUNT, skipped_write: COUNT }, "How many of its replay runs ended each way (one still at work past its deadline failed): what each run did, never the serving thresholds' reading of it. A run that answered with a guard's confidence under its threshold is `answered` here and handed back in the score.") }), description: "The numbers it was decided on. A replay runs each read live (through a cache seeded from the graded run's recorded calls) and answers each write from that recording, never sending one." },
   runs: { type: "array", items: { type: "string" }, description: "Its replay runs (path `replay`)." },
   inputs: { type: "array", items: { type: "string" }, description: "On a replaying record: the graded run each of `runs` replays, in the same order. Its runs are reserved before they are created; one not created a few minutes on is created by the next claim." },
+  replay_id: { type: "string", description: "The replay's id, on its replaying record and the one that decided it: GET .../revisions/{digest}/replays/{replay_id} reads it, whether a run's claim or its owner started it." },
   refit: { ...closed({ from: { type: "string", description: "The digest it was refit from." }, guards: { type: "array", items: closedWith({ node: { type: "string" }, was: { type: ["number", "null"], description: "The guard's threshold before; null for an escalate." }, threshold: { type: ["number", "null"], description: "Its threshold after; null when it was switched off (the revision has no guard on that step, or no escalate by that label)." } }, { fit: { type: "object" }, escalate: { const: true, description: "An escalate node the replay recorded instead of obeying (its `when` reads a judge's field), switched off: the revision drops it." } }) } }), description: "What a refit changed: each guarded step's threshold before and after (null after: switched off), its new fit (`both` guards), and each escalate it switched off." },
-  checked: { ...COUNT, description: `How many graded runs of it the last refit check read; it is checked again ${REFIT_EVERY} graded runs later.` },
+  checked: { ...COUNT, description: `The place among the agent's grades (each grade's order, one more than the grade before it) of the newest grade its last refit check read; it is checked again once ${REFIT_EVERY} more graded runs it served come after it.` },
+  since: { ...COUNT, description: "On a replay's promote: the place among the agent's grades of the newest grade when this promotion began, which names it. Its checks count only the graded runs this promotion served, so a revision promoted again after a hold is never held again on the grades it was held on, nor on a run served before it and graded after." },
+  held_on: { type: "array", items: { type: "string" }, description: `The runs it served that were graded wrong when its graded runs held it (newest first, at most ${REPLAY_INPUTS}), kept on that hold, on its next replay (those still graded that it fits, each among its inputs) and on that replay's hold. A replay promotes it only once it answered or handed back on each of them.` },
   commit: { type: "string", description: "The learning commit whose workflow.json is this revision's text: what it serves from as the champion while a newer revision replays." },
   superseded_by: { type: "string", description: "A superseded revision's newer one: the digest whose replay replaced its own." },
 });
@@ -1488,6 +1505,38 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { name: { type: "string", minLength: 1, maxLength: 200, description: "The new agent's name; absent, the workflow's own." } } } } } },
       responses: { "201": { description: "The new agent, with what this host still lacks for it to run (`warnings`).", headers: { Location: ref("headers/Location"), "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: ref("schemas/Agent") } } }, ...errors(400, 401, 403, 404, 409, 422, 429, 500) }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays": {
+    post: {
+      operationId: "startLearnedWorkflowReplay", tags: ["agents"], summary: "Replay a learned workflow's revision on the agent's graded inputs: re-check a held revision, or an edited one",
+      description: `Starts the replay a run's claim starts for a new revision (GET /agents/{agent_id}/learning/promotions explains them): one replay run of the agent per graded input, each the workflow alone at workflow cost, its reads live and its writes answered only from the graded run's recording, never sent. \`inputs\`: \`held\` (the default), the graded runs the revision's last replay or hold was decided on, or, with none, the agent's newest ${REPLAY_INPUTS}; a number from 1 to ${GRADES_KEPT}, that many of the agent's newest graded runs. Either way, a revision held on runs it served that were graded wrong is replayed on those too (its hold's \`held_on\`), and promoted only once it answered or handed back on each. Each is a graded run the agent answered (path \`agent\` or \`handed_back\`) or the workflow answered alone (\`workflow\`), with no uploaded file, whose input the revision takes. Its record is a replay's (\`source: replay\`, \`replaying\` then promoted or held, with its numbers, as a claim-started one is), decided once every replay run ended: at a run's claim that lays the revision, or at its read (GET .../replays/{replay_id}). A promoted revision serves first, and a held one may be refit, as after any replay. Its replay runs are handed no per-run MCP credentials. The revision is \`digest\`, the first 16 hex of its workflow.json's sha256: one a promotion record names (read at its commit), or the one on the learning folder's main. 404 for an unknown agent, workflow or revision. 409 \`replay_conflict\` when it is replaying already, another revision of the workflow replays (one at a time), it is promoted (it serves already), no graded input fits it, or the agent's runs take no learned workflow here. 409 \`agent_not_runnable\` for an archived agent, as a run's start is: nothing is reserved. 400 for any other \`inputs\`. Only the owner, signed in with their password, starts one: the console's password session alone, from this server's own origin with a JSON body; every token is 403 \`forbidden\`.`,
+      security: [{ ownerSession: [] }],
+      parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`.", schema: { type: "string" } }, { name: "digest", in: "path", required: true, description: "The revision: the first 16 hex of its workflow.json's sha256.", schema: { type: "string" } }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { inputs: { oneOf: [{ const: "held" }, { type: "integer", minimum: 1, maximum: GRADES_KEPT }], default: "held", description: "`held`: the graded inputs it was last decided on; a number: the agent's newest that many." } } } } } },
+      responses: { "202": { description: "The replay started: its runs are queued.", headers: { Location: ref("headers/Location") }, content: { "application/json": { schema: closed({ replay: { type: "string", description: "The replay's id." }, inputs: { ...COUNT, description: "How many graded inputs it replays: one replay run each." } }) } } }, ...errors(400, 401, 403, 404, 409, 422, 429, 500) }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}": {
+    get: {
+      operationId: "getLearnedWorkflowReplay", tags: ["agents"], summary: "A replay of a learned workflow's revision: running, done or failed, its counts and its score",
+      description: "A replay a run's claim or the agent's owner started. This read decides it as a claim would, once every replay run ended or its deadline passed (promoted within 2 points of the agent, else held, then one refit), so a replay of a revision no run lays is decided too. It never starts a run: a replay whose launch was interrupted (the server stopped before creating its runs) reads `running` until its deadline. `status`: `running` while it replays, `done` once promoted or held (`decided`, with its `reason`), `failed` when a newer revision superseded it and its runs were cancelled, or when none of its runs started by its deadline (held, nothing replayed; its `reason` says so and to start it again with POST). The counts are its replay runs' outcomes so far (once decided, those it was decided on): `answered` alone, `handed_back` (the agent's recorded answer), `failed` (no evidence either way), `skipped_write` (a write its recording does not have). `score` is the decided record's, else the runs ended so far at the revision's serving thresholds. Aggregates only, its words cut as the promotions list's are.",
+      parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name.", schema: { type: "string" } }, { name: "digest", in: "path", required: true, description: "The revision's digest.", schema: { type: "string" } }, { name: "replay_id", in: "path", required: true, description: "The replay's id: POST .../replays answered it, and its promotion records carry it (`replay_id`).", schema: { type: "string" } }],
+      responses: { "200": json(closedWith({
+        replay: { type: "string" }, workflow: { type: "string" }, digest: { type: "string" },
+        status: { enum: ["running", "done", "failed"] },
+        inputs: { ...COUNT, description: "Its replay runs: one per graded input." },
+        answered: { ...COUNT, description: "Replay runs the workflow answered alone, as each run did, the same before and once it is decided (guards read record-only: one answered under a guard's threshold counts here, and `alone` hands it back)." },
+        handed_back: { ...COUNT, description: "Replay runs it handed back on." },
+        failed: { ...COUNT, description: "Replay runs a step failed in: no evidence either way, never scored." },
+        skipped_write: { ...COUNT, description: "Replay runs stopped at a write the graded run's recording does not have: never run, never scored." },
+        alone: { ...COUNT, description: "Scored inputs it would answer alone at its serving thresholds: `score.n` - `score.handed_back`, derived, never stored." },
+        score: closed(REPLAY_SCORE),
+        cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null while one's cost is unknown (one not created or not ended yet), never a part of it." },
+      }, {
+        decided: { enum: ["promote", "hold", "superseded"], description: "Once it is not running: what it decided." },
+        reason: { type: "string", description: "Why, in words, with the numbers." },
+      }), "The replay."), ...errors(401, 403, 404, 429, 500) }, ...MARK,
     },
   },
   "/runs/{run_id}/learning": {
@@ -1979,6 +2028,50 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 409, 422, 429, 500) },
       "x-agentrun-serve": "toolkeys/1",
+    },
+  },
+  "/settings/chatgpt": {
+    get: {
+      operationId: "getChatGPTSignIn", tags: ["local"], summary: "This server's ChatGPT sign-in: its state, who and which plan, never a token",
+      description: "One sign-in per server, whose plan runs codex and pi with no key (`chatgpt/<model-id>`, capabilities' `models.source` `chatgpt` when no key is set). `expired`: OpenAI refused to renew it; sign in again. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CHATGPT_SIGN_IN, "The sign-in's state."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+    delete: {
+      operationId: "signOutChatGPT", tags: ["local"], summary: "Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here",
+      description: "Cancels a sign-in that waits, removes the sealed sign-in and revokes its session at OpenAI's documented revocation endpoint on auth.openai.com (one try, 5 s); the sign-in is removed whatever OpenAI answered. A renewal or a sign-in finishing meanwhile revokes the pair it got rather than keep it. `revoked` true: nothing of the sign-in is left alive at OpenAI as far as the server can tell (OpenAI confirmed the revocation, or nothing was signed in, as when only a waiting sign-in was cancelled). `revoked` false: signed out here, and `message` says \"Signed out here. OpenAI didn't confirm the revocation: remove AgentRun in your ChatGPT settings.\" A run on a plan model after it fails saying the server is not signed in. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["revoked"], properties: { revoked: { type: "boolean", description: "Whether OpenAI confirmed the revocation (true, too, when nothing was signed in)." }, message: { type: "string", description: "With `revoked` false: what to do, in words." } } }, "Signed out here."),
+        ...errors(401, 403, 429, 500),
+      },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
+  "/settings/chatgpt/sign-in": {
+    post: {
+      operationId: "startChatGPTSignIn", tags: ["local"], summary: "Start signing in with ChatGPT: the link to open",
+      description: "Starts OpenAI's Sign in with ChatGPT for this server and answers the link a person opens. One waits at a time, for 10 minutes: a new start cancels the one waiting, whose address is then stale. On the machine the server runs on, the browser's return finishes it; elsewhere, paste the address the tab ended on (`127.0.0.1:1455/auth/callback?...`, the address OpenAI's sign-in returns to) to POST /settings/chatgpt/sign-in/finish. 400 in words when the sign-in can't start (another holds this machine's port 1455). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["authorize_url", "expires_at"], properties: { authorize_url: { type: "string", format: "uri", description: "OpenAI's page to sign in on." }, expires_at: DATE_TIME } }, "The sign-in, waiting."),
+        ...errors(400, 401, 403, 429, 500),
+      },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
+  "/settings/chatgpt/sign-in/finish": {
+    post: {
+      operationId: "finishChatGPTSignIn", tags: ["local"], summary: "Finish signing in with ChatGPT with the address the sign-in tab ended on",
+      description: "Takes the whole address the browser tab ended on, pasted, and finishes the sign-in that waits: its plan's models are read from OpenAI, and the sign-in is sealed here. 400 in words for an address that is not that sign-in's end (another address, a cancelled sign-in's, one with no code: the sign-in keeps waiting), with no sign-in waiting, or when OpenAI refuses it (start again). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["redirect_url"], properties: { redirect_url: { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true, description: "The address the sign-in tab ended on, whole." } } } } } },
+      responses: { "200": json(CHATGPT_SIGN_IN, "Signed in."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
     },
   },
   "/auth/session": {
@@ -2764,6 +2857,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "On a `tool_result` row whose call made more than 200 computer calls: how many past the 200 its record left out. Absent otherwise.",
       "x-agentrun-serve": "computercalls/1",
     },
+    tool_input: {
+      type: "object", additionalProperties: true,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`) and cut at ${CAPS.text} characters. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      "x-agentrun-serve": "callswhole/1",
+    },
+    tool_result_text: {
+      type: ["string", "null"],
+      description: `On a \`tool_result\` row of a timeline read with \`calls=whole\` alone: the head of the call's output, to ${CALL_RESULT_CHARS} characters, through the run's redaction, its URLs' query values elided as \`tool_result_preview\`'s are; null for an empty output. Absent otherwise.`,
+      "x-agentrun-serve": "callswhole/1",
+    },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
       description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. Its \`summary\` and \`text\` are its \`detail\` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
@@ -3281,8 +3384,12 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
   const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
-  timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
-  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
+  timeline.parameters = [
+    ...(timeline.parameters as Json[]),
+    { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } },
+    { name: "calls", in: "query", required: false, description: `\`whole\`: each \`tool_use\` row carries its call's arguments (\`tool_input\`) and each \`tool_result\` row the head of its output to ${CALL_RESULT_CHARS} characters (\`tool_result_text\`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (\`after\`, \`Last-Event-ID\`) from one read goes with the same \`calls\`.`, schema: { enum: ["whole"] } },
+  ];
+  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1", calls: "callswhole/1" };
   changed.push("GET /runs/{run_id}/timeline");
   // GET /agents also takes `archived`, as GET /runs already does (server.ts archivedParam, shared by both routes):
   // true lists only archived agents, false (the default) the others.
@@ -3339,7 +3446,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const sourcesAdded = MODEL_SOURCES.filter((value) => Array.isArray(modelsSource.enum) && !modelsSource.enum.includes(value));
   if (sourcesAdded.length) {
     modelsSource.enum = [...modelsSource.enum!, ...sourcesAdded];
-    modelsSource.description = "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `managed`, `chatgpt` and `env` are the hosted API's.";
+    modelsSource.description = "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `chatgpt`: no key, and a person's ChatGPT plan signed in here (GET /settings/chatgpt), which runs codex and pi on its models (`chatgpt/<model-id>`) and no other harness (each harness's `reason` says it needs a key). `managed` and `env` are the hosted API's.";
     modelsSource["x-agentrun-serve"] = "models/2";
     fields.push(...sourcesAdded.map((value) => `Capabilities.models.source.${value}`));
   }
