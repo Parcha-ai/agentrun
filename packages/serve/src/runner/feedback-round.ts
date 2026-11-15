@@ -105,7 +105,8 @@ export interface OpenedRound {
 
 /** Opens run `grade.run` again on the feedback round its grade asks for (feedbackRoundOf), with the grade's words
  *  (`label`, else feedbackWords'), and says which, with its steer: only a run that learns (its launch's learning start,
- *  never one that only uses what was learned, nor a notes-only run's revision ask), neither archived nor of an archived
+ *  never one that only uses what was learned, nor a notes-only run's revision ask), whose runner supports managed
+ *  feedback, neither archived nor of an archived
  *  agent (closed history: a grade of it starts no paid work), and one the store opens again (an agentic run that answered
  *  or that a person stopped). Null when the grade asks for nothing more, or the run can't be opened again (the grade is
  *  kept either way). */
@@ -116,7 +117,10 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   const run = await store.runs.get(grade.run);
   if (!run || run.archivedAt !== null || (await store.agents.get(run.agentId))?.archivedAt !== null) return null;
   const launched = await store.runs.launch(grade.run).catch(() => undefined);
-  const learning = launched ? readLaunchBody(launched.body)?.learning : undefined;
+  const launch = launched ? readLaunchBody(launched.body) : undefined;
+  // Source sessions have a dedicated runner that cannot consume a managed feedback steer.
+  if (launch?.native) return null;
+  const learning = launch?.learning;
   if (!learning || learning.use || (round === "revise" && learning.notesOnly)) return null;
   const feedback = { round, correct: grade.correct, ...(round === "revise" && grade.workflow ? { workflow: grade.workflow } : {}) };
   try {

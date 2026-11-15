@@ -1,9 +1,15 @@
 // The conformance case isolation.vendor-agent against fake computers: a program the computer's user runs reaches no
 // port of the vendor's own agent, on either loopback, and no outside address (a public IP literal on 443, a DNS name),
 // and sees its own loopback alone. The agent's ports are each provider's own declaration
-// (capabilities().vendorAgentPorts), never the case's. No Docker, no daemon, no vendor.
+// (capabilities().vendorAgentPorts), never the case's. And isolation.root-runs: that user can write nothing root runs.
+// No Docker, no daemon, no vendor.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { ROOT_RUNS, rootRunsArgv } from "../dist/conformance/cases/isolation.js";
 import { conformanceCases, coreGroups, runConformance } from "../dist/index.js";
 import { fakeComputers } from "./fake-computer.mjs";
 
@@ -176,4 +182,82 @@ test("it is skipped in words where nothing is declared (Docker), and fails Core 
 	const child = await run({ mode: "child" });
 	assert.equal(statuses(child)[ID], "fail");
 	assert.match(reasons(child)[ID], /vendor-agent/);
+});
+
+// --- isolation.root-runs: the computer's user can write nothing root runs ---
+
+const ROOT_ID = "isolation.root-runs";
+const runRoot = (options) => runConformance(fakeComputers(options).provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.id === ROOT_ID) });
+
+test("isolation.root-runs is a Core case of the isolation group that needs exec alone, so every provider with computerd takes it", () => {
+	const found = conformanceCases.filter((c) => c.id === ROOT_ID);
+	assert.equal(found.length, 1);
+	assert.equal(found[0].level, "core");
+	assert.equal(found[0].group, "isolation");
+	assert.deepEqual(found[0].needs, ["exec"]);
+	for (const path of ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/opt/agentrun/computerd", "/usr/local/sbin/agentrun-archil", "/usr/bin/archil", "/usr/bin/envd", "/etc/inittab"]) assert.ok(ROOT_RUNS.includes(path), path);
+});
+
+test("isolation.root-runs passes where the user can write none of what root runs or the directories above it, and records every path it read", async () => {
+	for (const mode of ["pid1", "child"]) {
+		const report = await runRoot({ mode, vendorAgentPorts: [] });
+		assert.deepEqual(statuses(report), { [ROOT_ID]: "pass" }, reasons(report)[ROOT_ID]);
+		const line = report.results[0].observed.find((one) => one.startsWith("what root runs, and the directories above it, as the computer's user: "));
+		for (const path of ["/usr/local/sbin", "/usr/local", "/usr", "/", "/opt/agentrun", "/usr/local/sbin/agentrun-archil"]) assert.ok(line?.includes(path), `${path} in ${line}`);
+	}
+});
+
+test("isolation.root-runs fails where the user can write a directory on root's PATH, a helper, or a directory above one, naming each", async () => {
+	for (const writable of [["/usr/local/sbin"], ["/usr/local/sbin/agentrun-archil"], ["/usr/local"], ["/opt/agentrun"], ["/usr/bin/envd"], ["/etc/inittab"], ["/etc"], ["/usr/local/bin", "/usr/local/sbin"]]) {
+		const report = await runRoot({ rootRunsWritable: writable });
+		assert.equal(statuses(report)[ROOT_ID], "fail", writable.join(", "));
+		for (const path of writable) assert.match(reasons(report)[ROOT_ID], new RegExp(`the computer's user can write what root runs: .*${path.replaceAll("/", "\\/")}`));
+	}
+});
+
+test("isolation.root-runs' check, run by sh: each path that is there and every directory above it, writable or closed by test -w, a missing one skipped, nothing written", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-root-runs-"));
+	try {
+		const open = join(root, "open");
+		const shut = join(root, "shut");
+		mkdirSync(open);
+		mkdirSync(shut);
+		writeFileSync(join(shut, "helper"), "");
+		chmodSync(join(shut, "helper"), 0o555);
+		chmodSync(shut, 0o555);
+		const argv = rootRunsArgv([open, join(shut, "helper"), join(root, "absent")]);
+		const ran = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stderr);
+		const lines = ran.stdout.trim().split("\n");
+		assert.ok(lines.includes(`writable ${open}`), ran.stdout);
+		assert.ok(lines.includes(`writable ${root}`), "the directory above, the user's own");
+		assert.ok(lines.includes(`closed ${shut}/helper`) && lines.includes(`closed ${shut}`), ran.stdout);
+		assert.ok(lines.includes("closed /"), "up to /");
+		assert.ok(!lines.some((line) => line.includes("absent")), "a missing path is skipped");
+		assert.deepEqual(readdirSync(shut), ["helper"], "nothing written");
+	} finally {
+		chmodSync(join(root, "shut"), 0o755);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// BusyBox's test -w reads the mode bits alone, and as root says yes to every path: in a user and mount namespace of its
+// own (root there), with a read-only bind of one directory, only the mount's options tell the two apart.
+const roMounts = spawnSync("unshare", ["-Urm", "true"]).status === 0 && spawnSync("busybox", ["true"]).status === 0;
+test("isolation.root-runs' check, run by BusyBox's sh as root: a path on a read-only mount is closed, the directory above it writable", { skip: roMounts ? false : "needs unshare -Urm and busybox" }, () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-root-runs-ro-"));
+	try {
+		const shut = join(root, "shut");
+		mkdirSync(shut);
+		writeFileSync(join(shut, "helper"), "");
+		const argv = rootRunsArgv([join(shut, "helper")]);
+		const ran = spawnSync("unshare", ["-Urm", "sh", "-c", 'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1" && shift && exec busybox sh -c "$@"', "sh", shut, argv[2], ...argv.slice(3)], { encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stderr);
+		const lines = ran.stdout.trim().split("\n");
+		assert.ok(lines.includes(`closed ${shut}/helper`) && lines.includes(`closed ${shut}`), ran.stdout);
+		assert.ok(lines.includes(`writable ${root}`), ran.stdout);
+		assert.deepEqual(readdirSync(shut), ["helper"], "nothing written");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

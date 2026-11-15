@@ -11,13 +11,12 @@
 import type { CapMark, StartMark } from "./marks.js";
 
 /** What the marks say: the cap's spend (null: unknown), the run's reported cost (null once any step's own cost is unknown,
- *  as a step a crash cut), the bound of the steps still open, and how many requests were sent (a refused one is none). */
-export type Spend = { spentUsd: number | null; reportedUsd: number | null; boundUsd: number; requests: number };
+ *  as a step a crash cut), and how many requests were sent (a refused one is none). */
+export type Spend = { spentUsd: number | null; reportedUsd: number | null; requests: number };
 
 export function spendOf(marks: readonly CapMark[]): Spend {
   let spent: number | null = 0;
   let reported: number | null = 0;
-  let bound = 0;
   let requests = 0;
   const add = (usd: number | null, known: boolean) => {
     spent = spent === null || usd === null ? null : spent + usd;
@@ -30,9 +29,8 @@ export function spendOf(marks: readonly CapMark[]): Spend {
   /** Ends read before any start of their id (marks that fall out of order): each closes the start that comes after it. */
   const early = new Set<string>();
   const cut = (start: StartMark) => {
-    // A crash cut it: it counts at what it was held at, and no one knows what it cost.
+    // A crash cut it: it counts at what it was held at (its worst case), and no one knows what it cost.
     add(start.heldUsd, false);
-    bound += start.boundUsd ?? 0;
   };
   for (const mark of marks) {
     if (mark.kind === "start") {
@@ -58,7 +56,7 @@ export function spendOf(marks: readonly CapMark[]): Spend {
     }
   }
   for (const start of open.values()) cut(start);
-  return { spentUsd: spent, reportedUsd: reported, boundUsd: bound, requests };
+  return { spentUsd: spent, reportedUsd: reported, requests };
 }
 
 /** A run's own priced answers from its marks, as the live cap counts them: each main-model request (never a side call or

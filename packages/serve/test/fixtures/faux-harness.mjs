@@ -65,11 +65,12 @@ export function grown(k, { miss = false } = {}) {
 /** Request `k` of a conversation shaped as Codex sends it: its input bound the body's bytes (4 a token, no provider count),
  *  a 10,000-token prompt that grows 1,100 tokens a request, each request reading the previous one's whole prompt from the
  *  cache; each asks 32,000 output tokens and needs 3,072 at least (1,024 for the answer and low effort's 2,048 for its
- *  reasoning), and costs under a cent at Sonnet 5.5's prices (faux-sonnet55.mjs). */
-export function codexGrown(k) {
+ *  reasoning), and costs under a cent at Sonnet 5.5's prices (faux-sonnet55.mjs). `miss`: it finds no cache and is billed
+ *  the most a request of its bound can be: every byte of its body a token, all of it written to the cache. */
+export function codexGrown(k, { miss = false } = {}) {
   const prompt = (n) => 10_000 + 1_100 * n;
-  const cacheRead = k === 0 ? 0 : prompt(k - 1);
-  const tokens = { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
+  const cacheRead = k === 0 || miss ? 0 : prompt(k - 1);
+  const tokens = miss ? { input: 0, output: 300, cacheRead: 0, cacheWrite: prompt(k) * 4 } : { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
   const usd = (tokens.input * 2 + tokens.output * 10 + tokens.cacheRead * 0.1 + tokens.cacheWrite * 2.5) / 1e6;
   return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens, usd };
 }
@@ -196,6 +197,9 @@ export function script(spec, session = {}) {
   // answer (<how>: an error status, our stop after it streamed, a lost connection); the client sends it again, answered.
   const carrierUnanswered = /Wrap up with the carrier unanswered \((status|stopped|lost)\)\./.exec(text)?.[1];
   if (carrierUnanswered) return [{ unanswered: carrierUnanswered, inputTokensMax: 1_000 }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // A request lost once it left (no cost came back), one our side stopped part way, then an answer reported at $0 (a
+  // free model's, whose every token is $0).
+  if (/Answer at \$0 after a lost and a stopped request\./.test(text)) return [{ unanswered: "lost" }, { unanswered: "stopped" }, { say: "Answered.", usd: 0 }];
   // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that its host refuses (its
   // start mark fails, under the tests' START_MARK_FAIL_ENV); the client sends another, answered.
   if (/Wrap up with the carrier refused\./.test(text)) return [{ say: "First.", inputTokensMax: 1_000, usd: 0.01, onRefused: "next" }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
@@ -380,6 +384,18 @@ export function script(spec, session = {}) {
       return { calls: [{ call, args }], bookAfter: true, ...figures };
     };
     return [...Array.from({ length: n }, (_, k) => streaming(k)), { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
+  }
+  // "Grow a Codex-shaped context for <n> requests, missing the cache at request <k>.": n requests of codexGrown, request k
+  // a miss billed at the most its bound allows, then its answer. "..., cut at request <k> until <file>.": request k is
+  // admitted and never answered until the file exists (a crash cuts it), then the answer.
+  const missOrCut = /Grow a Codex-shaped context for (\d+) requests, (?:missing the cache at request (\d+)|cut at request (\d+) until (\S+))\./.exec(text);
+  if (missOrCut) {
+    const [, count, missAt, cutAt, cutUntil] = missOrCut;
+    const n = Number(count);
+    const { inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd } = codexGrown(n);
+    const steps = Array.from({ length: n }, (_, k) => codexGrown(k, { miss: missAt !== undefined && k === Number(missAt) }));
+    const cut = cutAt === undefined ? steps : [...steps.slice(0, Number(cutAt)), ...(existsSync(cutUntil) ? [] : [{ ...steps[Number(cutAt)], cut: true }]), ...steps.slice(Number(cutAt) + 1)];
+    return [...cut, { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
   }
   // "Grow a Codex-shaped context for <n> requests, writing note.md at request <k>.": n requests of codexGrown, request k
   // calling write (a tool a test sets to ask) in place of its read, then its answer.

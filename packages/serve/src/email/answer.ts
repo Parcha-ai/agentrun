@@ -75,7 +75,8 @@ function fieldsCut(m: Message): Message {
         break;
       case "to":
       case "cc":
-        out[key] = cutList(value, LIST_KEPT, CUT.address);
+        // A filing's `to` is one folder's name; a message's, its addresses.
+        out[key] = typeof value === "string" ? cutJson(value, CUT.id) : cutList(value, LIST_KEPT, CUT.address);
         break;
       case "references":
         out[key] = cutList(value, REFERENCES_KEPT, CUT.id, true);

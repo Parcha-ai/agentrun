@@ -245,10 +245,12 @@ const inputFilled = (value: unknown, given: Record<string, unknown>): unknown =>
   return value;
 };
 
-/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), the rest as text. */
+/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), its enabled the boolean its one
+ *  placeholder names, the rest as text. */
 const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
   const out = filled(trigger, given) as Json;
   if (isObject(trigger.target) && trigger.target.input !== undefined) out.target = { ...(out.target as Json), input: inputFilled(trigger.target.input, given) };
+  if (typeof trigger.enabled === "string" && WHOLE.test(trigger.enabled)) out.enabled = typedFilled(trigger.enabled, given);
   return out;
 };
 
@@ -650,8 +652,19 @@ export function readPackage(from: string | PackageFiles): Package {
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
+      : key === "enabled" && typeof value === "string" ? []
       : [[key, value] as const]);
     for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    // enabled is true, false, or one boolean parameter with a default, filled at apply (triggerFilled): the trigger is on
+    // or off by the owner's answer, and by the package's default when the apply leaves it out.
+    if (typeof trigger.enabled === "string") {
+      const rule = `triggers[${i}].enabled is true, false, or one placeholder alone, "\${parameters.<name>}", naming a boolean parameter with a default`;
+      const whole = WHOLE.exec(trigger.enabled);
+      const spec = whole && Object.hasOwn(fields, whole[1]!) ? fields[whole[1]!] : undefined;
+      if (!whole) bad(MANIFEST, rule);
+      else if (spec && spec.type !== "boolean") bad(MANIFEST, `${rule}: parameters.${whole[1]} is a ${spec.type as string}`);
+      else if (spec && spec.default === undefined) bad(MANIFEST, `${rule}: parameters.${whole[1]} has no default, and the trigger is on or off even when the apply leaves it out`);
+    }
     if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
         if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
@@ -753,7 +766,12 @@ export function readPackage(from: string | PackageFiles): Package {
     const whole = typeof value === "string" ? WHOLE.exec(value) : null;
     return !!whole && Object.hasOwn(fields, whole[1]!) && fields[whole[1]!]!.default === undefined;
   };
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  // A trigger's enabled given as text is said above, by its own rule, not again as POST /v2/triggers words it.
+  const saidEnabled = (field: string): boolean => {
+    const at = /^triggers\.(\d+)\.enabled$/.exec(field);
+    return !!at && typeof p.triggers[Number(at[1])]?.enabled === "string";
+  };
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (!saidEnabled(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }
@@ -877,7 +895,10 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   // owner is told (overrides.model picks one it serves).
   const gateway = Boolean(env.AGENT_MODEL_BASE_URL);
   const skipped = model.prefer && gateway ? `model.prefer ${model.prefer} is not used: this server reaches its models through a gateway, which has not said it serves that model.` : undefined;
-  if (!skipped && model.prefer && harnessRuns(env, model.prefer, harness) && !("why" in (await chooseModel(env, model.prefer, "default", harness)))) return { model: model.prefer };
+  const preferred = !skipped && model.prefer && harnessRuns(env, model.prefer, harness) ? await chooseModel(env, model.prefer, "default", harness) : undefined;
+  if (preferred && !("why" in preferred)) return { model: model.prefer };
+  // A preferred model this server's catalog does not list is said, as a gateway's skip is (one that lacks only a key is not).
+  const unknown = preferred && "why" in preferred && preferred.needs === "model" ? `model.prefer ${model.prefer} is not used: this server does not know that model.` : undefined;
   const tier = MODEL_TIERS[model.tier]!;
   const id = hostModel(env, tier, harness);
   // A gateway's own id (no provider) is no "provider/model-id" a definition can name: the agent is left to the server's
@@ -885,9 +906,9 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   // model the agent runs on, never the tier's when it is left out.
   const bare = Boolean(id && !MODEL_REF.test(id));
   const runsOn = bare && id !== env.AGENT_MODEL ? `The ${model.tier} tier's model ${id} is this gateway's own id, which an agent's definition can't name, so the agent runs on this server's default model.`
-    : skipped ? (bare || !id ? "The agent runs on this server's default model." : `The agent runs on this server's model for the ${model.tier} tier.`)
+    : skipped || unknown ? (bare || !id ? "The agent runs on this server's default model." : `The agent runs on this server's model for the ${model.tier} tier.`)
     : undefined;
-  const warning = [skipped, runsOn, skipped ? "overrides.model picks another the gateway serves." : undefined].filter(Boolean).join(" ");
+  const warning = [skipped ?? unknown, runsOn, skipped ? "overrides.model picks another the gateway serves." : unknown ? "overrides.model picks another." : undefined].filter(Boolean).join(" ");
   return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
 }
 

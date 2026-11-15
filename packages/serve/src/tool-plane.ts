@@ -34,7 +34,7 @@ import { hostModel } from "./model.js";
 import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { canonicalPin, defaultPermission, isPinKeys, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY, type ToolEffect } from "./tool-gate.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
-import { EMAIL_SCOPES, SCOPED_TOOLS } from "./email/names.js";
+import { EMAIL_SCOPES, SCOPED_TOOLS, SCOPED_WORDS } from "./email/names.js";
 import { isCatalogName, isMcpName, mcpNameOf, parseToolName } from "./tool-names.js";
 
 /** An email read tool's scope (email/names.ts). */
@@ -451,9 +451,9 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
         if (layer !== "agent" || name !== "bash") return [{ field: field(name, key), reason: "not_allowed", message: `A policy is set on bash in an agent's own tool settings (definition.tool_settings.bash.policy), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
         return (BASH_POLICIES as readonly unknown[]).includes(given) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${BASH_POLICIES.join(", ")}: read-only refuses, before it runs, any command that could write, run code or read outside the run's folder` }];
       }
-      // An email read tool's scope (email/tools.ts): an agent's own, on email_read and email_search only, set as bash's policy is.
+      // An email tool's scope (email/tools.ts): an agent's own, on email_read, email_search and email_file only, set as bash's policy is.
       if (key === "scope") {
-        if (layer !== "agent" || !SCOPED_TOOLS.includes(name)) return [{ field: field(name, key), reason: "not_allowed", message: `A scope is set on ${SCOPED_TOOLS.join(" or ")} in an agent's own tool settings (definition.tool_settings.email_read.scope), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
+        if (layer !== "agent" || !SCOPED_TOOLS.includes(name)) return [{ field: field(name, key), reason: "not_allowed", message: `A scope is set on ${SCOPED_WORDS} in an agent's own tool settings (definition.tool_settings.email_read.scope), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
         return (EMAIL_SCOPES as readonly unknown[]).includes(given) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${EMAIL_SCOPES.join(", ")}: thread, an email's run reads its thread alone; mailbox, the whole account` }];
       }
       // The server's own mark of a pin in its file that does not read (withDefaults serves it), which a whole-map save

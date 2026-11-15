@@ -15,6 +15,8 @@ import { fauxTable } from "./fixtures/faux-table.mjs";
 
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+// The faux model at a price: the default faux model is listed at $0, a free model, whose request with no cost is $0.
+const FAUX_PRICED = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -141,7 +143,7 @@ function runEntries(data, runId) {
 const storeRecords = (data, runId, kind) => runEntries(data, runId).filter((record) => record.kind === kind);
 
 test("a request whose price is unknown makes the run's cost unknown, never 0", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: FAUX_PRICED });
   const runId = await started(api, "unpriced", "Price unknown.");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 });
@@ -206,7 +208,7 @@ test("a run cancelled while its harness's request is out, and never opened again
 });
 
 test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
-  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: FAUX_PRICED });
   const runId = await started(api, "later", "Second turn unpriced.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002);

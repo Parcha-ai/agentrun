@@ -116,7 +116,7 @@ export function replayLine(record: Promotion): string {
   const r = record.replay;
   if (!r || !r.n) return record.reason;
   const how = record.source === "refit" ? "Refit on" : record.source === "graded" ? "Checked on" : "Replay on";
-  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.skipped_write ? `, ${r.skipped_write} skipped` : ""}`;
+  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.outcomes?.skipped_write ? `, ${r.outcomes.skipped_write} skipped` : ""}`;
 }
 
 /** A guarded step as a workflow's JSON says it: its `label`; its `node`, the name the runner gives it on its guard rows

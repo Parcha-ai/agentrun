@@ -1,19 +1,19 @@
-// The E2B host: E2B Desktop sandboxes (kind desktop) or E2B's plain template (kind linux), every call through the
-// host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
+// The E2B host: sandboxes from an E2B template, a desktop (kind desktop) or a plain Linux (kind linux), both from our box
+// template by default (prepareImage, box-image.ts boxE2bTemplate), every call through the host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
 // import). E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
 import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
-import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
+import { boxE2bTemplate } from "./box-image.js";
+import { E2B } from "./descriptors/e2b.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
-import { shellLine } from "./hosted/scripts.js";
 import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { ComputerSpec, Refusal } from "./provider.js";
-import type { ComputerErrorCode } from "./result.js";
+import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
 /**
  * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
@@ -135,6 +135,13 @@ const KEEPALIVE_HEADER = "Keepalive-Ping-Interval";
 const KEEPALIVE_S = "50";
 /** The Connect codes envd's process calls answer (connectrpc Code), as this provider's codes. */
 const CONNECT_CODES: Record<number, ComputerErrorCode> = { 1: "aborted", 3: "invalid", 4: "timeout", 5: "not_found", 7: "denied", 8: "limit", 16: "denied" };
+/** What create makes root's alone in every E2B computer, before anything else (HostFacts.rootOnly). */
+const ROOT_ONLY: readonly string[] = ["/usr/local", "/usr/bin/envd", "/etc/inittab"];
+/** Root's command, as envd starts it: /bin/sh by its path, no login shell, the argv as its own words. */
+const ROOT_SHELL = "/bin/sh";
+const ROOT_SHELL_ARGS = ["-c", 'exec "$@"', "sh"];
+/** The PATH root's command runs with: the system's directories alone, none of /usr/local. */
+const ROOT_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
 
 
 /** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
@@ -192,8 +199,10 @@ class E2BHost implements MachineHost {
 		maxLifetimeMs: PRO_MAX_MS,
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
-		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
+		// The box template has xfwm4 (box/Dockerfile), as E2B Desktop's has: the apps an agent opens are framed and focused.
 		windowManager: true,
+		// System paths whose permissions E2B's template build sets wider than root's, on its templates and ours alike.
+		rootOnly: ROOT_ONLY,
 	};
 	readonly #Sandbox: SdkSandboxClass;
 	readonly #connection: E2BConnectionOptions;
@@ -220,7 +229,7 @@ class E2BHost implements MachineHost {
 	check(spec: Partial<ComputerSpec>): Refusal[] {
 		const refusals = sizeRefusals(spec, "an E2B computer", "template");
 		if (typeof spec.image === "string" && spec.image !== "" && !TEMPLATE.test(spec.image)) {
-			refusals.push({ field: "image", message: `an image is the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"` });
+			refusals.push({ field: "image", message: `an image is the name or id of an E2B template, such as "${boxE2bTemplate()}" (the box template) or "desktop" (E2B Desktop)` });
 		}
 		return refusals;
 	}
@@ -300,9 +309,9 @@ class E2BHost implements MachineHost {
 	}
 
 	/**
-	 * A process as root through envd's Process.Start stream, as commands.run starts one (index.mjs:5123-5146): `bash -l -c`
-	 * and the argv quoted, root by the Basic header (authenticationHeader, index.mjs:1896-1900), and envd's keepalive
-	 * every 50 s. Its stdout and stderr are the bytes each data event carries, passed on as they come: commands.run would
+	 * A process as root through envd's Process.Start stream, the call commands.run makes (index.mjs:5123-5146) without its
+	 * login shell: /bin/sh by its path runs the argv as its own words, with PATH the system's directories alone, root by the
+	 * Basic header (authenticationHeader, index.mjs:1896-1900), and envd's keepalive every 50 s. Its stdout and stderr are the bytes each data event carries, passed on as they come: commands.run would
 	 * decode them as UTF-8 text first. No deadline on the stream (timeoutMs 0, which the Connect transport reads as none,
 	 * connect-web connect-transport.js:145-150), so envd never ends it (start.go:39-44); the start alone is bounded by
 	 * ctx. Writes go one sendStdin at a time, in order; end is closeStdin; kill SIGKILLs it and lets go of its stream.
@@ -314,7 +323,7 @@ class E2BHost implements MachineHost {
 		const requestTimeoutMs = this.#requestMs;
 		const stream = new AbortController();
 		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
-			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin: true },
+			{ process: { cmd: ROOT_SHELL, args: [...ROOT_SHELL_ARGS, ...argv], envs: { PATH: ROOT_PATH } }, stdin: true },
 			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
 		)[Symbol.asyncIterator]();
 		// The start, within ctx: a stream that gives no start event in time, or the caller's abort, is let go of.
@@ -406,10 +415,22 @@ class E2BHost implements MachineHost {
 }
 
 /**
- * Computers that are E2B sandboxes, on the shared adapter. A spec's image is an E2B template (its name or id):
- * "desktop" is E2B Desktop's, with Xvfb, x11vnc and noVNC (e2b-dev/desktop template.py:21-65).
+ * Computers that are E2B sandboxes, on the shared adapter. A spec's image is an E2B template (its name or id). A server
+ * starts every one, sandbox or desktop, from the box template prepareImage() answers: the box image (box/Dockerfile)
+ * with Archil's client and its root helper, Xvfb, xfwm4 and the desktop's apps, which the provider starts through
+ * computerd (desktop.ts). Any other template a spec names must carry what the computer's kind needs.
  */
 export class E2BProvider extends HostedProvider {
+	/**
+	 * The provider contract's prepareImage (its descriptor declares it): the box template the release publishes,
+	 * public under its E2B team (box-image.ts boxE2bTemplate), which any E2B account starts by that name. No call: E2B
+	 * starts a public template at create with nothing to pull ahead of it, so onWait is never told. A desktop starts
+	 * from the same template as a sandbox: the kind is the provider's, not the image's.
+	 */
+	async prepareImage(): Promise<Result<string>> {
+		return ok(boxE2bTemplate());
+	}
+
 	constructor(options: E2BProviderOptions) {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);

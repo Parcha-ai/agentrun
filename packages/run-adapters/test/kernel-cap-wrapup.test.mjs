@@ -22,14 +22,14 @@ async function answered(cap, request, cost) {
   return note;
 }
 
-test("the typical cost: the next's expected with none priced, the one, then the median after the first; unknown or $0 is no priced request", () => {
+test("the typical cost: the next's own figure with none priced, the one, then the median after the first; unknown or $0 is no priced request", () => {
   assert.equal(typicalCost([], 0.06), 0.06);
   assert.equal(typicalCost([0.2], 0.06), 0.2);
   assert.equal(typicalCost([0.5, 0.1, 0.3, 0.2], 0.06), 0.2, "the median after the first, which wrote the cache");
   assert.equal(typicalCost([null, 0, Number.NaN], 0.06), 0.06);
 });
 
-test("due under three times the typical, not at or above; the same under strict", () => {
+test("due under three times the typical, not at or above", () => {
   assert.deepEqual(wrapUpDue(1, 0.7, 0, 0.1001), { leftUsd: 0.30000000000000004 });
   assert.equal(wrapUpDue(1, 0.7, 0, 0.1), undefined, "at it: not due");
   assert.equal(wrapUpDue(1, 0.6, 0, 0.1), undefined);
@@ -87,11 +87,11 @@ test("Codex-shaped requests that each need 10,240 output tokens and cost half a 
   assert.ok(cap.spentUsd() + cap.leastUsd(modelRequest(LUNA, 0, 20_000, { outputTokensLeast: 10_240 })) <= 0.4, "before the cap refuses the next");
 });
 
-test("the least of the request taking the note is priced cache-aware, as its admission prices it", () => {
+test("the least of the request taking the note is priced uncached, as its admission prices it, whatever the session cached", () => {
   const previous = { model: SONNET45.id, cachedTokens: 99_000, inputTokens: 1_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
-  // Uncached, its step-0 typical ($0.39) would make $0.80 left due (3x); read from the cache ($0.05) it is not.
+  // Uncached, its step-0 typical ($0.39) makes $0.80 left due (3x), the cache the session read before notwithstanding.
   const { cap } = capWith(1.2, { spentUsd: 0.4 });
-  assert.equal(cap.note(modelRequest(SONNET45, 100_000, 1_024, { recent: [previous] })), undefined);
+  assert.match(cap.note(modelRequest(SONNET45, 100_000, 1_024, { recent: [previous] }))?.words ?? "", /^This run's budget is about \$0\.80/);
 });
 
 test("at step 0 with no previous request, the next request's least priced uncached makes it due alone (a pin)", () => {
@@ -116,7 +116,7 @@ test("a request that fits what is left only without the note's bytes is sent wit
 });
 
 test("the request that carries the note is held at its bound with the note's bytes in it (a pin)", async () => {
-  const { cap } = capWith(0.1, { mode: "strict" });
+  const { cap } = capWith(0.1);
   const request = modelRequest(SONNET45, 10_000, 1_024);
   const note = cap.note(request);
   const bytes = Buffer.byteLength(note.words, "utf8");

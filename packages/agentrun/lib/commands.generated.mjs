@@ -25,6 +25,45 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "connect-native"
+    ],
+    "operationId": "connectNative",
+    "method": "POST",
+    "path": "/native/connect",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "project",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "claude-code",
+          "codex"
+        ],
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Connect a native project using ordinary agent and revision storage"
+  },
+  {
+    "command": [
+      "agents",
       "create"
     ],
     "operationId": "createAgent",
@@ -90,6 +129,67 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Remove an agent's own Archil disk, and everything on it"
+  },
+  {
+    "command": [
+      "agents",
+      "disconnect-native"
+    ],
+    "operationId": "disconnectNative",
+    "method": "POST",
+    "path": "/agents/{agent_id}/native/disconnect",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Disconnect future native jobs while retaining source configuration and history"
+  },
+  {
+    "command": [
+      "agents",
+      "discover-native"
+    ],
+    "operationId": "discoverNative",
+    "method": "POST",
+    "path": "/native/discover",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "project",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "claude-code",
+          "codex"
+        ],
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Discover existing native projects on this source machine without running a model"
   },
   {
     "command": [
@@ -179,6 +279,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows"
+  },
+  {
+    "command": [
+      "agents",
+      "get-native"
+    ],
+    "operationId": "getNative",
+    "method": "GET",
+    "path": "/agents/{agent_id}/native",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read a native connection"
   },
   {
     "command": [
@@ -343,6 +465,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Replace the agent's definition"
+  },
+  {
+    "command": [
+      "agents",
+      "verify-native"
+    ],
+    "operationId": "verifyNative",
+    "method": "POST",
+    "path": "/agents/{agent_id}/native/verify",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Check native CLI and sign-in without a paid model call"
   },
   {
     "command": [
@@ -1704,16 +1848,6 @@ export const COMMANDS = [
         "description": "Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`."
       },
       {
-        "name": "cap_mode",
-        "type": "string",
-        "enum": [
-          "expected",
-          "strict"
-        ],
-        "required": false,
-        "description": "How the run's cap (`max_cost_usd`) prices each model request's input. `expected` (the default): the input the previous request of its conversation reported read from or written to the cache, at the cache-read price, when that request ended less than 4 minutes before; the rest of its input (the previous request's input after the cache, and what the conversation grew by since, a token a byte) at the input price, the cache write's when dearer. With no such request, all of it at that price. Output is limited to what the cap leaves, so output never passes it; a cache miss can, by at most the request's bound (its input uncached less its input expected), served as the run's `cost.overshoot_bound_usd` while it is in flight; its real cost is booked, and the timeline says so. `strict`: every input token at the input or cache-write price, the worst case: no request passes the cap, and a run pauses sooner. Only with a cap. Absent: the agent's (its definition's `cap_mode`), else expected. 422 not_allowed for a run with no cap."
-      },
-      {
         "name": "workflow_first",
         "type": "boolean",
         "required": false,
@@ -2230,16 +2364,6 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": "Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`."
-      },
-      {
-        "name": "cap_mode",
-        "type": "string",
-        "enum": [
-          "expected",
-          "strict"
-        ],
-        "required": false,
-        "description": "How the run's cap (`max_cost_usd`) prices each model request's input. `expected` (the default): the input the previous request of its conversation reported read from or written to the cache, at the cache-read price, when that request ended less than 4 minutes before; the rest of its input (the previous request's input after the cache, and what the conversation grew by since, a token a byte) at the input price, the cache write's when dearer. With no such request, all of it at that price. Output is limited to what the cap leaves, so output never passes it; a cache miss can, by at most the request's bound (its input uncached less its input expected), served as the run's `cost.overshoot_bound_usd` while it is in flight; its real cost is booked, and the timeline says so. `strict`: every input token at the input or cache-write price, the worst case: no request passes the cap, and a run pauses sooner. Only with a cap. Absent: the agent's (its definition's `cap_mode`), else expected. 422 not_allowed for a run with no cap."
       },
       {
         "name": "workflow_first",

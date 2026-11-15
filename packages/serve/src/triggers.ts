@@ -26,7 +26,7 @@ import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeli
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
-import { type Clock, type PollResult, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
+import { type Clock, type PollResult, second, type Source, type StartResult, type StartWhy, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
@@ -76,6 +76,9 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 export const LAST_CHECK = "last_check";
 /** The sign-ins a polled source's server refuses in a row that turn its trigger off. */
 export const REFUSALS_TO_STOP = 3;
+/** How long a trigger's create, edit or turn-on waits for its source's start (trigger-adapter.ts `start`): one not taken
+ *  by then is taken at its first check. */
+export const START_WAIT_MS = 10_000;
 /** Whether `adapter`'s firings are events from outside (pushed, or found by a poll), each its own, never a time. */
 const eventful = (adapter: TriggerAdapter | undefined) => adapter?.delivery === "push" || adapter?.poll !== undefined;
 /** A polled trigger's last check as kept (LAST_CHECK), when it reads. */
@@ -282,6 +285,8 @@ export class Triggers {
   private readonly seenFull = new Set<string>();
   /** The polled triggers whose poll is running: one at a time each. */
   private readonly polling = new Set<string>();
+  /** Each polled trigger's count of starts taken (takeStart): a poll or a start that sees it changed keeps nothing. */
+  private readonly starts = new Map<string, number>();
   private closed = false;
 
   constructor(private readonly deps: TriggerDeps) {
@@ -347,6 +352,8 @@ export class Triggers {
     } catch (error) {
       throw (await this.scopeTaken(error, source, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
     }
+    // Where a polled source starts watching: from now, taken before its first time is armed.
+    if (enabled) await this.takeStart(asTrigger(row), "created");
     // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
     await this.arm();
     // What it minted, shown this once, by field: a webhook's `secret`.
@@ -524,10 +531,50 @@ export class Triggers {
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
-    // A polled source goes on from now too: its cursor and last check forgotten, its next poll its first.
-    if (enabled && (!trigger.enabled || source) && adapter.poll) await this.deps.settings(adapter.id)?.remove(id);
+    // A polled source with a start (trigger-adapter.ts) takes a new one when turned on again or when the edit changed
+    // where it reads; any other edit keeps its cursor. One without forgets its cursor and last check: its next poll its first.
+    const start = adapter.start;
+    const moved = source !== undefined && start !== undefined && start.on.some((field) => JSON.stringify(source[field]) !== JSON.stringify(trigger.source[field]));
+    if (enabled && start && (!trigger.enabled || moved)) await this.takeStart(asTrigger(row), trigger.enabled ? "edited" : "enabled");
+    else if (enabled && !start && (!trigger.enabled || source) && adapter.poll) await this.deps.settings(adapter.id)?.remove(id);
     await this.arm();
     return this.view(asTrigger(row));
+  }
+
+  /** Trigger `trigger`'s polled source started from now (its adapter's start, waited on at most START_WAIT_MS): its old
+   *  cursor and last check forgotten, the start's cursor and check kept (no refusal counted), its note a skipped history
+   *  line. A start not taken leaves no cursor, so its first poll takes it. Never throws: the create or edit stands. */
+  private async takeStart(trigger: Trigger, why: StartWhy): Promise<void> {
+    const adapter = this.adapter(trigger.source);
+    const start = adapter.start;
+    if (!start) return;
+    const generation = (this.starts.get(trigger.id) ?? 0) + 1;
+    this.starts.set(trigger.id, generation);
+    const now = this.clock.now();
+    try {
+      const settings = this.deps.settings(adapter.id);
+      await settings?.remove(trigger.id);
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<StartResult>((done) => {
+        timer = setTimeout(() => done({ check: { ok: false, message: start.unchecked(trigger.source, why) }, note: start.unchecked(trigger.source, why) }), START_WAIT_MS);
+        timer.unref?.();
+      });
+      const taken = start.take(trigger.source, { trigger: trigger.id, why, credentials: async () => this.deps.credentials?.(adapter.id) }).catch((error: unknown): StartResult => {
+        const message = String((error as Error)?.message ?? error);
+        return { check: { ok: false, message }, note: start.unchecked(trigger.source, why) };
+      });
+      const result = await Promise.race([taken, late]).finally(() => clearTimeout(timer));
+      // Edited, turned off or deleted meanwhile, or started again: this start is not its own any more.
+      const current = await this.find(trigger.id);
+      if (this.closed || this.starts.get(trigger.id) !== generation || !current?.enabled || JSON.stringify(current.source) !== JSON.stringify(trigger.source)) return;
+      for (const [field, value] of Object.entries(result.cursor ?? {})) await settings?.set(trigger.id, field, value);
+      await settings?.set(trigger.id, LAST_CHECK, JSON.stringify({ at: iso(now), ok: result.check.ok, message: result.check.message, refused: 0 }));
+      const at = Math.floor(now / 1000) * 1000;
+      await this.record(current, { key: firingKey(adapter.id, trigger.id, `start\n${second(now)}\n${why}\n${generation}`), by: adapter.id, nominalAt: at, status: "skipped", reason: result.note });
+      if (!result.check.ok) this.deps.say({ condition: "trigger_check_failed", trigger: trigger.id, error: result.check.message });
+    } catch (error) {
+      this.deps.say({ condition: "trigger_start_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) });
+    }
   }
 
   async remove(id: string): Promise<void> {
@@ -666,6 +713,9 @@ export class Triggers {
    *  sign-in in a row the trigger turned off. A poll that throws is a failed check. */
   private async polled(trigger: Trigger, adapter: TriggerAdapter, nominalAt: number, now: number): Promise<void> {
     const settings = this.deps.settings(adapter.id);
+    // A start taken while it polled (an edit, a turn-on) is newer than anything this poll found.
+    const generation = this.starts.get(trigger.id);
+    const restarted = () => this.starts.get(trigger.id) !== generation;
     let result: PollResult;
     try {
       result = await adapter.poll!(trigger.source, { trigger: trigger.id, setting: (field) => settings?.get(trigger.id, field), credentials: async () => this.deps.credentials?.(adapter.id) });
@@ -676,7 +726,7 @@ export class Triggers {
     try {
       // Edited, turned off or deleted while it polled: nothing it found is kept.
       const current = await this.find(trigger.id);
-      if (!current || !current.enabled || JSON.stringify(current.source) !== JSON.stringify(trigger.source)) return;
+      if (!current || !current.enabled || JSON.stringify(current.source) !== JSON.stringify(trigger.source) || restarted()) return;
       const by = adapter.id;
       const at = Math.floor(nominalAt / 1000) * 1000;
       if (result.note) await this.record(current, { key: firingKey(by, trigger.id, `note\n${second(nominalAt)}`), by, nominalAt: at, status: "skipped", reason: result.note });
@@ -703,6 +753,7 @@ export class Triggers {
         cursor = event.cursor;
       }
       if (!full && events.length) cursor = result.cursor ?? cursor;
+      if (restarted()) return;
       for (const [field, value] of Object.entries(cursor ?? {})) await settings?.set(trigger.id, field, value);
       const refusals = result.refused ? (checkOf(settings?.get(trigger.id, LAST_CHECK))?.refused ?? 0) + 1 : 0;
       if (result.refused && refusals >= REFUSALS_TO_STOP) {

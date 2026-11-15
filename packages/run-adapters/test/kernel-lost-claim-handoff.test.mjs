@@ -3,7 +3,7 @@
 // request (its runner.request written) and saw it answer, but the store refused its runner.turn: a newer open of the
 // session fenced the old writer. The session's next booking in this process (same scope) writes that booking at its
 // bookCut, as the lost one would have, and tells its end. A request whose price is unknown stays unpriced (its cost null,
-// one unpriced request) and counts for the cap at its hold, never more than its hold and bound. Without a scope (each
+// one unpriced request) and counts for the cap at its hold, its worst case. Without a scope (each
 // open a process of its own: a dead process hands nothing on), the request is booked cut, as before.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -12,19 +12,18 @@ import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 
 const KEY = "run";
 const MODEL = "claude-opus-5-5";
-/** What the cap holds for the request, and what a cache miss adds to it. */
+/** What the cap holds for the request: its worst case, a cache miss included. */
 const HOLD = 0.5;
-const BOUND = 1;
 /** The run's cap: an unknown cost never reads as all of it. */
 const CAP = 5;
 /** The answer's usage on a known model, priced by the proxy. */
 const KNOWN = { input: 3000, output: 25000, cacheRead: 0, usd: 0.39 };
 const near = (a, b) => typeof a === "number" && Math.abs(a - b) < 1e-9;
 
-/** A claim's booking of the session: every request held at HOLD with BOUND, its events kept in `events`. */
+/** A claim's booking of the session: every request held at HOLD, its events kept in `events`. */
 async function claimOf(store, events = []) {
   const writer = await store.open(KEY);
-  const booking = await modelPortFor(writer, { key: KEY, label: KEY, beforeRequest: () => ({ holdUsd: HOLD, boundUsd: BOUND }), onEvent: (event) => void events.push(event) });
+  const booking = await modelPortFor(writer, { key: KEY, label: KEY, beforeRequest: () => ({ holdUsd: HOLD }), onEvent: (event) => void events.push(event) });
   return { writer, booking, events };
 }
 
@@ -56,7 +55,7 @@ test("a request that answered on a known model while its claim was lost books it
   assert.deepEqual(turns[0].data.usage, { input: 3000, output: 25000, cacheRead: 0, cacheWrite: 0 }, "with its tokens");
   const read = sessionSpendOf(records);
   assert.ok(near(read.cost.usd, KNOWN.usd) && read.cost.unpriced === 0, `the run's cost is known: ${JSON.stringify(read.cost)}`);
-  assert.ok(near(read.spentUsd, KNOWN.usd), `the cap counts what it cost, not its hold and bound: ${read.spentUsd}`);
+  assert.ok(near(read.spentUsd, KNOWN.usd), `the cap counts what it cost, not its hold: ${read.spentUsd}`);
   assert.ok(near(again.booking.spentUsd(), KNOWN.usd), `the new booking's spend reads it so: ${again.booking.spentUsd()}`);
   const ends = again.events.filter((e) => e.type === "request_end");
   assert.equal(ends.length, 1, "its end is told once, by the new claim");
@@ -81,17 +80,17 @@ test("a request whose price is unknown stays unpriced after the resume and count
   const read = sessionSpendOf(records);
   assert.equal(read.cost.usd, null, "the run's cost is unknown, never $0");
   assert.equal(read.cost.unpriced, 1, "one request has no price: it is not metered");
-  assert.ok(typeof read.spentUsd === "number" && read.spentUsd <= HOLD + BOUND && read.spentUsd < CAP, `the cap counts it at its hold, never all of the cap: ${read.spentUsd}`);
+  assert.ok(typeof read.spentUsd === "number" && read.spentUsd <= HOLD && read.spentUsd < CAP, `the cap counts it at its hold, never all of the cap: ${read.spentUsd}`);
 });
 
-test("without a scope (a process that died hands nothing on) the request is booked cut, at its hold and bound", async () => {
+test("without a scope (a process that died hands nothing on) the request is booked cut, at its hold", async () => {
   const store = memorySessionStore();
   await lostWhileOut(store, KNOWN);
   const records = await store.read(KEY);
   const turns = turnsOf(records);
   assert.equal(turns.length, 1);
   assert.equal(turns[0].data.cut, true, `booked cut: ${JSON.stringify(turns[0])}`);
-  assert.ok(near(sessionSpendOf(records).spentUsd, HOLD + BOUND), "counted at its hold and bound");
+  assert.ok(near(sessionSpendOf(records).spentUsd, HOLD), "counted at its hold");
 });
 
 test("another run's booking never takes what a lost claim of this run handed on", async () => {
@@ -102,7 +101,7 @@ test("another run's booking never takes what a lost claim of this run handed on"
   await assert.rejects(lost.booking.models.afterRequest(KNOWN, ticket, { end: "answered", usd: KNOWN.usd }), SessionFenced);
   // Another run with the same session key and an unanswered request of the same turn, left by a process that died.
   const other = memorySessionStore({ scope: "run-5" });
-  await (await other.open(KEY)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: MODEL, heldUsd: HOLD, boundUsd: BOUND } }]);
+  await (await other.open(KEY)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: MODEL, heldUsd: HOLD } }]);
   const after = await claimOf(other);
   await after.booking.bookCut();
   const turns = turnsOf(await other.read(KEY));

@@ -1,14 +1,15 @@
 // The email tools, over the server's one account (account.ts) and its wire (mail.ts): email_search and email_read read
 // it (PEEK only: every message stays as unread as it was), email_draft keeps a message in its Drafts folder, email_send
 // sends one, marked as this server's (X-AgentRun-Sent, its value the run's id) so the email trigger never starts a run on
-// it, and files a copy in Sent unless the provider files its own (Gmail). Host tools on every harness, bound beside
+// it, and files a copy in Sent unless the provider files its own (Gmail); email_file files a message under a Gmail label
+// or in a folder, and never deletes one (the trash and junk folders are refused). Host tools on every harness, bound beside
 // web_fetch (tool-list.ts `host`); the password is read in the runner, from the one store under its seal key, and never
 // in an answer. Each answer is held under the host's result bound (answer.ts).
 // Thread scope: a run an email trigger started reads only that email's thread (the message, and every message whose
 // Message-ID, References or In-Reply-To names it or one it names, in any mailbox, Drafts and Sent included); a message
-// outside it is answered "outside this run's thread" and never fetched. The agent's own tool setting `scope: "mailbox"` on
-// email_read or email_search reads the whole account; any other run reads the whole account. So an email's words can
-// never send the agent through the rest of the inbox.
+// outside it is answered "outside this run's thread" and never fetched or filed. The agent's own tool setting `scope:
+// "mailbox"` on email_read, email_search or email_file reaches the whole account; any other run reaches the whole account.
+// So an email's words can never send the agent through the rest of the inbox.
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
 import { forModel } from "../result.js";
@@ -16,10 +17,10 @@ import type { ToolBinding, ToolEntry, ToolHost } from "../tools.js";
 import { isObject } from "../validate.js";
 import { keepsSentCopy, NO_ACCOUNT, openAccount, type OpenedAccount } from "./account.js";
 import { emailError, emailText } from "./answer.js";
-import { EMAIL_DRAFT, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD } from "./names.js";
+import { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD } from "./names.js";
 import { composed, foundOf, type ImapSession, inThread, MailError, type MailMessage, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, threadClause, withImap } from "./mail.js";
 
-export { EMAIL_DRAFT, EMAIL_READ, EMAIL_SCOPES, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD, SCOPED_TOOLS, sendSummary } from "./names.js";
+export { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SCOPES, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD, SCOPED_TOOLS, sendSummary } from "./names.js";
 
 /** A search's results by default, and at most. */
 const LIMIT_DEFAULT = 20;
@@ -235,10 +236,51 @@ async function send(mail: Mail, args: Record<string, unknown>, runId: string) {
   return { sent: true, message_id: built.messageId, ...(filed ? { note: `Sent, but no copy was filed in Sent: ${filed}` } : {}) };
 }
 
+/** The names email_file refuses whatever the account flags: the trash and junk folders by their usual names. */
+const BINS = new Set(["trash", "junk", "spam", "[gmail]/trash", "[gmail]/spam", "\\trash", "\\junk"]);
+/** A folders server's answer to a filing that would keep the message in the inbox. */
+const FOLDERS_REFUSAL = "this server has folders: filing moves the message out of the inbox; pass archive: true to move it";
+/** Gmail's label for a message in the inbox: taken off, the message is archived. */
+const INBOX_LABEL = "\\Inbox";
+
+/** The message `id` filed under `to`: a Gmail label (archive: its \Inbox label off too), else, with archive: true, a move
+ *  to the folder `to`, created if missing. Never a delete: the trash and junk folders are refused before anything is
+ *  touched; and archive false never takes mail out of the inbox. */
+async function file(mail: Mail, args: Record<string, unknown>) {
+  const id = messageId(text(args, "message_id", 998, true)!);
+  const to = text(args, "to", 300, true)!.trim();
+  if (/[\u0000-\u001f]/.test(to)) throw new BadArgs("to is a folder's or a label's name, on one line.");
+  if (args.archive !== undefined && typeof args.archive !== "boolean") throw new BadArgs("archive is true or false.");
+  const refused = () => new BadArgs(`${EMAIL_FILE} files mail, it never deletes it: ${to} is the trash or junk folder.`);
+  if (BINS.has(to.toLowerCase())) throw refused();
+  return withMail(mail, async (session) => {
+    const bin = (await session.mailboxes()).find((box) => box.path === to && (box.specialUse === "\\Trash" || box.specialUse === "\\Junk"));
+    if (bin) throw refused();
+    const found = await findById(session, id, mail);
+    if (!found) throw new MailError("missing", mail.scope.kind === "thread" ? `${id} is ${OUTSIDE_THREAD}, or not in this account: this run files only the thread of the email that started it.` : `No message ${id} in this account.`);
+    const done = (archived: boolean) => ({ filed: true, message_id: id, to, archived, subject: found.subject });
+    if (session.can("X-GM-EXT-1")) {
+      await session.ensure(to);
+      await session.select(found.mailbox);
+      await session.label(found.uid, [to]);
+      const leaves = args.archive === true && found.mailbox.toUpperCase() === "INBOX";
+      if (leaves) await session.label(found.uid, [INBOX_LABEL], true);
+      return done(leaves);
+    }
+    // A folders server: filing is a move out of where the message is, so it takes archive: true; archive false never
+    // takes mail out of the inbox.
+    if (args.archive !== true) throw new BadArgs(FOLDERS_REFUSAL);
+    await session.ensure(to);
+    await session.select(found.mailbox);
+    await session.move(found.uid, to);
+    return done(true);
+  });
+}
+
 const STRING = { type: "string" };
 const ADDRESSES = { type: "array", items: STRING, description: "Email addresses, such as [\"ana@example.com\"]." };
 
-/** The four tools, by name: their words for the model, their arguments, how a call cut off by a crash is replayed, and
+/** The five tools, by name: their words for the model, their arguments, how a call cut off by a crash is replayed, and
  *  what a call does. */
 const TOOLS: Record<string, { description: string; properties: Record<string, unknown>; required: string[]; replay: "safe" | "unsafe"; run(mail: Mail, args: Record<string, unknown>, host: ToolHost): Promise<unknown> }> = {
   [EMAIL_SEARCH]: {
@@ -269,9 +311,16 @@ const TOOLS: Record<string, { description: string; properties: Record<string, un
     replay: "unsafe",
     run: (mail, args, host) => send(mail, args, host.where.ref.id),
   },
+  [EMAIL_FILE]: {
+    description: "File a message of the server's email account by its message_id under to: on Gmail it adds the label to (made if missing) and the message stays in the inbox unless archive: true; elsewhere filing moves the message to the folder to (made if missing), so it needs archive: true. It never deletes mail: the trash and junk folders are refused. Answers JSON {filed: true, message_id, to, archived, subject}, archived saying whether it left the inbox. On a run an email started, only that email's thread can be filed.",
+    properties: { message_id: { type: "string", minLength: 1, description: "The Message-ID, such as <abc@example.com>." }, to: { type: "string", minLength: 1, description: "The folder or label, such as Receipts." }, archive: { type: "boolean", description: "Take it out of the inbox (default false). On a server with folders, filing is a move, so it needs true." } },
+    required: ["message_id", "to"],
+    replay: "unsafe",
+    run: (mail, args) => file(mail, args),
+  },
 };
 
-/** The four tools, for a run `host` serves (host-bounds.test.mjs lists them as the Claude Agent CLI is given them). */
+/** The five tools, for a run `host` serves (host-bounds.test.mjs lists them as the Claude Agent CLI is given them). */
 export const emailRegistrations = (host: ToolHost): ToolRegistration[] => Object.keys(TOOLS).map((name) => emailTool(name, host));
 
 /** `name`'s tool, bound for the run `host` serves: its account opened at each call (a password saved since counts), its
@@ -293,7 +342,8 @@ function emailTool(name: string, host: ToolHost): ToolRegistration {
         const answer = await tool.run(mail, (isObject(args) ? args : {}) as Record<string, unknown>, host);
         return forModel(emailText(answer as Record<string, unknown>));
       } catch (error) {
-        if (error instanceof BadArgs || error instanceof MailError) return forModel(emailError(`${name}: ${error.message}`), { isError: true });
+        // Words that already start with the tool's name say it once.
+        if (error instanceof BadArgs || error instanceof MailError) return forModel(emailError(error.message.startsWith(`${name} `) ? error.message : `${name}: ${error.message}`), { isError: true });
         throw error;
       }
     },
