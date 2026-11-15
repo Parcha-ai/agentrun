@@ -71,7 +71,7 @@ const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
-  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "medium", { per_run_usd: 0.5 }, false]);
+  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", choices: [{ id: "particle", label: "particle-1 (low cost)", model: "openrouter/particle-ai/particle-1", harness: "pi", secrets: ["OPENROUTER_API_KEY"] }] }, "medium", { per_run_usd: 0.5 }, false]);
   assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("skills/review/findings.schema.json"), "the answer's schema lives in the skill's folder, where the reviewers' guides read it");
@@ -264,7 +264,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   // No shell here (no box): [shell, none] takes none, so the agent is made without bash, and the apply says so.
   assert.deepEqual([definition.computer, definition.tools, definition.tool_settings], [{ kind: "none" }, ["read", "subagent"], undefined], "no shell and no GitHub MCP server here: read for the skill's files, subagent for the reviewers");
   assert.equal(applied.body.warnings.filter((w) => w.field === "computer").length, 1, JSON.stringify(applied.body.warnings));
-  assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
+  assert.notEqual(definition.model, "openrouter/particle-ai/particle-1", "the server's fast model: particle-1 is a choice the owner picks");
   assert.match(definition.instructions, /the pull request is already checked out in\s+`repo\/`/);
   assert.match(definition.instructions, /start eight reviewers on it in one turn with `subagent`/);
   assert.match(definition.instructions, /never build, install, run tests or run the repository's code, never commit or push/);
