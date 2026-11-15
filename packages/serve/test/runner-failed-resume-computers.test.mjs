@@ -3,7 +3,8 @@
 // says the run ended, no computer of any of its claims is left running (workspace/run-end-computers.ts, through the
 // runner's runEnded). Each way such a claim ends: its image fails, its computer is refused here, a person cancels it
 // while it waits on its computer, it is refused before any loop (a harness this runner does not run), and it is lost
-// again itself before a third claim fails the same way. Through the runner, its store and the spec builder pi really uses
+// again itself before a third claim fails the same way; and a Docker still not answering at the run's end, asked again
+// until it does. Through the runner, its store and the spec builder pi really uses
 // (adapter-run-spec.ts); the sandbox is a loopback stand-in for Docker's, and the model a script.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -46,6 +47,8 @@ const until = async (done, what, ms = 60_000) => {
 function sandboxes() {
   const held = new Map();
   const made = [];
+  /** How many lists of a run's computers fail next, as a Docker that does not answer. */
+  const down = { lists: 0 };
   let waiting = () => {};
   const waits = new Promise((resolve) => (waiting = resolve));
   const provider = (prepare = "ok") => ({
@@ -63,6 +66,10 @@ function sandboxes() {
       return { ok: true, value: "agentrun/computer:prepared" };
     },
     async list(labels) {
+      if (labels["agentrun.run"] !== undefined && down.lists > 0) {
+        down.lists -= 1;
+        return { ok: false, error: { code: "unreachable", message: "Docker did not answer" } };
+      }
       const listed = [...held.values()].filter((one) => Object.entries(labels).every(([name, value]) => one.labels[name] === value));
       return { ok: true, value: listed.map((one) => ({ ref: one.ref, labels: one.labels, state: "running", network: "none" })) };
     },
@@ -86,7 +93,7 @@ function sandboxes() {
   });
   /** The run's sandboxes still held, as "<id>@<epoch>". */
   const left = () => [...held.values()].filter((one) => one.labels["agentrun.run"] === RUN).map((one) => `${one.ref.id}@${one.labels["agentrun.epoch"]}`);
-  return { provider, made, held, left, waits };
+  return { provider, made, held, left, waits, down };
 }
 
 async function opened(t) {
@@ -121,7 +128,7 @@ async function opened(t) {
     const createLoop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (given, body) => (harness && given === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(body, run, deps, claim)) : undefined) });
     const runner = startRunner({
       store, name, ...TIMING, createLoop,
-      runEnded: runEndComputers({ store, computers: computerDeps, log: (line) => logged.push(line) }),
+      runEnded: runEndComputers({ store, computers: computerDeps, log: (line) => logged.push(line), retryMs: 50 }),
       onEvent: (event) => {
         // What the run's computers are when the runner says the run ended.
         if (event.type === "ended") ended.push({ status: event.status, left: docker.left() });
@@ -208,6 +215,19 @@ test("the resumed claim lost again while it waits on its image, and a third clai
   assert.equal(end.status, "failed");
   assert.deepEqual(run.docker.made.map((one) => one.epoch), ["1"]);
   assert.deepEqual(end.left, []);
+});
+
+test("the Docker that failed the resumed claim still does not answer at the run's end: it is asked again, and the lost runner's sandbox is let go once it does", { timeout: 120_000 }, async (t) => {
+  const run = await opened(t);
+  await run.lose();
+  run.docker.down.lists = 2;
+  await run.start("runner-b", { prepare: "fail" });
+  const end = await run.theEnd();
+  assert.equal(end.status, "failed");
+  assert.equal(run.docker.down.lists, 0, "both failed lists were asked");
+  assert.deepEqual(end.left, []);
+  assert.ok(run.logged.some((line) => line.includes("an earlier claim left on docker, c1")), `said: ${JSON.stringify(run.logged)}`);
+  assert.ok(!run.logged.some((line) => line.includes("could not be let go")), `said: ${JSON.stringify(run.logged)}`);
 });
 
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {
