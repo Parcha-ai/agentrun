@@ -7,14 +7,15 @@ import { SdkRuns } from "../dist/sdk/runs.js";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 
-const disabled = { enabled: false, revision: null, context: "", skills: [] };
+const manifest = { workflow_tools: [{ name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] };
+const disabled = { enabled: false, revision: null, context: "", skills: [], workflows: [] };
 const input = { input: "Report release status.", instructions: "Keep the backend policy and tools." };
 
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
   test(`${runtime} omitted and false learning stay Off through completion without a grader`, async (t) => {
     const server = await serve(t, { runner: false });
     const { api, store, data } = server;
-    for (const learning of [undefined, false]) for (const bridge of [false]) await t.test(`${learning === undefined ? "omitted" : "false"}, bridge ${bridge}`, async () => {
+    for (const learning of [undefined, false]) for (const bridge of [false, true]) await t.test(`${learning === undefined ? "omitted" : "false"}, bridge ${bridge}`, async () => {
       const id = `off-${learning === undefined ? "omitted" : "false"}-${bridge}`;
       // Do not use the SDK test helper's default learning=false: absence is a separate contract.
       const definition = { id, name: id, instructions: input.instructions, sdk: { runtime }, tools: [], ...(learning === undefined ? {} : { learning }) };
@@ -23,7 +24,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       const before = structuredClone(entry.revision.body);
       assert.equal(Object.hasOwn(before, "learning"), learning !== undefined);
       const sdkRuns = new SdkRuns(store, data, server.token);
-      const receipt = await sdkRuns.start(entry, { ...input, runtime }, {
+      const receipt = await sdkRuns.start(entry, { ...input, runtime, ...(bridge ? manifest : {}) }, {
         pinnedOf: async () => ({ revision: entry.revision, version: entry.version }),
         learning: "on",
         // There is deliberately no gradeModel. Off must not even read a learning seed.
@@ -57,11 +58,11 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
 
   test(`${runtime} only enabled workflow learning falls back to notes without a bridge`, async (t) => {
     const { api, store } = await serve(t, { runner: false });
-    for (const learning of [true, "notes"]) for (const bridge of [false]) await t.test(`${learning}, bridge ${bridge}`, async () => {
+    for (const learning of [true, "notes"]) for (const bridge of [false, true]) await t.test(`${learning}, bridge ${bridge}`, async () => {
       const id = `enabled-${learning}-${bridge}`;
       assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: input.instructions, sdk: { runtime }, tools: [], learning } })).status, 201);
       const before = (await getAgent(store, id)).revision.body;
-      const started = await api("POST", `/agents/${id}/sdk-runs`, { ...input, runtime }, { "Idempotency-Key": id });
+      const started = await api("POST", `/agents/${id}/sdk-runs`, { ...input, runtime, ...(bridge ? manifest : {}) }, { "Idempotency-Key": id });
       assert.equal(started.status, 201, JSON.stringify(started.body));
       assert.equal(started.body.learning.enabled, true);
       const launch = (await store.runs.launch(started.body.run_id)).body;

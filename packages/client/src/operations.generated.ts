@@ -417,6 +417,7 @@ export type RunSummary = {
     kind: "budget";
     cap_usd: number;
     spent_usd?: number;
+    held_usd?: number;
     needs_usd?: number;
     least_cap_usd?: number;
     suggested_cap_usd?: number;
@@ -709,6 +710,7 @@ export type Run = {
     kind: "budget";
     cap_usd: number;
     spent_usd?: number;
+    held_usd?: number;
     needs_usd?: number;
     least_cap_usd?: number;
     suggested_cap_usd?: number;
@@ -3544,6 +3546,7 @@ export type SdkRunEventsBody = {
     status: "started" | "completed" | "failed";
     input?: unknown;
     output?: unknown;
+    parent_tool_use_id?: string;
   }>;
 };
 export interface SdkRunEventsParams {
@@ -3567,6 +3570,15 @@ export type StartSdkRunBody = {
   input: string;
   instructions: string;
   model?: string;
+  workflow_tools?: Array<{
+    name: string;
+    description: string;
+    input_schema: Record<string, unknown>;
+    output_schema?: Record<string, unknown>;
+    permission: "allow" | "ask" | "deny";
+    price_usd?: number;
+  }>;
+  workflow_adapters?: Array<"runNode" | "runJudge">;
 };
 export interface StartSdkRunParams {
   "Idempotency-Key": string;
@@ -3583,6 +3595,11 @@ export type StartSdkRunResponse = {
     skills: Array<{
       name: string;
       files: Record<string, string>;
+    }>;
+    workflows: Array<{
+      name: string;
+      workflow: string;
+      description: string;
     }>;
   };
 };

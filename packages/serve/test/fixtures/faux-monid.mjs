@@ -11,7 +11,9 @@
 // fails as a fetch to a host that can't be reached does; with AGENTRUN_TEST_FAUX_MONID_STATUS, it answers that status;
 // with AGENTRUN_TEST_FAUX_MONID_STALL, it is held, its signal ignored as a provider answering late, until release(), and
 // stalled() gives the held call's signal once one is held; with AGENTRUN_TEST_FAUX_MONID_CHARGE, a run its maxCost lets
-// through completes charged that many dollars, whatever its estimate (monid re-priced it between the read and the run).
+// through completes charged that many dollars, whatever its estimate (monid re-priced it between the read and the run);
+// with AGENTRUN_TEST_FAUX_MONID_DELAY_MS, a run it lets through answers that many milliseconds later (sooner at its
+// signal), as a real fetch takes a while, so a burst's calls are out at once.
 import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
@@ -100,6 +102,8 @@ export default async function fakeMonid(url, init = {}) {
   const estimate = Math.round((listed?.price.amount?.value ?? 0) * each * 1e6) / 1e6;
   if (typeof body.maxCost === "number" && estimate > body.maxCost) return json(400, { code: 400, errorCode: "MAX_COST_EXCEEDED", message: `Run not started: estimated cost ~$${estimate} is above maxCost $${body.maxCost}. Raise maxCost to at least ${estimate} or choose a cheaper endpoint.` });
   const runId = `run${String(++next).padStart(4, "0")}`;
+  const delay = Number(process.env.AGENTRUN_TEST_FAUX_MONID_DELAY_MS ?? 0);
+  if (delay > 0) await new Promise((resolve) => { const timer = setTimeout(resolve, delay); init.signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
   const charge = process.env.AGENTRUN_TEST_FAUX_MONID_CHARGE;
   if (charge) return json(200, { ...done(runId, body.endpoint, { person: body.input?.body?.name ?? null }), provider: body.provider, billing: { reportedCost: { value: Math.round(Number(charge) * 1e6), unit: "MICRO_DOLLAR", currency: "USD" } } });
   switch (body.endpoint) {

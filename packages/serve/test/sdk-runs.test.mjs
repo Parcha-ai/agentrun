@@ -36,7 +36,7 @@ test("SDK backend runs retain caller execution, scope credentials, and reject co
   const started = await api("POST", `/agents/${id}/sdk-runs`, startBody, headers("first"));
   assert.equal(started.status, 201, JSON.stringify(started.body));
   const receipt = started.body;
-  assert.deepEqual(receipt.learning, { enabled: false, revision: null, context: "", skills: [] });
+  assert.deepEqual(receipt.learning, { enabled: false, revision: null, context: "", skills: [], workflows: [] });
   const sdk = client(server.baseUrl, receipt.token),
     path = `/sdk-runs/${receipt.run_id}`;
   assert.equal(
@@ -214,7 +214,7 @@ test("SDK evidence enters the normal checked, independently graded learning lane
   );
   await api("PUT", `/agents/${id}/definition`, { definition: { instructions: "Original policy.", learning: false } });
   const off = await api("POST", `/agents/${id}/sdk-runs`, { ...startBody, runtime: "codex-sdk" }, headers("learn-off"));
-  assert.deepEqual(off.body.learning, { enabled: false, revision: null, context: "", skills: [] });
+  assert.deepEqual(off.body.learning, { enabled: false, revision: null, context: "", skills: [], workflows: [] });
   for (const receipt of [second.body, off.body])
     await client(server.baseUrl, receipt.token)("POST", `/sdk-runs/${receipt.run_id}/complete`, {
       status: "cancelled",

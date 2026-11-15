@@ -89,8 +89,8 @@ function joins(store: Store, context: Context) {
     async of(run: RunRow): Promise<RunRowView> {
       if (!agentArchived.has(run.agentId)) agentArchived.set(run.agentId, (await store.agents.get(run.agentId))?.archivedAt ?? null);
       if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, ((await store.agents.revision(run.revisionId))?.kind as RevisionKind) ?? "agentic");
-      // A run that has not ended shows the spend booked so far (the cap's own reading over the journal, the figure it holds
-      // the run to), since cost_usd is written only at the end; an ended run shows its stored cost.
+      // A run that has not ended shows what it has spent so far over the journal (spentOverStore: never the hold of a step
+      // still running), since cost_usd is written only at the end; an ended run shows its stored cost.
       const cost = runReadState(run, kinds.get(run.revisionId)!) === "running" ? await spentOverStore(store, run.id, context) : run.costUsd;
       return viewOf(run, agentArchived.get(run.agentId)!, kinds.get(run.revisionId)!, cost);
     },
