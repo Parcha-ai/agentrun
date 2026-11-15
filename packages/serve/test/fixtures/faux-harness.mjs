@@ -79,7 +79,9 @@ export function script(spec, session = {}) {
   const text = spec.system.join("\n");
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
   const given = spec.tools.find((tool) => tool.name === "learned_workflow");
-  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name), ...(given ? { learned: { description: given.description, inputSchema: given.inputSchema } } : {}) })}\n`);
+  // And the tools it is handed for a script's nested calls alone (deferred: never listed to the model), when there are any.
+  const deferred = spec.tools.filter((tool) => tool.deferred).map((tool) => tool.name);
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name), ...(deferred.length ? { deferred } : {}), ...(given ? { learned: { description: given.description, inputSchema: given.inputSchema } } : {}) })}\n`);
   // The spend cap's wrap-up due once a $0.40 request whose answer runs the learned workflow <name> on <question> is booked:
   // the workflow's node request comes next on the session's model, then the harness's own closing answer.
   const wrapAround = /Wrap up around the learned workflow (\S+) on (.+?)\./.exec(text);

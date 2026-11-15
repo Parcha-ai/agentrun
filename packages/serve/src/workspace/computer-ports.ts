@@ -1,8 +1,13 @@
 // A desktop's or a phone's one port, as the kernel registry's computer tools reach it (run-adapters kernel/registry
 // Hands.computer), over the computer's surface (@parcha/agentrun-computer's createSurface, made in run-tools.ts from the
-// hello the claim connected it with): the one core that answers a per-step tool, a script (computer-script.ts) and the
-// claim's MCP endpoint (computer-mcp.ts) alike. A phone with no computerd (daemon none) answers the same methods in
-// process, so one port fits both. A refusal throws the computer's kind and words.
+// hello the claim connected it with): the one core that answers a per-step tool and computer_op (each called by the
+// model or by a codemode script's `computer`) and the claim's MCP endpoint (computer-mcp.ts) alike. A phone with no
+// computerd (daemon none) answers the same methods in process, so one port fits both. A refusal throws the computer's
+// kind and words.
+//
+// The agent's shell on the computer (shell.run, processes.start) gets what the run's bash gets under its bash policy
+// (bash-read-only.ts policyEnv, policyPrelude), which no argument of the call overrides; and where the agent's exec is
+// off (run-tools.ts AgentComputer) both are refused in words that say so.
 //
 // On a computer that replaced an earlier claim's (computer-for-claim.ts ClaimComputer.replaced), the model's context
 // still holds the refs and states the old one gave, and a new computer gives the same names (@e3, s4) to other things.
@@ -12,12 +17,34 @@
 import { SurfaceError, type Surface } from "@parcha/agentrun-computer/surface";
 import type { ComputerPort } from "@parcha/agentrun-kernel/kernel";
 
+/** What a call of the computer's shell is told when its agent's computer has exec off. */
+export const NO_PROGRAMS_WORDS = "this agent's computer runs no programs: its exec setting is off, so its scripts have no computer.shell and no computer.processes. Drive it through what it shows: its screen, its input and its apps.";
+
+/** The ops whose command runs in the computer's shell. */
+const SHELL_OPS: ReadonlySet<string> = new Set(["shell.run", "processes.start"]);
+
+/** What the run's bash adds under its bash policy: the environment that locks git's config down, set over any a call
+ *  gives, and the line that runs git only at the floor version. */
+export type ShellPolicy = { readonly env: Readonly<Record<string, string>>; readonly prelude: string };
+
+/** `args` of a shell op as the computer is sent them: with the policy's environment over the call's own, and its prelude
+ *  ahead of a command given as text. */
+function shaped(args: unknown, shell: ShellPolicy): unknown {
+  const given = (args ?? {}) as Record<string, unknown>;
+  const env = { ...((given.env ?? {}) as Record<string, string>), ...shell.env };
+  return { ...given, ...(Object.keys(env).length > 0 ? { env } : {}), ...(shell.prelude !== "" && typeof given.command === "string" ? { command: `${shell.prelude}${given.command}` } : {}) };
+}
+
 /** The port of a computer's surface. `replaced`: the computer replaced an earlier claim's, so an act is held to what
- *  this one showed (replacedGuard). */
-export const portOf = (surface: Surface, { replaced = false }: { readonly replaced?: boolean } = {}): ComputerPort => {
+ *  this one showed (replacedGuard). `shell`: the run's bash policy, which the computer's shell gets too. `programs`
+ *  false: the agent's exec is off, and its shell ops are refused (NO_PROGRAMS_WORDS). */
+export const portOf = (surface: Surface, { replaced = false, shell, programs }: { readonly replaced?: boolean; readonly shell?: ShellPolicy; readonly programs?: false } = {}): ComputerPort => {
   const port: ComputerPort = {
     groups: surface.card.groups,
-    call: (op, args, signal) => surface.call(op, args, signal ? { signal } : {}),
+    call: async (op, args, signal) => {
+      if (SHELL_OPS.has(op) && programs === false) throw new Error(NO_PROGRAMS_WORDS);
+      return surface.call(op, SHELL_OPS.has(op) && shell ? shaped(args, shell) : args, signal ? { signal } : {});
+    },
   };
   return replaced ? replacedGuard(port) : port;
 };
