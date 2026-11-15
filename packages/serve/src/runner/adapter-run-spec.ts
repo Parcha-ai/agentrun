@@ -211,8 +211,9 @@ export function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
-  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
+  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead). A ChatGPT plan's route is
+  // billed to the plan: its requests cost the run no dollars (CapModel.plan), never an unknown price.
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.provider.plan ? { plan: true } : {}) };
 }
 
 /** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
@@ -703,8 +704,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         // A tier with no model of its own (no model_tiers, no AGENT_MODEL_<TIER>): the agent's own model.
         const at = tierRoutes.get(subagentRoute(tier));
         if (!at) return { ref: { provider: PORT_PROVIDER, modelId: route.model } };
-        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on.
-        if (at.unpriced && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
+        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on. A
+        // ChatGPT plan's tier is not unpriced: it costs the run no dollars (capModelOf).
+        if (at.unpriced && !at.provider.plan && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
         return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
       preamble: environmentLine(),

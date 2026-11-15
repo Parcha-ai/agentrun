@@ -109,19 +109,30 @@ export const CALL_REFUSED = "agentrun.refused";
  *  `error`, or the Messages client's "<api> API error (400): {...}" with them at the top (the runner's pi route speaks
  *  Messages to the session's proxy). */
 function proxyCapRefusal(errorMessage: unknown): boolean {
-  if (typeof errorMessage !== "string") return false;
+  return proxyAnswerOf(errorMessage)?.code === "spend_cap_reached";
+}
+
+/** The code of the model proxy's answer once a ChatGPT plan's limit is reached (the kernel's PLAN_LIMIT_CODE): its words
+ *  are the run's error as they are. */
+const PLAN_LIMIT_CODE = "plan_limit_reached";
+
+/** The model proxy's own answer in pi's error for a request (`type` "agentrun_proxy"), its code and words, read by its
+ *  fields after the HTTP status pi-ai puts first (proxyCapRefusal says the two forms); undefined for any other error. */
+function proxyAnswerOf(errorMessage: unknown): { code?: string; message?: string } | undefined {
+  if (typeof errorMessage !== "string") return undefined;
   const at = errorMessage.indexOf("{");
-  if (at < 0) return false;
+  if (at < 0) return undefined;
   const head = errorMessage.slice(0, at);
   // The provider's name is any word with no space (agentrun-session today; a route's own, such as openrouter/anthropic):
   // the body's fields, never the name, say whose refusal it is.
-  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return false;
+  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return undefined;
   try {
-    const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; error?: { type?: unknown; code?: unknown } } | null;
+    const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; message?: unknown; error?: { type?: unknown; code?: unknown; message?: unknown } } | null;
     const error = body?.error ?? body;
-    return error?.type === "agentrun_proxy" && error.code === "spend_cap_reached";
+    if (error?.type !== "agentrun_proxy") return undefined;
+    return { ...(typeof error.code === "string" ? { code: error.code } : {}), ...(typeof error.message === "string" ? { message: error.message } : {}) };
   } catch {
-    return false;
+    return undefined;
   }
 }
 /** Written right after an answer whose cost was not in when it was written (a harness's proxy books a response after
@@ -766,7 +777,9 @@ function createProjector(options: TimelineOptions) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered !== "continued") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
-        const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
+        // A ChatGPT plan's limit reached (the model proxy's own answer, by its code) reads in its own words alone.
+        const proxied = proxyAnswerOf(message.errorMessage);
+        const why = redactedWhy(proxied?.code === PLAN_LIMIT_CODE && proxied.message ? proxied.message : (str(message.errorMessage) ?? "unknown error"));
         // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
         // still bill it (run-adapters answeredUnpriced). Its row says so, as the usage row counts it "not priced".
         const priced = Number.isFinite(obj(obj(message.usage)?.cost)?.total);

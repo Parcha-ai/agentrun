@@ -118,7 +118,8 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     policy: await policyFor(route.provider, route.model, []),
     price: (route.price ?? (() => null)) as (model: string, usage: ProxyUsage) => number | null,
-    capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null },
+    // A ChatGPT plan's route is billed to the plan: its requests cost the run no dollars (CapModel.plan).
+    capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null, ...(route.provider.plan ? { plan: true } : {}) },
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(route.provider.plan ? { plan: true } : {}),
     ...(route.provider.refused ? { refused: route.provider.refused } : {}),

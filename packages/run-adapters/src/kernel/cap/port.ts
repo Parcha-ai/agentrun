@@ -122,6 +122,8 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
  *  no measure, or priced output with neither a limit nor a ceiling (as the rule's noCeiling): undefined (it cannot be
  *  counted), never 0 and never Infinity. */
 function worstOf(model: CapModel | undefined, inputTokens: number | undefined, outputTokens: number | undefined): number | undefined {
+  // A plan's request costs the run nothing (CapModel.plan).
+  if (model?.plan) return 0;
   if (!model?.price || inputTokens === undefined) return undefined;
   if (outputTokens === undefined && model.outputCeiling === null && model.price.output > 0) return undefined;
   const bound = inputBound({ kind: "model", id: "", model, inputTokens });

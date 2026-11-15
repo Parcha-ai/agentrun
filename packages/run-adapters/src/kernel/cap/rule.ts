@@ -26,6 +26,8 @@ export type Judged = { heldUsd: number; outputTokensMax?: number; thinkingBudget
 
 /** A model request priced: its output asked and least, and its worst case at an output (price.ts requestPrice). */
 export function priced(request: ModelCapRequest) {
+  // A plan's request costs the run nothing at any output: its least, its step-0 figure and its worst are $0.
+  if (request.model.plan) return { asked: outputAsked(request), cost: (_output: number) => 0, least: 0 };
   const bound = inputBound(request);
   const price = request.model.price;
   if (bound === undefined || price === null) return undefined;
@@ -35,6 +37,10 @@ export function priced(request: ModelCapRequest) {
 }
 
 function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, keepUsd }: Known): Judged {
+  // A request on a person's subscription plan (CapModel.plan) is billed to the plan, never in dollars: held at $0, its
+  // output never limited (the plan's own limits apply), and admitted at any known spend, even one at the cap. Whatever else the run pays for (a
+  // paid tool, a model on a key) is judged as ever, so the cap still holds every dollar.
+  if (request.model.plan) return { heldUsd: 0, stoppedUsd: () => 0 };
   if (inputBound(request) === undefined) throw new CapRefused(unmeasured(capUsd), { forGood: true, spentUsd: spent });
   const price = request.model.price;
   if (price === null) throw new CapRefused(noPrice(capUsd), { forGood: true, spentUsd: spent });
@@ -109,7 +115,8 @@ export type NoteState = { capUsd: number | undefined; spentUsd: number | null; h
  *  the typical cost (step 0: its input and a 4,096-token answer) or twice its least, not yet told, never for a side call,
  *  and never when the request fits what is left only without the note's bytes. */
 export function noteFor(request: ModelCapRequest, state: NoteState): { words: string; leftUsd: number } | undefined {
-  if (request.side || state.told || state.capUsd === undefined || state.spentUsd === null) return undefined;
+  // A plan's request is never stopped by the cap, so the model on it has nothing to wrap up for.
+  if (request.side || request.model.plan || state.told || state.capUsd === undefined || state.spentUsd === null) return undefined;
   const p = priced(request);
   if (!p) return undefined;
   const least = p.cost(p.least);

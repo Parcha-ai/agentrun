@@ -151,6 +151,10 @@ export interface ProviderPolicy {
   addNote?(body: Record<string, unknown>, text: string): Record<string, unknown>;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
+  /** An error answer of the provider's that no retry can mend (a subscription plan's limit reached), read from its status
+   *  and its body: the words and code its client is answered with instead, at `refusedStatus`, so the client never asks
+   *  again and its run ends in those words. Undefined: the provider's answer goes through as it came. */
+  finalError?(status: number, body: string): { message: string; code: string } | undefined;
 }
 
 export interface ModelUsageReport extends ProxyUsage {
@@ -580,6 +584,9 @@ export interface ModelProxyOptions {
    *  (`ProviderPolicy.cut`), before its client has the piece that carries the stop: a harness whose client would ask for
    *  the answer again (Codex retries an incomplete stream) ends the turn there, the answer cut ("length"). */
   onCut?: (stop: { outputTokens?: number }) => void;
+  /** Told, with its words and code, once the provider's error answer is one no retry mends (`ProviderPolicy.finalError`:
+   *  a plan's limit reached), as its client is answered those words: the harness ends the turn in them. */
+  onFinal?: (message: string, code: string) => void;
 }
 
 /** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
@@ -1312,7 +1319,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
-      const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
+      let upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
       // its booking.
       try {
@@ -1325,6 +1332,34 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           await options.credentialRefused(credential);
         } catch {
           say(`model proxy (${policy.id}): the host could not renew a refused credential`);
+        }
+      }
+      // An error no retry mends (ProviderPolicy.finalError, a plan's limit reached): its client is answered the policy's
+      // words at refusedStatus, a status it never asks again on, in place of the provider's. It was not paid: booked as
+      // the provider's error answer is, at nothing.
+      if (!upstream.ok && policy.finalError) {
+        const text = await upstream.text();
+        let final: { message: string; code: string } | undefined;
+        try {
+          final = policy.finalError(upstream.status, text);
+        } catch (error) {
+          say(`model proxy (${policy.id}): whether an error answer is final could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
+        if (final) say(`model proxy (${policy.id}): the provider's error answer ends the run`, { status: upstream.status, code: final.code });
+        // The body read is decoded: passed on, it carries no encoding or length of the provider's.
+        const headers = new Headers(upstream.headers);
+        headers.delete("content-encoding");
+        headers.delete("content-length");
+        upstream = final
+          ? new Response(JSON.stringify({ error: { message: final.message, type: "agentrun_proxy", code: final.code } }), { status: refusedStatus, headers: { "content-type": "application/json" } })
+          : new Response(text, { status: upstream.status, headers });
+        // The harness ends the turn in the policy's words, whatever its client makes of the answer.
+        if (final) {
+          try {
+            options.onFinal?.(final.message, final.code);
+          } catch (error) {
+            say(`model proxy (${policy.id}): onFinal threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+          }
         }
       }
       // Its ids are kept before its body is read: from here the provider has seen it, whatever cuts it off.

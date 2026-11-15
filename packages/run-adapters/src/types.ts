@@ -39,6 +39,15 @@ export const HOST_RESULT_MAX_CHARS = 120_000;
  */
 export const CONTENT_FILTERED = "content_filter: the model provider stopped this answer";
 
+/**
+ * What a run on a person's ChatGPT plan ends with once the plan's limit is reached (its 429): the plan's own limit, never
+ * the run's spend cap, so nothing here can raise it and nothing tries again. A harness's model proxy answers its client
+ * these words (`ProviderPolicy.finalError`) and the harness halts the turn with them; a host shows them as they are.
+ */
+export const PLAN_LIMIT_WORDS = "Your ChatGPT plan's limit is reached. Manage usage in your ChatGPT settings, then run it again.";
+/** The code the proxy's answer carries beside PLAN_LIMIT_WORDS. */
+export const PLAN_LIMIT_CODE = "plan_limit_reached";
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;

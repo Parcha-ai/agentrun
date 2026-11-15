@@ -24,13 +24,16 @@ export interface ModelPrice extends PriceRates {
 }
 
 /** A model as the cap prices it: its API (what its provider adds server-side, and whether its thinking takes a budget),
- *  its price (null: none known), and its output ceiling (null: none). */
+ *  its price (null: none known), and its output ceiling (null: none). `plan`: billed to a person's subscription plan (a
+ *  ChatGPT plan's model), never by the token: a request on it costs the run no dollars, so the cap holds it at $0 and
+ *  never limits its output, whatever its price says. */
 export interface CapModel {
   readonly id: string;
   readonly api: string;
   readonly price: ModelPrice | null;
   readonly outputCeiling: number | null;
   readonly reasoning?: boolean;
+  readonly plan?: boolean;
 }
 
 /** A model request about to be sent, from any harness (pi in process, a CLI's through the model proxy). */
