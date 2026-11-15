@@ -1,0 +1,19 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun, repo
+kind: feature
+---
+Run explicitly selected native setups on another machine through an outbound Python worker. One-use owner enrollment becomes a connector-scoped credential; leased commands preserve stable event and completion retries, cancel source work on lost leases, and never redispatch an uncertain model call. Source paths, configuration, credentials and permissions remain controlled by the source operator. Opens are pinned to each run’s reviewed configuration fingerprint and cancelled opens release late sessions, files and locks. Independent polling and delivery keep source lease expiry responsive during stalled uploads. Remote seeds omit unsupported skill and resource counts with a visible reason. Scoped command-owner metadata avoids parsing another connector’s retained payloads and preserves escaped NUL in native content. PostgreSQL applies an additive column/index migration; existing SQLite stores install it and backfill on server reopen. Start this build’s server before its runners; a runner refuses an older SQLite store whose metadata is not yet prepared. Remote Codex grading separates uncached input from both cache components, while unknown cache usage keeps grading tokens unknown. An upload rejected after cancellation waits for a newer heartbeat before classifying a missing cancellation, keeping that source stopped without interrupting other commands.
+
+An oversized or malformed source bridge response, a stopped event reader or stdout EOF closes the bridge and fails its pending operations. Later commands cannot execute without a reader; the existing four-megabyte frame limit stays unchanged and uncertain native work is never replayed automatically.
+
+Authenticated command completions accept the source worker's four-megabyte UTF-8 envelope, including its lease token; other request limits are unchanged. A result that exceeds that envelope becomes a small durable command failure before upload, so acknowledgement retries and worker restarts preserve the same outcome without stopping unrelated jobs or repeating native execution.
+
+A command that exhausts the destination's cumulative event capacity stops only its own native source and records a small durable failure. Unrelated jobs continue; late output is discarded, and retries or restarts reuse the recorded failure without executing the command again.
+
+PostgreSQL command metadata is migration 0013, after the released 0011 revision-MCP-pin and 0012 revision-Monid-pin migrations. Upgrades preserve existing pins, agent revisions and command payloads. An experimental store that already applied the unpublished native-command migration as 0011 or 0012 refuses startup with a migration-text mismatch; this build does not rewrite that history or reset data. Keep its previous build until a separate preserving migration is available. SQLite stores missing MCP, Monid or native command-owner metadata are upgraded only by the server before runners can open them.
+
+Remote preparation retains policy omission reasons and current coverage markers; incomplete or older source evidence disables automatic learning while ordinary native jobs remain available.
+
+Final native tool and usage events are acknowledged before command completion. A cancellation that cannot acquire or flush the bridge writer within 250 milliseconds closes the shared bridge through its bounded child cleanup; pending operations fail without automatic replay instead of blocking the lease loop. Healthy per-command cancellation keeps its ordered frame and other sessions.
+
+When source preparation withdraws notes and skills or the final source-plus-saved policy evidence is incomplete or truncated, the native run records why automatic learning was skipped before sending a reflection or queuing a grade. Ordinary tasks retain their saved and learned context; complete policy evidence keeps the checked reflection and grading flow.
