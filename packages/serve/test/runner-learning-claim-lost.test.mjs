@@ -4,7 +4,8 @@
 // refused, then parked for a raise (input_required) on spend that was only ever learning's. One rule: the run's status
 // comes from how the job's own turn ended. Learning spend that leaves the cap no room, or that takes the total past it,
 // is the learning's: dropped in the reason the learning code keeps for the cap (no_budget), the spend still booked;
-// never a budget pause, a wrap-up note in the learning turn, or a run failed over its cap.
+// never a budget pause, a wrap-up note in the learning turn, or a run failed over its cap. A job's turn that failed (a
+// tool call faulted on every restart) ends the run failed in the same words after a takeover as without one.
 // pi through the adapter loop (conformance-pi-adapter.mjs) on the end-of-run step, runners on one store whose clock the
 // case moves past each lost claim (adapter-pi-cap-raise-crash.test.mjs's way).
 import assert from "node:assert/strict";
@@ -48,8 +49,10 @@ const isCompile = (body) => /Compile the whole job/.test(lastUserText(body));
  *  one runner after another: each request `held` matches while losses are left is never answered there, and that
  *  runner's claim is lost (its journal frozen, the runner killed, the store's clock moved past its claim) once it is out;
  *  the next runner takes the run over. `priceOf(body)`: what a request the provider answered is booked at (each answer's
- *  booking reads the figure of the request it answers, in order). Settles at the run's end or park. */
-async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf }) {
+ *  booking reads the figure of the request it answers, in order). `script`: the job's turn (the model's steps before
+ *  the learning's). `toolsOf(lose)`: the session's tools; `lose()` counts a loss as a held request does and gives a call
+ *  that never returns on that runner. `restartLimit`: pi's (MAX_RESTARTS). Settles at the run's end or park. */
+async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf, script: jobScript = [{ say: ANSWER }], toolsOf = () => ({}), restartLimit = MAX_RESTARTS }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-learning-claim-lost-"));
   const clock = { skewMs: 0 };
   const now = () => Date.now() + clock.skewMs;
@@ -87,7 +90,7 @@ async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf })
     // The script's step is the request's count of assistant messages (scriptedOrigin): the job's answer, then the
     // learning turn's reply.
     const step = (request.messages ?? []).filter((message) => message.role === "assistant").length;
-    const script = [{ say: ANSWER }, ...Array.from({ length: step }, () => ({ say: isCompile(request) ? "No change." : REFLECTED }))];
+    const script = [...jobScript, ...Array.from({ length: step }, () => ({ say: isCompile(request) ? "No change." : REFLECTED }))];
     prices.push(priceOf(request));
     return scriptedOrigin(script, sent)(url, init);
   };
@@ -109,7 +112,12 @@ async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf })
     const figure = prices.shift();
     return typeof figure === "number" ? figure : listPrice(model, usage);
   };
-  const spec = piAdapterSpec({ script: [], tools: {}, hooks: quiet, agentId: "agent-1" }, { fetch, price });
+  const lose = () => {
+    left -= 1;
+    out();
+    return hold();
+  };
+  const spec = piAdapterSpec({ script: [], tools: toolsOf(lose), hooks: quiet, agentId: "agent-1" }, { fetch, price });
   // A lost runner's journal, frozen at the loss: every commit from then on never returns, so its loop (still alive in this
   // process: a kill stops nothing) writes nothing more, as a dead process's would.
   const frozen = new Set();
@@ -129,7 +137,7 @@ async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf })
       ...(await spec(claim, run)),
       cap: { capUsd, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf },
       runCap: { capUsd: () => capUsd, ...runCap },
-    }), { restartLimit: MAX_RESTARTS });
+    }), { restartLimit });
     // Run-1 on the adapter loop; any other run it claims (a learning run a proposal queues) is held, never run here.
     const createLoop = (deps) => {
       const loop = job({ ...deps, endOfRun, journal: (claim) => freezing(name, deps.journal(claim)) });
@@ -227,6 +235,27 @@ test("the walk's shape: a job answered at $1, its look-back cut twice and booked
   const total = booked.reduce((sum, usd) => sum + usd, 0);
   assert.ok(total > CAP + 0.3 && total < CAP + 0.5, `about $5.38 booked against the $5 cap: ${total}`);
   assert.deepEqual([view.cost.usd, view.cost.cap_usd, view.cost.so_far_usd, view.cost.unpriced], [null, CAP, 2.16, 2], `the run's cost: $2.16 known, the two cut requests not priced: ${JSON.stringify(view.cost)}`);
+});
+
+test("a job that answered after a tool call faulted on every restart, lost mid look-back: the next claim ends the run failed in the same words as without the takeover", { timeout: 180_000 }, async (t) => {
+  // The job's turn: one call of a tool whose first run is out at a claim's loss (pi's restart limit 1: the next claim
+  // ends it restart_limit), then the answer: the run fails in the restart's words (adapter-loop.ts restartLimited), its
+  // job's submission done all the same. The look-back's request is out at a second loss in the takeover case.
+  const toolsOf = (lose) => {
+    let ran = false;
+    return { fetch_page: { name: "fetch_page", replaySafe: true, run: () => (ran ? "the page" : ((ran = true), lose())) } };
+  };
+  const shape = { capUsd: 50, runCap: { modelOf: () => SONNET }, priceOf: () => undefined, endOfRunOf: realLearning, script: [{ call: "fetch_page" }, { say: ANSWER }], toolsOf, restartLimit: 1 };
+  const alone = await lostRun(t, { ...shape, held: () => false, losses: 1 });
+  assert.equal(alone.row.state, "failed", `without a takeover in its learning the run fails on the tool's restarts: ${JSON.stringify(alone.row)}`);
+  assert.match(alone.row.summary ?? "", /faulted on every restart/, `the run says why: ${alone.row.summary}`);
+  const { server, row, sent } = await lostRun(t, { ...shape, held: isLookBack, losses: 2 });
+  // The look-back's request, cut at the loss, is pi's to restart too: under the same limit the takeover ends it, so the
+  // learning turn gives no answer there; the claim still found it open (lookingBackOpen).
+  assert.equal(sent.filter(isLookBack).length, 1, `the look-back went out once, at the loss: ${sent.length} requests`);
+  assert.deepEqual([row.state, row.summary], [alone.row.state, alone.row.summary], `the takeover ends the run as the job's turn ended, in its words: ${JSON.stringify(row)}`);
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.equal(view.status, "failed", `the run reads failed: ${JSON.stringify({ status: view.status, error: view.error })}`);
 });
 
 test("a capped pi run lost mid compile turn: the next claim takes the open compile turn as learning's; the run ends completed with its answer, its learning dropped no_budget, never parked", { timeout: 120_000 }, async (t) => {
