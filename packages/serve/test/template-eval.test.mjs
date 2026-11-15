@@ -205,6 +205,29 @@ test("a background shell call keeps its own name in the grading record, as the g
   assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
+test("tool_used's at_least passes on that many matching calls or more, its args filtering first as count's do; count stays exact, and a grader gives one of the two", async (t) => {
+  const search = (query) => ({ tool: "web_search", arguments: { query }, status: "success", result: "{}" });
+  const record = { answer: "", calls: ["a", "b", "c", "d", "robots"].map(search), mcpCalls: [], files: [] };
+  const grade = (fields) => gradeDeterministic({ file: "s.md", type: "tool_used", tools: ["web_search"], expect: "called", ...fields }, record, []);
+  assert.deepEqual(grade({ atLeast: 4 }), { pass: true, reason: "5 calls of web_search; the grader expects at least 4" }, "five searches pass at least 4");
+  assert.equal(grade({ atLeast: 5 }).pass, true);
+  assert.deepEqual(grade({ atLeast: 6 }), { pass: false, reason: "5 calls of web_search; the grader expects at least 6" });
+  assert.equal(grade({ count: 4 }).pass, false, "count is still exact");
+  assert.deepEqual(grade({ atLeast: 2, args: { query: "robots" } }), { pass: false, reason: `1 call of web_search with {"query":"robots"}; the grader expects at least 2` }, "args filter the calls first");
+  // Read from a grader's front matter: at_least, a whole number of calls of 1 or more, and never beside count.
+  const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
+  const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
+  grader("most.md", "at_least: 4");
+  assert.deepEqual(readCases(dir, ["graded"]).cases[0].graders.find((g) => g.file === "most.md"), { file: "most.md", type: "tool_used", tools: ["web_search"], expect: "called", atLeast: 4 });
+  grader("both.md", "count: 4\nat_least: 4");
+  grader("zero.md", "at_least: 0");
+  grader("none.md", "expect: not_called\nat_least: 2");
+  assert.throws(() => readCases(dir, ["graded"]), (e) => {
+    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a least one: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
+    return true;
+  });
+});
+
 /** A copy of the fixture package whose agent is also granted `grants` (monid endpoints), with one case `monid` whose
  *  agent calls monid's /person/enrich by its wire name and whose graders are `graders` ({file: front matter}). */
 async function monidPackage(t, grants, graders) {
