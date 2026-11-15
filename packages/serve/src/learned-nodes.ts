@@ -32,14 +32,17 @@ export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" 
 
 /** A run's guard rows, from its root entries: every guard check of every learned_workflow call (LEARNED_NODES `guards`,
  *  never the capped trace's), in order, each with its call's workflow. What its metrics keep as `guards`. A call run
- *  again (after a park or a crash: it nests calls) keeps an entry each time; only its last counts, as it holds every check
- *  its rerun made again. */
+ *  again (after a park or a crash: it nests calls) keeps an entry each time; only its last that ran a node or made a check
+ *  counts, as it holds every check its rerun made again. A rerun refused before any node ran (a replay run keeps that
+ *  entry, `nodes: []`) leaves the attempt before it standing. */
 export function guardsOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): GuardRow[] {
   const rows: GuardRow[] = [];
   const last = new Map<unknown, number>();
   entries.forEach((entry, index) => {
-    const call = entry.kind === LEARNED_NODES ? (entry.data as { call?: unknown } | undefined)?.call : undefined;
-    if (typeof call === "string") last.set(call, index);
+    if (entry.kind !== LEARNED_NODES) return;
+    const data = entry.data as { call?: unknown; nodes?: unknown; guards?: unknown } | undefined;
+    const ran = (Array.isArray(data?.nodes) && data.nodes.length > 0) || (Array.isArray(data?.guards) && data.guards.length > 0);
+    if (typeof data?.call === "string" && ran) last.set(data.call, index);
   });
   for (const [index, entry] of entries.entries()) {
     if (entry.kind !== LEARNED_NODES) continue;
