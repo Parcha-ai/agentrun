@@ -166,7 +166,7 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
         : "There is no tool for a call node to run: author no call node.",
       "A model node (extract, decide, agent) names no `tools`: it runs in a session of its own with none. Fetch with a call node.",
       `An agent node asks at most ${LEARNED_MAX_TURNS} \`max_turns\`, and never \`context: "fork"\`.`,
-      "Give each model node `\"tier\": \"fast\"`; a step that needs the agent's own judgment names no tier, and runs on the agent's model.",
+      "Give each legwork model node `\"tier\": \"fast\"`. The step that writes the answer (`output.path`) names no tier: it runs on the agent's model.",
       "`input.schemaId` names a schema whose required fields are the run's own input fields, as a run is given them: then the workflow runs first on later runs, before the agent.",
       "`output.path` is required: the workflow's answer is the value there, the job's answer in the format the runs answered with.",
       jev
@@ -185,8 +185,8 @@ export const compileReference = (dsl: { readonly authorContract: (options: { hos
 /** The worked example's input, as a run gives it. */
 export const EXAMPLE_INPUT = { content: "Refund request: order 1043, a $42 kettle that arrived broken, bought 9 days ago." } as const;
 /** The worked example: a whole job, input to answer, that the checks and the dry run pass (a test holds it to them).
- *  An extract step reads the facts, a judge asks one typed question of them (with a decision provider), a decide step
- *  answers, and an escalate step hands back a case the policy does not cover. With Jev (`jev`) each judgment step is
+ *  An extract step reads the facts on the fast tier, a judge asks one typed question of them (with a decision provider),
+ *  a decide step answers on the agent's own model (no tier: answerTierProblems), and an escalate step hands back a case the policy does not cover. With Jev (`jev`) each judgment step is
  *  guarded on its own confidence and Jev's (`both`) and the extract step on Jev's; without, the judgment steps on their
  *  own confidence alone. */
 export function compileExample(judges: boolean, jev = false): Record<string, unknown> {
@@ -201,7 +201,7 @@ export function compileExample(judges: boolean, jev = false): Record<string, unk
   const steps: Record<string, unknown>[] = [
     { node: "extract", label: "facts", instructions: "Read the request: the item, its price in dollars, how many days ago it was bought, and whether it arrived damaged. Null for what it does not say.", state: { content: "{content}" }, out: "Facts", as: "facts", tier: "fast", ...facts },
     ...(judges ? [{ node: "judge", label: "policy", state: { facts: "{facts}" }, out: "Policy", as: "policy", guard }] : []),
-    { node: "decide", label: "answer", instructions: "Decide refund, replace or decline by the refund policy, and write the reply to the customer. A request the policy does not cover is needs_review.", state: judges ? { facts: "{facts}", policy: "{policy}" } : { facts: "{facts}" }, out: "Answer", as: "answer", tier: "fast", guard },
+    { node: "decide", label: "answer", instructions: "Decide refund, replace or decline by the refund policy, and write the reply to the customer. A request the policy does not cover is needs_review.", state: judges ? { facts: "{facts}", policy: "{policy}" } : { facts: "{facts}" }, out: "Answer", as: "answer", guard },
     { node: "escalate", label: "review", when: { predicate: "field_equals", path: "answer.decision", value: "needs_review" }, kind: "needs_review", stage: "answer", summary: "The policy does not cover this request: {answer.reply}" },
   ];
   return { v: 2, name: "refund-request", schemas, input: { schemaId: "Request" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps } };

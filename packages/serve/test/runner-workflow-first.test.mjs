@@ -71,7 +71,7 @@ const answerFlow = {
   },
   input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
   root: { node: "chain", steps: [
-    { node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer", tier: "fast" },
+    { node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer" },
     { node: "escalate", label: "unsure", when: { predicate: "field_equals", path: "answer.sure", value: false }, kind: "unsure", stage: "answer", summary: "not sure of {answer.answer}" },
   ] },
 };
@@ -765,7 +765,7 @@ test("costLineOf: the newest 10 served runs at the digest against the agent's by
 const textFlow = {
   ...answerFlow,
   schemas: { ...answerFlow.schemas, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } } },
-  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question in words.", out: "Answer", as: "answer", tier: "fast" }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question in words.", out: "Answer", as: "answer" }] },
 };
 const TEXT_FLOWS = [{ name: "answer", description: "Answers a question in words", workflow: textFlow }];
 
