@@ -141,9 +141,9 @@ export const needsNetwork = (network: readonly string[] | undefined): boolean =>
 export const aLabel = (label: string, start = false): string => `${start ? "A" : "a"}${/^[AEIOU]/i.test(label) ? "n" : ""} ${label}`;
 
 /** Why a sandbox or a desktop that would mount the owner's Archil disk can't start in Mode 2: the mount needs Archil's
- *  image in the owner's own vendor account, and this server can't put it there yet (E2B Desktop's template has none, and
- *  Agent37's agentrun-box is in no owner's workspace). Settings (computers.ts modeRefusal) and a run's start
- *  (computerReadiness) say it. */
+ *  image in the owner's own vendor account, and this server can't put it there yet (E2B Desktop's template has none).
+ *  A provider that prepares its image (prepareImage: Agent37 registers the box image in the owner's workspace) is never
+ *  refused so. Settings (computers.ts modeRefusal) and a run's start (computerReadiness) say it. */
 export const mode2ArchilWhy = (label: string, kind: "sandbox" | "desktop"): string =>
   `${aLabel(label, true)} ${kind} can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (${SETTINGS})`;
 
@@ -176,7 +176,7 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
   });
   if ("refused" in resolved) return { refused: resolved.refused };
   const entry = registry.PROVIDERS.find((one) => one.id === resolved.provider);
-  if (mode === 2 && (resolved.kind === "sandbox" || resolved.kind === "desktop") && resolved.mounts && entry) return { refused: `${mode2ArchilWhy(entry.label, resolved.kind)}.` };
+  if (mode === 2 && (resolved.kind === "sandbox" || resolved.kind === "desktop") && resolved.mounts && entry && !entry.prepareImage) return { refused: `${mode2ArchilWhy(entry.label, resolved.kind)}.` };
   if (entry && entry.mounts.includes("bind") && answers) {
     const said = await answers(entry.id);
     // It names the box whose probe said no (a refusal's details.box), as the box check did.

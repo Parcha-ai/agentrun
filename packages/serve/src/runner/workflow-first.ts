@@ -31,6 +31,8 @@ export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
 import { endedIn, type GuardRow, guardsOf, replaySkippedIn } from "../learned-nodes.js";
+import { sameAnswer } from "../learn/promote.js";
+import type { Skipped } from "../learn/replay-calls.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
  *  revision, under which call, and how it ended. A later claim that finds it never runs the workflow again. */
@@ -299,7 +301,7 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
-export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: { readonly tool: string; readonly step: string; readonly unmarked?: true } };
+export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: Skipped };
 /** How a replay run's workflow ended on its input: `skipped_write`, stopped at a write the graded run's recording does not
  *  have (learn/replay-calls.ts SKIPPED_WRITE), never run. */
 export type ReplayOutcome = "answered" | "handed_back" | "failed" | "skipped_write";
@@ -317,8 +319,8 @@ export function servedAnswerOf(entries: readonly { readonly kind: string; readon
 
 /** Whether a run its learned workflow answered alone still ends on that answer (the run's path is who wrote its final
  *  answer): its newest answer row outside the end-of-run turns (`rows`, runTimeline's, LEARNING_LABEL's left out) is
- *  none, or says what the workflow `answer`ed, as it produced it or as the agent was shown it (`shown`) (trimmed; two
- *  JSON answers holding the same value read the same). A
+ *  none, or says what the workflow `answer`ed, as it produced it or as the agent was shown it (`shown`) (promote.ts sameAnswer: trimmed text, or JSON of the same value, a
+ *  fenced block in prose included). A
  *  follow-up the agent answered with a new or changed answer did not end on the workflow: `handed_back`. A feedback
  *  round (a grade's label, adapter-loop.ts) asks the agent no turn of the job's, so its run stays the workflow's. */
 export function servedAnswerStands(answer: string, rows: readonly { readonly kind: string; readonly agent_label?: string | null; readonly text?: string | null }[], shown?: string): boolean {
@@ -327,22 +329,6 @@ export function servedAnswerStands(answer: string, rows: readonly { readonly kin
   // says it again says the workflow's answer, though a held value in it now reads as redacted.
   return !last || sameAnswer(last.text ?? "", answer) || (shown !== undefined && sameAnswer(last.text ?? "", shown));
 }
-
-/** Two answers that say the same: equal once trimmed, or both JSON of the same value (keys in any order). */
-export function sameAnswer(a: string, b: string): boolean {
-  if (a.trim() === b.trim()) return true;
-  const parsed = (text: string): unknown => {
-    try {
-      return JSON.parse(text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, "$1"));
-    } catch {
-      return undefined;
-    }
-  };
-  const [x, y] = [parsed(a), parsed(b)];
-  return x !== undefined && y !== undefined && canonical(x) === canonical(y);
-}
-const canonical = (value: unknown): string =>
-  Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
 
 /** Said to the agent between the job and a follow-up's message, on a run its learned workflow answered alone: which
  *  workflow answered and what, so the follow-up (a reviewer's word on that answer) reads against it. */

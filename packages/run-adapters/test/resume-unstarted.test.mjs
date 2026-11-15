@@ -1,8 +1,10 @@
 // resumeUnstartedCalls: on a CLI's resume, a call its transcript left dangling that never reached its intent (no effect
 // for tool:<callId> in the drive's records, the session's own on the run's journal) goes through the tool bridge, the
 // host's gate first, then its intent, the call and its result, all journaled, and only then is it settled into the CLI's
-// transcript (`settle`). A call with an intent (cut off, released or ended) is left to the CLI's own recovery: never run
-// again here. A gate that parks writes nothing and settles nothing, and the call keeps its id.
+// transcript (`settle`). A call that ended (completed, or failed of its own accord) is settled with the outcome the records
+// hold, read back with nothing run and no gate asked: the CLI may have let go before it wrote that result (a park beside
+// it). A call cut off or released is left to the CLI's own recovery: never run again here. A gate that parks writes
+// nothing and settles nothing, and the call keeps its id.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { openDrive } from '@parcha/agentrun-kernel/kernel';
@@ -47,32 +49,37 @@ test('a deny is settled in the host words, and nothing ran or was written', asyn
   assert.deepEqual(starts(await store.read('s2'), 'c2'), []);
 });
 
-test('a call with an intent is never run again here, whether it was cut off, released or ended', async () => {
+test('a call with an intent is never run again here: one that ended is settled with its recorded outcome, one cut off or released is left to the CLI', async () => {
   const store = memorySessionStore();
-  // First drive: two calls start and never end (the process died), one ends.
+  // First drive: two calls start and never end (the process died), one ends, one fails of its own accord.
   const first = await openDrive({ writer: await store.open('s3'), signal: new AbortController().signal });
   const ran = [];
   const hang = { name: 'lookup', description: 'Hangs.', inputSchema: { type: 'object' }, replay: 'never', execute: () => new Promise(() => {}) };
   const hangSafe = { ...hang, name: 'peek', replay: 'safe' };
   const done = lookupTool(ran, 'safe');
-  const bridge1 = toolBridge(first, [hang, hangSafe, { ...done, name: 'done' }], { serial: false });
+  const broken = { name: 'broken', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'never', execute: async () => { ran.push('broken'); throw new Error('no such issue'); } };
+  const bridge1 = toolBridge(first, [hang, hangSafe, { ...done, name: 'done' }, broken], { serial: false });
   void bridge1.call('lookup', {}, 'cut');
   void bridge1.call('peek', {}, 'released');
   await bridge1.call('done', { q: 'y' }, 'ended');
+  await bridge1.call('broken', {}, 'failed');
   await new Promise((resolve) => setImmediate(resolve));
   // Second drive on the same session: the cut-off intents are resolved by its open; none is run again here.
   const second = await openDrive({ writer: await store.open('s3'), signal: new AbortController().signal });
   let asked = 0;
-  const bridge2 = toolBridge(second, [lookupTool(ran), { ...lookupTool(ran, 'safe'), name: 'peek' }, { ...done, name: 'done' }], { gate: async () => { asked += 1; return 'allow'; } });
+  const bridge2 = toolBridge(second, [lookupTool(ran), { ...lookupTool(ran, 'safe'), name: 'peek' }, { ...done, name: 'done' }, broken], { gate: async () => { asked += 1; return 'allow'; } });
   const settled = [];
+  const before = (await store.read('s3')).length;
   await resumeUnstartedCalls(second, bridge2, [
     { callId: 'cut', tool: 'lookup', args: {} },
     { callId: 'released', tool: 'peek', args: {} },
     { callId: 'ended', tool: 'done', args: { q: 'y' } },
-  ], async (call) => { settled.push(call.callId); });
+    { callId: 'failed', tool: 'broken', args: {} },
+  ], async (call, outcome) => { settled.push([call.callId, outcome]); });
   assert.equal(asked, 0, 'no gate asked');
-  assert.deepEqual(settled, [], 'none settled here: the CLI recovers them as today');
-  assert.deepEqual(ran, [{ q: 'y' }], 'only the call that ended in the first drive ever ran');
+  assert.deepEqual(settled, [['ended', { text: 'found y', isError: false }], ['failed', { text: 'no such issue', isError: true }]], 'the ended ones settled with their recorded outcome; the cut-off ones left to the CLI');
+  assert.deepEqual(ran, [{ q: 'y' }, 'broken'], 'only the calls that ended in the first drive ever ran, once each');
+  assert.equal((await store.read('s3')).length, before, 'nothing written: read back from the records');
 });
 
 test('a gate that parks on resume writes nothing and settles nothing; the call keeps its id', async () => {

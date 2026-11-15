@@ -106,7 +106,7 @@ test("kind desktop declares the screen and input besides the shell, as its descr
 	const configuration = entry.capabilities.find((one) => one.kind === "desktop");
 	assert.deepEqual(configuration.options, { kind: "desktop" }, "serve builds the desktop with kind desktop");
 	assert.deepEqual(configuration.groups, desktop.groups);
-	assert.deepEqual(entry.defaultImage, { sandbox: "agent37-base", desktop: "agentrun-box" });
+	assert.equal(entry.prepareImage, true, "serve starts both kinds from the template prepareImage registers (agent37-image.test.mjs)");
 	assert.throws(() => restOnly({ kind: "phone" }), /kind is desktop or linux/);
 });
 
@@ -612,9 +612,9 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 	assert.equal(shorter.capabilities().maxLifetimeMs, 600_000, "a shorter cap from the environment is kept");
 	const longer = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.maxLifetimeMs]: "3600000" }, ...doubles });
 	assert.equal(longer.capabilities().maxLifetimeMs, 30 * 60_000, "a longer one is cut to 30 minutes");
-	assert.equal(conformanceModule.conformanceImage({ env: {} }), "agent37-base");
-	assert.equal(conformanceModule.conformanceImage({ env: { [ENV.template]: "box@v1" } }), "box@v1");
-	assert.equal(conformanceModule.conformanceImage({ env: { [ENV.kind]: "desktop" } }), "agentrun-box", "a desktop starts from the box template");
+	assert.equal(await conformanceModule.conformanceImage({ env: {} }), "agent37-base");
+	assert.equal(await conformanceModule.conformanceImage({ env: { [ENV.template]: "box@v1" } }), "box@v1");
+	await assert.rejects(conformanceModule.conformanceImage({ env: { ...env, [ENV.kind]: "desktop" }, ...doubles }), /set AGENTRUN_COMPUTER_LIVE_AGENT37=1/, "a desktop's box template is registered live");
 	const desktop = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.kind]: "desktop" }, ...doubles });
 	assert.equal(desktop.capabilities().kind, "desktop");
 	const host = await conformanceModule.createHost({ env, ...doubles });

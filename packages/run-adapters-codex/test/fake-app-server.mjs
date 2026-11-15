@@ -213,8 +213,8 @@ async function stream(text, onPiece) {
 /**
  * `FAKE_CODEX_MODEL=responses`: the turn is the provider's model's, as Codex's is. Each step sends the thread's history (its
  * `response_item` payloads, in order) and its dynamic tools to the provider's `/responses`, then does what the answer says: a
- * `function_call` calls that dynamic tool (its line, `item/tool/call`, its output) and asks the model again; text is said and
- * ends the turn. A resumed thread's history is the rollout it resumed, so the model picks up where it was.
+ * `function_call` calls that dynamic tool (its line, `item/tool/call`, its output; several in one answer, each in turn) and
+ * asks the model again; text is said and ends the turn. A resumed thread's history is the rollout it resumed, so the model picks up where it was.
  */
 /** Codex's stream retries (its `stream_max_retries` default), and what modelTurn returns for a turn interrupted between them. */
 const STREAM_RETRIES = 5;
@@ -232,7 +232,7 @@ async function modelTurn(turnId) {
     });
     if (!res.ok || !res.body) throw new Error(`the model answered ${res.status}`);
     let text = '';
-    let call;
+    const calls = [];
     let completed = false;
     let incomplete;
     // The answer's text, told as it comes (Codex's item/agentMessage/delta), its item started at the first piece.
@@ -257,7 +257,7 @@ async function modelTurn(turnId) {
         if (event.type === 'response.output_text.delta') {
           text += event.delta ?? '';
           piece(event.delta ?? '');
-        } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') call = event.item;
+        } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') calls.push(event.item);
         else if (event.type === 'response.completed') {
           completed = true;
           break read;
@@ -277,19 +277,23 @@ async function modelTurn(turnId) {
       continue;
     }
     if (!completed) throw new Error('the model stream was cut');
-    if (call) {
-      const callId = call.call_id;
-      const tool = call.name;
-      let args = {};
-      try {
-        args = call.arguments ? JSON.parse(call.arguments) : {};
-      } catch {}
-      write('response_item', { type: 'function_call', name: tool, arguments: call.arguments ?? '{}', call_id: callId });
-      notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
-      const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
-      const out = result.contentItems?.map((c) => c.text).join('') ?? '';
-      write('response_item', { type: 'function_call_output', call_id: callId, output: out });
-      notify('item/completed', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool, status: result.success ? 'completed' : 'failed' } });
+    if (calls.length) {
+      // Every call the answer made is on the rollout as it streamed in; then each runs, in the model's order, its output
+      // written as it ends (a later call that blocks leaves the earlier ones' outputs written).
+      for (const call of calls) write('response_item', { type: 'function_call', name: call.name, arguments: call.arguments ?? '{}', call_id: call.call_id });
+      for (const call of calls) {
+        const callId = call.call_id;
+        const tool = call.name;
+        let args = {};
+        try {
+          args = call.arguments ? JSON.parse(call.arguments) : {};
+        } catch {}
+        notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
+        const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
+        const out = result.contentItems?.map((c) => c.text).join('') ?? '';
+        write('response_item', { type: 'function_call_output', call_id: callId, output: out });
+        notify('item/completed', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool, status: result.success ? 'completed' : 'failed' } });
+      }
       continue;
     }
     piece('');

@@ -1183,7 +1183,7 @@ class AgentTemplate(TypedDict):
 
 class _InputIssueRequired(TypedDict):
     field: str
-    reason: Literal["missing", "wrong_type", "not_allowed", "not_an_option", "too_short", "too_long", "too_few", "too_many", "bad_format", "duplicate", "invalid", "not_set_up_here", "redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired", "registration_unavailable"]
+    reason: Literal["missing", "wrong_type", "not_allowed", "not_an_option", "too_short", "too_long", "too_few", "too_many", "bad_format", "duplicate", "invalid", "not_set_up_here", "redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired", "registration_unavailable", "priced_by_usage"]
     message: str
 
 
@@ -1623,7 +1623,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
-    price: float | Literal["not metered"]
+    price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
 
@@ -3551,7 +3551,7 @@ class _RunPending2Required(TypedDict):
 
 
 class RunPending2(_RunPending2Required, total=False):
-    price: float | Literal["not metered"]
+    price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
 

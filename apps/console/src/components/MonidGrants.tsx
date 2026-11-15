@@ -19,7 +19,7 @@ const cardLine = (grant: string): string => {
  *  field checks the name's shape only; the save reads monid's listing and is the judge of the rest. `listed`: the grants
  *  to show unticked too, which the editor keeps (every grant its form has shown), so a card outlives a save and a step
  *  change. `notes`: what the last save's
- *  answer said of a grant (a wildcard's endpoints left out), in the server's words; `refused`: why the last save was
+ *  answer said of a grant (each endpoint monid prices by usage), in the server's words; `refused`: why the last save was
  *  refused at a grant, in the server's words. */
 export function MonidGrants({ tools, listed = [], notes = [], refused = [], onChange }: {
   tools: readonly string[]; listed?: readonly string[];

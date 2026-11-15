@@ -40,8 +40,8 @@ export function monidFieldsOf(tools: readonly string[]): Map<string, string> {
   return new Map(tools.flatMap((tool, i) => (isMonidName(tool) ? [[`definition.tools[${i}]`, tool] as const] : [])));
 }
 
-/** A save's warnings split by what they are about: those at a monid grant (each endpoint a wildcard left out, monid's
- *  pricing in the server's words: the run is not refused, the endpoint just isn't granted), and the rest (what this host
+/** A save's warnings split by what they are about: those at a monid grant (each endpoint monid prices by usage, in the
+ *  server's words: granted, its charge able to pass its estimate; the run is not refused), and the rest (what this host
  *  lacks to run the revision). `tools`: the tools the saved revision holds. */
 export function splitMonidWarnings(warnings: readonly SaveWarning[], tools: readonly string[]): { monid: { grant: string; warning: SaveWarning }[]; rest: SaveWarning[] } {
   const at = monidFieldsOf(tools);
