@@ -389,7 +389,9 @@ export class ComposioTriggers implements TriggerUpstream {
       await this.keep(ours, sub.secret);
       return ours;
     }
-    if (!move) throw new ApiError("composio_subscription_elsewhere", `This Composio project's webhook subscription sends its events to ${sub.webhook_url}, not to this server. Move it here (every event of the project then comes here), or use a Composio server with another project's key.`, { details: { webhook_url: sub.webhook_url } });
+    // Only another server or a tool of the owner's can hold it (this server keeps no other way to make one): the words say
+    // what a move stops.
+    if (!move) throw new ApiError("composio_subscription_elsewhere", `Composio sends this project's events to ${sub.webhook_url} now. Moving them here stops them arriving there: anything listening at ${sub.webhook_url} (another AgentRun server, or a tool of yours) gets no more events.`, { details: { webhook_url: sub.webhook_url } });
     // Moved under the hook its address already names when that hook is kept here (this server's, at an older public
     // address), so the triggers on it go on; else a new one.
     const was = this.hookIn(sub.webhook_url);

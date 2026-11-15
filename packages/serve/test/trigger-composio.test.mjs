@@ -113,5 +113,5 @@ test("a webhook trigger's signatures are standard and GitHub's: the capabilities
   walk(doc);
   assert.ok(found.length > 0, "the webhook source's schema is in the document");
   for (const names of found) assert.deepEqual(names, ["standard", "github"]);
-  assert.deepEqual(doc.components.schemas.Capabilities.properties.features.properties.triggers.properties.webhook.properties.signatures.items.enum, ["standard", "github"]);
+  assert.deepEqual(doc.components.schemas.Features.properties.triggers.properties.webhook.properties.signatures.items.enum, ["standard", "github"]);
 });

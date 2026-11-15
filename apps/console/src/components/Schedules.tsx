@@ -38,9 +38,12 @@ const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sen
 /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs with no one there. */
 /** `refreshMs`: how often an open trigger's page reads it again, so a firing shows as it happens (the list, twice that). */
 /** `now`: the page's clock, for whether a one-time schedule's time has passed. */
-export function SchedulesPage({ v2, view, go, agentName, minEvery, failuresToPause, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; failuresToPause?: number; refreshMs?: number; now?: () => number }) {
-  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} failuresToPause={failuresToPause} />;
-  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : view.kind === "composio" ? <ComposioForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
+export function SchedulesPage({ v2, view, go, agentName, minEvery, failuresToPause, publicUrl, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; failuresToPause?: number; publicUrl?: boolean; refreshMs?: number; now?: () => number }) {
+  // Composio reaches an app trigger at this server's public address: with none (capabilities say false), New app trigger
+  // stays in sight but off, with the line that says how to give one. Unknown (an older server) leaves it on.
+  const noAddress = publicUrl === false;
+  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} failuresToPause={failuresToPause} noAddress={noAddress} />;
+  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : view.kind === "composio" ? <ComposioForm v2={v2} go={go} noAddress={noAddress} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
   if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} now={now} />;
   return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} failuresToPause={failuresToPause} />;
 }
@@ -74,7 +77,10 @@ function OffChip({ trigger }: { trigger: Trigger }) {
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)}${t.last_firing.catch_up ? " · caught up late" : ""} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
-function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PageProps & { every: number; now: () => number; failuresToPause?: number }) {
+/** The words under New app trigger when the server has no public address. */
+export const NO_ADDRESS_LINE = "App triggers need this server's public address: set AGENTRUN_PUBLIC_URL and restart.";
+
+function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddress }: PageProps & { every: number; now: () => number; failuresToPause?: number; noAddress: boolean }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -98,16 +104,17 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PagePr
         {/* With no trigger yet the panel below offers the four, each with what it is for: the page says each once. */}
         {!(triggers && !triggers.length) && (
           <>
-            <Button size="lg" onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
+            <Button size="lg" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
             <Button size="lg" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
             <Button size="lg" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
             <Button size="lg" variant="solid" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
           </>
         )}
       </div>
+      {noAddress && triggers && triggers.length > 0 && <p className="-mt-2 mb-4 text-small text-muted-foreground">{NO_ADDRESS_LINE}</p>}
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !triggers ? <ListSkeleton label="Loading the triggers" rows={4} />
-        : !triggers.length ? <FirstTrigger go={go} />
+        : !triggers.length ? <FirstTrigger go={go} noAddress={noAddress} />
         : (
           <ul className="border">
             {triggers.map((t) => (
@@ -136,7 +143,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PagePr
 
 /** A server with no trigger yet: what a trigger is, and the four things that can start a run, each with its own way
  *  in. These stand in for the page's four buttons, which show once there is a trigger. */
-function FirstTrigger({ go }: { go: (hash: string) => void }) {
+function FirstTrigger({ go, noAddress }: { go: (hash: string) => void; noAddress: boolean }) {
   const kinds = [
     { Icon: CalendarClock, name: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
     { Icon: Webhook, name: "Webhook", what: "On each signed request another system sends to its URL.", action: "New webhook", to: "#/triggers/new-webhook" },
@@ -153,7 +160,8 @@ function FirstTrigger({ go }: { go: (hash: string) => void }) {
           <li key={name} className="flex flex-col border bg-background p-4">
             <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{name}</p>
             <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{what}</p>
-            <Button size="sm" variant={to === "#/triggers/new" ? "solid" : "outline"} className="mt-4 self-start" onClick={() => go(to)}>{action}</Button>
+            {noAddress && to === "#/triggers/new-composio" && <p className="mt-2 text-small text-muted-foreground">{NO_ADDRESS_LINE}</p>}
+            <Button size="sm" variant={to === "#/triggers/new" ? "solid" : "outline"} className="mt-4 self-start" disabled={noAddress && to === "#/triggers/new-composio"} onClick={() => go(to)}>{action}</Button>
           </li>
         ))}
       </ul>
@@ -201,9 +209,6 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   const [confirming, setConfirming] = useState(false);
   // A webhook's Rotate secret: asked first (the old secret stops signing at once), then the new one shown that once.
   const [rotating, setRotating] = useState(false);
-  const [givingSecret, setGivingSecret] = useState(false);
-  const [given, setGiven] = useState("");
-  const [secretSet, setSecretSet] = useState(false);
   const [fresh, setFresh] = useState<string | null>(null);
   // A rotation out: its own flag, not `busy` (a Run now that ends first clears that), so a second rotation never goes out
   // while the first is, and an older answer never shows a secret the newer one already revoked.
@@ -292,12 +297,6 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
     if (said?.composio) setGone(said.composio.note);
     else go("#/triggers");
   }, "the delete");
-  // A composio trigger's secret is Composio's: given here, sealed, never shown again.
-  const giveSecret = async () => {
-    if (rotateOut.current) return;
-    rotateOut.current = true; setRenewing(true); setSaid(null);
-    try { await v2.rotateTriggerSecret(id, { secret: given.trim() }); setGivingSecret(false); setGiven(""); setSecretSet(true); } catch (e) { setSaid(problem(e, "the secret")); } finally { rotateOut.current = false; setRenewing(false); }
-  };
   const rotate = async () => {
     if (rotateOut.current) return;
     rotateOut.current = true; setRenewing(true); setSaid(null); setFresh(null);
@@ -331,14 +330,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
           <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : "Edit"}</Button>
-          {hook && hook.source.signature === "composio" && (!givingSecret ? <Button size="sm" onClick={() => setGivingSecret(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Set secret</Button> : (
-            <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void giveSecret(); }}>
-              <Input name="secret" type="password" autoComplete="off" aria-label="Composio's webhook secret" className="w-64" value={given} onChange={(e) => setGiven(e.target.value)} />
-              <Button size="sm" variant="solid" type="submit" disabled={!given.trim() || renewing}>Save</Button>
-              <Button size="sm" variant="ghost" type="button" onClick={() => { setGivingSecret(false); setGiven(""); }}>Cancel</Button>
-            </form>
-          ))}
-          {hook && hook.source.signature !== "composio" && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
+          {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-small" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
               <Button size="sm" variant="solid" onClick={() => { setRotating(false); void rotate(); }}>Yes, make a new one</Button>
@@ -368,7 +360,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
         <dt className="caps text-label text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
         {hook ? <>
           <dt className="caps text-label text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-small">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-small text-muted-foreground">{HOOK_URL_HINT}</span></dd>
-          <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}{hook.source.signature === "composio" && !secretSet && !(trigger as { secret?: { set?: boolean } }).secret?.set ? " (no secret set yet: every request is refused)" : ""}</dd>
+          <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
         </> : app ? <>
@@ -609,7 +601,7 @@ function Copyable({ title, text, label, hint }: { title: string; text: string; l
   );
 }
 
-const SIGNATURES: ("standard" | "github" | "composio")[] = ["standard", "github", "composio"];
+const SIGNATURES: WebhookDraft["signature"][] = ["standard", "github"];
 
 /** A new webhook trigger: each signed request to its URL starts a capped run of the agent. The create's answer carries
  *  its signing secret that once (or, on a retry under the same Idempotency-Key, a note in its place): shown with the URL,
@@ -651,9 +643,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className="max-w-2xl p-5 md:p-8">
         {back}
         <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary-text" aria-hidden />{made.name}</h1>
-        <p className="mt-2 text-body text-muted-foreground">{made.source.kind === "webhook" && made.source.signature === "composio"
-          ? "Register this URL as your Composio project's webhook subscription, then set the secret Composio gives you on this trigger with Set secret. Until then every request is refused; after, each Composio event starts a run."
-          : `Send each request to this URL, signed with this secret (${SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.`}</p>
+        <p className="mt-2 text-body text-muted-foreground">{`Send each request to this URL, signed with this secret (${SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.`}</p>
         {made.signing_secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.signing_secret} /> : (
           <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-body">
             <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />
@@ -684,7 +674,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
           </div>
           {issues["source.signature"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
         </fieldset>
-        {draft.signature === "composio" && <p className="text-small text-muted-foreground">Composio makes this webhook's secret when you register the trigger's URL as your project's webhook subscription: set it on the trigger then.</p>}
+        <p className="text-small text-muted-foreground">Events from an app Composio connects start runs through an app trigger instead: <a href="#/triggers/new-composio" className="underline underline-offset-2">New app trigger</a></p>
         <WebhookFilter signature={draft.signature} rules={draft.accept} onChange={set("accept")} issues={issues} cap={null} />
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
@@ -802,7 +792,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
  *  each event starts a capped run of. The server makes the instance on Composio, and the project's webhook subscription
  *  when there is none, and says in its own words what stops it: a subscription at another address is moved here only once
  *  the person says so. */
-function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
+function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) => void; noAddress: boolean }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [readError, setReadError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -909,6 +899,7 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
     <form onSubmit={save} className="max-w-2xl p-5 md:p-8" noValidate>
       {back}{title}
       <p className="mt-2 text-body text-muted-foreground">Each event Composio delivers for it starts a capped run of the agent. This server makes the trigger on Composio for the account the server is connected as.</p>
+      {noAddress && <p className="mt-4 border border-warning/50 p-3 text-body" role="status">{NO_ADDRESS_LINE}</p>}
       {rest.length > 0 && (
         <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">
           {rest.map((r, i) => <p key={i} className="break-words">{r}</p>)}
@@ -957,8 +948,7 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       </div>
       {elsewhere && (
         <div role="alertdialog" aria-label="Move the subscription here?" className="mt-6 space-y-3 border border-warning/50 p-4 text-body">
-          <p>This Composio project's webhook subscription sends its events to <code className="break-all font-mono text-small">{elsewhere.url}</code>, not to this server.</p>
-          <p>Moving it here sends every event of the project to this server instead: whatever listens at that address stops getting them.</p>
+          <p>Composio sends this project's events to <code className="break-all font-mono text-small">{elsewhere.url}</code> now. Moving them here stops them arriving there: anything listening at <code className="break-all font-mono text-small">{elsewhere.url}</code> (another AgentRun server, or a tool of yours) gets no more events.</p>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" variant="solid" onClick={move}>Move it here</Button>
             <Button type="button" size="sm" variant="ghost" onClick={() => setElsewhere(null)}>Keep it there</Button>
@@ -966,7 +956,7 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         </div>
       )}
       <div className="mt-6 flex flex-wrap gap-2">
-        <Button type="submit" size="lg" variant="solid" disabled={saving || !!elsewhere}>{saving ? "Creating" : "Create app trigger"}</Button>
+        <Button type="submit" size="lg" variant="solid" disabled={saving || !!elsewhere || noAddress}>{saving ? "Creating" : "Create app trigger"}</Button>
         <Button type="button" size="lg" variant="ghost" onClick={() => go("#/triggers")}>Cancel</Button>
       </div>
     </form>
@@ -1016,7 +1006,7 @@ function WebhookFilter({ signature, rules, onChange, issues, cap }: { signature:
       <div className="mt-2 space-y-3">
         <Said issues={issues} field="source.accept" />
         <AcceptEditor name="accept" rules={rules} onChange={onChange} issues={issues} room={ACCEPT_LIMITS.rules - rules.length} eventHint={EVENT_HINTS[signature]}
-          eventPlaceholder={signature === "github" ? "issues" : signature === "composio" ? "GITHUB_ISSUE_ADDED_EVENT" : "issue.opened"} />
+          eventPlaceholder={signature === "github" ? "issues" : "issue.opened"} />
         <p className="text-small text-muted-foreground" role="note">{runsWords(rules.length > 0, cap)}</p>
       </div>
     </fieldset>

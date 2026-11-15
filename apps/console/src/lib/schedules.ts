@@ -196,7 +196,7 @@ export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}
 /** Said beside a URL hookUrlOf built: the server's own public address may differ from the one this page was opened at. */
 export const HOOK_URL_HINT = "This server's address as this page sees it: behind a proxy, use its public address.";
 /** What a webhook's signature check takes, in words. */
-export const SIGNATURE_WORDS: Record<"standard" | "github" | "composio", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)", composio: "Composio's (webhook-signature, keyed by its secret as given)" };
+export const SIGNATURE_WORDS: Record<"standard" | "github", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)" };
 type HookSource = Extract<TriggerSource, { kind: "webhook" }>;
 type GitHubSource = Extract<TriggerSource, { kind: "github" }>;
 /** A filter's rule in words, as its editor names each part (lib/accept.ts). */
@@ -315,7 +315,7 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
 
 /** A new webhook's fields as typed: how its requests are signed, its filter (none: every signed request fires), then the
  *  run each one starts (as a schedule's). */
-export type WebhookDraft = { name: string; signature: "standard" | "github" | "composio"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string };
+export type WebhookDraft = { name: string; signature: "standard" | "github"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string };
 export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", accept: [], agentId: "", content: "", maxCost: "" });
 
 /** A webhook's source with `rules` as its filter (none: no accept), its kind and signature as `was` has them. */

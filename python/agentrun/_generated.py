@@ -673,7 +673,6 @@ __all__ = [
     "RevokeRemoteConnectorResponseConnector",
     "RevokeRemoteConnectorResponseConnectorCapabilities",
     "RotateComposioSecretResponse",
-    "RotateTriggerSecretBody",
     "RotateTriggerSecretResponse",
     "Run",
     "RunClaim",
@@ -5519,7 +5518,7 @@ class FeaturesWebhooks(TypedDict):
     at_rest: Literal["sealed"]
 
 
-class FeaturesTriggers(TypedDict):
+class _FeaturesTriggersRequired(TypedDict):
     routes: bool
     sources: list[Literal["schedule", "webhook", "github", "composio"]]
     targets: list[Literal["start_run", "message_run"]]
@@ -5530,9 +5529,13 @@ class FeaturesTriggers(TypedDict):
     webhook: FeaturesTriggersWebhook
 
 
+class FeaturesTriggers(_FeaturesTriggersRequired, total=False):
+    public_url: bool
+
+
 class FeaturesTriggersWebhook(TypedDict):
     signing: Literal["standard-webhooks/v1"]
-    signatures: list[Literal["standard", "github", "composio"]]
+    signatures: list[Literal["standard", "github"]]
     tolerance_s: int
     max_body_bytes: int
     payload_kept_bytes: int
@@ -6406,7 +6409,7 @@ class _CreateTriggerBodySource4Required(TypedDict):
 
 
 class CreateTriggerBodySource4(_CreateTriggerBodySource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[CreateTriggerBodySource4AcceptItem]
 
 
@@ -6563,7 +6566,7 @@ class _CreateTriggerResponseSource4Required(TypedDict):
 
 
 class CreateTriggerResponseSource4(_CreateTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[CreateTriggerResponseSource4AcceptItem]
 
 
@@ -6824,7 +6827,7 @@ class _GetTriggerResponseSource4Required(TypedDict):
 
 
 class GetTriggerResponseSource4(_GetTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[GetTriggerResponseSource4AcceptItem]
 
 
@@ -7029,7 +7032,7 @@ class _ListTriggersResponseTriggersItemSource4Required(TypedDict):
 
 
 class ListTriggersResponseTriggersItemSource4(_ListTriggersResponseTriggersItemSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[ListTriggersResponseTriggersItemSource4AcceptItem]
 
 
@@ -7185,10 +7188,6 @@ class ListTriggersResponseTriggersItemLastFiringError(TypedDict):
     message: str
 
 
-class RotateTriggerSecretBody(TypedDict, total=False):
-    secret: str
-
-
 class _RotateTriggerSecretResponseRequired(TypedDict):
     secret: SecretMeta
 
@@ -7234,7 +7233,7 @@ class _UpdateTriggerBodySource4Required(TypedDict):
 
 
 class UpdateTriggerBodySource4(_UpdateTriggerBodySource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[UpdateTriggerBodySource4AcceptItem]
 
 
@@ -7390,7 +7389,7 @@ class _UpdateTriggerResponseSource4Required(TypedDict):
 
 
 class UpdateTriggerResponseSource4(_UpdateTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[UpdateTriggerResponseSource4AcceptItem]
 
 
@@ -7844,7 +7843,7 @@ OPERATIONS: dict[str, Operation] = {
     "listTriggerFirings": Operation(method="GET", path="/triggers/{trigger_id}/firings", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggers": Operation(method="GET", path="/triggers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
+    "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
     "updateTrigger": Operation(method="PATCH", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getUsage": Operation(method="GET", path="/usage", path_params=(), multi_segment=(), query=("from", "to", "group_by"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWebhook": Operation(method="DELETE", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -8420,9 +8419,9 @@ class TriggersResource(Group):
         """The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers)."""
         return self._call("listTriggers", (), None, None, timeout=timeout)
 
-    def rotate_secret(self, trigger_id: str, body: RotateTriggerSecretBody | None = None, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
+    def rotate_secret(self, trigger_id: str, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
         """A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
-        return self._call("rotateTriggerSecret", (trigger_id,), body, None, timeout=timeout)
+        return self._call("rotateTriggerSecret", (trigger_id,), None, None, timeout=timeout)
 
     def update(self, trigger_id: str, body: UpdateTriggerBody, *, timeout: float | None = None) -> UpdateTriggerResponse:
         """Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id})."""
