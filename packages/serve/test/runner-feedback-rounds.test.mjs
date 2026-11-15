@@ -436,7 +436,11 @@ test("a store failure while the read looks up the round's steer fails the read, 
   const { server, start, grade } = await world(t);
   const first = await start("run-store-down", 1, { byHand: true });
   await grade(first, false, LABEL(1));
-  const failing = new Proxy(server, { get: (target, key) => key === "commands" ? async () => { throw new Error("the store went away") } : Reflect.get(target, key) });
+  const failing = new Proxy(server, { get: (target, key) => {
+    if (key === "commands") return async () => { throw new Error("the store went away") };
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
   await assert.rejects(runLearningOverStore(failing, first.id, secretsShown([]), []), /the store went away/);
 });
 
