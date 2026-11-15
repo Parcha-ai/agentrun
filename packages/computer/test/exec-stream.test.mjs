@@ -53,6 +53,16 @@ test("kill's probe reads a killed process its parent has not reaped yet (a zombi
 	for (let at = 0; at < 200 && !/^State:\s*Z/m.test(readFileSync(`/proc/${child.pid}/status`, "utf8")); at++) spawnSync("sleep", ["0.01"]);
 	assert.match(readFileSync(`/proc/${child.pid}/status`, "utf8"), /^State:\s*Z/m, "the killed child is a zombie until this loop reaps it");
 	assert.equal(probe(child.pid), "gone", "a zombie has ended: kill -0 alone would read it as running");
+	await new Promise((done) => (child.exitCode !== null || child.signalCode !== null ? done() : child.once("exit", done)));
+	assert.equal(probe(child.pid), "gone", "once reaped, it has no state to read, and kill -0 finds nothing");
+});
+
+test("kill's probe reads the same under busybox sh, where a machine has it", async (t) => {
+	const busybox = spawnSync("busybox", ["true"]);
+	if (busybox.error || busybox.status !== 0) return t.skip("no busybox here");
+	const probe = (pid) => spawnSync("busybox", ["sh", "-c", PID_STATE_SCRIPT, "sh", String(pid)], { encoding: "utf8" }).stdout.trim();
+	assert.equal(probe(process.pid), "running", "this test's own process runs");
+	assert.equal(probe(2 ** 22 + 1), "gone", "a pid past the kernel's limit is no process");
 });
 
 test("an exec that decodes stdout as UTF-8 fails the byte checks, and says byte 0x80 came back as ef bf bd", async () => {
