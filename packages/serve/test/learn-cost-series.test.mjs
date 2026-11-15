@@ -90,8 +90,10 @@ test("a run that learns whose record names no path is left out and counted, neve
 
 test("the summary's replay is the serving promotion's record, read from the store's promotions; none before one", async (t) => {
   const store = await agentOn(t);
+  // Its launch offered the workflow: only an offered name is the run's.
+  const offering = { ...LEARNS, learning: { ...LEARNS.learning, workflows: ["answer"] } };
   const end = async (id, metrics, costUsd) => {
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: offering });
     await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd, metrics });
   };
   await end("run-1", { path: "agent" }, 0.9);
