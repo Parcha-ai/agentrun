@@ -2348,12 +2348,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (askCut.armed && event.type === "tool_start") askCut.disarm();
           theRecord.onEvent(event);
         };
-        // A call of the CLI's own that its host tool calls run inside (Codex's code-mode `exec`): on its record as a call, never
-        // run again after a crash (a crash ends it interrupted, as its CLI's resume answers it), and each call it makes named
-        // under it, so its rows read as a codemode script's do on every other harness.
+        // A call of the CLI's own that its host tool calls run inside (Codex's code-mode `exec`): on its record as a call, and
+        // each call it makes named under it, so its rows read as a codemode script's do on every other harness. Its start is
+        // marked `nests`, so a crash leaves it open: its harness ends it (ownCalls.ended) from its CLI's own answer to it after
+        // the resume, which comes after the rows of the calls it made, never as an interrupted end ahead of them.
         const ownCalls: OwnCalls | undefined = record
           ? {
-              opened: (callId, name, input) => record.start(callId, name, input, false).catch(unlessSealed),
+              opened: (callId, name, input) => record.start(callId, name, input, false, true).catch(unlessSealed),
               nestedIn: (callId, parent) => record.nestedIn(callId, parent),
               ended: (callId, output, failed) => record.end(callId, failed ? "failed" : "done", output).catch(unlessSealed),
             }

@@ -347,7 +347,9 @@ export interface OwnCalls {
    *  row (a refused or parked one's too) names its parent. */
   nestedIn(callId: string, parent: string): void;
   /** The call ended with `output`, `failed` when the harness's stream says it did not do its work (Codex's "Script failed"),
-   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). */
+   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). A crash leaves an opened call
+   *  open on the host's record: the harness ends it after the resume, from its CLI's answer to it (Codex's recovered exec
+   *  output), so its end comes after the rows of the calls it made. */
   ended(callId: string, output: string, failed: boolean): Promise<void>;
 }
 
