@@ -148,8 +148,9 @@ const LINK_AT = new RegExp(`\\]\\(|${TEXT_URL.source}`, "gi");
 /** The five entities XML names, and its numeric references: an XML body's URLs are read with them undone. */
 const XML_ENTITY = /&(?:(quot|amp|lt|gt|apos)|#(\d{1,7})|#x([0-9a-f]{1,6}));/gi;
 const NAMED: Record<string, string> = { quot: '"', amp: "&", lt: "<", gt: ">", apos: "'" };
-/** An XML attribute's value in single quotes. */
-const SINGLE_QUOTED = /=\s*'([^'<]*)'/g;
+/** An XML attribute, its value in double quotes (kept as it is, so an "='" in its query is never taken for an attribute)
+ *  or in single quotes (the second group). */
+const ATTRIBUTE = /(\s[\w:.-]+\s*=\s*)(?:"[^"]*"|'([^'<]*)')/g;
 
 /** Where a markdown link's target (the text after its "](") ends: at whitespace or at the ")" that closes the link, so
  *  parentheses it holds in pairs (a wiki title's) stay. */
@@ -187,8 +188,10 @@ function* hrefsIn(text: string): Generator<string> {
 function xmlUndone(text: string): string {
   if (!/^\s*<[?!A-Za-z]/.test(text)) return text;
   // A single-quoted attribute (`href='https://a/b'`) ends at its quote as a double-quoted one does: its value holds no
-  // "'" or "<" (XML writes them as entities), so it is requoted whole, before its entities are undone.
-  return text.replace(SINGLE_QUOTED, '="$1"').replace(XML_ENTITY, (entity, name: string | undefined, decimal: string | undefined, hex: string | undefined) => {
+  // "'" or "<" (XML writes them as entities), so it is requoted whole, before its entities are undone. Attributes are
+  // read in order, each whole, so a double-quoted value (`href="https://a/?q='b'"`) is passed over as it is.
+  const requoted = text.replace(ATTRIBUTE, (attribute, name: string, single: string | undefined) => (single === undefined ? attribute : `${name}"${single}"`));
+  return requoted.replace(XML_ENTITY, (entity, name: string | undefined, decimal: string | undefined, hex: string | undefined) => {
     if (name) return NAMED[name.toLowerCase()]!;
     const code = Number.parseInt(decimal ?? hex!, decimal ? 10 : 16);
     return code <= 0x10ffff ? String.fromCodePoint(code) : entity;

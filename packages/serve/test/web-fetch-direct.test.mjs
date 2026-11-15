@@ -99,12 +99,12 @@ test("a page that is not HTML lists the absolute URLs its text holds: a JSON bod
 test("the URLs a hostile text writes out are read in one pass: runs of schemes, closing brackets and nesting take no longer than their length", async () => {
   const { linksOf } = await import("../dist/web-fetch-direct.js");
   const n = 400_000;
-  const texts = ["https://".repeat(n / 8), `https://a.example/${")".repeat(n)}`, `https://a.example/${"(".repeat(n)}${".".repeat(n)}`, `${"[".repeat(5_000)}"https://deep.example/"${"]".repeat(5_000)}`, `${"](".repeat(n / 2)} https://after.example/`];
+  const texts = ["https://".repeat(n / 8), `https://a.example/${")".repeat(n)}`, `https://a.example/${"(".repeat(n)}${".".repeat(n)}`, `${"[".repeat(5_000)}"https://deep.example/"${"]".repeat(5_000)}`, `${"](".repeat(n / 2)} https://after.example/`, `<f${" a='".repeat(n / 4)}`, `<f${" a=".repeat(n / 3)}`, `<f a="${"&amp;".repeat(n / 5)}`];
   const started = performance.now();
   const found = texts.map((text) => [...linksOf(text)]);
   const ms = performance.now() - started;
   assert.ok(ms < 1_000, `read in ${Math.round(ms)} ms, not under 1,000`);
-  assert.deepEqual(found.slice(1), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
+  assert.deepEqual(found.slice(1, 5), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
 });
 
 /** A GitHub releases.atom, as github.com serves it: each entry's link in an attribute, its content escaped HTML. */
@@ -128,6 +128,8 @@ test("an Atom feed lists its entries' links: an attribute's URL, and its escaped
   // A single-quoted attribute ends at its quote too, and an entity in it is undone.
   const { linksOf } = await import("../dist/web-fetch-direct.js");
   assert.deepEqual([...linksOf("<feed><link href='https://example.com/release'/><link href = 'https://example.com/a?x=1&amp;y=O&apos;Reilly'/></feed>")], ["https://example.com/release", "https://example.com/a?x=1&y=O%27Reilly"], "an apostrophe in a query, as the URL standard writes it");
+  // A double-quoted attribute is left as it is, an "='" in its query too.
+  assert.deepEqual([...linksOf(`<feed><link href="https://example.com/?q='hello'&amp;x=1"/></feed>`)], ["https://example.com/?q=%27hello%27&x=1"]);
   // Every URL the body writes out: its namespace's and the one in its tag URI's id too, as the text holds them.
   assert.deepEqual(page.links, ["http://www.w3.org/2005/Atom", "https://github.com/vitejs/vite/releases", "https://github.com/vitejs/vite/releases?q=v8&expanded=true", "https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md"]);
 });
