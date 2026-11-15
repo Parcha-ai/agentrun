@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A desktop or phone run that parks for a person (a tool's approval, a cap raise, a question to a person, a learned workflow's park) keeps its computer for 10 minutes. Before, every park let the computer go, so the run resumed on a new machine and lost what the agent had open on the old one. Now the timeline says "The desktop is kept for 10 minutes while you decide.", and an answer within that time resumes the run on the same machine, with its screen, files and programs as they were. After 10 minutes the kept computer is ended, and a later resume gets a new one that says "The desktop wasn't kept: 10 minutes passed." before the usual replaced-computer words. A stop or cancel while parked lets the kept computer go at once. The end at 10 minutes survives a server restart: the computer janitor reads the kept computers and ends each one at its time. A sandbox, an agent's own computer and a paired computer are unchanged. The desktop and phone skills now say that app ids come from `apps.list`, so the agent calls it before `apps.open`.

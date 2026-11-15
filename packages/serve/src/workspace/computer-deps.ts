@@ -30,7 +30,8 @@ import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
+import { KEEP_MS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -257,12 +258,25 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
  *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." A computer that
  *  replaced an earlier claim's (`replaced`) says it is a new one, never why the old one went (a lost runner, a crash, a
  *  server's stop, a park: the words fit each), and, where the run's folder is on Archil and mounted in it
- *  (`folderKept`), that the folder is kept. */
-export const computerReadyWords = ({ provider, kind, hello, replaced }: ComputerSaid): string => {
+ *  (`folderKept`), that the folder is kept. The one kept through the run's park (`kept`) says it is the same; a new one
+ *  after a kept one's time passed (`replaced.lapsed`) says why first. */
+export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: ComputerSaid): string => {
   const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
+  if (kept) return `${ready} It's the same ${kind}, as the wait left it.`;
   if (!replaced) return ready;
-  return `${ready} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
+  const lapsed = replaced.lapsed ? ` ${computerLapsedWords(kind)}` : "";
+  return `${ready}${lapsed} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
+
+/** The minutes a park keeps the run's desktop or phone (computer-kept.ts KEEP_MS), in words. */
+const KEEP_MINUTES = `${KEEP_MS / 60_000} minutes`;
+
+/** The run's timeline phase as its run parks with its desktop or phone kept (ClaimComputer.keeps), such as "The desktop
+ *  is kept for 10 minutes while you decide." */
+export const computerKeptWords = (kind: KeptKind): string => `The ${kind} is kept for ${KEEP_MINUTES} while you decide.`;
+
+/** Why the run's computer at its resume is a new one: the one kept at its park was ended at its time. */
+export const computerLapsedWords = (kind: string): string => `The ${kind} wasn't kept: ${KEEP_MINUTES} passed.`;
 
 /** What the run's model is told, once, on its next request after its claim gave it a computer that replaced an earlier
  *  claim's (the adapter loop's computer note), labelled as the server's (SERVER_NOTE_LABEL): a desktop's or a phone's

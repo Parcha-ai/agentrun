@@ -71,10 +71,10 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import { hadComputer, type RunComputerHold } from "./computer-journal.js";
-import type { MadeKind, Replaced } from "../workspace/computer-for-claim.js";
+import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -116,7 +116,11 @@ export interface ClaimComputer {
   readonly replaced?: Replaced;
   /** The claim made it the run's own, of this kind (computer-for-claim.ts ClaimComputer.made). */
   readonly made?: MadeKind;
+  /** The kind of computer a park of the run keeps (computer-for-claim.ts ClaimComputer.keeps). */
+  readonly keeps?: KeptKind;
   release(): Promise<void>;
+  /** The release at the run's park, which keeps the computer it `keeps` (computer-for-claim.ts ClaimComputer.park). */
+  park?(): Promise<boolean>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
  *  (workspace/computer-deps.ts computerDepsFrom), or a test's stand-in. */
@@ -437,8 +441,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // became of the agent's own computer (a persistent setting) is said on the run's timeline.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer): a later
-    // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park).
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park past its keep). The
+    // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -815,7 +820,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
     // release revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
-    release: () => holds.release(),
+    // At a park, a desktop or a phone is kept for the resume instead (spec-holds.ts SpecHolds.release `parked`), its mount
+    // credential with it, and the run's timeline is told so.
+    ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
+    release: (how) => holds.release(how),
   };
 }
 

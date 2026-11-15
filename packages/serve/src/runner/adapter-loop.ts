@@ -218,8 +218,12 @@ export interface AdapterRunSpec {
   readonly held?: HeldSpec;
   /** Lets this spec's resources go once the loop writes nothing more through them: called once, after its Session and
    *  Harness are closed, when its pass ends (a restart's included) and at the run's end. Never throws out: a failure is
-   *  logged, and the end stands. */
-  readonly release?: () => Promise<void>;
+   *  logged, and the end stands. `parked`: the pass ended in a park, which keeps the run's desktop or phone (`keptWords`). */
+  readonly release?: (how?: { readonly parked?: boolean }) => Promise<void>;
+  /** A park of this pass keeps the run's desktop or phone for its resume (computer-for-claim.ts ClaimComputer.keeps): the
+   *  words the loop says so in on the run's timeline as it parks (computer-deps.ts computerKeptWords). Absent: a park lets
+   *  the computer go. */
+  readonly keptWords?: string;
   /** What the spec's tool host bindings registered (tools.ts ToolHost's onConversation, beforeResume, beforeRelease),
    *  run where main's per-run process runs them (app.ts): each agent conversation's creating commit, once the claim's
    *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
@@ -919,7 +923,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   };
   /** The current pass's spec's release, until it is called (closeSession). */
-  let releaseNow: (() => Promise<void>) | undefined;
+  let releaseNow: AdapterRunSpec["release"];
+  /** The current pass ended in a park that keeps its desktop or phone (keepAtPark), until its release reads it. */
+  let parkedNow = false;
   /** From the end-of-run step's start (or a claim that found its turn open: lookingBackOpen, from its session's open)
    *  until the claim ends: a steer is left for the end, writes and edits under work/.learning/ are refused
    *  (REFLECT_NOTE_ONLY), and every request is learning's, never the job's: the cap's wrap-up note is never told to it,
@@ -2649,6 +2655,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const cutBy = stopReason as StopReason | undefined;
             if (step === "park" && cutBy?.kind !== "command") {
               await releaseHost(harness);
+              await keepAtPark(harness);
               gate.seal(new Parked());
               return { state: "parked" };
             }
@@ -3399,9 +3406,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     mcp?.release();
     mcp = undefined;
     // The pass's resources go once nothing more is written through them (AdapterRunSpec.release), once each.
+    // A park's keeps the run's desktop or phone (keepAtPark).
     const release = releaseNow;
+    const parked = parkedNow;
     releaseNow = undefined;
-    await release?.().catch((error: unknown) => console.warn(`[runner] its run's release failed: ${said(error)}`));
+    parkedNow = false;
+    await release?.({ parked }).catch((error: unknown) => console.warn(`[runner] its run's release failed: ${said(error)}`));
   }
 
   /** What a round's first ask kept, read before the hook can skip or close its resumed turn: the CLI's record, or pi's
@@ -3658,8 +3668,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function parkClaim(on: Harness, theGate: Gate): Promise<LoopEnd> {
     await releaseHost(on);
     await bookingsSettled();
+    await keepAtPark(on);
     theGate.seal(new Parked());
     return { state: "parked" };
+  }
+
+  /** At a park, before its seal: a pass whose spec keeps its desktop or phone (AdapterRunSpec.keptWords) has it kept for
+   *  the resume at its release (closeSession), once the run's timeline says so, for the person deciding. A write that
+   *  fails (the fence's refusal: a lost claim, whose run a later claim may hold already) keeps nothing: the computer goes
+   *  as at the run's end. */
+  async function keepAtPark(on: Harness): Promise<void> {
+    const summary = specNow?.keptWords;
+    if (!summary) return;
+    parkedNow = await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary, at: Date.now() } as unknown as JsonValue }), context).then(() => true, () => false);
   }
 
   /** The run's pause at its cap: its agentrun.budget entry, in one commit with the run parked in the cap's words. */
