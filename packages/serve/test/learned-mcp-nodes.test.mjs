@@ -5,11 +5,12 @@
 // and the owner's allow runs it once; a stop while it runs cuts the call at the server. pi, on the faux model.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, call, clientOwnerSession, follow, retried, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, retried, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { NODE_REQUESTS_ENV } from "./fixtures/faux-learned-node.mjs";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { learnedApprovedTools, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
@@ -394,4 +395,130 @@ test("each MCP node is booked on the run's one ledger and held to its cap: the f
   assert.deepEqual([view.pending?.kind, view.pending?.cap_usd, view.pending?.needs_usd], ["budget", 0.08, 0.05], JSON.stringify(view.pending));
   assert.deepEqual([calls(fake, "add").length, calls(fake, "paid").length], [1, 0], "the second is refused unsent");
   assert.equal(view.cost?.usd, 0.05, "the first node's price is the run's cost");
+});
+
+// A learned_workflow call runs again from its start after a park or a crash (it nests calls). Its model node's answer
+// is the first run's (NestedCalls.memo), taken from the record: the rerun never asks the node's model again, so the
+// node is asked and booked on the run's ledger once. The node's model is a priced faux (faux-learned-node.mjs).
+const FAUX_NODE = new URL("./fixtures/faux-learned-node.mjs", import.meta.url).pathname;
+const CRASHABLE = { leaseMs: 1_500, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+const titleStep = { node: "extract", label: "title", instructions: "Name the note.", out: "Title", as: "title" };
+/** A learned workflow of a model node (the note's title), then `steps`: its output the title. */
+const titled = (name, steps) => ({ ...chain(name, [titleStep, ...steps], "title"), schemas: { ...chain(name, []).schemas, Title: { type: "object", properties: { title: { type: "string" } }, required: ["title"] } } });
+
+/** The server on the priced faux, each request of a learned workflow's model node noted (`asked`: how many so far). */
+async function nodeServe(t, options = {}) {
+  const file = join(await scratch(t), "node-requests.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), [NODE_REQUESTS_ENV]: file });
+  const server = await serveOf(t, { faux: FAUX_NODE, accounts: true, openSetup: true, ...options });
+  return { server, asked: () => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).length : 0) };
+}
+
+/** The run's ledger rows of the learned_workflow call's model requests: each runner.request booked under its label, and
+ *  the runner.turn that settled it, across every session of the run. */
+async function nodeBookings(server, runId) {
+  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+  const { createModels } = await import("@earendil-works/pi-ai/models");
+  const { createRegistry, Harness } = await import("@earendil-works/pi-durable");
+  const { journalSessions } = await import("../dist/runner/sessions.js");
+  const row = await server.store.runs.get(runId);
+  const harness = await Harness.open(server.store.journal({ runId, runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), { models: createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
+  try {
+    const sessions = journalSessions(harness, ctx, server.store);
+    const requests = [];
+    const turns = [];
+    for (const key of await sessions.keys()) {
+      const records = await sessions.read(key);
+      for (const record of records) {
+        if (record.kind !== "runner.request" || record.data?.host !== LEARNED_WORKFLOW_TOOL) continue;
+        requests.push(record.data);
+        turns.push(...records.filter((other) => other.kind === "runner.turn" && other.data?.turn === record.data.turn).map((other) => other.data));
+      }
+    }
+    return { requests, turns };
+  } finally {
+    await harness.close(ctx);
+  }
+}
+
+test("a model node that ran before an action off the card parked the run is asked and booked once: the call's rerun after the allow takes its first answer", { timeout: 200_000 }, async (t) => {
+  const { server, asked } = await nodeServe(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "allow" } })).status, 200);
+  const flow = titled("title-add-write", [step("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum"), step("write", "mcp:fake/slow_write", { line: "x", seconds: 0 }, "wrote")]);
+  const runId = await learnedRun(server, "node-once", ["mcp:fake/add", "mcp:fake/slow_write"], [flow], runOf("title-add-write", { a: 2, b: 3 }));
+  const card = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
+  assert.equal(asked(), 0, "no node runs before the card is answered");
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "ask" } })).status, 200);
+  assert.equal(await answer(runId, card.id, { decision: "allow" }), 204);
+  const nested = await pendingOf(api, runId, "mcp:fake/slow_write", card);
+  const first = asked();
+  assert.ok(first > 0, "the model node ran before the off-card action parked the run");
+  assert.equal(await answer(runId, nested.id, { decision: "allow" }), 204);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  assert.equal(asked(), first, "the rerun never asked the node's model again");
+  const after = await nodeBookings(server, runId);
+  assert.equal(after.requests.length, first, `the node's requests are booked once: ${JSON.stringify(after.requests)}`);
+  assert.equal(after.turns.length, first, `and settled once: ${JSON.stringify(after.turns)}`);
+  assert.deepEqual([calls(fake, "add").length, calls(fake, "slow_write").length], [1, 1], "each MCP action sent once");
+});
+
+test("a model node that ran before a crash cut the call is asked and booked once: the call's rerun on the next runner takes its first answer", { timeout: 240_000 }, async (t) => {
+  const { server, asked } = await nodeServe(t, { runnerTiming: CRASHABLE });
+  const { api, data } = server;
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/*": { permission: "allow" } })).status, 200);
+  const flow = titled("title-then-wait", [step("write", "mcp:fake/slow_write", { line: "x", seconds: 30 }, "wrote")]);
+  const runId = await learnedRun(server, "node-crash", ["mcp:fake/slow_write"], [flow], runOf("title-then-wait", { a: 2, b: 3 }));
+  for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
+    assert.ok(i < 900, "the workflow reaches its MCP node, after its model node");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const first = asked();
+  assert.ok(first > 0, "the model node ran before the crash");
+  const held = runRecordOf(data, runId);
+  await server.crashRunner();
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
+  assert.ok(runRecordOf(data, runId).epoch > held.epoch, "another runner took the run up");
+  const { rows } = await follow(api, runId, ["completed", "failed"]);
+  assert.ok(rows.filter((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL).length >= 1, "the call answered on the next runner");
+  assert.equal(asked(), first, "the rerun never asked the node's model again");
+  const booked = await nodeBookings(server, runId);
+  assert.equal(booked.requests.length, first, `the node's requests are booked once: ${JSON.stringify(booked.requests)}`);
+  assert.equal(calls(fake, "slow_write").length, 1, "the cut MCP call is never sent again");
+});
+
+test("an approved card covers its own call only: an action an earlier call's card named, asked in a later call of the same workflow whose card did not name it, parks on a card of its own", { timeout: 240_000 }, async (t) => {
+  // One run, three calls in turn (faux-calls.mjs): the workflow, the harness's own call of `paid`, the workflow again.
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const server = await serveOf(t, { faux: FAUX_CALLS, accounts: true, openSetup: true });
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  const settings = async (write, add) => assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: write }, "mcp:fake/add": { permission: add } })).status, 200);
+  await settings("allow", "ask");
+  const flow = chain("write-then-add", [step("write", "mcp:fake/slow_write", { line: "x", seconds: 0 }, "wrote"), step("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum")], "sum");
+  const learned = [LEARNED_WORKFLOW_TOOL, { name: "write-then-add", input: { a: 2, b: 3 } }];
+  const runId = await learnedRun(server, "earlier-card", ["mcp:fake/add", "mcp:fake/slow_write", "mcp:fake/paid"], [flow], `Calls ${JSON.stringify([learned, ["mcp__fake__paid", { query: "x" }], learned])}`);
+  const first = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
+  assert.ok(first.args_preview.includes('"tool":"mcp:fake/add"') && !first.args_preview.includes("slow_write"), first.args_preview);
+  assert.equal(await answer(runId, first.id, { decision: "allow" }), 204);
+  const own = await pendingOf(api, runId, "mcp:fake/paid", first);
+  assert.deepEqual([calls(fake, "slow_write").length, calls(fake, "add").length], [1, 1], "the first call ran whole on its card");
+  // The second call's card is shown with add allowed and slow_write set to ask; add is set to ask again while it waits.
+  await settings("ask", "allow");
+  assert.equal(await answer(runId, own.id, { decision: "allow" }), 204);
+  const second = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL, own);
+  assert.ok(second.args_preview.includes('"tool":"mcp:fake/slow_write"') && !second.args_preview.includes("mcp:fake/add"), second.args_preview);
+  await settings("ask", "ask");
+  assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  const nested = await pendingOf(api, runId, "mcp:fake/add", second);
+  assert.ok(nested.call_id.startsWith(`${second.call_id}/`), `asked as a call nested in the second: ${JSON.stringify(nested)}`);
+  assert.deepEqual([calls(fake, "slow_write").length, calls(fake, "add").length], [2, 1], "the earlier card passed nothing of the later call");
+  assert.equal(await answer(runId, nested.id, { decision: "allow" }), 204);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal(calls(fake, "add").length, 2, "its own allow runs it once");
 });
