@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
@@ -704,10 +704,14 @@ export type HarnessInstaller = (entry: HarnessInstallEntry, dir: string, pins: H
  *  one installer at a time across processes (the hold on that directory, installForClaim); then `dir` is made a link to
  *  it. The checks take the link as they are (a package counts by where its link points, inTree; each CLI's sha256 is
  *  checked at every run), so the data directory holds the link alone, and removing it never touches the shared install.
- *  For the template eval's scratch servers (template-eval.ts): each would install half a gigabyte of Claude Code again. */
+ *  For the template eval's scratch servers (template-eval.ts): each would install half a gigabyte of Claude Code again.
+ *  A root that is not this user's alone (a link, another's, or one others may write to: a shared TMPDIR's planted tree
+ *  would be loaded and run) is never read: the install goes into `dir` itself, as a server's does. */
 export function sharedInstaller(root: string, install?: HarnessInstaller): HarnessInstaller {
+  const base = resolve(root);
   return async (entry, dir, pins, signal) => {
-    const shared = installDirOf(root, `${entry.id}@${pins.version}-${pins.platform}`);
+    if (!(await ownAlone(base))) return (install ?? ((entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal })))(entry, dir, pins, signal);
+    const shared = installDirOf(base, `${entry.id}@${pins.version}-${pins.platform}`);
     if (entry.lacking(shared, pins) !== undefined) await installForClaim(entry, shared, async () => pins, { signal, ...(install ? { install } : {}) });
     // The link made beside `dir`, then renamed over it, so a look at `dir` finds the install or nothing.
     await mkdir(dirname(dir), { recursive: true });
@@ -718,6 +722,14 @@ export function sharedInstaller(root: string, install?: HarnessInstaller): Harne
       throw error;
     });
   };
+}
+
+/** Whether `root` is a directory of this user's that no one else may write to, made so when it is not there. */
+async function ownAlone(root: string): Promise<boolean> {
+  await mkdir(root, { recursive: true, mode: 0o700 }).catch(() => undefined);
+  const st = await lstat(root).catch(() => undefined);
+  const uid = process.getuid?.();
+  return Boolean(st?.isDirectory() && (uid === undefined || st.uid === uid) && (st.mode & 0o022) === 0);
 }
 
 /** Resolves once every install a claim let go of has stopped (its npm ended, SIGTERM then SIGKILL past its grace, its
