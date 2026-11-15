@@ -281,7 +281,7 @@ test("keyless Exa's daily cap: busy for 60 s after its first RATE_LIMITED, the c
   assert.equal(breaker.held()?.error, UNAVAILABLE, "200 s on, still off");
 });
 
-test("keyless Exa: two RATE_LIMITED answers within one open wait (in flight together) only hold it; a success between two waits does not reset the count", () => {
+test("keyless Exa: two RATE_LIMITED answers within one open wait (in flight together) only hold it; a success between two waits resets the count, so the next is a wait again", () => {
   let now = Date.parse("2026-11-15T19:00:00Z");
   const fail = { error: "the provider's search failed" };
   const found = { provider: "exa-keyless", query: "q", results: [] };
@@ -292,15 +292,29 @@ test("keyless Exa: two RATE_LIMITED answers within one open wait (in flight toge
   assert.match(flight.held()?.error ?? "", BUSY, "two in flight: busy, never off");
   now += 61_000;
   assert.equal(flight.held(), undefined, "past the wait, the next call reaches Exa");
-  // A daily count: a success after the first wait does not reset it.
-  const daily = webSearch.searchBreaker(() => now);
-  daily.read({ answer: fail, limit: EXA_RATE(30) });
+  // A success means the daily count is not spent: a transient limit at minute 5 and another at minute 50, with good
+  // searches between, are two waits, never search off for the run.
+  const transient = webSearch.searchBreaker(() => now);
+  transient.read({ answer: fail, limit: EXA_RATE() });
+  now += 61_000;
+  assert.equal(transient.held(), undefined);
+  transient.read({ answer: found });
+  assert.equal(transient.held(), undefined, "a success leaves it closed");
+  now += 45 * 60_000;
+  transient.read({ answer: fail, limit: EXA_RATE() });
+  assert.equal(transient.held()?.error, "search is busy; try again in 60 s, or answer from what you have", "a wait again, not off");
+  // With no success since, the next one past that wait is the daily count.
+  now += 61_000;
+  assert.equal(transient.held(), undefined);
+  transient.read({ answer: fail, limit: EXA_RATE() });
+  assert.equal(transient.held()?.error, UNAVAILABLE, "the next RATE_LIMITED after a completed wait, no success since, turns it off");
+  // A failure that is no limit (a 5xx) is no success: it does not reset the count.
+  const failed = webSearch.searchBreaker(() => now);
+  failed.read({ answer: fail, limit: EXA_RATE(30) });
   now += 31_000;
-  assert.equal(daily.held(), undefined);
-  daily.read({ answer: found });
-  assert.equal(daily.held(), undefined, "a success leaves it closed");
-  daily.read({ answer: fail, limit: EXA_RATE(30) });
-  assert.equal(daily.held()?.error, UNAVAILABLE, "the next RATE_LIMITED after a completed wait turns it off");
+  failed.read({ answer: fail });
+  failed.read({ answer: fail, limit: EXA_RATE(30) });
+  assert.equal(failed.held()?.error, UNAVAILABLE, "a failed search between is no success");
 });
 
 test("a rate limit not keyless Exa's (Parallel's 429, a hosted search's) that repeats after its wait still just waits again", () => {
