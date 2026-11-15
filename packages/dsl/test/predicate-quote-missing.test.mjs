@@ -124,3 +124,16 @@ test('validation: a path, a non-empty pages list of paths this run produces, and
   assert.match(errorsOf(check({ pages: ['answer.evidence.0'] })).join('\n'), /reads its quotes as a page/);
   assert.match(errorsOf(check({ pages: ['fetched'] })).join('\n'), /reads "fetched" but no input key or earlier node produces "fetched"/);
 });
+
+test('a poll waiting on not quote_missing reads its pages from the declared result: one outside it is refused, as its path is', () => {
+  const pollOn = (pages) => {
+    const doc = flow();
+    doc.schemas.Draft = { type: 'object', properties: { quotes: { type: 'array', items: { type: 'string' } }, text: { type: 'string' } } };
+    doc.root.steps = [{ node: 'call', label: 'draft', via: 'tool', tool: 'drafts.get', args: { url: '{url}' }, out: 'Draft', as: 'draft', deadline_s: 5, poll: { until: { predicate: 'not', of: { predicate: 'quote_missing', path: 'quotes', pages } }, interval_s: 1, deadline_s: 5 } }];
+    doc.output.path = 'draft';
+    const checked = validateWorkflow(doc, { input: { url: 'u', answer: {} } });
+    return checked.ok ? [] : checked.errors;
+  };
+  assert.deepEqual(pollOn(['text']), []);
+  assert.match(pollOn(['text', 'body']).join('\n'), /poll\.until pages "body" is not in the declared result shape \(quotes, text\); every quote would miss and the poll could never settle/);
+});

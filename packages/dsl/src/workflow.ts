@@ -1490,8 +1490,13 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
             for (const [name, pred] of [["until", p.until], ["fail_when", p.fail_when]] as const) {
               if (pred === undefined) { if (name === "until") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.until is required`); continue; }
               if (!checkPredicate(pred, label, path, `poll.${name}`, "poll")) continue;
-              const predPath = (negated(pred) as { path?: string }).path;
+              const read = negated(pred) as { predicate?: string; path?: string; pages?: unknown };
+              const predPath = read.path;
               if (resultShape && typeof resultShape === "object" && predPath && resultPathMissing(resultShape, predPath)) fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): poll.${name} path "${predPath}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); the poll could never settle`);
+              // quote_missing also reads its pages from the result: one outside it misses every quote, poll after poll.
+              if (resultShape && typeof resultShape === "object" && read.predicate === "quote_missing" && Array.isArray(read.pages)) for (const page of read.pages) {
+                if (typeof page === "string" && page && resultPathMissing(resultShape, page)) fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): poll.${name} pages "${page}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); every quote would miss and the poll could never settle`);
+              }
             }
             if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.interval_s must be a finite number of at least 0.1 seconds`);
             if (!(Number.isFinite(p.deadline_s) && p.deadline_s >= (Number(node.deadline_s) || 0))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.deadline_s must be a finite number at least deadline_s`);
