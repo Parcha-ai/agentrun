@@ -13,6 +13,7 @@
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PROVIDERS } from "@parcha/agentrun-computer";
+import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
@@ -296,7 +297,8 @@ export const RUNNER_DRAIN_ENV = "AGENTRUN_DRAIN_TIMEOUT";
 
 /** What a runner process holds, from its arguments and `env`: --loops, else the server's --max-runs default
  *  (AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds; maxRunsOf); --drain-timeout, else
- *  AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT. A bad AGENTRUN_MAX_RUNS or AGENTRUN_DRAIN_TIMEOUT is RunnerRefused. */
+ *  AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT. A bad AGENTRUN_MAX_RUNS, AGENTRUN_DRAIN_TIMEOUT or
+ *  AGENTRUN_FREE_MODEL_REQUESTS is RunnerRefused. */
 export function runnerHolds(args: { loops?: number; drainMs?: number }, env: NodeJS.ProcessEnv): { loops: number; drainMs: number } {
   let loops = args.loops;
   if (loops === undefined) {
@@ -311,6 +313,13 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
     const given = env[RUNNER_DRAIN_ENV];
     drainMs = durationMs(given || RUNNER_DRAIN_TIMEOUT);
     if (drainMs === undefined) throw new RunnerRefused(`${RUNNER_DRAIN_ENV} is a duration such as 6s, 500ms or 1m, not ${JSON.stringify(given)}`);
+  }
+  // The limit on each run's requests on free models (AGENTRUN_FREE_MODEL_REQUESTS), read again at each claim: a bad one refuses
+  // the runner here, never a run at its claim.
+  try {
+    freeModelRequestsOf(env);
+  } catch (error) {
+    throw new RunnerRefused((error as Error).message);
   }
   return { loops, drainMs };
 }

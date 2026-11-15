@@ -83,6 +83,20 @@ test("a request whose price is unknown stays unpriced after the resume and count
   assert.ok(typeof read.spentUsd === "number" && read.spentUsd <= HOLD && read.spentUsd < CAP, `the cap counts it at its hold, never all of the cap: ${read.spentUsd}`);
 });
 
+test("a free request left open beside the handed-on one: the new booking's spend reads the paid request at what it reported, never its hold", async () => {
+  const store = memorySessionStore({ scope: "run-6" });
+  // A free model's request a process that died left open (its runner.request marked `freeRequest`, never answered).
+  await (await store.open(KEY)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: "free-model", freeRequest: true } }]);
+  // Then a claim in this process sends a paid request, loses the claim, and the run is taken again here: the paid answer
+  // is handed on (`taken`), and the free request is booked cut, at $0, by the same bookCut.
+  const again = await lostWhileOut(store, KNOWN);
+  const records = await store.read(KEY);
+  const turns = turnsOf(records);
+  assert.deepEqual(turns.map((r) => [r.data.turn, r.data.usd, r.data.cut ?? false]), [[2, KNOWN.usd, false], [1, 0, true]], `the paid one at its cost, the free one cut at $0: ${JSON.stringify(turns)}`);
+  assert.ok(near(sessionSpendOf(records).spentUsd, KNOWN.usd), `the records count what it cost: ${sessionSpendOf(records).spentUsd}`);
+  assert.ok(near(again.booking.spentUsd(), KNOWN.usd), `the new booking's spend reads the paid request at what it reported (${KNOWN.usd}), not its hold (${HOLD}): ${again.booking.spentUsd()}`);
+});
+
 test("without a scope (a process that died hands nothing on) the request is booked cut, at its hold", async () => {
   const store = memorySessionStore();
   await lostWhileOut(store, KNOWN);

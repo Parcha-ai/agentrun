@@ -642,6 +642,7 @@ export interface components {
       min: components["Usd"];
       max: components["Usd"];
     } | null;
+    free_model_requests?: number;
   };
   MessageCreate: {
     content: string;

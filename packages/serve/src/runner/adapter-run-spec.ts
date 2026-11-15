@@ -12,7 +12,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { BeforeRequest, HostTool, NestedCalls, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import { decisionProvidersIn } from "../decisions.js";
@@ -213,6 +213,8 @@ export interface AdapterSpecDeps {
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
  *  overhead its provider adds; the output ceiling is the route's when it carries one, else none. */
 export function capModelOf(route: ModelRoute): CapModel {
+  // A ChatGPT plan's route is billed to the plan: the one plan rule (planCapModel), a CLI's plan model's too.
+  if (route.provider.plan) return planCapModel(route.model, route.provider.api, route.outputCeiling ?? null);
   // A model serve has no price for carries placeholder zeros: the cap reads it as unknown (null), never as $0.
   const cost: RouteCost | undefined = route.unpriced ? undefined : route.cost;
   const price = cost
@@ -224,9 +226,8 @@ export function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead). A ChatGPT plan's route is
-  // billed to the plan: its requests cost the run no dollars (CapModel.plan), never an unknown price.
-  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.provider.plan ? { plan: true } : {}) };
+  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
 /** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
@@ -564,6 +565,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     },
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
+    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
+    freeRequests: freeModelRequestsOf(deps.env),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
   // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).

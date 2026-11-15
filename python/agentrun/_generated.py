@@ -5545,7 +5545,7 @@ class Region(TypedDict):
     state: Literal["live", "beta", "planned"]
 
 
-class Limits(TypedDict):
+class _LimitsRequired(TypedDict):
     max_body_bytes: int
     max_upload_bytes: int | None
     max_files_per_run: int
@@ -5556,6 +5556,10 @@ class Limits(TypedDict):
     idempotency_ttl_s: int
     input_wait_s: int | None
     max_cost_usd: LimitsMaxCostUsd | None
+
+
+class Limits(_LimitsRequired, total=False):
+    free_model_requests: int
 
 
 class LimitsMaxCostUsd(TypedDict):

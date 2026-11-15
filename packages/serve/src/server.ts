@@ -156,6 +156,7 @@ import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS,
 import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
@@ -830,6 +831,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
       input_wait_s: null,
       max_cost_usd: null,
+      // The most requests on free models a run makes (AGENTRUN_FREE_MODEL_REQUESTS, else 60): each costs $0, so the
+      // dollar cap cannot stop them, and this does (the kernel cap's free.ts). ChatGPT-plan requests don't count.
+      free_model_requests: freeModelRequestsOf(env),
     },
   };
 }
@@ -880,6 +884,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const learning = learningOf(process.env, options.learning);
   const learningBudget = learningBudgetOf(process.env, options.learningBudget);
+  // A limit on a run's requests on free models that is no whole number above 0 stops the start, naming its variable.
+  freeModelRequestsOf(process.env);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
