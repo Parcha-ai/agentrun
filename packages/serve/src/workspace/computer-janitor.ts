@@ -14,6 +14,9 @@
 // What a computer leaves outside itself (Docker's egress parts) goes with its release; the provider's sweepLeftovers is
 // not asked, since it reads labels alone and can't tell this server's parts from another's.
 //
+// A desktop or a phone kept at a run's park (computer-kept.ts) goes by its own row, on any provider: each sweep ends one
+// past its time or whose run ended, and the janitor wakes again at the earliest time still ahead.
+//
 // A provider whose sweep fails is logged, once per distinct failure, and the others are swept. It runs only where its
 // start asks for it (the CLI's runner and the runner subcommand), never under --faux, and never two sweeps at once. Its
 // close cuts a sweep under way and waits for it on a bound of its own (JANITOR_CLOSE_MS), so a stuck vendor call never
@@ -28,6 +31,7 @@ import { FAUX_ENV } from "../model.js";
 import type { Store } from "../store/index.js";
 import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-computer.js";
 import type { ComputerDeps } from "./computer-deps.js";
+import { type KeptSweep, sweepKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
 
@@ -182,17 +186,48 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
   return out;
 }
 
-/** The janitor: one sweep now, then one every `everyMs`, never two at once. `close()` stops it, cuts a sweep under way
- *  and waits for it at most `closeMs`. Under --faux it does nothing. */
+/** The pass over the desktops and phones kept at a run's park (computer-kept.ts sweepKept): one past its time, or whose
+ *  run ended, is ended through its provider, made with this server's keys, whatever its lifetime (a vendor's own end is
+ *  hours away). Undefined without the store's settings, where none is kept. Never throws. */
+export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now">): Promise<KeptSweep | undefined> {
+  const { store, computers } = deps;
+  if (!store.settings) return undefined;
+  const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
+  const providerOf = async (id: string): Promise<ComputerProvider | undefined> => {
+    const make = Object.hasOwn(computers.providers, id) ? computers.providers[id] : undefined;
+    if (!make || !computers.kinds.PROVIDERS.some((entry) => entry.id === id)) return undefined;
+    const options = providerOptions(id, await keysOf(id), computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
+    return options.ok ? make(options.options, { ledger: storeLedger(store.computerLedger, id) }) : undefined;
+  };
+  return sweepKept({ settings: store.settings, runs: store.runs, now: (deps.now ?? Date.now)(), providerOf });
+}
+
+/** The janitor: one sweep now, then one every `everyMs`, never two at once, and one more at the earliest time a kept
+ *  computer is due (sweepKeptComputers), so a park's keep ends on time though the process that parked it is gone.
+ *  `close()` stops it, cuts a sweep under way and waits for it at most `closeMs`. Under --faux it does nothing. */
 export function startJanitor(deps: JanitorDeps): { readonly first: Promise<void>; close(): Promise<void> } {
   if (deps.env[FAUX_ENV]) return { first: Promise.resolve(), close: async () => {} };
   /** The last failure said per provider: a failure is said once, until it changes or the provider sweeps again. */
   const said = new Map<string, string>();
   const cut = new AbortController();
   let running: Promise<void> | undefined;
+  /** The wake at the earliest kept computer's time, when it is sooner than the next sweep. */
+  let wake: NodeJS.Timeout | undefined;
+  const keptPass = async (): Promise<void> => {
+    const kept = await sweepKeptComputers(deps);
+    if (!kept || cut.signal.aborted) return;
+    if (kept.ended.length > 0) deps.log(`the computer janitor ended the computers kept at a park past their time: ${kept.ended.join(", ")}`);
+    for (const words of kept.failed) deps.log(`the computer janitor could not end a computer kept at a park: ${words}`);
+    clearTimeout(wake);
+    wake = undefined;
+    if (kept.next === undefined) return;
+    wake = setTimeout(() => void (cut.signal.aborted || running || once()), Math.max(0, kept.next - (deps.now ?? Date.now)()) + 1_000);
+    wake.unref();
+  };
   const once = (): Promise<void> =>
     (running ??= (async () => {
       try {
+        await keptPass();
         for (const { provider, swept } of await sweepServerComputers(deps, cut.signal)) {
           // A sweep the close cut says nothing more.
           if (cut.signal.aborted) break;
@@ -219,6 +254,7 @@ export function startJanitor(deps: JanitorDeps): { readonly first: Promise<void>
     async close() {
       cut.abort();
       clearInterval(timer);
+      clearTimeout(wake);
       if (!running) return;
       // A vendor call that ignores the cut (a release takes no signal) is left to finish on its own after this bound.
       let bound: NodeJS.Timeout | undefined;
