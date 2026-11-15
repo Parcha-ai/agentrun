@@ -204,7 +204,7 @@ export function codeMode(deps: CodeModeDeps) {
     const own = deps.ownCalls;
     if (!said || !own) return;
     if (said.kind === "opened") void openRow(said.exec, said.input).catch((error) => deps.log("codex: an exec's row was not written", { exec: said.exec, error: String(error) }));
-    else void (rows.get(said.exec) ?? Promise.resolve()).then(() => own.ended(said.exec, said.output)).catch((error) => deps.log("codex: an exec's end was not written", { exec: said.exec, error: String(error) }));
+    else void (rows.get(said.exec) ?? Promise.resolve()).then(() => own.ended(said.exec, said.output, said.failed)).catch((error) => deps.log("codex: an exec's end was not written", { exec: said.exec, error: String(error) }));
   });
 
   /** The script a nested call is tied to now, as the log and the proxy's latest answer have it. */

@@ -27,14 +27,17 @@ export const UNWATCHED = "(unwatched answer)";
 export type Tie = { kind: "tied"; exec: string } | { kind: "held"; exec: string } | { kind: "ambiguous"; live: string[] } | { kind: "none" };
 
 /** What a rollout line says of a script: its `exec` line opened it (`input`, the script), or an output finished it (`output`,
- *  that output's text). */
-export type ScriptEvent = { kind: "opened"; exec: string; input: string } | { kind: "finished"; exec: string; output: string };
+ *  that output's text; `failed`, the script failed, as its status header says). */
+export type ScriptEvent = { kind: "opened"; exec: string; input: string } | { kind: "finished"; exec: string; output: string; failed: boolean };
 
 /** Codex's status header of an exec's or a wait's output: the text it starts with (its first part), never what the script printed after it. */
 const statusOf = (output: unknown): string =>
   typeof output === "string" ? output : Array.isArray(output) && typeof (output[0] as { text?: unknown } | undefined)?.text === "string" ? (output[0] as { text: string }).text : "";
 /** A cell that yielded and still runs, as its status header says. */
 const RUNNING = /^Script running with cell ID (\S+)/;
+/** A script that failed (it threw, or its cell was gone), as its status header says. The rollout's output line has no
+ *  status field of its own: this header is the only place Codex says how a script ended. */
+const FAILED = /^Script failed\b/;
 
 const textOf = (output: unknown): string =>
   typeof output === "string" ? output : Array.isArray(output) ? output.map((part: { text?: unknown }) => (typeof part?.text === "string" ? part.text : "")).join("\n") : "";
@@ -79,7 +82,7 @@ export class Scripts {
   private finish(at: number, output: unknown): ScriptEvent {
     const exec = this.open.splice(at, 1)[0]!.exec;
     this.done.add(exec);
-    return { kind: "finished", exec, output: textOf(output) };
+    return { kind: "finished", exec, output: textOf(output), failed: FAILED.test(statusOf(output)) };
   }
 
   /** The script of an unfinished `exec` whose line the rollout holds; none for any other. */

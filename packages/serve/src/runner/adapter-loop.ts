@@ -2315,7 +2315,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ? {
               opened: (callId, name, input) => record.start(callId, name, input, false).catch(unlessSealed),
               nestedIn: (callId, parent) => record.nestedIn(callId, parent),
-              ended: (callId, output) => record.end(callId, "done", output).catch(unlessSealed),
+              ended: (callId, output, failed) => record.end(callId, failed ? "failed" : "done", output).catch(unlessSealed),
             }
           : undefined;
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };

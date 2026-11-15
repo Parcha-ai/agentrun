@@ -343,8 +343,9 @@ export interface OwnCalls {
   /** The host tool call `callId` runs inside the harness's call `parent`: said before the call reaches the gate, so its
    *  row (a refused or parked one's too) names its parent. */
   nestedIn(callId: string, parent: string): void;
-  /** The call ended with `output` (once: a call already ended says nothing). */
-  ended(callId: string, output: string): Promise<void>;
+  /** The call ended with `output`, `failed` when the harness's stream says it did not do its work (Codex's "Script failed"),
+   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). */
+  ended(callId: string, output: string, failed: boolean): Promise<void>;
 }
 
 /** `tool`, a tool the adapter adds of its own, made the host's (SessionIO.hostTool). */
