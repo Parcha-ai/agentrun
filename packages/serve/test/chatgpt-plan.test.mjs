@@ -408,7 +408,7 @@ test("the renewal lease across two processes on one SQLite store: a live lease s
   assert.equal(openai.refreshes, refreshesBefore + 1, "and the refresh token is not sent again before the lease ends");
   viewHidesLease(await new one.ChatGPTPlan({ store: serverStore, sealKey }).load());
   // Once it has lapsed (a reader whose clock is past its end), the lease is taken over: one more refresh.
-  const later = new two.ChatGPTPlan({ store: runnerStore, sealKey, now: () => Date.now() + 31_000 });
+  const later = new two.ChatGPTPlan({ store: runnerStore, sealKey, now: () => Date.now() + 61_000 });
   assert.equal(await later.token(), openai.issued.at(-1).access, "a held lease that lapsed is taken over");
   assert.equal(openai.refreshes, refreshesBefore + 2);
 
@@ -431,4 +431,5 @@ test("the renewal lease across two processes on one SQLite store: a live lease s
   assert.equal(await runnerStore.sealedKeys.get(PLAN_ROW), undefined, "the row stays gone");
   assert.equal(await serverStore.sealedKeys.get(PLAN_ROW), undefined);
   assert.equal((await new one.ChatGPTPlan({ store: serverStore, sealKey }).load()).view().state, "signed_out");
+  await assert.rejects(new two.ChatGPTPlan({ store: runnerStore, sealKey }).token(), (error) => error instanceof two.PlanUnavailable && /not signed in/.test(error.message), "the next token() says signed out");
 });

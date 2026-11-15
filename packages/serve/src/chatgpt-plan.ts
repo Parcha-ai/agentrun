@@ -37,12 +37,13 @@ const PENDING_MS = 10 * 60_000;
 const REFRESH_MARGIN_MS = 5 * 60_000;
 /** The longest one refresh call at OpenAI may take: its holder gives it up by then. */
 const REFRESH_CALL_MS = 15_000;
-/** A refresh lease's length: the call, the write back (STORE_WRITE_DEADLINE_MS) and 5 s spare, so a lease never lapses
+/** A refresh lease's length (60 s): the call, the write back (STORE_WRITE_DEADLINE_MS) and 35 s spare, so a lease never lapses
  *  while its holder may still spend the token. Its end is written on the holder's clock and judged on each reader's own:
- *  sealed_keys has no store clock to lease by, so a reader whose clock runs more than the 5 s spare ahead of the holder's
+ *  sealed_keys has no store clock to lease by, so a reader whose clock runs more than the 35 s spare ahead of the holder's
  *  can take a lease still live, and send a refresh token the holder may be spending (which OpenAI answers by revoking
- *  the sign-in). Hosts that share a store keep their clocks in step (NTP) for this. */
-const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 5_000;
+ *  the sign-in). Hosts that share a store keep their clocks in step (NTP) for this. A holder that dies holds the others
+ *  up for the lease's length at most. */
+const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 35_000;
 /** How often a reader waiting on a peer's renewal reads the row again. */
 const LEASE_WAIT_MS = 200;
 const RENEW_LATER = "OpenAI could not renew the ChatGPT sign-in just now: try again in a moment.";
