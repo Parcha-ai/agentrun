@@ -138,6 +138,15 @@ test('a guard: a model whose price is partial (input or output missing) or $0 fo
   }
 });
 
+test("a guard: an OpenRouter router listed at $0 (its price is the routed model's) is never free: a failed request on openrouter/auto stays unknown, as before", async () => {
+  for (const id of ['openrouter/auto', 'auto', 'openrouter/free', 'typesafe/jev-router']) {
+    const router = { ...FREE, id };
+    const { turn, cost } = await bookedUnder(router, undefined, { end: 'lost', label: 'cut' });
+    assert.deepEqual([turn?.usd, turn?.free], [null, undefined], `${id}: ${JSON.stringify(turn)}`);
+    assert.deepEqual([cost.usd, cost.unpriced], [null, 1], id);
+  }
+});
+
 test('a guard: a free model whose request carries a fee (a native web search) is not free: the fee is a cost', async () => {
   const store = memorySessionStore();
   const cap = runCap({ sessions: store, capUsd: () => undefined, modelOf: () => FREE });
