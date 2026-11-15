@@ -176,6 +176,7 @@ export function emailText(answer: Record<string, unknown>): string {
   const rest = fieldsCut(others);
   if (!Array.isArray(messages)) return JSON.stringify(rest);
   const all = messages.map((m) => fieldsCut(m && typeof m === "object" ? (m as Message) : {}));
+  if (!all.length) return JSON.stringify({ ...rest, messages: [] });
   for (let n = all.length; n > 0; n--) {
     const dropped = all.length - n;
     const note = dropped ? droppedNote(rest, all.slice(n)) : {};

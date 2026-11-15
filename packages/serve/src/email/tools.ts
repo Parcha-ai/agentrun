@@ -183,12 +183,22 @@ async function search(mail: Mail, args: Record<string, unknown>) {
     await session.open(path);
     const query = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(subject ? { subject } : {}), ...(words ? { text: words } : {}), ...(since ? { since } : {}), ...(args.unread === true ? { seen: false } : args.unread === false ? { seen: true } : {}) };
     const uids = await mail.uids(session, query);
-    // The newest arrivals, then by their dates.
-    const found = await session.fetch(path, uids.slice(-(limit as number)), SEARCH_BYTES);
+    // On a thread, the messages the sender may read are judged on their headers first, so the limit counts only those:
+    // a newer one they took no part in never takes the slot of an older one of theirs. The newest arrivals, then by
+    // their dates.
+    const readable = mail.scope.kind === "thread" ? await headsAllowed(session, mail, path, uids) : uids;
+    const found = await session.fetch(path, readable.slice(-(limit as number)), SEARCH_BYTES);
     const kept: MailMessage[] = [];
     for (const m of found) if (await mail.allows(session, m)) kept.push(m);
     return { messages: kept.sort(newestFirst).slice(0, limit as number).map(foundOf) };
   });
+}
+
+/** The UIDs of `uids` (of `path`, open) whose headers the run's scope allows, lowest first: no body is fetched. */
+async function headsAllowed(session: ImapSession, mail: Mail, path: string, uids: number[]): Promise<number[]> {
+  const kept: number[] = [];
+  for (const head of await session.heads(path, uids)) if (await mail.allows(session, head)) kept.push(head.uid);
+  return kept;
 }
 
 async function read(mail: Mail, args: Record<string, unknown>) {
