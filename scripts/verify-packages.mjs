@@ -67,8 +67,9 @@ function templateFiles() {
 // copied; no other package may carry them.
 const allowedExtraFiles = {
   'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json', 'package/src/vendor/browser-use-pi/UPSTREAM.json'],
-  // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
-  'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
+  // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs),
+  // and OpenAI's o200k_base vocabulary, unchanged, with its licenses (src/host/o200k.ts reads it to count input tokens).
+  'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json', 'package/vendor/o200k/o200k_base.tiktoken', 'package/vendor/o200k/LICENSE'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).

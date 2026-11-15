@@ -16,7 +16,7 @@
 // `input_tokens`; they are booked apart. The watch reads each `function_call` item of an answer before OpenCode has it:
 // its call id, name and arguments, which tie the MCP call OpenCode makes next (it carries no call id) to the model's own.
 import type { IncomingHttpHeaders } from "node:http";
-import { lastObjectOf, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { lastObjectOf, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix OpenCode gives the adapter's MCP tools: the server is `hands`. */
 export const TOOL_PREFIX = "hands_";
@@ -410,11 +410,9 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
     outputLeast: responsesOutputLeast,
     effortOf: responsesEffort,
     limitOutput: limitResponsesOutput,
-    // Its bytes less the escapes in the text it carries (codex's figure: the same Responses API), and on a route straight
-    // to OpenAI, OpenAI's own count when that is lower; on a route OpenAI does not count, the kernel's local count when
-    // that is lower.
+    // Its bytes less the escapes in the text it carries (codex's figure: the same Responses API), or the kernel's local
+    // count when that is lower, on every route.
     serverInputOverhead: responsesInputOverhead,
-    countInput: OPENAI_INPUT_COUNTER,
     countInputLocally: responsesLocalInputTokens,
     // A stop counts the content it streamed, not the wire, and the part of its reasoning budget that did not stream.
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),

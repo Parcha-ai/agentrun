@@ -121,7 +121,7 @@ export interface ProviderPolicy {
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
   outputAsked?(body: Record<string, unknown>): number | undefined;
-  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens, OpenAI's input_tokens), which the proxy asks before
+  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens), which the proxy asks before
    *  each of the session's answer requests (`countedInputOf`) when its upstream is exactly `origin`, the provider's own: never
    *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
    *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */
@@ -577,9 +577,6 @@ export interface ModelProxyOptions {
   redact?: (text: string) => string;
   /** The price of a response, or null when it is unknown. */
   price?: (model: string, usage: ProxyUsage) => number | null;
-  /** The upstream states what each answer cost in its usage's `cost`, in USD (OpenRouter's usage accounting,
-   *  `usageCostOf`): read as the request's reported figure when no header gave one, the price's figure kept beside it. */
-  usageCost?: boolean;
   log?: (message: string, detail?: Record<string, unknown>) => void;
   /** Told each forwarded request's route and the provider's status once it answers: what a route does on this
    *  provider (a free route it may not serve), as a status code only, never a body or a key. */
@@ -732,6 +729,20 @@ export function reportedCostOf(headers: Headers): number | undefined {
 
 /** A cost a provider states in its answer's usage: a number, finite, above 0 and below MAX_REQUEST_USD. */
 const usageFigure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 && value <= MAX_REQUEST_USD ? value : undefined);
+
+/** The origin a route with its own fetch names (serve's translation to a model that speaks neither API): nothing is ever
+ *  sent there, its fetch answers every request, and it writes an answer's cost in its usage only where the provider
+ *  stated one (OpenRouter's). */
+export const ROUTE_ORIGIN = "https://model-route.invalid";
+
+/** Whether every answer from `origin` states what it cost in its usage's `cost`, in USD (`usageCostOf`): OpenRouter's
+ *  (https://openrouter.ai/docs/use-cases/usage-accounting, on every API it serves), and a translation route's
+ *  (`ROUTE_ORIGIN`), which passes OpenRouter's figure on. No other origin's usage is read for a cost. */
+export function statesUsageCost(origin: string): boolean {
+  if (!URL.canParse(origin)) return false;
+  const url = new URL(origin);
+  return url.hostname === "openrouter.ai" || url.origin === ROUTE_ORIGIN;
+}
 
 /** What an answer says it cost in its own usage, when it says so (OpenRouter's usage accounting, on every answer of every
  *  API it serves: https://openrouter.ai/docs/use-cases/usage-accounting): the answer's last `usage` object (a stream's
@@ -1039,6 +1050,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const hostHeaders = { ...options.headers };
   const forward = options.fetch ?? fetch;
   const origin = baseOf(options.origin);
+  /** Whether each answer states what it cost in its usage (`statesUsageCost`): read as the request's reported figure when
+   *  no header gave one, the price's figure kept beside it. */
+  const costStated = statesUsageCost(origin);
   const refusedStatus = policy.refusedStatus ?? 400;
   /** Why the turn's answer stopped, once the harness was told (onCut, onFiltered): the session's answer requests are
    *  refused, unsent and unbooked, until it opens its next turn (openTurn). A client that asks again (Codex retries an
@@ -1709,7 +1723,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const failed = streamErrorOf(kept);
       if (failed !== undefined && usage && usage.input + usage.output + usage.cacheRead + (usage.cacheWrite ?? 0) === 0) usage = undefined;
       // What the answer's own usage says it cost (OpenRouter's), when no header said: what was paid, as a gateway's header.
-      if (reported === undefined && options.usageCost) reported = usageCostOf(kept);
+      if (reported === undefined && costStated) reported = usageCostOf(kept);
       // In the provider's words, the credential and the host's header values cut, then the host's redactor, as its client
       // was sent them.
       const wordsOf = (said: string) => {
