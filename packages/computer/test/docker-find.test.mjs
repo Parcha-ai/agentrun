@@ -3,21 +3,25 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { sweep } from "../dist/index.js";
-import { container, fakeDocker, idOf, valuesOf } from "./fake-docker.mjs";
+import { allowed, container, fakeDocker, idOf, valuesOf } from "./fake-docker.mjs";
 
 const A = "computer-0000000000aa";
 const B = "computer-0000000000bb";
 const PAST = "2026-01-01T00:00:00.000Z";
 
-/** a: no network, team a, running; b: open, team b, stopped; plus containers this provider does not count. */
+/** b: open, through its egress proxy, team b, stopped. */
+const openB = allowed({ name: B, allow: "open", labels: { team: "b", run: "1" }, running: false, deadline: PAST });
+
+/** a: no network, team a, running; b: open (openB); plus containers this provider does not count. */
 const seeded = (options = {}) =>
 	fakeDocker({
 		containers: [
 			container({ name: A, labels: { team: "a", run: "1" } }),
-			container({ name: B, labels: { team: "b", run: "1" }, network: "bridge", running: false, deadline: PAST }),
+			...openB.containers,
 			container({ name: "computer-0000000000cc", labels: { team: "a", run: "1" }, computer: false }),
 			container({ name: "postgres", labels: { team: "a", run: "1" } }),
 		],
+		volumes: openB.volumes,
 		...options,
 	});
 
@@ -48,7 +52,7 @@ test("attach() reports the spec it read back from the computer: its user as uid:
 	const { provider } = seeded({
 		containers: [
 			container({ name: A, labels: { team: "a" } }),
-			container({ name: B, labels: { team: "b" }, network: "bridge", running: false }),
+			...allowed({ name: B, allow: "open", labels: { team: "b" }, running: false }).containers,
 			container({ name: R, labels: { team: "root" }, user: "0:0", image: "alpine:3.20", deadline, memory: 512 * 1024 * 1024, quota: 50_000, pids: 64, workdir: "/opt/x" }),
 		],
 	});
@@ -65,7 +69,7 @@ test("attach() reports the spec it read back from the computer: its user as uid:
 	assert.equal(a.ok, true, JSON.stringify(a));
 	assert.deepEqual([a.value.spec.user, a.value.spec.network, a.value.spec.image, a.value.spec.cpus, a.value.spec.memoryMb, a.value.spec.pids], ["1000:1000", "none", "debian:bookworm-slim", 2, 4096, 1024]);
 	const b = await provider.attach({ id: B });
-	assert.equal(b.ok && b.value.spec.network, "open", "a stopped computer on the bridge reports open");
+	assert.equal(b.ok && b.value.spec.network, "open", "a stopped computer whose egress proxy serves --open public reports open");
 	assert.equal(b.value.spec.kind, undefined, "a stopped computer cannot be asked its kind: attach reports none");
 });
 
@@ -214,15 +218,17 @@ test("list() reads back every computer with the labels: its labels, deadline, st
 	assert.equal(byName[B].deadline.toISOString(), PAST);
 	assert.equal(byName[B].state, "stopped");
 	assert.equal(byName[B].network, "open");
-	const [ps, inspect] = calls();
+	const [ps, inspect, proxy] = calls();
 	assert.deepEqual(ps.slice(0, 1), ["ps"]);
 	assert.ok(ps.includes("-a") && ps.includes("--no-trunc"), JSON.stringify(ps));
 	assert.deepEqual(valuesOf(ps, "--filter"), ["label=agentrun.computer=1"]);
 	assert.deepEqual(inspect.slice(0, 4), ["inspect", "--type", "container", "--format"]);
 	assert.notEqual(inspect[4], "{{json .}}", "list reads only the fields it reports, not the whole inspect");
+	assert.equal(proxy.at(-1), `${B}-egress`, "open's read-back holds what its proxy serves");
+	const before = calls().length;
 	const team = await provider.list({ team: "b" });
 	assert.deepEqual(team.value.map((info) => info.ref.name), [B]);
-	assert.deepEqual(valuesOf(calls()[2], "--filter"), ["label=agentrun.computer=1", "label=team=b"]);
+	assert.deepEqual(valuesOf(calls()[before], "--filter"), ["label=agentrun.computer=1", "label=team=b"]);
 });
 
 test("list() reports a missing or unreadable deadline as undefined", async () => {
@@ -246,16 +252,23 @@ test("list() with no match makes no inspect, and a computer gone between ps and 
 
 test("network() reads back none, open, or what else the computer is on, never wider", async () => {
 	const host = "computer-0000000000ee";
+	const bridge = "computer-0000000000ab";
+	const open = allowed({ name: B, allow: "open" });
 	const { provider } = fakeDocker({
 		containers: [
 			container({ name: A }),
-			container({ name: B, network: "bridge" }),
+			...open.containers,
+			container({ name: bridge, network: "bridge" }),
 			container({ name: host, network: "host" }),
 			{ ...container({ name: "computer-0000000000ff" }), NetworkSettings: { Networks: { none: {}, extra: {} } } },
 		],
+		volumes: open.volumes,
 	});
 	assert.deepEqual(await provider.network({ id: idOf(A), name: A }), { ok: true, value: "none" });
 	assert.deepEqual(await provider.network({ id: idOf(B), name: B }), { ok: true, value: "open" });
+	const bridged = await provider.network({ id: idOf(bridge), name: bridge });
+	assert.equal(bridged.ok, true);
+	assert.match(bridged.value.other, /bridge/, "open is only through the egress proxy: Docker's bridge is a network this provider never makes");
 	const other = await provider.network({ id: idOf(host), name: host });
 	assert.equal(other.ok, true);
 	assert.match(other.value.other, /host/);

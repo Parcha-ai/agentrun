@@ -11,7 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
 import { HostError } from "../dist/host.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
@@ -1032,7 +1032,7 @@ test("network() reads the network from inside (the probe) and refuses any change
 	assert.equal(made(await provider.network(ref)), "none");
 	assert.ok(probes() > before, "the probe from inside is the network's truth, with no vendor read-back");
 	only(fake).box.reached = ["1.1.1.1:443"];
-	assert.match(made(await provider.network(ref)).other, /created none, yet from inside an answer came back from 1\.1\.1\.1:443/, "a probe that reaches out is no network none");
+	assert.match(made(await provider.network(ref)).other, /created none, yet from inside: .*an answer from 1\.1\.1\.1:443/, "a probe that reaches out is no network none");
 	only(fake).box.reached = [];
 	assert.equal(made(await provider.network(ref, "none")), "none", "the network it already has answers ok");
 	for (const policy of ["open", { allow: ["example.com"] }]) {
@@ -1040,6 +1040,192 @@ test("network() reads the network from inside (the probe) and refuses any change
 		assert.equal(refused.error?.code, "refused");
 		assert.match(refused.error.message, /fixed at create/);
 	}
+});
+
+// --- network open and a list: init's egress proxy ---
+
+const NETWORK_LABEL = "agentrun.computer.network";
+const POLICY = "/opt/agentrun/egress/policy";
+const RELAY = "127.0.0.1:3128";
+/** The fake with every network form declared, as Agent37, E2B, Modal and Daytona declare them. */
+const OPEN = { descriptor: NETWORK_DESCRIPTOR };
+const LIST = { allow: ["Example.com", "93.184.215.0/24"] };
+const policyReads = (fake) => fake.requests.filter(({ method, params }) => method === "files.read" && params.path === POLICY).length;
+
+test("a descriptor's network forms are what the adapter declares and takes; a form it does not declare is refused at check() in words naming the provider and the choices, never widened or narrowed", () => {
+	const open = setup(OPEN).provider;
+	assert.deepEqual(open.capabilities().network, ["none", "open", "allow"]);
+	assert.deepEqual(open.capabilities().allow, { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true }, "a list's bounds: Docker's, ports 80 and 443");
+	for (const network of ["none", "open", LIST]) assert.deepEqual(open.check({ ...SPEC, network }), [], JSON.stringify(network));
+	const bad = open.check({ ...SPEC, network: { allow: ["*.com.", "example.com"] } });
+	assert.deepEqual(bad.map(({ field }) => field), ["network"], "a malformed list is refused, in the list's own words");
+	assert.match(bad[0].message, /Fakehost's allowlist|not a name|wildcard|entry/i);
+	const words = (descriptor, network) => setup({ descriptor }).provider.check({ ...SPEC, network }).map(({ field, message }) => `${field}: ${message}`);
+	assert.deepEqual(words(FAKE_DESCRIPTOR, "open"), ["network: Fakehost can't open the network; choose none"]);
+	assert.deepEqual(words(FAKE_DESCRIPTOR, LIST), ["network: Fakehost can't limit the network to a list; choose none"]);
+	const noList = { ...FAKE_DESCRIPTOR, network: ["none", "open"] };
+	assert.deepEqual(words(noList, LIST), ["network: Fakehost can't limit the network to a list; choose none or open"], "the lead's words");
+	assert.equal(setup({ descriptor: noList }).provider.capabilities().allow, undefined, "no list's bounds where no list is declared");
+	assert.deepEqual(words(noList, "open"), []);
+	assert.deepEqual(words(NETWORK_DESCRIPTOR, "wide"), ["network: network is required: none, open or a list ({ allow: [names or CIDRs] })"]);
+	// The proxy runs as nobody, so the programs' user may not be nobody where it runs: then they could signal it.
+	const users = setup(OPEN, { facts: USER_FACTS }).provider;
+	for (const user of ["65534", "1000:65534"]) {
+		assert.deepEqual(users.check({ ...SPEC, network: "open", user }).map(({ field }) => field), ["user"], user);
+		assert.deepEqual(users.check({ ...SPEC, user }), [], `${user} under none: no proxy`);
+	}
+});
+
+test("create under open: the machine is asked for egress, carries the form in a label, init is given --network open; the read-back finds init's relay answering, nothing answering directly, and the proxy's policy; list, attach and network() read open back", async () => {
+	const { provider, fake } = setup(OPEN);
+	const ref = made(await create(provider, { ...SPEC, network: "open" }));
+	const m = only(fake);
+	assert.equal(m.request.egress, true, "the machine gets the vendor's egress, for the proxy");
+	assert.equal(m.request.labels[NETWORK_LABEL], "open");
+	assert.equal(m.init.network, "open", "init starts the proxy for open");
+	const start = fake.events.find(({ machine, what }) => machine === m.id && what === "run start");
+	assert.ok(start, "a child host's start");
+	assert.ok(policyReads(fake) >= 1, "the policy beside the proxy's socket is read back");
+	const probe = fake.requests.find(({ method, params }) => method === "exec.run" && params.argv[1] === "probe" && params.argv.includes("--connect"));
+	assert.ok(probe.params.argv.includes(RELAY), "the probe tries init's relay too");
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE]);
+	const [info] = made(await provider.list({}));
+	assert.equal(info.network, "open");
+	assert.equal(made(await provider.attach({ id: ref.id })).spec.network, "open");
+	assert.equal(made(await provider.network(ref)), "open");
+	assert.equal(made(await provider.network(ref, "open")), "open", "the network it has answers ok");
+	for (const policy of ["none", LIST]) {
+		const refused = await provider.network(ref, policy);
+		assert.equal(refused.error?.code, "refused");
+		assert.match(refused.error.message, /fixed at create/);
+	}
+	// From inside, against what the label records: each is drift, and network() says so.
+	m.box.reached = ["1.1.1.1:443"];
+	assert.match(made(await provider.network(ref)).other, /created open, yet from inside: .*direct answer from 1\.1\.1\.1:443/);
+	m.box.reached = [];
+	m.box.relay = "down";
+	assert.match(made(await provider.network(ref)).other, /relay at 127\.0\.0\.1:3128 did not answer/);
+	delete m.box.relay;
+	m.box.policy = "allow:example.com";
+	assert.match(made(await provider.network(ref)).other, /the egress proxy serves "allow:example\.com"/);
+	delete m.box.policy;
+	m.box.interfaces = ["lo", "eth0"];
+	assert.match(made(await provider.network(ref)).other, /eth0/, "the netns is lo alone under open too");
+});
+
+test("create under a list: the form, normalized, goes to the label and to init; list, attach and network() read the list back; a retry with another list is refused as exists", async () => {
+	const { provider, fake } = setup(OPEN);
+	const spec = { ...SPEC, network: LIST };
+	const ref = made(await provider.create(spec, { requestId: "listed" }));
+	const m = only(fake);
+	assert.equal(m.request.egress, true);
+	assert.equal(m.request.labels[NETWORK_LABEL], "allow:example.com,93.184.215.0/24");
+	assert.equal(m.init.network, "allow:example.com,93.184.215.0/24");
+	const read = { allow: ["example.com", "93.184.215.0/24"] };
+	assert.deepEqual(made(await provider.list({})).map((info) => info.network), [read]);
+	assert.deepEqual(made(await provider.attach({ id: ref.id })).spec.network, read);
+	assert.deepEqual(made(await provider.network(ref)), read);
+	assert.deepEqual(made(await provider.network(ref, LIST)), read, "the same list, as given, answers ok");
+	assert.equal((await provider.network(ref, { allow: ["example.org"] })).error?.code, "refused");
+	assert.equal(made(await provider.create(spec, { requestId: "listed" })).id, ref.id, "a retry of the same list finds it");
+	const other = await provider.create({ ...SPEC, network: { allow: ["example.org"] } }, { requestId: "listed" });
+	assert.equal(other.error?.code, "exists", other.error?.message);
+	assert.equal(fake.machines.size, 1);
+});
+
+test("a computer whose network does not read back as created is refused at create and deleted: a direct answer, init's relay down, the proxy serving another form", async () => {
+	for (const [box, words] of [
+		[{ reached: ["1.1.1.1:443"] }, /declared open through the egress proxy alone, read back a direct answer from 1\.1\.1\.1:443/],
+		[{ relay: "down" }, /init's relay at 127\.0\.0\.1:3128 did not answer from inside/],
+		[{ policy: "allow:example.com" }, /declared open, the egress proxy serves "allow:example\.com"/],
+	]) {
+		const { provider, fake } = setup(OPEN, { box });
+		const refused = await create(provider, { ...SPEC, network: "open" });
+		assert.equal(refused.error?.code, "refused", JSON.stringify(box));
+		assert.match(refused.error.message, words);
+		await nothingLeft(fake, JSON.stringify(box));
+	}
+});
+
+test("create under none, with every form declared, is as before: no egress, no network label, no --network for init, no proxy policy read", async () => {
+	const { provider, fake } = setup(OPEN);
+	const ref = made(await create(provider));
+	const m = only(fake);
+	assert.equal(m.request.egress, false);
+	assert.equal(m.request.labels[NETWORK_LABEL], undefined);
+	assert.equal(m.init.network, "", "no proxy");
+	assert.equal(policyReads(fake), 0);
+	const probe = fake.requests.find(({ method, params }) => method === "exec.run" && params.argv[1] === "probe" && params.argv.includes("--connect"));
+	assert.ok(!probe.params.argv.includes(RELAY), "the probe tries the configured targets alone");
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE, ACCEPTED_NOTE]);
+	assert.equal(made(await provider.network(ref)), "none");
+});
+
+test("pid1 under open: the entrypoint gives init --network open after its other flags, and the read-back holds", async () => {
+	const { provider, fake } = setup(OPEN, { facts: { daemon: "pid1" } });
+	made(await create(provider, { ...SPEC, network: "open" }));
+	const m = only(fake);
+	assert.equal(m.request.egress, true);
+	assert.deepEqual(m.request.command.slice(-2), ["--network", "open"]);
+	assert.equal(m.init.network, "open");
+	const plain = setup(OPEN, { facts: { daemon: "pid1" } });
+	made(await create(plain.provider));
+	assert.ok(!only(plain.fake).request.command.includes("--network"), "none: no --network");
+});
+
+test("Archil under open and under none: the root still gets egress and mounts before init starts, and init gets the network form alone under open", async () => {
+	for (const network of ["none", "open"]) {
+		const { provider, fake } = setup(OPEN, { box: { reached: [] } });
+		const ref = made(await create(provider, { ...ARCHIL_SPEC, network }));
+		const m = only(fake);
+		assert.equal(m.request.egress, true, `${network}: the root reaches Archil`);
+		const runs = runsOf(fake, m.id);
+		assert.ok(runs.indexOf("run mount") < runs.indexOf("run serve") && runs.indexOf("run serve") < runs.indexOf("run start"), runs.join(", "));
+		assert.equal(m.init.network, network === "open" ? "open" : "");
+		const [info] = made(await provider.list({ "agentrun.run": "r1" }));
+		assert.equal(info.network, network);
+		assert.equal(info.mount.kind, "archil");
+		assert.equal(made(await provider.network(ref)), network);
+	}
+});
+
+test("the pid1 entrypoint, run by sh, gives init --network and the form where one is given, and nothing where none is", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-entrypoint-"));
+	try {
+		const home = join(root, "work");
+		mkdirSync(home);
+		const daemon = join(root, "computerd");
+		writeFileSync(daemon, '#!/bin/sh\necho "args=$*"\n');
+		chmodSync(daemon, 0o755);
+		writeFileSync(`${daemon}.installed`, "n0nce\n");
+		const run = (network) => {
+			const words = [...hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", atomic: true, waitS: 5, nonce: "n0nce", network }).entrypoint];
+			words[4] = daemon;
+			words[6] = home;
+			return execFileSync(words[0], words.slice(1), { cwd: "/", env: { PATH: process.env.PATH }, encoding: "utf8" }).trim();
+		};
+		const base = "args=init --deadline 2030-01-01T00:00:00.000Z --user 2510:2510 --own-network";
+		assert.equal(run("open"), `${base} --network open`);
+		assert.equal(run("allow:example.com,93.184.215.0/24"), `${base} --network allow:example.com,93.184.215.0/24`);
+		assert.equal(run(""), base);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a child's start gives init the network form as its eighth word, after the display and the maximum, empty where not given", () => {
+	const at = (options) => {
+		const { start } = hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", ...options });
+		// start: [..., INIT, "sh", d, t, w, h, r, v?, m?, n?]: the words after the daemon's own, home and the socket's folder.
+		return start.slice(start.indexOf(DAEMON) + 5);
+	};
+	assert.deepEqual(at({ network: "open" }), ["", "", "open"]);
+	assert.deepEqual(at({ display: ":0", maxDeadline: "2030-01-02T00:00:00.000Z", network: "open" }), [":0", "2030-01-02T00:00:00.000Z", "open"]);
+	assert.deepEqual(at({ display: ":0" }), [":0", ""], "no form, no eighth word");
+	assert.deepEqual(at({}), []);
+	const init = hostedCommands().start.find((word) => word.startsWith("# agentrun-computer: init"));
+	assert.match(init, /n=\$\{8-\}/);
+	assert.match(init, /\$\{n:\+--network "\$n"\}/, "init takes it as --network");
 });
 
 test("testConnection lists by the adapter's label and counts this provider's machines, making nothing", async () => {

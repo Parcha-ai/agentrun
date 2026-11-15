@@ -179,8 +179,10 @@ const noNetworkWhy = (provider: ProviderEntry): string =>
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
  *  makes "none" alone, "open" alone, or "open" and "allow" but no "none" (a browser behind its own proxy); none where
  *  the allow-list applies as it is (Docker), or nothing is declared. */
-export function networkWords(network: readonly string[] | undefined): string | undefined {
+export function networkWords(network: readonly string[] | undefined, kind?: ComputerKind): string | undefined {
   if (network?.length === 1 && network[0] === "none") return NO_NETWORK_WORDS;
+  // A desktop whose provider makes open is open under the default list (computer-deps.ts networkOf), as Local Chrome is.
+  if (kind === "desktop" && network?.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   if (network?.length === 1 && network[0] === "open") return VENDOR_NETWORK_WORDS;
   if (network?.length === 2 && network.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   return undefined;
@@ -308,7 +310,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
           const serving = provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0);
           const images = imagesOf(serving, provider.defaultImage?.[kind]);
-          const network = refusedOpen(provider) ? NETWORK_REFUSED_WORDS : networkWords(provider.network);
+          const network = refusedOpen(provider) ? NETWORK_REFUSED_WORDS : networkWords(provider.network, kind);
           // A sandbox's GPUs: only a sandbox takes them (computer-setting.ts computerIssues).
           const gpu = kind === "sandbox" ? sandboxGpu(kinds, provider) : undefined;
           // The configurations of this kind that keep an agent's own computer (computer-setting.ts persistenceIssues).

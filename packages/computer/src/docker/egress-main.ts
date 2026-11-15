@@ -1,10 +1,11 @@
 // The entry a Docker computer's egress proxy container runs (egress.ts makes the container):
 //
-//	node egress-main.js --socket <path> --deadline <ISO time> --allow <entries,...> [--local <addresses,...>] [--hint <words>]
+//	node egress-main.js --socket <path> --deadline <ISO time> (--allow <entries,...> | --open public) [--local <addresses,...>] [--hint <words>]
 //
-// It refuses to start, exit 2 and why on stdout, with no list, an empty one or a bad entry (a proxy with none would reach
-// every public host), with no socket, or with no deadline it can read. Started, it logs "egress ready allow=<list>" once
-// its socket listens, then one line per decision. It ends, exit 0 and its socket removed, on SIGTERM or SIGINT and at
+// `--open public` is every public host (a computer whose network is open); `--allow` a list. It refuses to start, exit 2
+// and why on stdout, with neither or both, an empty list or a bad entry (no list never means open: only `--open public`
+// does), with no socket, or with no deadline it can read. Started, it logs "egress ready allow=<list>" (or "egress ready
+// open") once its socket listens, then one line per decision. It ends, exit 0 and its socket removed, on SIGTERM or SIGINT and at
 // the deadline, the computer's own: an orphaned proxy forwards nothing past its computer's end. `--local` is the Docker
 // host's own addresses, refused as this host's. It imports only node: modules and the proxy: it runs in a bare Node image.
 import { EGRESS_READY, parseAllow, startEgressProxy } from "./egress-proxy.js";
@@ -14,7 +15,7 @@ const MAX_TUNNELS = 64;
 const MAX_CONNECTIONS = 20_000;
 /** The longest a Node timer holds; a later deadline is waited for in steps of it. */
 const MAX_TIMER_MS = 2_147_483_647;
-const FLAGS = new Set(["--socket", "--deadline", "--allow", "--local", "--hint"]);
+const FLAGS = new Set(["--socket", "--deadline", "--allow", "--open", "--local", "--hint"]);
 
 const say = (line: string) => process.stdout.write(`${line}\n`);
 const refuse = (why: string): never => {
@@ -29,13 +30,18 @@ for (let at = 0; at < argv.length; at += 2) {
 	if (!FLAGS.has(flag) || given.has(flag) || at + 1 >= argv.length) refuse(`${JSON.stringify(flag)} is not one of ${[...FLAGS].join(", ")}, each once and with a value`);
 	given.set(flag, argv[at + 1]!);
 }
-let allow: string[] = [];
-try {
-	allow = parseAllow(given.get("--allow") ?? "");
-} catch (error) {
-	refuse(`its list is not one (${(error as Error).message})`);
+const open = given.get("--open");
+if (open !== undefined && open !== "public") refuse(`--open takes "public", not ${JSON.stringify(open)}`);
+if (open !== undefined && given.has("--allow")) refuse("both --open and --allow were given: a proxy serves one");
+let allow: string[] | undefined;
+if (open === undefined) {
+	try {
+		allow = parseAllow(given.get("--allow") ?? "");
+	} catch (error) {
+		refuse(`its list is not one (${(error as Error).message})`);
+	}
+	if (allow === undefined || allow.length === 0) refuse("no host list was given, and no --open public: no list never means every public host");
 }
-if (allow.length === 0) refuse("no host list was given: one with none would reach every public host");
 const socketPath = given.get("--socket") ?? "";
 if (!socketPath.startsWith("/")) refuse("no socket path was given");
 const deadline = Date.parse(given.get("--deadline") ?? "");
@@ -47,11 +53,11 @@ const proxy = await startEgressProxy({
 	maxTunnels: MAX_TUNNELS,
 	maxConnections: MAX_CONNECTIONS,
 	log: say,
-	allow,
+	...(allow === undefined ? {} : { allow }),
 	alsoLocal: () => local,
 	...(given.has("--hint") ? { allowHint: given.get("--hint")! } : {}),
 });
-say(`${EGRESS_READY} allow=${allow.join(",")}`);
+say(allow === undefined ? `${EGRESS_READY} open` : `${EGRESS_READY} allow=${allow.join(",")}`);
 
 const end = (why: string) => {
 	say(`egress: ${why}, the proxy ends`);
