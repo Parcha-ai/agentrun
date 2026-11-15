@@ -24,7 +24,9 @@ export interface MachineHost {
 	readonly facts: HostFacts;
 	/**
 	 * Makes one machine, by its options, and answers its id once the vendor has one. It does not wait for the machine to
-	 * run (the adapter polls get while it is starting) or to be listed (the adapter waits for that too). The machine
+	 * run (the adapter polls get while it is starting) or to be listed (the adapter waits for that too), except where the
+	 * vendor applies a machine's settings only once it is ready: there it may wait for ready within ctx.timeoutMs, set
+	 * them, and answer then (PROVIDERS.md, create). The machine
 	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. An answer that
 	 * never comes is not a machine the adapter forgets: it lists by req.labels and deletes what it finds.
 	 */

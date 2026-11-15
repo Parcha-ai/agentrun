@@ -164,10 +164,15 @@ test("the agent's next run attaches the same computer under its claim, and says 
 
 test("the agent's own computer at a later claim of the run is never called a new one: it is the same computer, kept", async () => {
   const { claim } = await setup();
-  await (await claim("run-1", 1)).release();
+  const first = await claim("run-1", 1);
+  assert.equal(first.made, undefined, "never recorded as the run's own computer");
+  await first.release();
   const said = [];
-  const resumed = await claim("run-1", 2, { earlierUp: async () => true, onConnected: (one) => void said.push(one) });
+  const asked = [];
+  const resumed = await claim("run-1", 2, { hadComputer: async () => (asked.push(1), true), onConnected: (one) => void said.push(one) });
   assert.equal(resumed.replaced, undefined);
+  assert.equal(resumed.made, undefined);
+  assert.deepEqual(asked, [], "the journal is not asked for the agent's own computer");
   assert.deepEqual(said.map((one) => one.replaced), [undefined]);
   await resumed.release();
 });

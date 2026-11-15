@@ -38,6 +38,7 @@ import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
 import costPerRun from "./cost-per-run.mjs";
 import workflowReplay from "./workflow-replay.mjs";
+import replayButton from "./replay-button.mjs";
 import learningLoop from "./learning-loop.mjs";
 import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
@@ -71,6 +72,7 @@ export const flows = [
   agentCardFooter,
   costPerRun,
   workflowReplay,
+  replayButton,
   learningLoop,
   gradeRun,
   toolCards,
