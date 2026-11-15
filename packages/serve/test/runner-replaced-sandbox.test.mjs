@@ -130,10 +130,11 @@ async function opened(t, body = {}) {
   const ends = [];
   // The end's commit releases the run's row (the store's rule) before the claim lets go of its sandbox, at the loop's
   // close: the run is settled when its row reads released and its runner has said so too.
-  const settled = (states) => until(async () => {
+  const isSettled = async (states) => {
     const now = await server.runs.get(RUN);
     return states.includes(now.state) && now.runner === null && states.includes(ends.at(-1)) && now;
-  }, `the run is released ${states.join(" or ")}`);
+  };
+  const settled = (states) => until(() => isSettled(states), `the run is released ${states.join(" or ")}`);
   const summaries = async () => (await runTimeline(server, RUN, ctx)).map((row) => row.summary);
   const made = async () => {
     const row = await server.runs.get(RUN);
@@ -146,7 +147,7 @@ async function opened(t, body = {}) {
     const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
     return records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data).at(-1);
   };
-  return { server, docker, clock, start, settled, summaries, made, ask };
+  return { server, docker, clock, start, isSettled, settled, summaries, made, ask };
 }
 
 const reminders = (body) => JSON.stringify(body).match(NOTES) ?? [];
@@ -218,13 +219,19 @@ test("a sandbox run parked on bash's ask and approved within 10 minutes goes on 
   assert.deepEqual([...run.docker.held.keys()], ["c1"], "the park kept the sandbox");
   run.docker.held.get("c1").tmp.set("outside-1", "left before the park");
   run.clock.offset = 60_000;
-  // The end's commit releases the run's row, and the claim lets go of its sandbox after it, at the loop's close: held
-  // here until the row reads released, so the run is settled only once its runner says it let go too.
-  run.docker.beforeRelease = () => until(async () => {
+  // The end's commit releases the run's row, and the claim lets go of its sandbox after it, at the loop's close: the
+  // sandbox held here while the row reads released, the run is not settled until its runner says it let go too.
+  let letGo;
+  const going = new Promise((resolve) => (letGo = resolve));
+  run.docker.beforeRelease = () => going;
+  await run.server.command(RUN, { kind: "approve", body: { approval: ask.callId } });
+  await until(async () => {
     const row = await run.server.runs.get(RUN);
     return row.state === "ended" && row.runner === null;
-  }, "the run's end is written before its sandbox goes");
-  await run.server.command(RUN, { kind: "approve", body: { approval: ask.callId } });
+  }, "the run's row reads released");
+  assert.equal(run.docker.held.size, 1, "the row reads released with the sandbox still held");
+  assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
+  letGo();
   await run.settled(["ended"]);
   assert.deepEqual(run.docker.made, ["c1"], "no create at the resume");
   assert.match(JSON.stringify(requests.at(-1)), /left before the park/, "the approved bash read the file on the same sandbox");
