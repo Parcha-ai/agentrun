@@ -61,6 +61,8 @@ export const QUEUE_TIMEOUT_MS = 2 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 /** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
 export const EVAL_HARNESSES = "agentrun-eval-harnesses";
+/** An owner's data folder is the eval's own server's to open (EvalOptions.data): a named server keeps its own. */
+export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
@@ -923,6 +925,12 @@ export type EvalOptions = {
   runs?: number;
   /** An existing server: its /v2 address and token. Absent: a server in this process on a temp data directory. */
   server?: { baseUrl: string; token: string };
+  /** The in-process server's data directory in place of a temp one (the CLI's --on-data): a stopped server's of the
+   *  owner's, so the eval's runs use what it keeps (a ChatGPT plan's sign-in) and every fake of the eval's own server
+   *  still binds. What the eval made there is archived, as on a named server, and the folder stays. Refused with
+   *  `server`, while another server holds the folder, and for an email case when its server keeps an email account,
+   *  which the case's fake mailbox would replace. */
+  data?: string;
   /** The in-process server's options beside its data and port (a faux model's module, say): tests' and the CLI's --faux. */
   serve?: Record<string, unknown>;
   /** The llm graders' model (`provider/model-id`); absent, the server's default. */
@@ -956,7 +964,8 @@ export type RunResult = { run: number; agent_id: string | null; run_id: string |
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
 export type Report = {
   package: { name: string; version: string; dir: string };
-  server: { kind: "in_process" } | { kind: "remote"; base_url: string };
+  /** `data`: the owner's data folder the in-process server ran on (EvalOptions.data); absent, a temp one. */
+  server: { kind: "in_process"; data?: string } | { kind: "remote"; base_url: string };
   grader_model: string | null;
   /** The eval's agents run with approvals never (`measured`), whatever the package's own default (`package`). */
   approvals: { measured: "never"; package: "ask" | "never" };
@@ -978,6 +987,7 @@ export function v2Base(url: string): string {
  *  case that does not check throws (PackageError, CaseError) before anything runs. */
 export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const log = options.log ?? (() => undefined);
+  if (options.data !== undefined && options.server) throw new Error(ON_DATA_WITH_SERVER);
   const { pkg, cases } = readCases(options.dir, options.cases);
   if (options.graderModel !== undefined && !MODEL_REF.test(options.graderModel)) throw new CaseError(options.dir, [`--grader-model is "provider/model-id", not ${options.graderModel}`]);
   // A case's fakes are bound by the eval's own runner, in this process: a named server's runs would search the real web,
@@ -989,6 +999,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const clock = !options.server && cases.some((one) => one.email) ? evalClock() : undefined;
   const started = new Date().toISOString();
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
+  // The in-process server's data: the owner's folder (options.data), which stays, or one in the scratch, gone with it.
+  const data = options.server ? undefined : (options.data ?? join(scratch!, "data"));
   let close = async () => undefined as unknown;
   let api: Api;
   let owner: Record<string, string> | undefined;
@@ -1004,7 +1016,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const harnessInstall = sharedInstaller(join(process.env.TMPDIR ?? tmpdir(), EVAL_HARNESSES));
     // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
     // Its fakes stand in for the package's MCP needs (mcpStandIns): each is saved as the source and toolkit it fakes.
-    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -1016,7 +1028,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -1035,6 +1047,19 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
       const cookie = opened?.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
       await opened?.body?.cancel().catch(() => undefined);
       if (cookie) owner = { cookie, origin };
+    }
+    // On the owner's folder, an email case's fake mailbox would replace the account its server keeps (one account, saved
+    // and removed per run): refused before anything runs, the account as it was.
+    if (clock && options.data !== undefined) {
+      const kept = await api("GET", "/settings/email", undefined, owner).catch(() => undefined);
+      const address = kept?.status === 200 && isObject(kept.body) ? kept.body.address : undefined;
+      if (typeof address === "string" || kept?.status !== 200) {
+        await close();
+        removeTree(scratch!);
+        throw new Error(typeof address === "string"
+          ? `the server on ${options.data} keeps an email account (${address}), and an email case saves its fake mailbox as the server's account in its place: remove it in Settings → Email, run the eval, and save it again; or run the eval without --on-data`
+          : `the server on ${options.data} did not say whether it keeps an email account (GET /settings/email ${kept?.status ?? "failed"}), which an email case's fake mailbox would replace: nothing ran`);
+      }
     }
   }
   const results: CaseResult[] = [];
@@ -1062,7 +1087,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   } finally {
     await cleanUp(api, made);
     // On an owner's server, what the eval made goes to the archive (an archived agent and its runs stay readable).
-    if (options.server) for (const id of made.agents) await api("POST", `/agents/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
+    if (options.server || options.data !== undefined) for (const id of made.agents) await api("POST", `/agents/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
     await close();
     if (scratch) removeTree(scratch);
   }
@@ -1075,7 +1100,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const graderCost = sum(graders.map((g) => g.cost_usd));
   return {
     package: { name: pkg.name, version: pkg.version, dir: options.dir },
-    server: options.server ? { kind: "remote", base_url: v2Base(options.server.baseUrl) } : { kind: "in_process" },
+    server: options.server ? { kind: "remote", base_url: v2Base(options.server.baseUrl) } : { kind: "in_process", ...(options.data !== undefined ? { data: options.data } : {}) },
     grader_model: options.graderModel ?? null,
     approvals: { measured: "never", package: pkg.approvals ?? "ask" },
     started_at: started, finished_at: new Date().toISOString(),

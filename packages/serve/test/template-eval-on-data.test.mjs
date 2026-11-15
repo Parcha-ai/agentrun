@@ -87,7 +87,7 @@ test("on an owner's data folder the eval's runs are that folder's server's: what
 test("a data folder another server holds is refused before anything runs", { timeout: 120_000 }, async (t) => {
   const { data } = await ownersFolder(t);
   await serve(t, { data });
-  await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data, serve: { faux: FAUX } }), /another server holds this data root/);
+  await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data, serve: { faux: FAUX } }), /another server holds (this data root|the store)/);
 });
 
 test("an email case on a folder whose server keeps an email account is refused before anything runs, and the account stays: its fake would replace it", { timeout: 120_000 }, async (t) => {
