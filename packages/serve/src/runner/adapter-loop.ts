@@ -19,7 +19,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
 import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type Ended, type HostTool, type ModelBooking, type ModelUsage, modelPortFor, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, type SessionWriter } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
 import { CAP_WRAPUP, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
@@ -2563,7 +2563,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         const placed = served !== undefined || followedUp || (session!.state !== "idle" && !firstUnplaced);
         // The end-of-run turn found open (lookingBackOpen), with no turn of this claim's sent before it: never recovered as
-        // the job's; the run goes to its end-of-run step, on how the job's own turn ended (jobEndBefore).
+        // the job's; the run goes to its end-of-run step, on the job's end the claim that asked it kept (jobEndKept).
         const lookingBack = lookingBackOpen && !followedUp && served === undefined;
         if (served || followedUp || firstUnplaced || lookingBack) {
           // The workflow answered, or handed back and its handback is the turn; the follow-up is the turn this claim runs,
@@ -2591,7 +2591,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let parkOn: string | undefined;
         /** The ask_person call the run waits on in its claim, while it does. */
         let waitingOn: string | undefined;
-        if (alone) data = lookingBack ? await jobEndBefore(root) : { state: "ended" };
+        if (alone && lookingBack) ({ end: data, failedWith } = await jobEndKept(root));
+        else if (alone) data = { state: "ended" };
         else for (;;) {
           let end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const), askCut.asked.then(() => "cut" as const)]);
           // Parked on a call held at the gate (a CLI's at its tool bridge): the answer that made the call may still be
@@ -2799,6 +2800,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         // The run's status is how its job's own turn ended (`data`), whatever the step spends after it: learning spend that
         // takes the run past its cap is the learning's (askEndOfRun reads overCap after each of its turns), never the run's.
+        // That end is kept before the step's first ask, so a claim that finds its turn open ends the run on it (jobEndKept).
+        if (!lookingBack) await keepJobEnd(harness, root, spec, data, failedWith);
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed", overCap);
         if (step.kind === "stopped") return await writeEnd(harness, root, gate, stopEnd(stopReason?.kind === "command" ? stopReason.cancel : undefined), [step.commandId], await cutRows(claim, spec, "stopped-looking"));
         if (step.kind === "interrupted") return await interrupted(stopReason?.kind ?? "its claim's signal aborted");
@@ -3146,17 +3149,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return turnOfRequest(on, conversation, last.requestId);
   }
 
-  /** How the job's turn ended, for a claim that found the end-of-run turn open (lookingBackOpen), as the claim that asked
-   *  that turn read it: the root's newest input before it unanswered, failed with no answer; else its last answer before
-   *  the turn's first entry cut at the model's output limit (cutLast), failed so; else ended. */
-  async function jobEndBefore(conversation: Conversation): Promise<EndData> {
-    const page = await gate!.journal.scanSubmissions({ conversationId: conversation.id, order: "descending" }, 50, undefined, context);
-    const inputs = page.items.filter((one) => one.type === "input");
-    const job = inputs.findIndex((one) => !one.requestId?.startsWith(REFLECT_PREFIX));
-    if (job >= 0 && inputs[job]!.status !== "done") return { state: "failed", summary: "the run gave no answer (failed)" };
-    const from = Math.min(...inputs.slice(0, job < 0 ? undefined : job).flatMap((one) => (one.entry === undefined ? [] : [Number(one.entry)])));
-    const cut = cutLast((await entriesOf(gate!.journal, conversation.id, context)).filter((entry) => Number(entry.id) < from));
-    return cut ? { state: "failed", summary: cut } : { state: "ended" };
+  /** How the job's own turn ended (`data`, and a CLI's error answer `failedWith`), as this claim decided it, kept on the
+   *  root before the end-of-run step asks its first turn (KINDS.jobEnd), for a run with a step to ask (stepOf). Its
+   *  summary is cut of every secret the runner holds, as every summary is when served. */
+  async function keepJobEnd(on: Harness, conversation: Conversation, spec: AdapterRunSpec, data: EndData, failedWith: string | undefined): Promise<void> {
+    if (!stepOf(spec)) return;
+    const end = data.summary !== undefined && deps.redact ? { ...data, summary: deps.redact(data.summary) } : data;
+    const kept: JobEndData = { end, ...(failedWith !== undefined ? { failedWith } : {}) };
+    await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.jobEnd, data: kept as unknown as JsonValue }), context);
+  }
+
+  /** The job's end for a claim that found the end-of-run turn open (lookingBackOpen): the newest keepJobEnd kept (a
+   *  follow-up's round keeps its own), never worked out again. */
+  async function jobEndKept(conversation: Conversation): Promise<JobEndData> {
+    const kept = (await entriesOf(gate!.journal, conversation.id, context)).filter((entry) => entry.kind === KINDS.jobEnd).at(-1);
+    if (!kept) throw new Error("the end-of-run turn is open, but the job's end was never kept before it");
+    return kept.data as unknown as JobEndData;
   }
 
   /** How the turn of the root's submission `requestId` ended (a steer of the idle session, which no session tracks). */
