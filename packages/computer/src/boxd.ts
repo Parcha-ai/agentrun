@@ -141,7 +141,9 @@ class BoxdHost implements MachineHost {
 	/**
 	 * An isolated machine (on none of the org's networks) with no standby, which would freeze a quiet computer. Once it is
 	 * ready: nothing out (the allowlist ["none"]) and no hibernation, since boxd's idle timers watch traffic and a computer
-	 * may have none. A throw after the machine exists leaves it to the adapter, which lists by the labels and deletes it.
+	 * may have none. A step after the machine exists that throws deletes it by its id (best effort) and throws its own
+	 * error, the delete's outcome added in words: the adapter reads a refused, denied or limit create as one that made
+	 * nothing, and sweeps no machine for it.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		if (req.egress) throw new HostError("invalid", "a boxd computer reaches nothing outside, and this request asks it to");
@@ -155,10 +157,33 @@ class BoxdHost implements MachineHost {
 			...(req.image === BOXD_DEFAULT_IMAGE ? {} : { fromSnapshot: req.image }),
 			...(deleteTimer ? { deleteAfter: Math.ceil((Date.parse(req.labels[MAX_LABEL] ?? "") - Date.now()) / 1000) + 300 } : {}),
 		});
-		await this.machines.waitUntilReady(made.id, { timeout: ctx.timeoutMs });
-		await this.machines.setEgressAllow(made.id, ["none"]);
-		await this.machines.setAutoHibernateTimeout(made.id, 0);
+		try {
+			await this.machines.waitUntilReady(made.id, { timeout: ctx.timeoutMs });
+			await this.machines.setEgressAllow(made.id, ["none"]);
+			await this.machines.setAutoHibernateTimeout(made.id, 0);
+		} catch (error) {
+			throw await this.#unmade(made.id, error);
+		}
 		return { id: made.id };
+	}
+
+	/** The machine a failed create made, deleted by its id; the step's own error comes back, the delete's outcome in its message. */
+	async #unmade(id: string, error: unknown): Promise<unknown> {
+		let outcome: string;
+		try {
+			await this.delete(id);
+			outcome = `the machine ${id} it made was deleted`;
+		} catch (failed) {
+			outcome = `the machine ${id} it made could not be deleted (${failed instanceof Error ? failed.message : String(failed)})`;
+		}
+		if (error instanceof Error) {
+			try {
+				error.message = `${error.message}; ${outcome}`;
+			} catch {
+				// A message that cannot be written stays as it was: the error itself is what the caller gets.
+			}
+		}
+		return error;
 	}
 
 	/** machines.get takes an id alone, so a machine of another org is none of this provider's. Not found is none (adapter). */

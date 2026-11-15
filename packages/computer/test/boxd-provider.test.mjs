@@ -153,15 +153,51 @@ test("create then waits until boxd's agent is ready, and closes egress and hiber
 		["setAutoHibernateTimeout", "m-1", 0],
 	]);
 	const failing = setup({}, { create: machine(), setEgressAllow: () => Promise.reject(named("APIStatusError", { grpcCode: 14 })) });
-	await assert.rejects(failing.host.create(request(), ctx), { name: "APIStatusError" }, "a setting that fails fails the create, and the adapter sweeps the machine by its labels");
+	await assert.rejects(failing.host.create(request(), ctx), { name: "APIStatusError" }, "a setting that fails fails the create");
+	assert.deepEqual(failing.rec.calls.at(-1), ["delete", "m-1"], "and deletes the machine it made");
 	const open = setup();
 	await assert.rejects(open.host.create({ ...request(), egress: true }, ctx), (error) => error.code === "invalid" && /reaches nothing outside/.test(error.message));
 	assert.deepEqual(open.rec.calls, [], "no machine is made");
 });
 
+test("a step after the machine exists that throws deletes that machine by its id once and throws its own error, which the adapter reads as made nothing", async () => {
+	for (const step of ["waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout"]) {
+		const limited = named("RateLimitError");
+		const { rec, host } = setup({}, { create: machine(), [step]: () => Promise.reject(limited) });
+		await assert.rejects(host.create(request(), ctx), (error) => {
+			assert.equal(error, limited, `${step}: the step's own error`);
+			assert.equal(host.errorCode(error), "limit");
+			assert.match(error.message, /^RateLimitError; the machine m-1 it made was deleted$/);
+			return true;
+		});
+		assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [["delete", "m-1"]], step);
+		assert.equal(rec.calls.at(-1)[0], "delete", `${step}: no step runs after the delete`);
+	}
+	const gone = setup({}, { create: machine(), waitUntilReady: () => Promise.reject(named("PermissionDeniedError")), delete: () => Promise.reject(named("NotFoundError")) });
+	await assert.rejects(gone.host.create(request(), ctx), (error) => error.name === "PermissionDeniedError" && /m-1 it made was deleted$/.test(error.message), "not found is deleted");
+	const stuck = setup({}, { create: machine(), setEgressAllow: () => Promise.reject(named("RateLimitError")), delete: () => Promise.reject(named("APIConnectionError")) });
+	await assert.rejects(stuck.host.create(request(), ctx), (error) => {
+		assert.equal(error.name, "RateLimitError", "a failed delete never hides the step's error");
+		assert.equal(stuck.host.errorCode(error), "limit");
+		assert.match(error.message, /the machine m-1 it made could not be deleted \(APIConnectionError\)$/);
+		return true;
+	});
+});
+
+test("the provider's create whose wait for the machine throws RateLimitError fails as limit, and the one machine it made is deleted by its id", async () => {
+	const { rec, provider } = setup({}, { list: [], create: (params) => machine({ name: params.name, labels: params.labels }), waitUntilReady: () => Promise.reject(named("RateLimitError")) });
+	const made = await provider.create(SPEC, { requestId: "r-limit" });
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "limit");
+	assert.match(made.error.message, /RateLimitError; the machine m-1 it made was deleted/);
+	assert.equal(rec.calls.filter(([name]) => name === "create").length, 1);
+	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [["delete", "m-1"]]);
+});
+
 test("get reads the machine back: its labels, its state and when boxd made it", async () => {
-	const read = async (patch) => setup({}, { get: machine(patch) }).host.get("m-1", ctx);
-	assert.deepEqual(await read({}), { id: "m-1", labels: machine().labels, state: "running", createdAt: CREATED });
+	const base = machine();
+	const read = async (patch) => setup({}, { get: { ...base, ...patch } }).host.get("m-1", ctx);
+	assert.deepEqual(await read({}), { id: "m-1", labels: base.labels, state: "running", createdAt: CREATED });
 	for (const [status, state] of [["pending", "starting"], ["starting", "starting"], ["suspended", "running"], ["migrating", "running"], ["hibernated", "stopped"], ["stopped", "stopped"], ["failed", "gone"], ["destroyed", "gone"]]) assert.equal((await read({ status })).state, state, status);
 	assert.deepEqual(await read({ status: "melting" }).then(({ state, why }) => [state, why]), ["gone", 'boxd reads its status as "melting"']);
 	assert.equal((await read({ createdAt: null })).createdAt, undefined);
