@@ -95,3 +95,81 @@ test("a server to anywhere but 127.0.0.1 is reached over TLS: 993 and 465 from t
   assert.equal(securityOf({ host: "127.0.0.1", port: 1143 }), "plaintext");
   assert.equal(securityOf({ host: "localhost", port: 1143 }), "starttls", "only the loopback address itself, never a name");
 });
+
+/** A store slice in memory whose writes a test can watch (`onWrite`, after the nth write lands) or fail (`failWrite`, the
+ *  nth write throws with nothing written): what the account's save does, write by write. */
+function watchedStore() {
+  const settings = new Map();
+  const sealed = new Map();
+  const store = { writes: 0, onWrite: undefined, failWrite: undefined };
+  const write = async (apply) => {
+    const n = ++store.writes;
+    if (store.failWrite === n) throw new Error(`the store failed write ${n}`);
+    apply();
+    await store.onWrite?.(n);
+  };
+  store.settings = { get: async (key) => (settings.has(key) ? structuredClone(settings.get(key)) : undefined), put: (key, value) => write(() => settings.set(key, structuredClone(value))), remove: (key) => write(() => settings.delete(key)) };
+  store.sealedKeys = { get: async (name) => sealed.get(name), put: (name, value) => write(() => sealed.set(name, value)), remove: (name) => write(() => sealed.delete(name)) };
+  store.rows = { settings, sealed };
+  return store;
+}
+
+const ACCOUNT_A = { preset: "other", address: "a@a.example", user: "a-user", password: "a-password-1", imap: { host: "imap.a.example", port: 993 }, smtp: { host: "smtp.a.example", port: 465 } };
+const ACCOUNT_B = { preset: "other", address: "b@b.example", user: "b-user", password: "b-password-2", imap: { host: "imap.b.example", port: 993 }, smtp: { host: "smtp.b.example", port: 465 } };
+const whole = (opened) => [ACCOUNT_A, ACCOUNT_B].some((one) => JSON.stringify(opened) === JSON.stringify(one));
+
+test("the account is one row, saved in one write: a read during a switch, or after a save that failed part way, gets one account whole, never one's servers with the other's password", async () => {
+  const { openAccount, saveAccount } = await import("../dist/email/account.js");
+  const key = randomBytes(32);
+
+  // A read after each write of a switch from A to B: A whole or B whole, each time.
+  const store = watchedStore();
+  await saveAccount(store, key, ACCOUNT_A);
+  const seen = [];
+  store.writes = 0;
+  store.onWrite = async () => seen.push(await openAccount(store, key));
+  await saveAccount(store, key, ACCOUNT_B);
+  store.onWrite = undefined;
+  assert.ok(seen.length >= 1);
+  for (const opened of seen) assert.ok(whole(opened), `a read during the switch: ${JSON.stringify(opened)}`);
+  assert.deepEqual(await openAccount(store, key), ACCOUNT_B);
+  assert.equal(store.writes, 1, "a save is one write: the account's servers and its sealed password in one row");
+
+  // A save that fails at its first write, or at any later one, leaves A whole (or, when it landed whole, B).
+  for (const failing of [1, 2]) {
+    const again = watchedStore();
+    await saveAccount(again, key, ACCOUNT_A);
+    again.writes = 0;
+    again.failWrite = failing;
+    await saveAccount(again, key, ACCOUNT_B).catch(() => undefined);
+    again.failWrite = undefined;
+    const opened = await openAccount(again, key);
+    assert.ok(whole(opened), `write ${failing} failed: ${JSON.stringify(opened)}`);
+  }
+});
+
+test("the account row holds its password sealed, never in the clear; the public part reads without it; removing it is one write; the old two-row shape reads as no account", async () => {
+  const { accountView, keptAccount, openAccount, removeAccount, saveAccount } = await import("../dist/email/account.js");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const key = randomBytes(32);
+  const store = watchedStore();
+  await saveAccount(store, key, ACCOUNT_A);
+  assert.ok(!JSON.stringify([...store.rows.settings.values()]).includes(ACCOUNT_A.password), "no clear password in the row");
+  const { password, ...open } = ACCOUNT_A;
+  assert.deepEqual(await keptAccount(store), open, "the public part, with no seal key");
+  assert.equal((await accountView(store, randomBytes(32))).password_unreadable, true, "under another seal key the password does not open");
+  assert.equal(await openAccount(store, randomBytes(32)), undefined);
+  store.writes = 0;
+  await removeAccount(store);
+  assert.equal(store.writes, 1, "removed in one write");
+  assert.equal(await openAccount(store, key), undefined);
+
+  // The shape before: the servers in the settings row (v: 1), the password under its own sealed key. No user has it; it
+  // reads as no account, never half of one.
+  const old = watchedStore();
+  await old.settings.put("email-account", { v: 1, preset: "other", address: ACCOUNT_A.address, user: ACCOUNT_A.user, imap: ACCOUNT_A.imap, smtp: ACCOUNT_A.smtp });
+  await putSealedKey(old, key, "email.default.password", ACCOUNT_A.password);
+  assert.equal(await openAccount(old, key), undefined);
+  assert.equal(await keptAccount(old), undefined);
+  assert.equal((await accountView(old, key)).configured, false);
+});

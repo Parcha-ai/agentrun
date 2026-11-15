@@ -251,3 +251,48 @@ test("a tool's error that echoes the password shows it nowhere: the server cuts 
   assert.ok(rows.includes("[redacted]"), "the tool's row is cut too");
   for (const [where, text] of [["the run's view", JSON.stringify(view)], ["its timeline", rows], ["the runs list", list]]) assert.ok(!text.includes(faux.password), `${where} shows the password`);
 });
+
+test("email_send to a recipient the mail server refuses: the others get it, and the answer names the refused in `rejected` and a note; its copy is still filed; all refused is an error in words", { timeout: 150_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("sender", { tool_settings: { email_send: { permission: "allow" } } }))).status, 201);
+  const { saw } = await ran(api, "sender", [
+    ["email_send", { to: ["ana@example.com", "refuse@faux.example"], subject: "Hello", text: "Hi both." }],
+    ["email_send", { to: ["refuse@faux.example"], subject: "Nobody", text: "Hi." }],
+  ]);
+  const [some, none] = saw;
+  assert.equal(some.sent, true, JSON.stringify(some));
+  assert.deepEqual(some.rejected, ["refuse@faux.example"], JSON.stringify(some));
+  assert.equal(some.note, "not delivered to refuse@faux.example: the mail server refused them");
+  assert.deepEqual(faux.sent().map((m) => m.to), [["ana@example.com"]], "delivered to the one it took, and sent once: no retry");
+  assert.deepEqual(faux.messages("Sent").map((m) => m.messageId), [some.message_id], "the copy filed in Sent all the same");
+  assert.equal(typeof none, "string", `all refused is an error: ${JSON.stringify(none)}`);
+  assert.match(none, /^email_send: .*(refused|rejected)/i);
+  assert.equal(faux.sent().length, 1, "nothing more sent");
+});
+
+test("email_read of a long thread reads the newest 20 at most: the bodies fetched are bounded before any is read, and the answer says truncated, how many more and their ids, oldest first", { timeout: 150_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t);
+  const at = (i) => new Date(Date.parse("2026-05-01T10:00:00Z") + i * 60_000).toISOString();
+  const id = (i) => `<t${i}@example.com>`;
+  for (let i = 0; i < 60; i++) {
+    faux.seed({ from: "ana@example.com", to: [ADDRESS], subject: i ? "Re: Long thread" : "Long thread", text: `Message ${i}.`, date: at(i), messageId: id(i), ...(i ? { inReplyTo: id(i - 1), references: [id(0), id(i - 1)] } : {}) });
+  }
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("reader"))).status, 201);
+  const before = faux.commands().length;
+  const { saw } = await ran(api, "reader", [["email_read", { message_id: id(0), thread: true }]]);
+  const [said] = saw;
+  assert.deepEqual(said.messages.map((m) => m.message_id), Array.from({ length: 20 }, (_, i) => id(40 + i)), "the newest 20, oldest first");
+  assert.equal(said.truncated, true);
+  assert.equal(said.more, 40);
+  assert.deepEqual(said.omitted, Array.from({ length: 40 }, (_, i) => id(i)), "the ids not read, oldest first, to read one at a time");
+  assert.equal(said.note, "40 earlier messages in this thread not read; email_read one by message_id");
+  // The bodies fetched: each UID a whole-message fetch (BODY.PEEK[]) named. The thread's 20, and the message it was asked
+  // for, looked up first.
+  const uidsIn = (set) => set.split(",").flatMap((part) => { const [a, b] = part.split(":").map(Number); return b === undefined ? [a] : Array.from({ length: b - a + 1 }, (_, k) => a + k); });
+  const bodies = faux.commands().slice(before).filter((c) => /FETCH/i.test(c) && /BODY\.PEEK\[\]/i.test(c)).flatMap((c) => uidsIn(/FETCH ([\d,:]+)/i.exec(c)?.[1] ?? ""));
+  assert.ok(bodies.length <= 21, `at most 20 bodies and the asked-for message's: ${bodies.length}`);
+});

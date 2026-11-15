@@ -49,6 +49,9 @@ test("email_draft and email_send: a reply or an email, to the first address and 
   assert.equal(labelOf("email_draft", { to: ["ana@example.com"], subject: "Plan", text: BODY }), "Drafted an email to ana@example.com: Plan");
   assert.equal(labelOf("email_send", { to: ["ana@example.com", "bo@example.com"], subject: "Re: Plan", text: BODY, in_reply_to: "<m1@example.com>" }), "Sent a reply to ana@example.com and 1 more: Re: Plan");
   assert.equal(labelOf("email_send", { to: ["ana@example.com"], cc: ["bo@example.com"], subject: "Hello", text: BODY }), "Sent an email to ana@example.com: Hello");
+  const refused = { sent: true, message_id: "<s2@faux.example>", rejected: ["refuse@faux.example", "x@faux.example"], note: "not delivered to refuse@faux.example, x@faux.example: the mail server refused them" };
+  assert.equal(labelOf("email_send", { to: ["ana@example.com"], subject: "Hello", text: BODY }, view(refused)), "Sent an email to ana@example.com: Hello (refused: 2)", "the refused counted from the answer");
+  assert.equal(labelOf("email_send", { to: ["ana@example.com"], subject: "Hello", text: BODY }, view({ sent: true, message_id: "<s3@faux.example>" })), "Sent an email to ana@example.com: Hello");
   assert.equal(nameOf("email_draft"), "Draft mail");
   assert.equal(nameOf("email_send"), "Send mail");
 });

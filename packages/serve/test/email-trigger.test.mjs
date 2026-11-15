@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, serve } from "./support.mjs";
 import { fakeClock, firings, keyOf, made } from "./trigger-support.mjs";
-import { ADDRESS, checked, emailTrigger, firedInput, mailbox, saved } from "./email-support.mjs";
+import { ADDRESS, checked, emailTrigger, firedInput, launchText, mailbox, saved } from "./email-support.mjs";
 
 const T0 = "2026-06-01T00:00:30Z";
 /** The grid's minute `n` after T0's: every_s 60 runs on whole minutes from the epoch. */
@@ -210,4 +210,36 @@ test("an unreachable server is said on the trigger as its last check and never t
   assert.deepEqual(schemaProblems(doc, doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema, off), []);
   const commands = faux.commands();
   assert.ok(commands.every((c) => !c.includes(faux.password)), "the fake never saw the password in a command line it keeps");
+});
+
+test("a message whose text grows when escaped (newlines, quotes and backslashes) still gives the run whole JSON: every field, the text cut to fit and said, the payload within the engine's bound", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api, data } = await serve(t, { triggerClock: clock });
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  await made(api, "mail");
+  const { id } = await trigger(api, emailTrigger("mail", { every_s: 60 }));
+  clock.to(minute(1));
+  await checked(api, id, minute(1));
+  await firings(api, id, 1);
+  const texts = { lines: `start${"a\n".repeat(6 * 1024)}end`, quotes: `start${"\"\\".repeat(6 * 1024)}end` };
+  const seeded = Object.entries(texts).map(([name, text]) => faux.seed({ from: "Ana <ana@example.com>", to: [ADDRESS], cc: ["bo@example.com"], subject: `Escapes ${name}`, text, date: "2026-06-01T00:01:10Z" }));
+  clock.to(minute(2));
+  await checked(api, id, minute(2));
+  const shown = await firings(api, id, 3);
+  for (const [i, m] of seeded.entries()) {
+    const fired = shown.find((f) => f.key === keyOf("email", id, m.messageId));
+    assert.equal(fired?.status, "started", JSON.stringify(shown));
+    const { content } = JSON.parse(launchText(data, fired.run_id)).input;
+    const tagged = /\n\n<trigger-payload source="email"[^>]* untrusted>\n([\s\S]*?)\n<\/trigger-payload>/.exec(content);
+    assert.ok(tagged, "the payload's block");
+    let payload;
+    assert.doesNotThrow(() => (payload = JSON.parse(tagged[1])), `the payload is whole JSON: ...${tagged[1].slice(-120)}`);
+    assert.deepEqual(Object.keys(payload).sort(), ["attachments", "cc", "date", "from", "from_name", "in_reply_to", "message_id", "subject", "text", "text_truncated", "to"]);
+    assert.deepEqual([payload.from, payload.cc, payload.subject, payload.message_id, payload.text_truncated], ["ana@example.com", ["bo@example.com"], m.subject, m.messageId, true]);
+    const original = Object.values(texts)[i];
+    assert.ok(payload.text.length > 1000 && original.startsWith(payload.text.replace(/\n\[cut: [^\]]*\]$/, "")), "the text cut from its end, as much kept as fits");
+    assert.ok(Buffer.byteLength(JSON.stringify(payload), "utf8") <= 16 * 1024, `within the bound: ${Buffer.byteLength(JSON.stringify(payload), "utf8")}`);
+    await follow(api, fired.run_id, ["completed"]);
+  }
 });
