@@ -675,7 +675,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search)) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
-  // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;
+  // The email tools (email/tools.ts) on the server's one email account (the email account setting, /v2/settings/email), every harness's as web_fetch is;
   // the mail libraries load at the first bind.
   [EMAIL_SEARCH]: emailTool(EMAIL_SEARCH, "Search the server's email account: { from?, to?, subject?, text?, since?, unread?, mailbox?: \"INBOX\", limit?: 20 (max 50) } -> { messages: [{ message_id, from, to, subject, date, snippet, unread, attachments }] }, newest first. On a run an email started, its thread alone unless the agent's setting says scope: \"mailbox\"."),
   [EMAIL_READ]: emailTool(EMAIL_READ, "Read an email of the server's account by message_id, or its whole thread (thread: true, by References and In-Reply-To, oldest first): { message_id, thread? } -> { messages: [{ from, from_name, to, cc, subject, date, message_id, in_reply_to, text, attachments, references }] }. Reads leave mail unread."),
