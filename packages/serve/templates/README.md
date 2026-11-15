@@ -101,7 +101,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   server writes them, under `Input:`; a body that holds its own `Input:` block is refused.
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply grants, always a
   list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
-  the agent starts with: `MEMORY.md` and its notes), `web` (fakes `web_search` and `web_fetch` for the case's runs).
+  the agent starts with: `MEMORY.md` and its notes), `web` (fakes `web_search` and `web_fetch` for the case's runs),
+  `now` (the case's clock).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
   `web_fetch` fails as a page that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
@@ -119,6 +120,12 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   harness gets the same fake: on claude-agent and codex their own web search is never offered to a `web:` case's runs.
   The package's `tools` must name `web_search` or `web_fetch`. Only the eval's own server honours `web`, so a case with
   it refuses to run with `--server`.
+- `now: 2026-11-14T09:00:00Z`, a date and time with its offset: each run's current date and time. The run's environment
+  line says that day ("Today is 2026-11-14 (UTC)"), as does claude-agent's turn date, and each `llm` grader is told it,
+  so a rubric can say "the run's date". A tool that reads the machine's clock (a shell's `date`, a browser's page) and
+  a harness CLI's own date (Codex adds its own to each turn) still read the real one. A fixture case whose prompt or
+  pages carry dates sets `now:`, else it drifts a day each day it is run. Only the eval's own server honours it: a case with `now` refuses
+  `--server`. Without it, the real clock.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",
