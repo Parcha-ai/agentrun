@@ -16,7 +16,7 @@ import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, r
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
-import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outcomeShown, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED, waitResumedText } from "./scripts.js";
+import { callKey, completedNested, execRecovery, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED, waitResumed } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = "codex.nested";
@@ -359,18 +359,21 @@ export function codeMode(deps: CodeModeDeps) {
           const done = state.effects.get(toolKey(c.callId));
           const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
           const answered = cell !== undefined && i === carrier && yieldedTies.length > 0 ? yieldedTies.map((tie) => ({ ...factOf(state, rolled, tie, told), resumed: resumed.get(tie.callId)! })) : undefined;
-          const waited = cell === undefined ? undefined : answered ? waitResumedText(cell, answered) : waitStoppedText(cell);
-          if (answered) {
+          const recovered = answered && cell !== undefined ? waitResumed(cell, answered) : undefined;
+          const waited = cell === undefined ? undefined : recovered ? recovered.output : waitStoppedText(cell);
+          if (recovered) {
             built.add(i);
-            shown.push(...answered.filter(outcomeShown).map((fact) => fact.callId));
+            shown.push(...recovered.shown);
           }
           items[i] = withOutputKind(waited !== undefined ? { ...item, output: waited } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
         const { own, loose } = listed.get(c.callId)!;
-        items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: execRecoveryOutput(own, loose) };
+        // Only the calls the output still tells after its bound: a call cut from it is not said to be above.
+        const recovered = execRecovery(own, loose);
+        items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: recovered.output };
         built.add(i);
-        shown.push(...[...own, ...loose].filter(outcomeShown).map((fact) => fact.callId));
+        shown.push(...recovered.shown);
       });
       items.forEach((item, i) => {
         if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output).text;

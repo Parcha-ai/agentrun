@@ -145,19 +145,20 @@ test("finished results past one result's bound (and the words around it) togethe
 test("a script whose calls' lines alone pass the bound: the note says a result is above only for the calls the cut output still tells, and \"not shown\" for the rest", async () => {
   // 2,000 short reads beside the parked write: even their outcome lines, results cut to nothing, pass the bound, so the
   // output itself is cut and the later calls are not in it.
-  const siblings = Array.from({ length: 2_000 }, (_, i) => ({ id: `exec-${i + 1}`, name: 'list', answer: { text: `r${i + 1}` } }));
+  // Each a tool of its own (the bridge holds one tool per name), so each answer is its own.
+  const siblings = Array.from({ length: 2_000 }, (_, i) => ({ id: `exec-${i + 1}`, name: `list${i + 1}`, answer: { text: `r${i + 1}` } }));
   const { output, note } = await cutBesidePark(siblings);
   assert.ok(output.length <= HOST_RESULT_MAX_CHARS + 2_000, `held to the bound: ${output.length}`);
-  const inOutput = (n) => output.includes(`\n${n}. mcp_fake__list completed: "r${n}". Its effect is done; it was not run again.\n`);
+  const inOutput = (n) => output.includes(`\n${n}. mcp_fake__list${n} completed: "r${n}". Its effect is done; it was not run again.\n`);
   assert.ok(inOutput(1), 'the first call is told');
   assert.ok(!inOutput(2_000), 'the last call is cut from the output');
   let above = 0;
   for (let n = 1; n <= 2_000; n++) {
-    const said = note.includes(`- mcp_fake__list, call exec-${n}: completed. Its result is in the output of the script that made the call, above.\n`);
+    const said = note.includes(`- mcp_fake__list${n}, call exec-${n}: completed. Its result is in the output of the script that made the call, above.\n`);
     assert.equal(said, inOutput(n), `call ${n}: the note says its result is above only when the output holds it (${inOutput(n) ? 'held' : 'cut'})`);
     if (said) above++;
   }
   assert.ok(above > 0 && above < 2_000, `some above, some not: ${above}`);
-  assert.match(note, /- mcp_fake__list, call exec-2000: completed\.\n/, 'a cut call keeps the plain words');
+  assert.match(note, /- mcp_fake__list2000, call exec-2000: completed\.\n/, 'a cut call keeps the plain words');
   assert.match(note, /\n\nThe output of the other calls is not shown here\. Check the actual state before relying on it\./);
 });

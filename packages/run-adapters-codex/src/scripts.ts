@@ -153,8 +153,9 @@ export function settle(fact: NestedFact): Settled {
 /** The most a recovered script's output holds (a cut-off `exec`'s, or the `wait` on its cell): one result at the host's bound, as
  *  the script was handed it, and the words that tell each call's outcome around it. It stands in for the script's own output,
  *  which the model reads as one tool result. Past it, every result it quotes is cut to the same share, each keeping its start
- *  and its last line (a filed answer's says where the whole is) and saying where it was cut (`cutTo`): never silently, and every
- *  call's outcome is still told. */
+ *  and its last line (a filed answer's says where the whole is) and saying where it was cut (`cut`): never silently, and every
+ *  call's outcome is still told. Only when the lines alone pass it is the output itself cut, with its note: the calls past
+ *  the cut are not in it, and the recovery note does not say they are (`Recovered.shown`). */
 export const EXEC_RECOVERY_MAX_CHARS = HOST_RESULT_MAX_CHARS + 2_000;
 
 /** A last line longer than this is not kept when a result is cut: it is the result's own text, not a pointer to the rest. */
@@ -162,30 +163,57 @@ const LAST_LINE_MAX = 1_000;
 
 /** `text` within `cap` characters: whole when it fits; else its start, a line saying where it was cut (as `boundResult`'s
  *  does), and its last line when that is short (a filed answer's, which says where the whole is), never splitting a
- *  character written as a surrogate pair. */
-function cutTo(text: string, cap: number): string {
-  if (text.length <= cap) return text;
+ *  character written as a surrogate pair. Whole, too, when the cut would be no shorter (a short result is never swapped
+ *  for a longer line saying it was cut). `kept`: how much of the start of `text` is there. */
+function cut(text: string, cap: number): { text: string; kept: number } {
+  if (text.length <= cap) return { text, kept: text.length };
   const at = text.lastIndexOf("\n");
   const last = at >= 0 && text.length - at <= LAST_LINE_MAX ? text.slice(at) : "";
   const note = (kept: number) => `\n[cut at ${kept} of ${text.length} characters]`;
   let kept = Math.max(0, cap - note(cap).length - last.length);
   if (kept > 0 && (text.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
-  return `${text.slice(0, kept)}${note(kept)}${last}`;
+  const short = `${text.slice(0, kept)}${note(kept)}${last}`;
+  return short.length < text.length ? { text: short, kept } : { text, kept: text.length };
 }
 
-/** One call's line in a recovered output: its words, and the result or error it quotes (`text`, as JSON) between them. */
-type Told = { head: string; text?: string; tail: string };
+/** One call's line in a recovered output: its words, and the result or error it quotes (`text`, as JSON) between them.
+ *  `callId` and `shows`: the call, and whether the line tells its outcome (`outcomeShown`). */
+type Told = { head: string; text?: string; tail: string; callId?: string; shows?: boolean };
 
 /** A told call's line, the text it quotes held to `cap`. */
-const lineOf = (told: Told, cap: number): string => (told.text === undefined ? `${told.head}${told.tail}` : `${told.head}${JSON.stringify(cutTo(told.text, cap))}${told.tail}`);
+const lineOf = (told: Told, cap: number): string => (told.text === undefined ? `${told.head}${told.tail}` : `${told.head}${JSON.stringify(cut(told.text, cap).text)}${told.tail}`);
 
-/** A recovered output built by `build` from its calls' lines at a cap on each quoted text: whole when it fits in
- *  EXEC_RECOVERY_MAX_CHARS; else at the largest cap that fits (the same for every quoted text); else, with no quoted text left
- *  to cut, the output cut to the bound with its note. */
-function fitted(build: (cap: number) => string): string {
+/** A recovered output, and the calls whose outcome it tells (`shown`): each whose line is whole in it and quotes some of its
+ *  result or error (all of it, or its start with the line saying where it was cut). */
+export interface Recovered {
+  output: string;
+  shown: string[];
+}
+
+/** A recovered output built by `build` from its calls' lines (`told`, in the order `build` writes them) at a cap on each
+ *  quoted text: whole when it fits in EXEC_RECOVERY_MAX_CHARS; else at the largest cap that fits (the same for every quoted
+ *  text); else, the lines alone passing the bound, the output cut to the bound with its note, and the calls past the cut
+ *  not in it. */
+function fitted(told: readonly Told[], build: (cap: number) => string): Recovered {
+  const at = (cap: number, output: string, limit = output.length): Recovered => {
+    const shown: string[] = [];
+    let from = 0;
+    for (const t of told) {
+      const line = lineOf(t, cap);
+      const pos = output.indexOf(line, from);
+      if (pos < 0 || pos + line.length > limit) break;
+      from = pos + line.length;
+      if (t.shows && t.callId !== undefined && (t.text === undefined || t.text === "" || cut(t.text, cap).kept > 0)) shown.push(t.callId);
+    }
+    return { output, shown };
+  };
   const whole = build(Number.POSITIVE_INFINITY);
-  if (whole.length <= EXEC_RECOVERY_MAX_CHARS) return whole;
-  if (build(0).length > EXEC_RECOVERY_MAX_CHARS) return cutTo(build(0), EXEC_RECOVERY_MAX_CHARS);
+  if (whole.length <= EXEC_RECOVERY_MAX_CHARS) return at(Number.POSITIVE_INFINITY, whole);
+  const least = build(0);
+  if (least.length > EXEC_RECOVERY_MAX_CHARS) {
+    const { text, kept } = cut(least, EXEC_RECOVERY_MAX_CHARS);
+    return at(0, text, kept);
+  }
   let lo = 0;
   let hi = whole.length;
   while (lo < hi) {
@@ -193,7 +221,7 @@ function fitted(build: (cap: number) => string): string {
     if (build(mid).length <= EXEC_RECOVERY_MAX_CHARS) lo = mid;
     else hi = mid - 1;
   }
-  return build(lo);
+  return at(lo, build(lo));
 }
 
 /** A tie record of a nested call: the `exec` it ran under (none when the answer that wrote the script could not be read to its end,
@@ -218,7 +246,8 @@ export function recoveryFacts<T>(execs: readonly string[], ties: readonly Nested
  *  handed live: held to the host's bound as the bridge holds it (`boundResult`); the session's record keeps it whole. */
 const describeCall = (fact: NestedFact, label: string): Told => {
   const settled = settle(fact);
-  const told = (head: string, text: string, tail: string): Told => ({ head, text: boundResult(text).text, tail });
+  const shows = outcomeShown(fact);
+  const told = (head: string, text: string, tail: string): Told => ({ head, text: boundResult(text).text, tail, callId: fact.callId, shows });
   if (settled.kind === "parked") return { head: `${label} was waiting for a person's approval and did not run; it was not run again.`, tail: "" };
   const again = fact.resumed;
   if (again && !again.ran) return told(`${label} waited for a person's approval, then: `, again.text, ". It did not run.");
@@ -245,15 +274,25 @@ export function outcomeShown(fact: NestedFact): boolean {
 /** What a dangling `wait` on a yielded exec's cell is told when calls of that script that waited for a person's approval
  *  were answered on this resume (code-mode.ts recoverItems): each call's outcome, in order. */
 export function waitResumedText(cell: string, resumed: readonly NestedFact[]): string {
+  return waitResumed(cell, resumed).output;
+}
+
+/** waitResumedText, and the calls whose outcome it tells. */
+export function waitResumed(cell: string, resumed: readonly NestedFact[]): Recovered {
   const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  return fitted((cap) => `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
+  return fitted(told, (cap) => `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
 }
 
 export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): string {
-  if (facts.length === 0 && loose.length === 0) return `The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.`;
+  return execRecovery(facts, loose).output;
+}
+
+/** execRecoveryOutput, and the calls whose outcome it tells: only those the recovery note may say are above. */
+export function execRecovery(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): Recovered {
+  if (facts.length === 0 && loose.length === 0) return { output: `The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.`, shown: [] };
   const own = facts.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
   const others = loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  return fitted((cap) => {
+  return fitted([...own, ...others], (cap) => {
     const apart = others.length
       ? `\n${others.length} ${others.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${others.map((t) => lineOf(t, cap)).join("\n")}`
       : "";
