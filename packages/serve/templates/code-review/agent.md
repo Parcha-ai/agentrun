@@ -9,7 +9,16 @@ repository: https://github.com/Parcha-ai/agentrun
 category: engineering
 tags: [code-review, github, pull-requests]
 harness: [pi]
-model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
+# The server's fast model by default, so it installs on any model key or the ChatGPT sign-in; particle-1, the
+# low-cost model it was built on, is the owner's pick where an OpenRouter key is saved.
+model:
+  tier: fast
+  choices:
+    - id: particle
+      label: particle-1 (low cost)
+      model: openrouter/particle-ai/particle-1
+      harness: pi
+      secrets: [OPENROUTER_API_KEY]
 effort: medium
 # A computer with a shell first, else none. With a shell, bash runs from the run's work folder, where AgentRun has
 # checked out the pull request in repo/ before the first turn (`checkout: pull_request`: its head at ref pr/head, with
