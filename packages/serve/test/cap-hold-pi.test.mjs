@@ -83,6 +83,94 @@ async function spentOf(store) {
   }
 }
 
+/** A unified diff of TypeScript of about `bytes` bytes, the same every time: code tokenizes denser than prose, so a body
+ *  of it checks the local count's margin where a token covers fewer bytes. */
+function typescriptDiff(bytes) {
+  const lines = ["diff --git a/src/billing/ledger.ts b/src/billing/ledger.ts", "index 3f2a91c..8be04d7 100644", "--- a/src/billing/ledger.ts", "+++ b/src/billing/ledger.ts"];
+  let size = lines.join("\n").length;
+  for (let i = 0; size < bytes; i++) {
+    const hunk = [
+      `@@ -${12 * i + 1},7 +${14 * i + 1},9 @@ export class Ledger${i % 37} implements Settles<Entry${i % 11}> {`,
+      ` export async function settle${i}(entry: LedgerEntry, limits: ReadonlyMap<string, number>): Promise<SettleResult> {`,
+      `-  const total = entry.lines.reduce((sum, line) => sum + line.amountCents, 0);`,
+      `+  const rate = (line: LedgerLine): number => limits.get(line.currency) ?? ${(i % 9) + 1};`,
+      `+  const total = entry.lines.reduce((sum, line) => sum + Math.round(line.amountCents * rate(line)), ${i % 5});`,
+      `+  if (total > MAX_SETTLE_CENTS_${i % 13}) throw new RangeError(\`settle${i}: \${total} cents is over the limit\`);`,
+      `   await this.journal.append({ kind: "settle", id: entry.id, total, at: clock.now() + ${i} });`,
+      `   return { id: entry.id, total, settledAt: Date.now(), shard: hashShard(entry.id, ${(i * 7) % 64}) };`,
+      ` }`,
+    ];
+    lines.push(...hunk);
+    size += hunk.join("\n").length + hunk.length;
+  }
+  return lines.join("\n");
+}
+/** What the code review pastes: a diff of some 281 KB, so its parent's merge request is some 286 KB on the wire. */
+const DIFF = typescriptDiff(281_000);
+/** The eight reviewers' findings, as each returns to the parent. */
+const FINDING = (n) => `Reviewer ${n}: settle${n * 31} rounds each line before summing, so a ledger of many small lines drifts by up to a cent a line; sum in cents first. No other finding.`;
+const CODE_CAP = 2;
+/** What the parent and its reviewers spent before the merge request: its first step, billed at Sol's list price. */
+const SPENT_BEFORE_MERGE = 0.62;
+
+test("a code review's merge step on sol: a pi parent at $2 with $0.62 spent, whose merge request carries a pasted 281 KB TypeScript diff and eight reviewers' findings (some 286 KB, past the tier on its bytes), is admitted on its local count, at least the body's own o200k count with its margin, and answers under the cap", { timeout: 90_000 }, async (t) => {
+  const sent = [];
+  let billed = 0;
+  // Step 0 starts the eight reviewers (one tool call each), billed $0.62; step 1 merges their findings and answers,
+  // billed for the body's own o200k count.
+  const fetch = async (url, init = {}) => {
+    if (String(url).includes("count_tokens")) return new Response("{}", { status: 404 });
+    const text = String(init.body ?? "");
+    const body = JSON.parse(text);
+    sent.push({ body, bytes: Buffer.byteLength(text, "utf8") });
+    const step = (body.messages ?? []).filter((message) => message.role === "assistant").length;
+    if (step === 0) {
+      const calls = Array.from({ length: 8 }, (_, n) => [
+        { type: "content_block_start", index: n, content_block: { type: "tool_use", id: `toolu_${n}`, name: "review", input: {} } },
+        { type: "content_block_delta", index: n, delta: { type: "input_json_delta", partial_json: JSON.stringify({ reviewer: n + 1 }) } },
+        { type: "content_block_stop", index: n },
+      ]).flat();
+      return sse([
+        { type: "message_start", message: { id: "msg_0", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: 260_000, output_tokens: 1 } } },
+        ...calls,
+        { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 10_000 } },
+        { type: "message_stop" },
+      ]);
+    }
+    return answer(body, step, { input_tokens: billed, output_tokens: 400 });
+  };
+  const review = { name: "review", replaySafe: true, ask: false, run: async (args) => FINDING(args.reviewer ?? 0) };
+  const spec = (_claim, run) => ({
+    adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
+    session: { key: "root", label: "root", system: ["Review the pasted diff: start eight reviewers, then merge their findings."], tools: hostTools({ review }), context: "fresh" },
+    input: `Review this change.\n\n${DIFF}`,
+    hooks: quiet,
+    gate: () => "allow",
+  });
+  // The body's own o200k count, what Sol bills it: the diff, the findings and the instructions, as text.
+  const { o200kTokens } = await import("@parcha/agentrun-kernel/host");
+  billed = await o200kTokens([DIFF, ...Array.from({ length: 8 }, (_, n) => FINDING(n + 1)), "Review this change.", "Review the pasted diff: start eight reviewers, then merge their findings."].join("\n"));
+  const { row, asked, store } = await capRun(t, { specOf: () => spec, cap: specCap(CODE_CAP), runCap: { capUsd: () => CODE_CAP, modelOf: () => SOL_CAP }, ms: 60_000 });
+  const spent = await spentOf(store);
+  t.diagnostic(`${row.state} ${JSON.stringify(row.summary ?? row.error ?? null).slice(0, 400)}: spent $${spent.toFixed(4)}; bodies ${JSON.stringify(sent.map((one) => one.bytes))}; billed ${billed}`);
+  t.diagnostic(`asked: ${JSON.stringify(asked.map((one) => ({ inputTokensMax: one.request?.inputTokensMax, answer: one.answer && ("refuse" in one.answer ? { refuse: one.answer.refuse } : { holdUsd: Number(one.answer.holdUsd?.toFixed(4)), outputTokensMax: one.answer.outputTokensMax }) })))}`);
+  assert.ok(Math.abs(price(SOL, { input: 260_000, output: 10_000 }) - SPENT_BEFORE_MERGE) < 1e-9, "the first step is billed $0.62");
+  const refusals = asked.filter((one) => one.answer && "refuse" in one.answer).map((one) => one.answer.refuse);
+  assert.deepEqual(refusals, [], "the merge request is not refused: its bound is its count, not its 286 KB");
+  assert.equal(sent.length, 2, "the merge request was sent");
+  const merge = sent[1];
+  assert.equal(merge.body.messages.flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((block) => block.type === "tool_result").length, 8, "it carries the eight findings");
+  assert.ok(merge.bytes > 272_000 && merge.bytes < 300_000, `the merge request is ${merge.bytes} bytes: past Sol's 272,000-token tier on its bytes`);
+  // Its bound is the body's own count with the stated margin: never under it, and under the tier.
+  const bound = asked[1].request.inputTokensMax;
+  assert.ok(bound >= Math.ceil(billed * 1.1) && bound < 272_000, `bounded at ${bound} tokens: at least ${billed} counted with its 10% margin, and under the tier`);
+  // Its least, at the bound: a cache write at $2.50 and a least answer at $10, well under the $1.38 left.
+  const least = (bound * 2.5 + 1_024 * 10) / 1e6;
+  assert.ok(least < (CODE_CAP - SPENT_BEFORE_MERGE) / 2, `its least, $${least.toFixed(4)}, is well under the $${(CODE_CAP - SPENT_BEFORE_MERGE).toFixed(2)} left`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(spent <= CODE_CAP + 1e-12, `the run's records count $${spent} on a $${CODE_CAP} cap`);
+});
+
 test("pi on GPT-6.1 Sol through OpenRouter at $1.50, $0.10 spent: a request whose body is past 272,000 bytes after a long page is admitted on its local count and answers, never past the cap", { timeout: 60_000 }, async (t) => {
   const sent = [];
   const { row, asked, store } = await capRun(t, { specOf: () => specOf(origin(sent)), cap: specCap(CAP), runCap: { capUsd: () => CAP, modelOf: () => SOL_CAP }, ms: 40_000 });
