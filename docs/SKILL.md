@@ -1,6 +1,6 @@
 ---
 name: agentrun-setup
-description: Help someone get started with AgentRun Cloud or set up AgentRun locally with a model key and a first agent. Use when asked to set up, install or try AgentRun.
+description: Help someone get started with AgentRun Cloud or set up AgentRun locally with their ChatGPT plan or a model key, and a first agent. Use when asked to set up, install or try AgentRun.
 ---
 
 # Set up AgentRun
@@ -50,9 +50,16 @@ its last lines say why: tell the person, and stop. Give the person the address i
 curl -s "$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2/capabilities" | node -p 'JSON.parse(require("fs").readFileSync(0)).models.default'
 ```
 
-`null` means it has no model yet. Ask the person to add one model key, never in this chat: `OPENROUTER_API_KEY` alone
-gives every harness its model (pi, Claude Code and Codex), or `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for one
-provider's own. The simplest place is the console they opened: Settings → Tool keys → Model keys, which takes effect at once, with
+`null` means it has no model yet. Offer the person both ways and let them pick:
+
+- **Continue with ChatGPT**, in the console they opened (the first screen, or Settings → Model keys). They sign in on
+  OpenAI's page themselves; never do it for them. Codex and pi agents then run on their ChatGPT plan, with no key;
+  Claude Code, OpenCode, Jev decisions and paid tools still need their own keys. The sign-in is theirs alone: they
+  shouldn't let other people run agents on it.
+- **Or add one model key**, never in this chat: `OPENROUTER_API_KEY` alone gives every harness its model (pi, Claude
+  Code and Codex), or `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for one provider's own.
+
+The simplest place for a key is the same console: Settings → Tool keys → Model keys, which takes effect at once, with
 no restart. Or they set it in the shell that starts AgentRun, then stop it (`kill %1`, or the PID you started) and start
 it again as in step 2. Never print, echo or write a key anywhere. Started this way, the
 person's shell and npm keep the keys they exported in their environment, as they always do; the server itself, and its

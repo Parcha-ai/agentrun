@@ -13,6 +13,7 @@ import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { workflowNodes } from "./workflow-nodes.js";
 import type { Skipped } from "./replay-calls.js";
+import type { ReplayOutcome } from "../runner/workflow-first.js";
 
 /** How many of the agent's newest graded inputs a replay runs on. */
 export const REPLAY_INPUTS = 20;
@@ -61,8 +62,8 @@ export interface Grade {
 }
 
 /** What a replay says (learn/refit.ts scoreRows), the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
- *  `n` inputs; `agree`, how many the workflow answered alone with the agent's recorded answer; `agent_acc`, the agent's
- *  recorded answers' accuracy; `wf_acc`, the workflow's, a hand-back counting as the agent's answer; `delta` = wf_acc -
+ *  `n` inputs; `agree`, how many the workflow answered alone with the graded run's recorded answer; `agent_acc`, the
+ *  agent's accuracy on them (agentRight); `wf_acc`, the workflow's, a hand-back counting as the agent's answer; `delta` = wf_acc -
  *  agent_acc; `handed_back`, how many it handed back (it answered n - handed_back alone: answersAlone). Accuracies to
  *  1e-4. */
 export interface ReplayScore {
@@ -74,6 +75,9 @@ export interface ReplayScore {
   readonly handed_back: number;
 }
 
+/** The ReplayScore fields of `x` alone (a scoreRows or refitGuards result, or a record's `replay`): the one pick of them. */
+export const scoreOf = (x: ReplayScore): ReplayScore => ({ n: x.n, agree: x.agree, agent_acc: x.agent_acc, wf_acc: x.wf_acc, delta: x.delta, handed_back: x.handed_back });
+
 /** Whether a replay or refit answered alone on at least one of its inputs: one that hands back every input would never
  *  serve. The one spelling of it (clears, settle's hold, the compile's held line); the count is n - handed_back. */
 export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boolean => score.handed_back < score.n;
@@ -84,15 +88,15 @@ export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boo
  *  while it replayed: one challenger at a time, so its replay runs were cancelled and it never serves). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
  *  its passing dry run), `refit` (a threshold refit wrote this revision, decided on the rows it was fit on), `graded` (a
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
- *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown) and how many of its inputs were
- *  skipped (`skipped_write`: each needed a write the graded run's recording does not have, learn/replay-calls.ts; never
- *  run, never scored) and at which tools (`skipped_tools`, SkippedTool), and its runs' outcomes (`outcomes`,
- *  ReplayOutcomes). `refit`: the guards a refit
+ *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown), its runs' outcomes (`outcomes`,
+ *  ReplayOutcomes: the one count of them, its `skipped_write` the inputs that needed a write the graded run's recording
+ *  does not have, learn/replay-calls.ts, never run, never scored) and the tools that stopped those (`skipped_tools`,
+ *  SkippedTool). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
  *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). `since`: on a replay's
  *  promote, the agent's newest grade (its seq) when this promotion began: which promotion of the digest it is (a run it
  *  serves keeps it, Grade.promotion, and its checks count only those runs' grades). `held_on`: the
- *  served runs graded wrong a revision was held on, owed by its next replay (heldOn). */
+ *  served runs graded wrong a revision was held on, owed by its next replay (runner/promotion.ts heldOn). */
 export interface PromotionRecord {
   readonly workflow: string;
   readonly digest: string;
@@ -100,7 +104,7 @@ export interface PromotionRecord {
   readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
-  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
+  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
   readonly runs?: readonly string[];
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
    *  launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
@@ -127,7 +131,7 @@ export interface PromotionRecord {
   /** The runs a revision served that were graded wrong when its graded check held it (newest first, at most REPLAY_INPUTS),
    *  kept on that hold, on the replay of it its owner starts (those of them still graded and fitting it, each one of its
    *  inputs), and on a replay's hold: a replay of the revision promotes it only once it answered (or handed back) on every
-   *  one (heldOn). */
+   *  one (runner/promotion.ts heldOn). */
   readonly held_on?: readonly string[];
   /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
   readonly superseded_by?: string;
@@ -143,11 +147,6 @@ export interface ReplayLaunch {
   readonly body: unknown;
   readonly handed_from?: string;
 }
-
-/** What a replay of a revision owes before it may promote it: the served runs graded wrong it was held on
- *  (PromotionRecord.held_on), none when `record` owes none. The one reading of it: the owner's replay puts each among its
- *  inputs (runner/promotion.ts askReplay), and its settle holds a replay that did not answer or hand back on each. */
-export const heldOn = (record: PromotionRecord | undefined): readonly string[] => record?.held_on ?? [];
 
 /** A tool that stopped a replay's inputs (each a skipped_write row): its catalog name, how many inputs it stopped, and
  *  whether it is an MCP tool its server listed with no readOnlyHint (`no_read_only_hint`: replay may only lack the hint,
@@ -358,7 +357,8 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
   return items.filter((_, i) => keep.has(i));
 }
 
-/** One replayed input: the graded run it replays (`of`), the agent's recorded answer and its grade, and what the workflow
+/** One replayed input: the graded run it replays (`of`), its recorded answer, its grade and the path it took (whose
+ *  answer it is: agentRight), and what the workflow
  *  did on it: answered alone (`answer`), handed back (it escalated: an escalate node or a guard), or failed (a step failed,
  *  on a credential or tool the replay lacked among them, or its output off its schema; no workflow, a stale digest, a run
  *  that did not end completed); with its guard rows, read record-only (recordOnly) so each step's p is known. A failed
@@ -367,8 +367,8 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
  *  which a replay never runs (learn/replay-calls.ts), the one named in `skipped`. */
 export interface ReplayRow {
   readonly of: string;
-  readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
-  readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+  readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly path: RunPath; readonly expected?: Readonly<Record<string, unknown>> };
+  readonly outcome: ReplayOutcome;
   readonly skipped?: Skipped;
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
@@ -377,7 +377,7 @@ export interface ReplayRow {
 /** How many of a replay's own runs ended each way (a run not ended past its deadline is failed): what each run did,
  *  never the serving thresholds' reading of it (a run that answered below its guard's threshold is answered here, handed
  *  back in its score). A replay record keeps them as it was decided on. */
-export type ReplayOutcomes = Readonly<Record<ReplayRow["outcome"], number>>;
+export type ReplayOutcomes = Readonly<Record<ReplayOutcome, number>>;
 
 /** The text inside an answer that is one unlabelled fence and nothing else, or undefined. */
 const WHOLE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n([\s\S]*?)\r?\n {0,3}\1[`~]*[ \t]*$/;
@@ -408,22 +408,33 @@ function same(a: unknown, b: unknown): boolean {
 /** Whether two answers say the same: equal as JSON values, else as trimmed text. */
 export const sameAnswer = (a: string | null, b: string | null): boolean => a !== null && b !== null && same(valueOf(a), valueOf(b));
 
-/** Whether the workflow's `answer` to a graded input is right: with the grade's expected fields, when its JSON holds each
- *  of them (or, one field expected, when the answer is that field's text: a workflow whose output is one text field
- *  answers with that text, learned-workflow.ts learnedOutput); else when it says what the agent's graded answer said,
- *  that answer's grade. An answer that differs from the agent's when the agent's was wrong is counted wrong: nothing says
- *  it is right (a replay never flatters the workflow). */
+/** Whether the workflow's `answer` to a graded input is right by its grade: with the grade's expected fields, when its JSON
+ *  holds each of them (or, one field expected, when the answer is that field's value: a workflow whose output is one
+ *  field answers with its text, or its JSON text when it is no text, learned-workflow.ts learnedOutput). Else, graded
+ *  right, when it says what the graded run said. Graded wrong: on a run a learned workflow answered alone (`workflow`),
+ *  when it says anything else (the bar on a wrong grade is the grade: saying what was graded wrong again is never a tie),
+ *  and wrong when what it said could not be read (nothing says it differs); on a run the agent answered, wrong whatever it
+ *  says (another answer proves nothing: a neutral tie with the agent's, agentRight). */
 export function answerCorrect(answer: string | null, recorded: ReplayRow["recorded"]): boolean {
   if (answer === null) return false;
   if (recorded.expected) {
     const value = valueOf(answer);
     const fields = Object.values(recorded.expected);
-    if (fields.length === 1 && typeof fields[0] === "string" && answer.trim() === fields[0].trim()) return true;
+    if (fields.length === 1 && (typeof fields[0] === "string" ? answer.trim() === fields[0].trim() : same(value, fields[0]))) return true;
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     return Object.entries(recorded.expected).every(([key, want]) => same((value as Record<string, unknown>)[key], want));
   }
-  return sameAnswer(answer, recorded.answer) ? recorded.correct : false;
+  if (recorded.correct) return sameAnswer(answer, recorded.answer);
+  return recorded.path === "workflow" && recorded.answer !== null && !sameAnswer(answer, recorded.answer);
 }
+
+/** Whether the agent's answer to a replayed input is right, the agent's side of a replay's score: the graded run's grade
+ *  when the answer graded is the agent's (path `agent`, or `handed_back`: the agent finished it). On a run a learned
+ *  workflow answered alone (`workflow`) the store holds no answer of the agent's on that input, so a right grade is the
+ *  agent's too and a wrong one counts the agent right: the grade's expected answer is the agent's when it gave one, and
+ *  with none the agent is the default. So a revision held on runs it served wrong never ties its own wrong answers; it
+ *  serves again only by answering them right (answerCorrect) or handing them back. */
+export const agentRight = (recorded: ReplayRow["recorded"]): boolean => recorded.correct || recorded.path === "workflow";
 
 /** The thresholds a workflow's guards serve at, by step label (the guard rows' `node`): every step of the workflow
  *  with a `guard` and a `label` (walkGuards). A label names one step: a learned draft that repeats one never runs
@@ -480,7 +491,11 @@ export function recordOnly(workflowText: string): string {
 
 /** Whether a score clears the bar: the workflow's accuracy at most PROMOTE_BAR under the agent path's, and it answered
  *  alone on at least one input (one that hands back every input scores the agent's own accuracy, and would never serve). */
-export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && answersAlone(score);
+export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => withinBar(score) && answersAlone(score);
+
+/** Whether a score's workflow is at most PROMOTE_BAR under the agent: clears' bar, and what a replay of a held revision
+ *  meets on the runs it was held on alone (runner/promotion.ts settle), where a hand-back on each is fine. */
+export const withinBar = (score: Pick<ReplayScore, "delta">): boolean => score.delta >= -PROMOTE_BAR - 1e-9;
 
 /** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({

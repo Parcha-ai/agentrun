@@ -12,6 +12,17 @@ Archive the agent: hidden from the lists, kept with its history.
 
 Route: `POST /agents/{agent_id}/archive`.
 
+### `agentrun agents connect-native`
+
+Connect a native project using ordinary agent and revision storage.
+
+Route: `POST /native/connect`.
+
+- `--project STRING` (string, required)
+- `--runtime claude-code|codex` (string, one of these, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun agents create`
 
 Create an agent home.
@@ -28,6 +39,23 @@ Route: `POST /agents`.
 Remove an agent's own Archil disk, and everything on it.
 
 Route: `DELETE /agents/{agent_id}/archil`.
+
+### `agentrun agents disconnect-native AGENT_ID`
+
+Disconnect future native jobs while retaining source configuration and history.
+
+Route: `POST /agents/{agent_id}/native/disconnect`.
+
+### `agentrun agents discover-native`
+
+Discover existing native projects on this source machine without running a model.
+
+Route: `POST /native/discover`.
+
+- `--project STRING` (string, required)
+- `--runtime claude-code|codex` (string, one of these)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun agents forget-sign-in AGENT_ID KEY`
 
@@ -52,6 +80,12 @@ Route: `GET /agents/{agent_id}/archil`.
 The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows.
 
 Route: `GET /agents/{agent_id}/learning/loop`.
+
+### `agentrun agents get-native AGENT_ID`
+
+Read a native connection.
+
+Route: `GET /agents/{agent_id}/native`.
 
 ### `agentrun agents list`
 
@@ -96,6 +130,12 @@ Route: `PUT /agents/{agent_id}/definition`.
 - `--if-match STRING` (string): The home's current ETag (`homeRevision`), as `GET /agents/{agent_id}` returned it. Required with the contract's body; this server's own body (`{definition, skills?, note?}`) may leave it out.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun agents verify-native AGENT_ID`
+
+Check native CLI and sign-in without a paid model call.
+
+Route: `POST /agents/{agent_id}/native/verify`.
 
 ## files
 
@@ -491,7 +531,6 @@ Route: `POST /runs`.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
 - `--quote-id STRING` (string): Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`.
-- `--cap-mode expected|strict` (string, one of these): How the run's cap (`max_cost_usd`) prices each model request's input. `expected` (the default): the input the previous request of its conversation reported read from or written to the cache, at the cache-read price, when that request ended less than 4 minutes before; the rest of its input (the previous request's input after the cache, and what the conversation grew by since, a token a byte) at the input price, the cache write's when dearer. With no such request, all of it at that price. Output is limited to what the cap leaves, so output never passes it; a cache miss can, by at most the request's bound (its input uncached less its input expected), served as the run's `cost.overshoot_bound_usd` while it is in flight; its real cost is booked, and the timeline says so. `strict`: every input token at the input or cache-write price, the worst case: no request passes the cap, and a run pauses sooner. Only with a cap. Absent: the agent's (its definition's `cap_mode`), else expected. 422 not_allowed for a run with no cap.
 - `--workflow-first` (boolean): Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.
 - `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
 - `--repo STRING` (string): The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.
@@ -618,7 +657,6 @@ Route: `POST /agents/{agent_id}/runs`.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
 - `--quote-id STRING` (string): Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`.
-- `--cap-mode expected|strict` (string, one of these): How the run's cap (`max_cost_usd`) prices each model request's input. `expected` (the default): the input the previous request of its conversation reported read from or written to the cache, at the cache-read price, when that request ended less than 4 minutes before; the rest of its input (the previous request's input after the cache, and what the conversation grew by since, a token a byte) at the input price, the cache write's when dearer. With no such request, all of it at that price. Output is limited to what the cap leaves, so output never passes it; a cache miss can, by at most the request's bound (its input uncached less its input expected), served as the run's `cost.overshoot_bound_usd` while it is in flight; its real cost is booked, and the timeline says so. `strict`: every input token at the input or cache-write price, the worst case: no request passes the cap, and a run pauses sooner. Only with a cap. Absent: the agent's (its definition's `cap_mode`), else expected. 422 not_allowed for a run with no cap.
 - `--workflow-first` (boolean): Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.
 - `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
 - `--repo STRING` (string): The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.

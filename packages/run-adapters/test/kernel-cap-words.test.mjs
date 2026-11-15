@@ -44,7 +44,7 @@ test("a paid tool's refusal after a fraction of a cent reads spent in cents", as
 });
 
 test("a paid call refused beside a request in flight names what is held apart from spent, with the cap that would run it", async () => {
-  const { cap } = capOn(0.5, { mode: "strict", spentUsd: 0.1 });
+  const { cap } = capOn(0.5, { spentUsd: 0.1 });
   await cap.admit(modelRequest(LUNA, 0, 2_000));
   const refusal = await refusalOf(cap.admit(toolRequest("monid_run", 0.25, { basis: "its quote" })));
   assert.equal(refusal.message, "spend_cap_reached: Not sent: this run has spent $0.10 and holds $0.20 for steps still running, of its $0.50 cap, and the next step, monid_run, could cost up to $0.25 (its quote). Raise the cap to at least $0.55 to continue.");
@@ -99,14 +99,11 @@ test("the raise a refusal names is above the cap by more than a float's tail, a 
   assert.ok(raiseFigure(0.31 - 1e-12, 0.31) > 0.31 - 1e-12 + 1e-9);
 });
 
-test("least_cap_usd under each mode admits the refused request at it, and a cent under refuses it", async () => {
-  const previous = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: Date.parse("2026-11-08T06:00:00Z") - 1_000 };
-  for (const mode of ["expected", "strict"]) {
-    const ask = () => modelRequest(SONNET, 100_000, 4_096, { recent: [previous] });
-    const refusal = await refusalOf(capOn(0.01, { mode }).cap.admit(ask()));
-    await capOn(refusal.figures.leastCapUsd, { mode }).cap.admit(ask());
-    await assert.rejects(capOn(refusal.figures.leastCapUsd - 0.01, { mode }).cap.admit(ask()), CapRefused, mode);
-  }
+test("least_cap_usd admits the refused request at it, and a cent under refuses it", async () => {
+  const ask = () => modelRequest(SONNET, 100_000, 4_096);
+  const refusal = await refusalOf(capOn(0.01).cap.admit(ask()));
+  await capOn(refusal.figures.leastCapUsd).cap.admit(ask());
+  await assert.rejects(capOn(refusal.figures.leastCapUsd - 0.01).cap.admit(ask()), CapRefused);
 });
 
 test("the suggested raise is spent + 10x least, a whole dollar above the cap; a float just past a dollar stays that dollar", () => {

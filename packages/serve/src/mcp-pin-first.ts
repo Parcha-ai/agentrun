@@ -6,6 +6,7 @@
 // store was upgraded): two first runs, or a start and a claim, at once agree on one pin. Nothing moves from a run's old
 // per-run pin (mcp_pins, dropped at the upgrade): the revision's pin is the one every run of it reads.
 import { readFile } from "node:fs/promises";
+import { nativeOf } from "./native/binding.js";
 import { type McpPin, mcpPinOf } from "./mcp-gateway.js";
 import type { OAuthNetwork } from "./mcp-oauth.js";
 import { boundTool } from "./mcp-probe.js";
@@ -33,6 +34,9 @@ export interface PinFirstDeps {
  *  pin of the other servers alone would stand for good, its missing tool never pinned), and the run is refused in the
  *  words it was (server.ts runnable at a start, the claim's own at a claim). */
 export async function pinFirst(revision: { readonly id: string; readonly kind: string; readonly body: unknown; readonly mcpPin?: unknown }, deps: PinFirstDeps): Promise<McpPin | undefined> {
+  // Source MCP names describe the native CLI's own configuration, never grants to this server's managed registry.
+  // Refuse a legacy managed grant through the native runnable guard without listing or pinning it first.
+  if (nativeOf(revision.body)) return undefined;
   if (revision.mcpPin !== undefined && revision.mcpPin !== null) return revision.mcpPin as McpPin;
   if (revision.kind !== "agentic") return undefined;
   const granted: string[] = [];

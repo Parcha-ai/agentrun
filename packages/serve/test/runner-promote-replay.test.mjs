@@ -185,7 +185,7 @@ test("a new digest with graded inputs replays before it serves: the agent takes 
   const records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "replay"], ["promote", "replay"]]);
   const { replay } = records[1];
-  assert.deepEqual({ ...replay, of: replay.of.length }, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0, of: 6, cost_usd: replay.cost_usd, skipped_write: 0, skipped_tools: [], outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
+  assert.deepEqual({ ...replay, of: replay.of.length }, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0, of: 6, cost_usd: replay.cost_usd, skipped_tools: [], outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
   assert.ok(replay.cost_usd > 0, "what the replay cost is on its record");
   assert.equal(records[1].digest, DIGEST);
 });
@@ -341,11 +341,16 @@ async function reviseOn(w, run, digest, flow, seed) {
   }
 }
 
+/** A revision's answer: 42 on the graded questions (their expected answer), and on the questions the champion served and
+ *  was graded wrong for (42 there), another answer: a revision promotes only by answering those right by the grade, never
+ *  by saying what was graded wrong again. The champion says 42 throughout. */
+const revisedSubmit = (text) => ({ answer: text.includes("revision") && !text.includes("Question ") ? 54 : 42, sure: true });
+
 /** The world with answerFlow promoted at the folder's seed (the champion, as a claim records it), one run it served graded
  *  wrong, then its revision landed on the folder's main as the end-of-run turn lands one. That served run is a graded
  *  input too (path workflow): the revision replays on it and the six graded runs, seven replay runs. */
 async function championWorld(t, opts = {}) {
-  const w = await world(t, opts);
+  const w = await world(t, { submit: revisedSubmit, ...opts });
   await recordPromotion(w.server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "dry_run", reason: "promoted on its passing dry run", commit: w.seed }, (was) => was === undefined);
   const served = await w.start("run-1", "What is six times seven");
   assert.deepEqual([served.metrics?.path, served.metrics?.workflow_digest], ["workflow", DIGEST], "the champion serves");

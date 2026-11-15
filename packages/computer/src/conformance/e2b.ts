@@ -15,7 +15,6 @@
 // disk's object API (the shared archilRunFolder, ./archil.ts: the host's disk SDK with COMPUTER_ARCHIL_API_KEY and
 // COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
 // are skipped. An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
-import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "../descriptors/e2b.js";
 import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
 import type { MachineHost } from "../host.js";
 import type { MountKind } from "../mount.js";
@@ -100,9 +99,16 @@ function live(env: Record<string, string | undefined>): void {
 	}
 }
 
+/**
+ * The conformance run's own default templates, E2B's stock ones: E2B Desktop's, and its plain one for kind linux. A server
+ * starts from the box template (the provider's prepareImage); a run on it names it with --image.
+ */
+const DESKTOP_TEMPLATE = "desktop";
+const BASE_TEMPLATE = "base";
+
 /** The template every computer of the run starts from: COMPUTER_E2B_TEMPLATE, or E2B Desktop's (the plain one for kind linux). */
 export function conformanceImage({ env = process.env }: Pick<E2BModuleOptions, "env"> = {}): string {
-	return env[E2B_ENV.template] || (env[E2B_ENV.kind] === "linux" ? E2B_BASE_TEMPLATE : E2B_DESKTOP_TEMPLATE);
+	return env[E2B_ENV.template] || (env[E2B_ENV.kind] === "linux" ? BASE_TEMPLATE : DESKTOP_TEMPLATE);
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */

@@ -151,3 +151,77 @@ test("a store an earlier build of this version made (no revisions.mcp_pin, a per
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
 });
+
+
+for (const missing of [["mcp_pin"], ["monid_pin"], ["mcp_pin", "monid_pin"], []]) {
+  test(`a version 11 runner ${missing.length ? `refuses missing ${missing.join(" and ")} until its server upgrades it` : "opens prepared revision metadata"}, without changing stored schema or rows`, async (t) => {
+    const dir = dataDir(t);
+    const first = await openSqliteStore({ dataDir: dir, role: "server" });
+    const legacy = { "monid:legacy/check": { description: "An old body-only pin.", input: { type: "object" }, usd: 0.01 } };
+    const body = { instructions: "Keep this saved body.", monidPin: legacy };
+    const mcp = { fake: { url: "http://127.0.0.1:1/mcp", tools: [{ name: "check", inputSchema: { type: "object" } }] } };
+    const monid = { "monid:tagger/tag": { description: "A saved usage-priced endpoint.", input: { type: "object" }, usd: null } };
+    await first.agents.create({ id: "agent-readiness", name: "Readiness" }, { id: "rev-readiness", kind: "agentic", body, mcpPin: mcp, monidPin: monid });
+    await first.close();
+    const file = join(dir, "store.sqlite");
+    const old = new DatabaseSync(file);
+    try {
+      for (const column of missing) old.exec(`ALTER TABLE revisions DROP COLUMN ${column}`);
+      old.exec("CREATE TABLE mcp_pins (run_id TEXT PRIMARY KEY, body TEXT, pinned_at INTEGER) STRICT");
+      old.prepare("INSERT INTO mcp_pins VALUES (?, ?, ?)").run("legacy-run", JSON.stringify(mcp), 1);
+    } finally { old.close(); }
+    // Logical schema and row bytes, not journal/checkpoint files a read-only connection may observe.
+    const snapshot = () => {
+      const raw = new DatabaseSync(file, { readOnly: true });
+      try {
+        const columns = raw.prepare("SELECT name FROM pragma_table_info('revisions')").all().map((row) => row.name);
+        const pins = ["mcp_pin", "monid_pin"].filter((column) => columns.includes(column));
+        const legacyTable = raw.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name = 'mcp_pins'").get().n;
+        return {
+          schema: raw.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name").all().map((row) => ({ ...row })),
+          version: raw.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version,
+          revision: { ...raw.prepare(`SELECT id, agent_id, parent_id, kind, body, created_at${pins.length ? `, ${pins.join(", ")}` : ""} FROM revisions WHERE id = 'rev-readiness'`).get() },
+          legacy: legacyTable ? raw.prepare("SELECT * FROM mcp_pins ORDER BY run_id").all().map((row) => ({ ...row })) : null,
+        };
+      } finally { raw.close(); }
+    };
+    const before = snapshot();
+    if (missing.length) {
+      // Reject at open, before a normal revision read can fail on a missing SELECT column.
+      await assert.rejects(async () => {
+        const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+        await runner.close();
+      }, /server.*MCP and Monid revision metadata.*runner/i);
+    } else {
+      const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+      try { assert.deepEqual((await runner.agents.revision("rev-readiness")).monidPin, monid); }
+      finally { await runner.close(); }
+    }
+    assert.deepEqual(snapshot(), before, "opening/refusing a runner adds, drops and changes no schema or saved row");
+    const server = await openSqliteStore({ dataDir: dir, role: "server" });
+    try {
+      const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+      try {
+        const revision = await runner.agents.revision("rev-readiness");
+        assert.deepEqual(revision.body, body, "the historical body-only pin remains opaque body data");
+        assert.equal(revision.createdAt, before.revision.created_at);
+        assert.deepEqual(revision.mcpPin, missing.includes("mcp_pin") ? null : mcp, "an existing MCP pin is retained; a missing one is not invented");
+        assert.deepEqual(revision.monidPin, missing.includes("monid_pin") ? null : monid, "a missing Monid column never imports the old body pin; saved unknown price stays null");
+      } finally { await runner.close(); }
+    } finally { await server.close(); }
+    const upgraded = snapshot();
+    assert.equal(upgraded.version, 11, "this additive metadata does not change the SQLite version policy");
+    assert.equal(upgraded.revision.body, before.revision.body, "the exact stored body JSON bytes are unchanged");
+    assert.equal(upgraded.legacy, null, "only the server removes the obsolete per-run table");
+    const raw = new DatabaseSync(file);
+    try {
+      for (const column of ["mcp_pin", "monid_pin"]) {
+        assert.deepEqual({ ...raw.prepare("SELECT type, \"notnull\" FROM pragma_table_info('revisions') WHERE name = ?").get(column) }, { type: "TEXT", notnull: 0 });
+        assert.throws(() => raw.prepare(`UPDATE revisions SET ${column} = 'not json' WHERE id = 'rev-readiness'`).run(), /CHECK constraint failed/);
+      }
+    } finally { raw.close(); }
+    const again = await openSqliteStore({ dataDir: dir, role: "server" });
+    await again.close();
+    assert.deepEqual(snapshot(), upgraded, "server reopen is idempotent without rewriting revision bytes or pins");
+  });
+}

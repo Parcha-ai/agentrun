@@ -7,7 +7,7 @@
 // workspace's type-check. It writes the median over the logs of each file's seconds, each suite's file total over its wall time
 // (its parallelism), the wall of each suite scripts/ci-shards.json runs whole, and each type-check. A test whose name
 // matches no file, or several, is left out: its file keeps its suite's median weight, as a new file does.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isMain } from './is-main.mjs';
 import { readConfig, readSuites } from './ci-plan.mjs';
@@ -135,11 +135,23 @@ export function timingsOf(root, texts, { config } = readConfig(root)) {
   return { parallelism: out(parallelism), walls: out(walls), typecheck: out(typecheck), files: out(files) };
 }
 
+/** `measured` file weights, plus each of `previous`'s that the logs did not measure and whose file still exists
+ *  (`exists(path)`): a test whose names the logs credit to no file (a name built at run time, say) keeps the weight it
+ *  had, never its suite's median, which can be a tenth of it. A file that is gone drops out. */
+export function carriedOver(previous, measured, exists) {
+  const files = { ...measured };
+  for (const [path, seconds] of Object.entries(previous ?? {})) if (!(path in files) && exists(path)) files[path] = seconds;
+  return Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+
 if (isMain(import.meta)) {
   const logs = process.argv.slice(2);
   if (!logs.length) { console.error('usage: node scripts/ci-timings.mjs <job log>...'); process.exit(2); }
   const root = process.cwd();
   const timings = timingsOf(root, logs.map((path) => readFileSync(path, 'utf8')));
+  const previousPath = join(root, 'scripts', 'ci-timings.json');
+  const previous = existsSync(previousPath) ? JSON.parse(readFileSync(previousPath, 'utf8')).files : undefined;
+  timings.files = carriedOver(previous, timings.files, (path) => existsSync(join(root, path)));
   const about = 'Seconds on a GitHub-hosted runner, medians over CI job logs, written by scripts/ci-timings.mjs: files, each test file\'s own time; parallelism, a suite\'s file total over its wall time; walls, a suite run as a whole; typecheck, a workspace\'s type-check in a pi part.';
   writeFileSync(join(root, 'scripts', 'ci-timings.json'), `${JSON.stringify({ about, ...timings }, null, 1)}\n`);
   console.log(`scripts/ci-timings.json: ${Object.keys(timings.files).length} files, ${Object.keys(timings.parallelism).length} suites, ${Object.keys(timings.typecheck).length} type-checks, from ${logs.length} logs`);

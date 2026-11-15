@@ -126,6 +126,11 @@ export interface ProviderPolicy {
    *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
    *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */
   countInput?: InputCounter;
+  /** A local count of the body `apply` returned, its margin included (`responsesLocalInputTokens`), for a request the
+   *  provider did not count: no `countInput`, an upstream that is not its origin (a gateway), a side or host request, or a
+   *  count that failed or said none. That request's input bound when it is below the byte bound. Undefined: the body has
+   *  no local count (a model whose tokenizer the policy does not have), and keeps its byte bound. Absent: never counted. */
+  countInputLocally?(body: Record<string, unknown>): Promise<number | undefined> | number | undefined;
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
@@ -151,6 +156,10 @@ export interface ProviderPolicy {
   addNote?(body: Record<string, unknown>, text: string): Record<string, unknown>;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
+  /** An error answer of the provider's that no retry can mend (a subscription plan's limit reached), read from its status
+   *  and its body: the words and code its client is answered with instead, at `refusedStatus`, so the client never asks
+   *  again and its run ends in those words. Undefined: the provider's answer goes through as it came. */
+  finalError?(status: number, body: string): { message: string; code: string } | undefined;
 }
 
 export interface ModelUsageReport extends ProxyUsage {
@@ -511,16 +520,12 @@ export interface ProxyRequest {
    *  summary), or the host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (the policy's `answers` reads it so: a title, a summary, a child's
-   *  request). Still the turn's to book, but a conversation of its own: the cap never prices the session's next request
-   *  from it, nor it from the session's. */
+   *  request). Still the turn's to book, but no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
   /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
-  /** Its `inputTokensMax` is its provider's count (ProviderPolicy.countInput), not its bytes: a host that compares one
-   *  request's bound with another's (how far a conversation grew) pairs a counted bound only with a counted one. */
-  inputTokensCounted?: true;
 }
 
 export interface ModelProxyHooks {
@@ -584,6 +589,9 @@ export interface ModelProxyOptions {
    *  (`ProviderPolicy.cut`), before its client has the piece that carries the stop: a harness whose client would ask for
    *  the answer again (Codex retries an incomplete stream) ends the turn there, the answer cut ("length"). */
   onCut?: (stop: { outputTokens?: number }) => void;
+  /** Told, with its words and code, once the provider's error answer is one no retry mends (`ProviderPolicy.finalError`:
+   *  a plan's limit reached), as its client is answered those words: the harness ends the turn in them. */
+  onFinal?: (message: string, code: string) => void;
 }
 
 /** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
@@ -842,18 +850,36 @@ export async function countedInputOf(policy: ProviderPolicy, origin: string, bod
     const response = await fetch(`${origin}${counter.path}`, { method: "POST", headers: { ...counter.headers(headers), "content-type": "application/json" }, body: JSON.stringify(counter.body(body)), signal: cut });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound`);
+      say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound or its local count`);
       return undefined;
     }
     const tokens = counter.tokensOf(await response.json());
     const margin = counter.margin ? counter.margin(body) : 0;
     if (!Number.isSafeInteger(tokens) || tokens! < 0 || !Number.isSafeInteger(margin) || margin < 0) {
-      say(`model proxy (${policy.id}): the provider's token count said no count; the request keeps its byte bound`);
+      say(`model proxy (${policy.id}): the provider's token count said no count; the request keeps its byte bound or its local count`);
       return undefined;
     }
     return tokens! + margin;
   } catch (error) {
-    say(`model proxy (${policy.id}): the provider's token count failed; the request keeps its byte bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    say(`model proxy (${policy.id}): the provider's token count failed; the request keeps its byte bound or its local count`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    return undefined;
+  }
+}
+
+/**
+ * The local count of a request with body `body`, its margin included (`policy.countInputLocally`); undefined (the request
+ * keeps its byte bound) when the policy has none, says none for this body, or its count throws or is not a whole number
+ * of tokens. Never throws.
+ */
+export async function localInputOf(policy: ProviderPolicy, body: Record<string, unknown>, say: (message: string, detail?: Record<string, unknown>) => void = () => {}): Promise<number | undefined> {
+  if (!policy.countInputLocally) return undefined;
+  try {
+    const tokens = await policy.countInputLocally(body);
+    if (tokens === undefined) return undefined;
+    if (!Number.isSafeInteger(tokens) || tokens < 0) throw new Error(`not a token count: ${String(tokens).slice(0, 40)}`);
+    return tokens;
+  } catch (error) {
+    say(`model proxy (${policy.id}): the local token count failed; the request keeps its byte bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     return undefined;
   }
 }
@@ -1125,20 +1151,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // admitted or booked, until the harness opens its next turn.
     if (answering && !route.free && stopTold !== undefined) return refuse(res, refusedStatus, `refused: the turn's answer was ${stopTold}, and the turn ends there`, req);
     // An answer request on an upstream that is its provider's own (policy.countInput): its input bound is the provider's
-    // exact count when that is below its bytes, so a small cap admits a first turn its bytes would not. Each answer request
-    // is counted, not only the first: the cap prices a step by the last one's tokens plus how far its bound grew, so a
-    // counted bound beside a byte bound would read the bytes as growth. A count that fails or times out leaves the byte
-    // bound, and never holds the request up for long. A noted request is counted with its note, which bounds it without
-    // the note too (the note only adds).
+    // exact count when that is below its bytes, so a small cap admits a turn its bytes would not: the cap holds each
+    // request at its whole input uncached, and the count is that input to the token. A count that fails or times out
+    // leaves the byte bound, and never holds the request up for long. A noted request is counted with its note, which
+    // bounds it without the note too (the note only adds).
     // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
-    let inputTokensCounted = false;
+    /** The provider's count, when it gave one: then no local count is taken, even when the provider's is the higher. */
+    let counted: number | undefined;
     if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
       // A client that goes while its request is counted is gone before anything is admitted: the count is cut, and the
       // request is neither admitted nor sent (nothing is booked, and no paid answer starts for no one).
       const gone = new AbortController();
       const onGone = () => gone.abort(new Error("the client went while its request was counted"));
       res.once("close", onGone);
-      let counted: number | undefined;
       try {
         counted = await countedInputOf(policy, origin, body, headers, forward, say, COUNT_TIMEOUT_MS, gone.signal);
       } finally {
@@ -1147,9 +1172,18 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (gone.signal.aborted || res.destroyed) return;
       if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
         inputTokensMax = counted;
-        inputTokensCounted = true;
         if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
       }
+    }
+    // A request its provider did not count (no counter, a gateway, a side or host request, a count that failed): its input
+    // bound is the policy's local count (countInputLocally, its margin included) when that is below its bytes. The body
+    // without the note is counted on its own.
+    if (counted === undefined && !route.free && inputTokensMax !== undefined && policy.countInputLocally) {
+      const local = await localInputOf(policy, body, say);
+      const localPlain = plain && inputTokensMaxWithoutNote !== undefined ? await localInputOf(policy, plain, say) : undefined;
+      if (res.destroyed) return;
+      if (local !== undefined && inputTokensMax !== undefined && local < inputTokensMax) inputTokensMax = local;
+      if (localPlain !== undefined && inputTokensMaxWithoutNote !== undefined && localPlain < inputTokensMaxWithoutNote) inputTokensMaxWithoutNote = localPlain;
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
@@ -1159,14 +1193,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (!route.free) ticket = await hooks.beforeRequest({
         // A side call: on another model than the session's, or the host's own (it counts toward no typical request). One on
         // the session's model that is no answer of the turn (a title, a summary, a child's: `answering`, the policy's
-        // answers) is `unanswered`: booked as any request, but a conversation of its own to the cap's expected pricing.
+        // answers) is `unanswered`: booked as any request, but no answer the host keeps its reserve back for.
         model: asked, inputTokensMax, ...(asked !== model || host !== undefined ? { side: true as const } : {}), ...(!answering && host === undefined ? { unanswered: true as const } : {}),
         ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
         ...(feeUsd > 0 ? { feeUsd } : {}),
         ...(host === undefined ? {} : { host }),
-        ...(inputTokensCounted ? { inputTokensCounted: true as const } : {}),
         ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {
@@ -1320,7 +1353,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
-      const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
+      let upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
       // its booking.
       try {
@@ -1333,6 +1366,36 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           await options.credentialRefused(credential);
         } catch {
           say(`model proxy (${policy.id}): the host could not renew a refused credential`);
+        }
+      }
+      // An error no retry mends (ProviderPolicy.finalError, a plan's limit reached): its client is answered the policy's
+      // words at refusedStatus, a status it never asks again on, in place of the provider's. It was not paid: booked as
+      // the provider's error answer is, at nothing.
+      if (!upstream.ok && policy.finalError) {
+        const text = await upstream.text();
+        let final: { message: string; code: string } | undefined;
+        try {
+          final = policy.finalError(upstream.status, text);
+        } catch (error) {
+          say(`model proxy (${policy.id}): whether an error answer is final could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
+        if (final) say(`model proxy (${policy.id}): the provider's error answer ends the run`, { status: upstream.status, code: final.code });
+        // The body read is decoded: passed on, it carries no encoding or length of the provider's.
+        const headers = new Headers(upstream.headers);
+        headers.delete("content-encoding");
+        headers.delete("content-length");
+        // The policy's answer keeps the provider's request ids (providerIdsOf reads them below), so the request's records
+        // still name it at the provider.
+        upstream = final
+          ? new Response(JSON.stringify({ error: { message: final.message, type: "agentrun_proxy", code: final.code } }), { status: refusedStatus, headers: { ...providerIdsOf(upstream.headers), "content-type": "application/json" } })
+          : new Response(text, { status: upstream.status, headers });
+        // The harness ends the turn in the policy's words, whatever its client makes of the answer.
+        if (final) {
+          try {
+            options.onFinal?.(final.message, final.code);
+          } catch (error) {
+            say(`model proxy (${policy.id}): onFinal threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+          }
         }
       }
       // Its ids are kept before its body is read: from here the provider has seen it, whatever cuts it off.

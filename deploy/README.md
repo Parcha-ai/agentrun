@@ -19,18 +19,43 @@ AgentRun runs as two kinds of process on one store:
 Both come from one image, built from `packages/serve/docker/Dockerfile`, so a runner always knows the schema of the
 store its server set up. Run the server and the runners from the same image tag.
 
+None of the ways below needs a model key. Once the server is up, open its console, set your password, then Continue
+with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or add a model key there instead:
+keys work as before, beside the sign-in. Codex and pi agents run on a ChatGPT plan; Claude Agent, OpenCode, Jev
+decisions and paid tools need their own keys.
+
+**Your server, your ChatGPT plan, only you:** a ChatGPT sign-in is for the person who runs this server. Don't share it
+or let others run agents on it. Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT
+settings. On a server that isn't this computer (Render, or a container), the sign-in tab ends on a page that won't
+load: copy its whole address into the console.
+
+## One container, no key
+
+The server and one runner in one container, its data on a named volume, its port on this machine's loopback:
+
+```sh
+(umask 077; [ -f agentrun.env ] || echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" > agentrun.env)   # once; keep this file
+docker run -d --name agentrun --restart unless-stopped -p 127.0.0.1:7340:7340 -v agentrun-data:/data --env-file agentrun.env -e AGENTRUN_PUBLIC_URL=http://127.0.0.1:7340/ ghcr.io/parcha-ai/agentrun-server:beta
+docker logs agentrun     # the console's link, the first visit's setup code and, the first time, the token
+```
+
+`agentrun.env` keeps the seal key outside the container and the volume, so a container made again with the same file
+opens the same store. The container has no Docker socket, so its agents get file tools and `web_fetch` but no shell; for
+a Docker sandbox, use `compose.yaml` at the repository's root. Put a TLS proxy in front before you publish the port
+anywhere else.
+
 ## The image's two commands
 
 ```sh
 # The server alone, with its runners in their own containers: the API on port 7340, everything under /data.
-docker run --hostname server -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... agentrun-server \
+docker run --hostname server -v agentrun-data:/data --env-file agentrun.env ghcr.io/parcha-ai/agentrun-server:beta \
   --data /data --listen server --port 7340 --drain-timeout 6s --no-runner
 
 # A runner: the same image, `runner` as its command, the same /data, a name of its own.
-docker run -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... agentrun-server runner --data /data --name runner-1 [--loops N] [--drain-timeout D]
+docker run -v agentrun-data:/data --env-file agentrun.env ghcr.io/parcha-ai/agentrun-server:beta runner --data /data --name runner-1 [--loops N] [--drain-timeout D]
 ```
 
-The image's default command is the server with a runner beside it, for one container on its own.
+The image's default command is the server with a runner beside it, for one container on its own (above).
 
 What each takes, from its environment alone:
 
@@ -44,7 +69,7 @@ What each takes, from its environment alone:
 | `AGENTRUN_DRAIN_TIMEOUT` | | optional | A runner's `--drain-timeout` when not given (`8s`, `500ms`, `1m`); unset, `6s`. Keep it plus 25 s below the grace a SIGKILL waits for. |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
-| Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |
+| Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | optional | optional | The runner makes a run's model requests; the server checks a run's model can run before it starts it. Give the same ones to both. With none, Continue with ChatGPT in the console, or save a key there. |
 | `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes alone, for a server behind its caller's backend: the console, sign-in, setup, settings, MCP, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
@@ -82,7 +107,8 @@ within 31 s: give it 35 s before a SIGKILL, more with a longer drain. `--drain-t
 printf 'AGENTRUN_SEAL_KEY=%s\n' "$(openssl rand -base64 32)" > .env && chmod 600 .env
 ```
 
-Add your model keys to `.env` (`ANTHROPIC_API_KEY=...`, say), then:
+A model key in `.env` (`ANTHROPIC_API_KEY=...`, say) is optional: with none, Continue with ChatGPT in the console once
+it's up. Then:
 
 ```sh
 docker compose up -d --build     # --build: this checkout's image, until a published one carries the runner command
@@ -134,7 +160,9 @@ migrates a schema its role owns.
 **Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
 it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
 `--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`. A first
-deploy needs one model key in Render's form, then `AGENTRUN_TOKEN` from the service's Environment tab at the first visit.
+deploy needs no model key: leave Render's key fields blank, paste `AGENTRUN_TOKEN` from the service's Environment tab
+at the first visit to set your password, then Continue with ChatGPT (Settings → Model keys, or the first screen), then
+run your first agent. Or paste a key in Render's form, or add one in the console.
 render.yaml has Render generate AGENTRUN_SEAL_KEY once; keep it with the service. More runners on Render need the same
 value set on each worker.
 

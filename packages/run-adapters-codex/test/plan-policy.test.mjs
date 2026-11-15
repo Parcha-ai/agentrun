@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as host from '@parcha/agentrun-kernel/host';
+import { PLAN_LIMIT_CODE, PLAN_LIMIT_WORDS } from '@parcha/agentrun-kernel';
 import { codexPolicy } from '../dist/host/policy.js';
 
 const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
@@ -44,4 +45,17 @@ test("a system-role message is refused on the plan in words, and the plan's own 
   const developer = { ...system, role: 'developer' };
   const sent = await policy.apply({ ...structuredClone(body), input: [developer, user] }, ROUTE);
   assert.deepEqual(sent.input.map((item) => item.role), ['developer', 'user'], 'a developer message goes as it is');
+});
+
+test("on the plan, a 429 past the plan's limit is final, in plain words; a rate limit and any other error go through, and off the plan nothing is final", () => {
+  const plan = codexPolicy({ model: 'gpt-6.1-sol', tools: [], plan: true });
+  const final = { message: PLAN_LIMIT_WORDS, code: PLAN_LIMIT_CODE };
+  for (const code of ['usage_limit_exceeded', 'subscription_sharing_usage_limit_exceeded']) {
+    assert.deepEqual(plan.finalError(429, JSON.stringify({ error: { code, message: 'The usage limit has been reached' } })), final, `${code} as the error's code`);
+    assert.deepEqual(plan.finalError(429, JSON.stringify({ error: { type: code } })), final, `${code} as the error's type`);
+  }
+  assert.equal(plan.finalError(429, JSON.stringify({ error: { code: 'rate_limit_exceeded' } })), undefined, 'a rate limit is waited out and asked again');
+  assert.equal(plan.finalError(400, JSON.stringify({ error: { code: 'usage_limit_exceeded' } })), undefined, 'only a 429');
+  assert.equal(plan.finalError(429, 'not json'), undefined);
+  assert.equal(codexPolicy({ model: 'gpt-6.1-sol', tools: [] }).finalError, undefined, 'off the plan');
 });

@@ -19,7 +19,6 @@ import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
 import { launchOf } from "./handed-values.js";
 import { capNowOf } from "./runner/journal-kinds.js";
-import { overCapBound } from "./runner/metrics.js";
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
@@ -69,10 +68,9 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redacted(text, values, CALL_RESULT_CHARS), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values));
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
-      // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf), a cache miss within the bound of the
-      // requests since its spend last fit said as one (overCapBound).
+      // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf).
       const capNow = capNowOf((await launchOf(snapshot, runId))?.maxCostUsd, records.entries);
-      const overCap = capNow === undefined ? timeline : withOverCap(timeline, capNow, overCapBound(records.entries as never, capNow));
+      const overCap = capNow === undefined ? timeline : withOverCap(timeline, capNow);
       // Each pause at its cap shown as the server's row, and the one it stands at now as its waiting row (withBudgetRows).
       const capped = withBudgetRows(overCap, records.entries as never, { ended });
       const rows = withApprovalRows(withAsks(capped), asksOf(records.entries), answersOf(records.entries, { final }), redact);
