@@ -5,7 +5,7 @@
 // on its own result row, and answered from its record when the script runs again. pi through the adapter loop on a
 // runner; the model is a scripted Anthropic origin and the computer a loopback fake: nothing leaves this process.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -28,6 +28,7 @@ const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const { INTERRUPTED_TEXT } = await import("@parcha/agentrun-kernel/kernel");
+const { DENIED_OPENING, REFUSAL_OPENINGS } = await import("../dist/refusal-words.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const GROUPS = ["screen", "input.pointer", "input.keys"];
@@ -505,6 +506,37 @@ test("on Codex, a script's computer_op calls sit under the script's own call on 
   assert.ok(rows.indexOf(outer) < rows.indexOf(nested[0]), `the script's row comes first: ${seen}`);
   const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "call_exec");
   assert.equal(result.tool_status, "success", `a script that ended well reads ok: ${result.summary}`);
+});
+
+/** Each nested call's answer as Codex's code mode handed it to the script: its rollout's DynamicToolCall completions (the
+ *  rollout as the session's journal mirrors it, `rollout:<threadId>`), each with its arguments and content items. */
+async function codexAnswers(server) {
+  const streams = (await entriesOf(server)).filter((entry) => entry.kind === "kernel.start" && entry.data?.name === "journal").map((entry) => entry.data.input?.streams ?? {});
+  const lines = streams.flatMap((all) => Object.entries(all).filter(([name]) => name.startsWith("rollout:")).flatMap(([, held]) => held.entries.map((entry) => entry.data)));
+  return lines.map((line) => JSON.parse(line)).filter((line) => line.type === "event_msg" && line.payload?.item?.type === "DynamicToolCall").map((line) => line.payload.item);
+}
+
+test("on Codex, a computer_op answers its script one text item: an op that ran is JSON (shell.run's has exitCode), and a refused one is the gate's words, opening as the kind skills say", async (t) => {
+  const { runners } = await stores({ runners: 1 });
+  const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-shape-"));
+  dirs.push(folder);
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "allow" }, write: { permission: "deny" } } } }, folder, "none");
+  const { server } = await codexRun(t, [{ tool: "computer_op", args: { op: "shell.run", args: { command: "echo hi" } } }, { tool: "computer_op", args: { op: "files.write", args: { path: "/workspace/notes.txt", data: "Pears: 41" } } }], { gate });
+  const answers = await codexAnswers(server);
+  const ran = answers.find((one) => one.arguments?.op === "shell.run");
+  const refused = answers.find((one) => one.arguments?.op === "files.write");
+  assert.ok(ran && refused, `both calls were answered: ${JSON.stringify(answers)}`);
+  for (const one of [ran, refused]) assert.deepEqual(one.content_items.map((item) => item.type), ["inputText"], `one text item: ${JSON.stringify(one)}`);
+  const value = JSON.parse(ran.content_items[0].text);
+  assert.equal(value.exitCode, 0, `shell.run's answer parses as JSON with its exit code: ${ran.content_items[0].text}`);
+  const words = refused.content_items[0].text;
+  assert.ok(words.startsWith(DENIED_OPENING), `a refused op's answer opens with the gate's words: ${words}`);
+  assert.throws(() => JSON.parse(words), "a refused op's answer is words, never JSON");
+  // The kind skills name every opening a refused op's answer starts with, from the one copy the gate writes them from.
+  for (const kind of ["desktop", "phone"]) {
+    const skill = readFileSync(new URL(`../src/workspace/kind-skills/${kind}/SKILL.md`, import.meta.url), "utf8").replace(/\s+/g, " ");
+    for (const opening of REFUSAL_OPENINGS) assert.ok(skill.includes(`\`${opening.trim()}\``), `the ${kind} skill names "${opening.trim()}"`);
+  }
 });
 
 test("on Codex, a script that failed reads failed on its exec's result row, as a failed script's row does on every other harness, never ok", async (t) => {
