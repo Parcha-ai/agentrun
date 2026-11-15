@@ -23,7 +23,9 @@ const alias = {
   // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
   "@timeline": fileURLToPath(new URL("../../packages/serve/src/timeline", import.meta.url)),
   "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
-  "@": fileURLToPath(new URL("./src", import.meta.url)),
+  // The catalog-name grammar the server reads a grant by (it imports nothing, as serve's tool-names test holds it).
+  "@agentrun/tool-names": fileURLToPath(new URL("../../packages/serve/src/tool-names.ts", import.meta.url)),
+  "@":fileURLToPath(new URL("./src", import.meta.url)),
 };
 // Story tests run from this file through @storybook/addon-vitest: with VITEST_STORYBOOK=true (`npm run test-storybook`, or
 // Storybook's own process) the only project is .storybook/vitest.project.ts's. Every other run, `npm test` among them,
