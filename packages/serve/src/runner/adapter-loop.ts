@@ -2084,15 +2084,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               mcpStale = false;
               await mcp.fresh();
             }
-            // The note this request carries, taken off the offer now: the replaced computer's when it took that one (only one
-            // is offered at a time, takeNote), else the wrap-up. Its admission tells it; a refusal (the throw below) or a
-            // dropped note leaves it untold, to be offered to a later request.
+            // The note this request carries: the replaced computer's when it took that one (only one is offered at a time,
+            // takeNote), else the wrap-up, taken off the offer now. Its admission tells it; a refusal (the throw below) or a
+            // dropped note leaves it untold, to be offered to a later request. The replaced computer's stays on offer until
+            // this admission ends, so no request that starts meanwhile carries it too.
             const noted = (request as { noted?: boolean }).noted === true;
             const computerTold = noted && computerNote.offered !== undefined ? computerNote.words : undefined;
-            if (computerTold !== undefined) computerNote.offered = undefined;
             const offer = noted && computerTold === undefined ? capNote.offered : undefined;
             if (offer) capNote.offered = undefined;
-            const ticket = await port.beforeRequest(request);
+            let ticket: Awaited<ReturnType<typeof port.beforeRequest>>;
+            try {
+              ticket = await port.beforeRequest(request);
+            } finally {
+              if (computerTold !== undefined) computerNote.offered = undefined;
+            }
             // The replaced computer's note, told: once, its row the server's, made durable before the request leaves.
             if (computerTold !== undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped) {
               computerNote.words = undefined;

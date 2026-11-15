@@ -641,13 +641,14 @@ export async function computerForClaim(
         }, signal);
       } else {
         deps.onStarting?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none"> });
+        // A fresh computer in place of an earlier claim's: one this claim let go of (its runner lost, a crash), or a
+        // desktop's or a phone's the run's journal says came up (its claim let it go at its end: a server's stop). The
+        // journal is read before anything is rented, so a read that fails leaves nothing to let go. A paired computer is
+        // the same one at every claim.
+        const journalSays = !pairedRow && (kind === "desktop" || kind === "phone") && launch.epoch > 1 && (await deps.earlierUp?.()) === true;
         const fresh = await providerLaunch(provider, launch, spec, signal);
         launched = fresh;
-        // A fresh computer in place of an earlier claim's: one this claim let go of (its runner lost, a crash), or a
-        // desktop's or a phone's the run's journal says came up (its claim let it go at its end: a server's stop).
-        // A paired computer is the same one at every claim.
-        const earlier = fresh.releasedOlder || ((kind === "desktop" || kind === "phone") && launch.epoch > 1 && (await deps.earlierUp?.()) === true);
-        if (earlier && !pairedRow) replaced = { folderKept: deps.mode === 2 && mount !== undefined };
+        if (!pairedRow && (fresh.releasedOlder || journalSays)) replaced = { folderKept: deps.mode === 2 && mount !== undefined };
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
       madeBy = entry;

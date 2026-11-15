@@ -358,6 +358,12 @@ test("a desktop's later claim with no older computer left, whose run's journal s
   }
 });
 
+test("the run's journal is read before anything is rented: a read that fails fails the claim with nothing made", async () => {
+  const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP, earlierUp: async () => { throw new Error("the journal read failed"); } });
+  await assert.rejects(run(), /the journal read failed/);
+  assert.deepEqual(record.created, [], "nothing rented");
+});
+
 test("a first claim gets no such line, nor a later claim that let nothing go and whose run had no desktop up", async () => {
   const said = [];
   const first = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP, epoch: 1, earlierUp: async () => true, onConnected: (one) => void said.push(one) });
