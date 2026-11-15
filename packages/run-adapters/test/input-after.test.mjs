@@ -45,6 +45,29 @@ test("a later request that differs in what bills input (its tools, its system pr
   assert.equal(messagesInputAfter(earlier, document), undefined);
 });
 
+test("a `cache_control` key the API does not read as a cache marker bills as any other text: a tool's schema property of that name that grows says nothing, and a tool call's input key of that name that grows counts from its message on", () => {
+  const named = (description) => [{ ...tools[0], input_schema: { type: 'object', properties: { ...tools[0].input_schema.properties, cache_control: { type: 'string', description } } } }];
+  const grown = 'Whether to cache the answer, and for how long, in every case this tool knows of. '.repeat(200);
+  assert.equal(messagesInputAfter({ body: { ...first, tools: named('Cache it.') }, inputTokens: 900 }, { ...second, tools: named(grown) }), undefined, "the tools differ in a schema's text");
+  const keyed = (text) => ({ role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'lookup', input: { q: 'capital of France', cache_control: text } }] });
+  const again = { role: 'user', content: 'And of Spain?' };
+  const later = { ...first, messages: [ask, env, keyed(grown), result, again] };
+  assert.equal(messagesInputAfter({ body: { ...first, messages: [ask, env, keyed('no'), result] }, inputTokens: 900 }, later), 900 + bytes(later.messages.slice(2)), "the tool call's input differs: it and what follows are added");
+  // A tool result's text that is JSON is a string the API never parses: it was always compared as written.
+  const text = (value) => ({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: JSON.stringify({ cache_control: value }) }] });
+  const read = { ...first, messages: [ask, env, call, text(grown), again] };
+  assert.equal(messagesInputAfter({ body: { ...first, messages: [ask, env, call, text('no')] }, inputTokens: 900 }, read), 900 + bytes(read.messages.slice(3)));
+});
+
+test("a cache marker where the API reads one (a tool, a system block, a message's content block, a block of a tool result's content) bills nothing and may move", () => {
+  const marker = { cache_control: { type: 'ephemeral', ttl: '1h' } };
+  const shot = (mark) => ({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'Paris.', ...mark }] }] });
+  const again = { role: 'user', content: 'And of Spain?' };
+  const before = { ...first, tools: [{ ...tools[0], ...marker }], messages: [ask, env, call, shot(marker)] };
+  const after = { ...first, system: [{ type: 'text', text: system[0].text }], messages: [ask, { role: 'system', content: 'Today is a Monday.' }, { ...call, content: [{ ...call.content[0], ...marker }] }, shot({}), again] };
+  assert.equal(messagesInputAfter({ body: before, inputTokens: 900 }, after), 900 + bytes([again]));
+});
+
 test("an image the later request adds counts at what the routed model bills it as, in place of its base64", () => {
   const png = Buffer.alloc(64);
   png.writeUInt32BE(0x89504e47, 0);

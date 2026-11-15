@@ -453,14 +453,35 @@ export interface BilledRequest {
 /** The fields of a Messages body that bill no input: how much it may answer, whether it streams, and who asks. */
 const UNBILLED_FIELDS: ReadonlySet<string> = new Set(["messages", "max_tokens", "stream", "metadata"]);
 
-/** `value` with every `cache_control` left out, at any depth: a cache marker bills no token. */
-const unmarked = (value: unknown): unknown => (Array.isArray(value) ? value.map(unmarked) : plain(value) ? Object.fromEntries(Object.entries(value).filter(([name]) => name !== "cache_control").map(([name, inner]) => [name, unmarked(inner)])) : value);
+/** A tool or a content block without its own cache marker, its `cache_control` key: a marker bills no token. Only that
+ *  key: one deeper (a schema's property, a tool call's input) is text the model reads. */
+const unmarked = (block: unknown): unknown => {
+  if (!plain(block)) return block;
+  const { cache_control: _marker, ...rest } = block;
+  return rest;
+};
+/** Content blocks without the cache markers the API reads in them: on each block, and on each block of a tool result's
+ *  content. */
+const unmarkedBlocks = (blocks: unknown): unknown =>
+  Array.isArray(blocks)
+    ? blocks.map((block) => {
+        const bare = unmarked(block);
+        return plain(bare) && bare.type === "tool_result" && Array.isArray(bare.content) ? { ...bare, content: bare.content.map(unmarked) } : bare;
+      })
+    : blocks;
 /** A content (a message's, or the system prompt) as the API reads it: a string is one text block. */
 const asBlocks = (content: unknown): unknown => (typeof content === "string" ? [{ type: "text", text: content }] : content);
-/** Whether two of a body's fields, or two messages (`message`), read alike to the model. */
-const sameRead = (a: unknown, b: unknown, message = false): boolean => {
-  const read = (value: unknown) => JSON.stringify(unmarked(message && plain(value) ? { ...value, content: asBlocks(value.content) } : value));
-  return read(a) === read(b);
+/**
+ * A body's field (`name`), or one of its messages (`message`), as the model reads it: without the cache markers, where
+ * the Messages API reads one (Anthropic's prompt caching guide, "What can be cached": a tool definition, a block of the
+ * system prompt, a block of a message's content, and so a tool use or tool result, and the API's `ToolResultBlockParam`,
+ * whose content blocks each take one). A `cache_control` anywhere else is not a marker and bills as text.
+ */
+const readOf = (name: string | undefined, value: unknown): string => {
+  if (name === undefined) return JSON.stringify(plain(value) ? { ...value, content: unmarkedBlocks(asBlocks(value.content)) } : value);
+  if (name === "system") return JSON.stringify(unmarkedBlocks(asBlocks(value)));
+  if (name === "tools") return JSON.stringify(Array.isArray(value) ? value.map(unmarked) : value);
+  return JSON.stringify(value);
 };
 
 /**
@@ -477,7 +498,7 @@ const sameRead = (a: unknown, b: unknown, message = false): boolean => {
  * of them, and for any message of its own the later one dropped, which only adds to the figure. What the later request
  * adds is bounded as the byte bound bounds any body (`inputTokensMaxOf`): a byte-level BPE token covers at least one
  * byte, and the JSON keys each message spends cover its role markers. Two bodies are compared as the model reads them:
- * a cache marker bills nothing, and a message's string content is the one text block the API reads it as (the Claude
+ * a cache marker, where the API reads one (`readOf`), bills nothing, and a message's string content is the one text block the API reads it as (the Claude
  * CLI sends its environment message as a block in one request and a string in the next). A thinking block the API leaves
  * out of a later request's context (an earlier turn's) only makes the later request cheaper.
  *
@@ -487,11 +508,11 @@ const sameRead = (a: unknown, b: unknown, message = false): boolean => {
 export function messagesInputAfter(earlier: BilledRequest, body: Record<string, unknown>): number | undefined {
   if (!plain(earlier?.body) || !plain(body) || !Number.isSafeInteger(earlier.inputTokens) || earlier.inputTokens <= 0) return undefined;
   const fields = new Set([...Object.keys(earlier.body), ...Object.keys(body)].filter((name) => !UNBILLED_FIELDS.has(name)));
-  for (const name of fields) if (!(name === "system" ? sameRead(asBlocks(earlier.body[name]), asBlocks(body[name])) : sameRead(earlier.body[name], body[name]))) return undefined;
+  for (const name of fields) if (readOf(name, earlier.body[name]) !== readOf(name, body[name])) return undefined;
   const before = list(earlier.body.messages);
   const after = list(body.messages);
   let shared = 0;
-  while (shared < before.length && shared < after.length && sameRead(before[shared], after[shared], true)) shared += 1;
+  while (shared < before.length && shared < after.length && readOf(undefined, before[shared]) === readOf(undefined, after[shared])) shared += 1;
   const added = after.slice(shared);
   if (messagesBlocks(added).some((block) => block.type === "document")) return undefined;
   const model = typeof body.model === "string" ? body.model : undefined;
