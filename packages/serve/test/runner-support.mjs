@@ -73,31 +73,34 @@ after(async () => {
 });
 
 /** The store at the test's place, as `role`: the file in `dir`, or on Postgres the schema `schema`. */
-const openAt = ({ file, schema }, role, now) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now }));
+const openAt = ({ file, schema }, role, now, busyTimeoutMs) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now, ...(busyTimeoutMs === undefined ? {} : { busyTimeoutMs }) }));
 
 /**
  * A store file of its own: the server's store (schema set up), and `runners` more opened on the same file as runners.
  * Every store's clock is real time plus `clock.skewMs`, so a test can move the store's now (as a clock that jumped).
  */
-export async function stores({ runners = 1 } = {}) {
+export async function stores({ runners = 1, busyTimeoutMs, frozen = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-"));
   const schema = onPostgres ? await freshSchema() : undefined;
   const file = schema ? `pg:${schema}` : join(dir, "store.sqlite");
   const clock = { skewMs: 0 };
-  const now = () => Date.now() + clock.skewMs;
+  // `frozen`: the store's now moves only when the test moves skewMs, so a backoff or lease never runs out because a loaded
+  // box was slow.
+  const start = Date.now();
+  const now = () => (frozen ? start : Date.now()) + clock.skewMs;
   const entry = { stores: [], dir, schema };
   opened.push(entry);
   atTestEnd(() => closeEntry(entry));
-  const server = await openAt({ file, schema }, "server", now);
+  const server = await openAt({ file, schema }, "server", now, busyTimeoutMs);
   entry.stores.push(server);
   const forRunners = [];
   for (let i = 0; i < runners; i++) {
-    const store = await openAt({ file, schema }, "runner", now);
+    const store = await openAt({ file, schema }, "runner", now, busyTimeoutMs);
     entry.stores.unshift(store);
     forRunners.push(store);
   }
   await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
-  return { server, runners: forRunners, clock, file };
+  return { server, runners: forRunners, clock, file, now };
 }
 
 /**
