@@ -167,7 +167,7 @@ describe("Triggers: from an app (Composio)", () => {
     await t.set("composio-where-0-pointer", "/data/title");
     await act(async () => { (t.host.querySelector('[name="composio-where-0-op"][value="prefix"]') as HTMLInputElement).click(); });
     await t.set("composio-where-0-value", "[agent]");
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     const [made] = s.posts();
     expect(made!.key).toMatch(/.+/);
     expect(made!.body).toEqual({ ...BODY, source: { ...BODY.source, accept: [{ event: "GITHUB_ISSUE_ADDED_EVENT", where: [{ pointer: "/data/title", prefix: "[agent]" }] }] } });
@@ -179,7 +179,7 @@ describe("Triggers: from an app (Composio)", () => {
     const t = await open(s.v2, { trigger: null, kind: "composio" });
     await t.fill();
     await t.set("config-repo", "");
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     expect(t.host.querySelector('[data-issue="source.config.repo"]')?.textContent).toMatch(/Repo is required/);
     expect(s.posts()).toEqual([]);
   });
@@ -188,14 +188,14 @@ describe("Triggers: from an app (Composio)", () => {
     const t = await open(server({ servers: [SERVERS[0]] }).v2, { trigger: null, kind: "composio" });
     expect(t.text()).toContain("Save a Composio server first");
     expect(t.host.querySelector('a[href="#/settings/mcp"]')).not.toBeNull();
-    expect(t.button(/^Create trigger$/)).toBeUndefined();
+    expect(t.button(/^Create app trigger$/)).toBeUndefined();
   });
 
   it("a subscription at another address is named, and moved here only once the person says so", async () => {
     const s = server({ create: (call, n) => (n === 1 ? refusal(409, "composio_subscription_elsewhere", `This Composio project's webhook subscription sends its events to ${ELSEWHERE}, not to this server.`, { details: { webhook_url: ELSEWHERE } }) : json(201, { ...ISSUES, ...(call.body as object), id: "trg_new" })) });
     const t = await open(s.v2, { trigger: null, kind: "composio" });
     await t.fill();
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     const ask = t.host.querySelector('[role="alertdialog"][aria-label="Move the subscription here?"]')!;
     expect(ask.textContent).toContain(ELSEWHERE);
     expect(ask.textContent).toMatch(/every event of the project/i);
@@ -214,7 +214,7 @@ describe("Triggers: from an app (Composio)", () => {
     const t = await open(s.v2, { trigger: null, kind: "composio" });
     const asked = () => t.host.querySelector('[role="alertdialog"][aria-label="Move the subscription here?"]');
     await t.fill();
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     expect(asked()).not.toBeNull();
     // Another server: another project, whose subscription nobody asked about.
     await t.choose("Composio server", "gh-other");
@@ -225,7 +225,7 @@ describe("Triggers: from an app (Composio)", () => {
     await t.choose("Event", "GITHUB_ISSUE_ADDED_EVENT");
     await t.set("config-owner", "many-drop");
     await t.set("config-repo", "agentrun-scratch");
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     expect(asked()).not.toBeNull();
     await t.set("config-repo", "another-repo");
     expect(asked()).toBeNull();
@@ -237,11 +237,11 @@ describe("Triggers: from an app (Composio)", () => {
     const s = server({ create: () => refusal(409, "composio_subscription_elsewhere", `Sends its events to ${ELSEWHERE}.`, { details: { webhook_url: ELSEWHERE } }) });
     const t = await open(s.v2, { trigger: null, kind: "composio" });
     await t.fill();
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     await t.click(/^Keep it there$/);
     expect(s.posts()).toHaveLength(1);
     expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
-    expect(t.button(/^Create trigger$/)).toBeDefined();
+    expect(t.button(/^Create app trigger$/)).toBeDefined();
   });
 
   it("an account not connected is said in the server's words, with the link to connect it", async () => {
@@ -249,7 +249,7 @@ describe("Triggers: from an app (Composio)", () => {
     const s = server({ create: () => refusal(409, "composio_not_connected", message, { details: { server: "gh", user_id: "agentrun-qa", connect_url: "https://connect.composio.test/link/ac_1" } }) });
     const t = await open(s.v2, { trigger: null, kind: "composio" });
     await t.fill();
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     expect(t.text()).toContain(message);
     const link = [...t.host.querySelectorAll("a")].find((a) => /Connect the account/.test(a.textContent ?? ""));
     expect(link?.getAttribute("href")).toBe("https://connect.composio.test/link/ac_1");
@@ -260,13 +260,13 @@ describe("Triggers: from an app (Composio)", () => {
     const noUrl = server({ create: () => refusal(409, "composio_no_public_url", "Composio can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL), then make the trigger.") });
     let t = await open(noUrl.v2, { trigger: null, kind: "composio" });
     await t.fill();
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     expect(t.text()).toContain("Composio can't reach this server");
     act(() => root?.unmount()); document.body.innerHTML = "";
     const bad = server({ create: () => refusal(422, "input_invalid", "invalid", { fields: [{ field: "source.config", reason: "refused", message: "Composio refused the request while turning on GITHUB_ISSUE_ADDED_EVENT on Composio (400): repo not found." }] }) });
     t = await open(bad.v2, { trigger: null, kind: "composio" });
     await t.fill();
-    await t.click(/^Create trigger$/);
+    await t.click(/^Create app trigger$/);
     expect(t.host.querySelector('[data-issue="source.config"]')?.textContent).toContain("repo not found");
   });
 });

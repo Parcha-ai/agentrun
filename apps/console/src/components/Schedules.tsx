@@ -966,7 +966,7 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         </div>
       )}
       <div className="mt-6 flex flex-wrap gap-2">
-        <Button type="submit" size="lg" variant="solid" disabled={saving || !!elsewhere}>{saving ? "Creating" : "Create trigger"}</Button>
+        <Button type="submit" size="lg" variant="solid" disabled={saving || !!elsewhere}>{saving ? "Creating" : "Create app trigger"}</Button>
         <Button type="button" size="lg" variant="ghost" onClick={() => go("#/triggers")}>Cancel</Button>
       </div>
     </form>
