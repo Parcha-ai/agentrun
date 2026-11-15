@@ -49,4 +49,14 @@ describe("a run's cost on a ChatGPT plan", () => {
     expect(link.getAttribute("href")).toBe(MANAGE_USAGE_URL);
     expect(link.getAttribute("target")).toBe("_blank");
   });
+
+  it("a workflow still running on the plan says its tokens and the plan, not its graph's dollar total", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const working: Run = { ...run(ON_PLAN), kind: "workflow", status: "working", state: "working", ended_at: null };
+    act(() => root!.render(createElement(RunHeader, { run: working, agentName: "Hello", costText: "$0.0000" })));
+    const header = host.querySelector("header")!;
+    expect(header.textContent).toContain("41.2K tokens · Using ChatGPT plan");
+    expect(header.textContent).not.toContain("$0.0000");
+  });
 });

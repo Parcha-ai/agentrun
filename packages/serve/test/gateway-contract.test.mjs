@@ -177,7 +177,7 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY, ANTHROPIC_BASE_URL: `${gw.url}/api` }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const { max_concurrent_runs, models: _models, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
-  assert.deepEqual(claude, { id: "claude-agent", available: false, steer: false, reason: "claude-agent needs ANTHROPIC_API_KEY.", default_model: null, run_memory_mib: 288 });
+  assert.deepEqual(claude, { id: "claude-agent", available: false, steer: false, reason: "claude-agent needs ANTHROPIC_API_KEY.", default_model: null, run_memory_mib: 288, needs: ["key"] });
   assert.equal((await api("POST", "/agents", agent("claude-custody", { harness: "claude-agent", model: CLAUDE_OR_MODEL }))).status, 201);
   const started = await api("POST", "/agents/claude-custody/runs", { input: { content: "Say hi." } });
   assert.equal(started.status, 409, `the run is refused: ${JSON.stringify(started.body)}`);
