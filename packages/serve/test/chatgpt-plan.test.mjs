@@ -4,7 +4,8 @@
 // its model list, its Responses API), and lets every other request through. Nothing reaches the network.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -52,6 +53,7 @@ function fakeOpenAI(t) {
       if (form.get("grant_type") === "refresh_token") {
         o.refreshes += 1;
         const sent = form.get("refresh_token");
+        if (o.refreshDelayMs) await new Promise((resolve) => setTimeout(resolve, o.refreshDelayMs));
         if (o.spent.has(sent)) return refused("refresh_token_reused");
         if (o.refuse || !o.live.has(sent)) return refused("invalid_grant");
         o.live.delete(sent);
@@ -255,7 +257,12 @@ test("two readers of one sign-in renew it once; a refresh token spent elsewhere 
   const sealed = new Map();
   const settings = new Map();
   const store = {
-    sealedKeys: { get: async (name) => sealed.get(name), put: async (name, bytes) => void sealed.set(name, bytes), remove: async (name) => void sealed.delete(name) },
+    sealedKeys: {
+      get: async (name) => sealed.get(name),
+      put: async (name, bytes) => void sealed.set(name, bytes),
+      replaceIf: async (name, was, bytes) => (sealed.has(name) && Buffer.from(sealed.get(name)).equals(Buffer.from(was)) ? (sealed.set(name, bytes), true) : false),
+      remove: async (name) => void sealed.delete(name),
+    },
     settings: { putIfAbsent: async (key, value) => (settings.has(key) ? settings.get(key) : (settings.set(key, value), value)) },
   };
   const sealKey = randomBytes(32);
@@ -292,4 +299,44 @@ test("two readers of one sign-in renew it once; a refresh token spent elsewhere 
   await assert.rejects(b.token(), PlanUnavailable);
   assert.equal(openai.refreshes, 3, "an expired sign-in is never refreshed again");
   assert.equal((await b.load()).view().state, "expired");
+});
+
+test("a server and a runner in their own processes, on one SQLite store, renew an ended token once: one refresh at OpenAI, the same new token for both, and once more after a 401 both saw", { timeout: 60_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  // Two processes: each its own store handle on the one file, and its own copy of the module (so no renewal in flight is
+  // shared in memory: only the store can keep them to one).
+  const { openSqliteStore } = await import("../dist/store/index.js");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const [one, two] = await Promise.all([import("../dist/chatgpt-plan.js?process=server"), import("../dist/chatgpt-plan.js?process=runner")]);
+  const dir = mkdtempSync(join(tmpdir(), "chatgpt-plan-lease-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const serverStore = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(() => serverStore.close());
+  const runnerStore = await openSqliteStore({ dataDir: dir, role: "runner" });
+  t.after(() => runnerStore.close());
+  const sealKey = randomBytes(32);
+
+  const issuedNow = await (await globalThis.fetch("https://auth.openai.com/api/accounts/oauth/token", { method: "POST", body: new URLSearchParams({ grant_type: "authorization_code", client_id: CLIENT, code: "fake-code", code_verifier: "v", redirect_uri: CALLBACK, resource: "https://api.openai.com/v1" }) })).json();
+  const credential = { type: "oauth", access: issuedNow.access_token, refresh: issuedNow.refresh_token, expires: Date.now() - 1_000, clientId: CLIENT, scopes: SCOPE.split(" ") };
+  await putSealedKey(serverStore, sealKey, PLAN_ROW, JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6.1-sol"] }));
+
+  // The token endpoint answers slowly, so both are asking while the first refresh is out.
+  openai.refreshDelayMs = 300;
+  const server = new one.ChatGPTPlan({ store: serverStore, sealKey });
+  const runner = new two.ChatGPTPlan({ store: runnerStore, sealKey });
+  const [fromServer, fromRunner] = await Promise.all([server.token(), runner.token()]);
+  assert.equal(openai.refreshes, 1, "exactly one refresh at OpenAI for the two processes");
+  assert.equal(fromServer, openai.issued.at(-1).access, "the server got the new token");
+  assert.equal(fromRunner, fromServer, "the runner adopted the same pair");
+  assert.equal(openai.spent.size, 1, "the old refresh token was spent once, never replayed");
+
+  // OpenAI answered 401 to that token in both processes: the row is read again, and one of them renews it.
+  await Promise.all([server.refused(fromServer), runner.refused(fromServer)]);
+  const [again, againRunner] = await Promise.all([server.token(), runner.token()]);
+  assert.equal(openai.refreshes, 2, "one more refresh for the two processes' 401s");
+  assert.notEqual(again, fromServer);
+  assert.equal(againRunner, again);
+  assert.equal(await runner.token(), again, "kept: no third refresh");
+  assert.equal(openai.refreshes, 2);
+  assert.equal(server.view().state, "signed_in");
 });
