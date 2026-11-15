@@ -1284,8 +1284,34 @@ class SqliteStore implements Store {
         const encoded=json(value);
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
       },
-      putIfAbsent: async (key, value) => {
+      putIfAbsent: async (key, value, capacity) => {
         const encoded=json(value);
+        if (capacity !== undefined) {
+          if (typeof capacity.prefix !== "string" || !capacity.prefix || capacity.prefix.includes("\0") || !key.startsWith(capacity.prefix) || !Number.isSafeInteger(capacity.limit) || capacity.limit < 1)
+            throw new TypeError("settings capacity requires a matching nonempty prefix and a positive safe integer limit");
+          return db.transaction(async (tx) => {
+            // SQLite holds its writer lock already; Postgres holds this schema's prefix lock until commit. The count
+            // and insertion cannot interleave with another bounded insertion, even through an independent store handle.
+            await d.lockKey(tx, `settings.capacity:${capacity.prefix}`);
+            const existing = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+            if (existing !== undefined) return JSON.parse(existing.value);
+            // Match Settings.all's literal prefix range: use the key index and never parse values or treat _/% as LIKE.
+            const points = Array.from(capacity.prefix);
+            let upper: string | undefined;
+            for (let i = points.length - 1; i >= 0; i--) {
+              const cp = points[i]!.codePointAt(0)!;
+              if (cp < 0x10ffff) { upper = points.slice(0, i).join("") + String.fromCodePoint(cp + 1); break; }
+            }
+            const count = await tx.get<{ n: number }>(
+              `SELECT count(*) AS n FROM settings WHERE key >= ?${upper === undefined ? "" : " AND key < ?"} AND substr(key, 1, length(?)) = ?`,
+              capacity.prefix, ...(upper === undefined ? [] : [upper]), capacity.prefix, capacity.prefix,
+            );
+            if (Number(count?.n ?? 0) >= capacity.limit) return undefined;
+            await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", key, encoded, nativeCommandOwner(key, encoded), now());
+            const saved = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+            return saved === undefined ? undefined : JSON.parse(saved.value);
+          });
+        }
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);
