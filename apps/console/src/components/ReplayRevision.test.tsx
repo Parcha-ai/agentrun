@@ -58,8 +58,10 @@ describe("Replay on a revision", () => {
     const host = mountOne(v2, { onDecided });
     expect(button(host)!.textContent).toBe("Replay");
     act(() => button(host)!.click());
-    expect(v2.startLearnedWorkflowReplay).toHaveBeenCalledWith("a", "sorter", DIGEST);
+    expect(host.querySelector("button")!.disabled).toBe(true);
+    expect(host.querySelector("button")!.textContent).toBe("Starting…");
     await flush();
+    expect(v2.startLearnedWorkflowReplay).toHaveBeenCalledWith("a", "sorter", DIGEST);
     expect(v2.learnedWorkflowReplay).toHaveBeenCalledWith("a", "sorter", DIGEST, "rp_1");
     expect(text(host, "replay-progress")).toBe("Replaying on 5 graded inputs: 2 of 5 ended (1 answered alone, 1 handed back).");
     expect(button(host)).toBeUndefined();
