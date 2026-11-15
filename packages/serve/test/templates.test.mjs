@@ -192,6 +192,18 @@ test("a package's model: its preferred one where this server runs it on the harn
   assert.deepEqual(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, undefined), {}, "a package that names none");
 });
 
+test("the bundled code-review installs on a server with an OpenRouter key alone and on one with the ChatGPT sign-in alone: its model line refuses neither", async () => {
+  const { withPlan } = await import("../dist/chatgpt-plan.js");
+  const review = readPackages().find((p) => p.name === "code-review");
+  const harness = review.harness[0];
+  const openrouter = await packageModel({ OPENROUTER_API_KEY: "fake-test-key" }, review.model, harness);
+  assert.equal(openrouter.refused, undefined, JSON.stringify(openrouter));
+  assert.ok(openrouter.model, "a model of the OpenRouter key's");
+  const signedIn = await packageModel(withPlan({}, { state: "signed_in", models: ["gpt-6.1-sol"] }), review.model, harness);
+  assert.equal(signedIn.refused, undefined, JSON.stringify(signedIn));
+  assert.ok(signedIn.model, "the plan's model");
+});
+
 test("a preferred model no catalog here lists is refused, saying so; a free one serve lists is used", async () => {
   const env = { OPENROUTER_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openrouter/openai/gpt-6-luna" };
   assert.deepEqual(await packageModel(env, { tier: "fast", prefer: "openrouter/nobody/no-such-model:free" }, "pi"), { refused: { why: "no model catalog here lists it", fix: "Apply with overrides.model." } });
