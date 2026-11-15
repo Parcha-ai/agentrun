@@ -107,15 +107,22 @@ async function leavesNoListener(claims, how) {
 
 // slow may start before note's park begins to wait or, on a loaded machine, after: the park's bound runs from its own
 // start, so the cut is measured from the model's ask for the answer (askedAt), which comes before both. The late start is
-// an explicit gate opened once the run reads parked, so no assertion rests on how fast a timer or a runner is.
-for (const gated of [false, true]) {
-  test(`pi: a call beside the parked one that outlasts the park's bound is cut at the bound, and once the parked call is answered the model reads it interrupted${gated ? " (it starts late, after the park's wait began)" : ""}`, { timeout: 60_000 }, async (t) => {
+// an explicit gate, so no assertion rests on how fast a timer or a runner is: "parked" opens it once the run reads parked
+// (slow may then start before the bound or after), "bound" only once the bound has passed and the claim let go, so slow
+// always starts on a signal already aborted (the case the CI runner hit: the abort comes before slow's listener).
+const LATE = { parked: " (it starts late, after the park's wait began)", bound: " (it starts only after the park's bound passed, its signal already aborted)" };
+for (const late of [undefined, "parked", "bound"]) {
+  test(`pi: a call beside the parked one that outlasts the park's bound is cut at the bound, and once the parked call is answered the model reads it interrupted${late ? LATE[late] : ""}`, { timeout: 60_000 }, async (t) => {
     const bound = 300;
-    const { server, running, slow, requests, askedAt, claims, startSlow } = await siblings(t, bound, { gated });
-    if (gated) {
-      await until(async () => (await server.runs.get("run-1")).state === "parked", "note's ask landed before slow started", 15_000);
-      startSlow();
+    const { server, running, slow, requests, askedAt, claims, startSlow } = await siblings(t, bound, { gated: late !== undefined });
+    if (late === "parked") await until(async () => (await server.runs.get("run-1")).state === "parked", "note's ask landed before slow started", 15_000);
+    if (late === "bound") {
+      await until(async () => {
+        const now = await server.runs.get("run-1");
+        return now.state === "parked" && now.runner === null;
+      }, "the park's bound passed and its claim let go before slow started", 15_000);
     }
+    if (late) startSlow();
     await running;
     assert.equal(askedAt.length, 1, "one answer asked for: slow and note");
     const answeredBy = askedAt[0];
