@@ -48,11 +48,11 @@ import {
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
-import { type BookedSpend, bookedSpend, planSpend } from "./runner/metrics.js";
+import { type BookedSpend, bookedSpend, cliModelWorked, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
-import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
+import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
@@ -218,6 +218,9 @@ interface StoreRun {
   readonly decisions: BookedSpend | undefined;
   /** Its model requests billed to a ChatGPT plan (metrics.ts planSpend), undefined when it made none. */
   readonly plan: { readonly requests: number; readonly tokens: number } | undefined;
+  /** An ended run's cost from its booking (metrics.ts runCostOf, the rule its end stored it by), read in the same snapshot
+   *  as its state; undefined for a run still going, imported, native, or that booked no request. */
+  readonly endCost?: RunCost;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -407,7 +410,12 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const decisions = booked.requests ? booked : undefined;
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
-  return { ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan };
+  // An ended run's cost by the one rule its end stored it by (metrics.ts runCostOf), read in the same snapshot as its
+  // state: never a view of the run ended with a figure its end did not write. A native run's end reads its own, and a
+  // workflow's end stores its cap's figures (workflow-spec.ts), so both keep the reading below.
+  const bookedCost = terminal && row.kind === "agentic" && !native && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
+  const endCost = bookedCost?.requests ? bookedCost : undefined;
+  return { ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, ...(endCost ? { endCost } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -433,8 +441,13 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
-  const priced = imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
-  const counted = priced === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
+  // An ended run that booked its requests reads its booking (runCostOf), the one rule its end stored its cost by, in the
+  // snapshot that read its state: never an answer's own price that its booking committed after, never ended without it.
+  const booked = run.endCost;
+  const priced = booked ? booked.usd : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
+  const counted = booked ? (booked.usd === null ? { so_far_usd: booked.known, unpriced: booked.unpriced } : undefined) : priced === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
+  // Its figure counts a request cut with no answer at its hold (runner.ts CUT_AT_HOLD): the most it can have cost.
+  const upper = booked && booked.atMost > 0 ? { upper_bound: true as const } : undefined;
   // A request billed to a ChatGPT plan has no price here (its meter strips one) and costs no dollars: the usage row counts
   // it unpriced, so it leaves that count, and a run whose only unpriced requests were on the plan costs what it knows.
   const plan = run.plan;
@@ -445,7 +458,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const soFar = counted && left !== undefined && left > 0 ? { so_far_usd: counted.so_far_usd, unpriced: left } : imported || decisions?.requests ? undefined : freeOf(run.rows, usd);
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
-  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
+  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */

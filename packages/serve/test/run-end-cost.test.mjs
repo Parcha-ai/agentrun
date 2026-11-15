@@ -1,0 +1,204 @@
+// One figure for an ended run's cost, from its booking, and never an ended run without it. A pi run through the adapter
+// loop on the runner, its spec the server's own (adapterRunSpecFromLaunch), its model a scripted origin at a fixed price
+// per request; GET /runs/{id} is viewOverStore, the runs list listRuns.
+//   - its final request's booking commits later than the end's settle bound (CLOSE_MS, a busy store): the end waits for
+//     it, so the booking lands before agentrun.end, and every view of the ended run, the list and the stored cost read the
+//     booked figure. Before, the end went on without it: the stored cost was unknown and the view read pi's own figure.
+//   - a booking slower than the bound on that wait (bookingWriteMs): the end goes on, says so, and every reader reads the
+//     cost unknown alike.
+//   - the end's metrics read past its bound (endPatchMs): the cost, read apart, is still stored.
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+
+const { openSqliteStore } = await import("../dist/store/index.js");
+const { startRunner } = await import("../dist/runner/runner.js");
+const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
+const { journalRecords } = await import("../dist/runner/journal-reader.js");
+const { listRuns } = await import("../dist/store-reads/runs.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { viewOverStore } = await import("../dist/store-view.js");
+after(closeOpenSessions);
+
+const TIMING = { leaseMs: 30_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+const KEY = `not-a-secret-${"r"}`;
+const MODEL = "claude-sonnet-5-5";
+// What the server books each request at, and pi's own catalog figure for the same answer differs: a reader that takes
+// pi's figure over the booking's shows it.
+const REQUEST_USD = 0.125;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** run-1, a pi run of one request (it answers "done"), on a runner whose spec is the server's own with
+ *  `over` laid on it (`over(spec)`). While it runs, every view of it is read, as fast as the store gives them; returns its
+ *  row once it rests, those views, its journal's entries and the list's row. */
+async function endedRun(t, over = (spec) => spec) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-end-cost-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let runner;
+  t.after(async () => {
+    await runner?.close();
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say done.", tools: [] } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say done." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: MODEL } } });
+  const route = {
+    model: MODEL, provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
+    fetch: scriptedOrigin([{ say: "done" }]),
+    price: () => REQUEST_USD,
+    cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 64_000,
+  };
+  const deps = {
+    env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route,
+    computerForClaim: async () => ({ release: async () => {} }),
+  };
+  runner = startRunner({
+    store, name: "runner-a", ...TIMING,
+    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop(async (claim, run) => over(await adapterRunSpecFromLaunch(given, run, deps, claim))) }),
+  });
+  const views = [];
+  let row;
+  for (const from = Date.now(); ; ) {
+    const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+    if (view) views.push({ status: view.status, cost: view.cost });
+    row = await server.runs.get("run-1");
+    if (["ended", "failed", "stopped", "parked"].includes(row.state) && row.runner === null) break;
+    if (Date.now() - from > 60_000) assert.fail(`the run never rested: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  }
+  for (let i = 0; i < 5; i++) {
+    const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+    views.push({ status: view.status, cost: view.cost });
+  }
+  const entries = await inCommitOrder(server, row);
+  const listed = (await listRuns(server, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
+  return { server, row, views, entries, listed, view: views.at(-1) };
+}
+
+/** Every entry of run-1's journal in the order its commits landed (journalRecords groups them by conversation). */
+async function inCommitOrder(server, row) {
+  const journal = server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state });
+  const entries = [];
+  for (let from = 0; ; ) {
+    const page = await journal.commitsAfter(from, 500, ctx);
+    for (const commit of page.commits) for (const entry of commit.entries ?? []) if (entry?.kind) entries.push(entry);
+    if (page.next === undefined) return entries;
+    from = page.next;
+  }
+}
+
+/** A hook that holds the run's `nth` booking for `ms` before it is written, as a busy store's queue does. */
+const lateBooking = (nth, ms) => (spec) => {
+  let n = 0;
+  return { ...spec, hooks: { ...spec.hooks, beforeBooking: async () => ((n += 1) === nth ? sleep(ms) : undefined) } };
+};
+
+test("the final request's booking, written later than the end's settle bound, lands before the run ends: the ended view, the list and the stored cost read its figure", { timeout: 120_000 }, async (t) => {
+  // CLOSE_MS (the settle bound) is 2 s; the booking takes 4 s.
+  const { row, views, entries, listed } = await endedRun(t, lateBooking(1, 4_000));
+  assert.equal(row.state, "ended", JSON.stringify(row.summary));
+  const order = entries.filter((e) => e.kind === "runner.turn" || e.kind === "agentrun.end").map((e) => e.kind);
+  assert.deepEqual(order, ["runner.turn", "agentrun.end"], "the final request's booking is written before the end");
+  assert.equal(row.costUsd, REQUEST_USD, "the stored cost is the booked figure, never unknown");
+  assert.equal(listed.costUsd, REQUEST_USD, "the runs list reads the same");
+  const ended = views.filter((one) => one.status === "completed");
+  assert.ok(ended.length > 0, "the ended run was read");
+  for (const one of ended) assert.equal(one.cost?.usd, REQUEST_USD, `every view of the ended run carries its final cost: ${JSON.stringify(one)}`);
+});
+
+test("a booking slower than the end's bound on its write: the end goes on and says so, and the view, the list and the stored cost read it unknown alike", { timeout: 120_000 }, async (t) => {
+  const warned = [];
+  t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
+  // The answer's cost and then the end each wait CLOSE_MS (2 s) and the 0.3 s bound: the end is written before the
+  // booking's 8 s are up. Read again once they are, so a booking written after the end changes no reader.
+  const { server, row } = await endedRun(t, (spec) => ({ ...lateBooking(1, 8_000)(spec), bookingWriteMs: 300 }));
+  await sleep(4_000);
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  const listed = (await listRuns(server, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
+  assert.equal(row.state, "ended");
+  assert.equal(row.costUsd, null, "unknown, never a figure that leaves the request out");
+  assert.equal(listed.costUsd ?? null, null, "the list says no figure");
+  assert.equal(view.cost.usd, null, `the view agrees: ${JSON.stringify(view.cost)}`);
+  assert.ok(warned.some((line) => /booking\(s\) still being written after 0\.3 s/.test(line)), `the end says it went on without it: ${JSON.stringify(warned)}`);
+});
+
+test("a request its runner was lost in, before any answer or usage, is booked at its hold as an upper bound: the run's cost stays known, said at most, never blanked", { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-end-cost-cut-"));
+  const clock = { skewMs: 0 };
+  const now = () => Date.now() + clock.skewMs;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const stores = [await openSqliteStore({ dataDir: dir, role: "runner", now }), await openSqliteStore({ dataDir: dir, role: "runner", now })];
+  const runners = [];
+  let release = () => {};
+  const hung = new Promise((resolve) => (release = resolve));
+  t.after(async () => {
+    release();
+    await Promise.all(runners.map((one) => one.close()));
+    for (const one of [...stores, server]) await one.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say done.", tools: [] } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say done." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: MODEL }, max_cost_usd: 5 } });
+  // The first request hangs (its runner is lost with it out); the next answers.
+  let sent = 0;
+  const answer = scriptedOrigin([{ say: "done" }]);
+  const route = {
+    model: MODEL, provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
+    // Only a model request counts (a cap may count a request's tokens first, at another path).
+    fetch: async (url, init) => (new URL(String(url)).pathname.endsWith("/messages") && (sent += 1) === 1 ? (await hung, new Response("", { status: 500 })) : answer(url, init)),
+    price: () => REQUEST_USD,
+    cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 16_000,
+  };
+  const loopOn = (store) => {
+    const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
+    return createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) });
+  };
+  runners.push(startRunner({ store: stores[0], name: "runner-a", ...TIMING, createLoop: loopOn(stores[0]) }));
+  // Lost once its request has left and its record is durable (a store flush, as the runner's next write or a periodic
+  // one makes): a request whose record never landed was never sent, as far as the next claim can know.
+  let seen = [];
+  const recorded = async () => (seen = await inCommitOrder(server, await server.runs.get("run-1")).catch((error) => [{ kind: String(error) }])).some((e) => e.kind === "runner.request");
+  for (const from = Date.now(); !(sent >= 1 && (await stores[0].flush(), await recorded())); await sleep(20)) if (Date.now() - from > 30_000) assert.fail(`the first request never left: sent ${sent}, ${JSON.stringify(seen.map((e) => e.kind))}`);
+  runners[0].kill();
+  clock.skewMs = TIMING.leaseMs * 2;
+  runners.push(startRunner({ store: stores[1], name: "runner-b", ...TIMING, createLoop: loopOn(stores[1]) }));
+  let row;
+  for (const from = Date.now(); ; await sleep(25)) {
+    row = await server.runs.get("run-1");
+    if (["ended", "failed", "stopped", "parked"].includes(row.state) && row.runner === null) break;
+    if (Date.now() - from > 60_000) assert.fail(`the run never rested: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  }
+  assert.equal(row.state, "ended", JSON.stringify(row.summary));
+  const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx)).entries;
+  const conv = Number(entries.find((e) => e.kind === "runner.request")?.conversationId);
+  const held = entries.find((e) => Number(e.conversationId) === conv && e.kind === "runner.request" && e.data?.turn === 1)?.data?.heldUsd;
+  assert.ok(typeof held === "number" && held > 0, `the lost request was held for under the cap: ${JSON.stringify(entries.filter((e) => /^(runner\.|agentrun\.session)/.test(e.kind)).map((e) => [e.conversationId, e.kind, e.data]))}`);
+  const cut = entries.filter((e) => Number(e.conversationId) === conv && e.kind === "runner.turn" && e.data?.turn === 1).map((e) => e.data);
+  assert.deepEqual(cut, [{ usd: null, cut: true, turn: 1, bookedUsd: held, rule: "cut", atMost: true }], "booked once, cut, at its hold, marked an upper bound");
+  const total = Math.round((held + REQUEST_USD) * 1e6) / 1e6;
+  assert.equal(row.costUsd, total, "the stored cost counts the cut at its hold, never unknown");
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual({ usd: view.cost.usd, upper_bound: view.cost.upper_bound, unpriced: view.cost.unpriced }, { usd: total, upper_bound: true, unpriced: undefined }, `the view says the same figure, as the most it can be: ${JSON.stringify(view.cost)}`);
+  const listed = (await listRuns(server, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
+  assert.equal(listed.costUsd, total);
+  const usage = (await runTimeline(server, "run-1", ctx, { settled: true })).find((one) => one.kind === "usage");
+  assert.equal(usage?.usage?.upper_bound, true, `the usage row marks it: ${JSON.stringify(usage)}`);
+  assert.match(usage.summary, /at most \$/, "and says it in words");
+});
+
+test("the end's metrics read past its bound: the cost, read apart from them, is still stored", { timeout: 120_000 }, async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const { row, view, listed } = await endedRun(t, (spec) => ({ ...spec, endPatchMs: 500, endPatch: async (data) => (await sleep(1_500), spec.endPatch(data)) }));
+  assert.equal(row.state, "ended");
+  assert.equal(row.costUsd, REQUEST_USD, "the cost is kept when the metrics are not");
+  assert.equal(row.metrics, null, "the metrics are unknown");
+  assert.equal(listed.costUsd, REQUEST_USD);
+  assert.equal(view.cost.usd, REQUEST_USD);
+});

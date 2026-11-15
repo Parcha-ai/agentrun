@@ -50,6 +50,12 @@ export const END_PATCH_MS = 30_000;
 /** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
  *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
 export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
+/** How long a booking whose write has begun (its request answered, its runner.turn on its way to the store) is waited
+ *  for, by an answer's cost and by a park's or an end's release, before either goes on without it. A busy store queues
+ *  that write behind every other run's; an end written ahead of it has no booking for the last request and reads the
+ *  run's cost unknown for good, so it waits as long as the end's own patch would (END_PATCH_MS). A request still
+ *  streaming is waited for CLOSE_MS only, as before: past it, it reads at its hold. */
+export const BOOKING_WRITE_MS = END_PATCH_MS;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };

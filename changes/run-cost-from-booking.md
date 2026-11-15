@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-client
+kind: fix
+---
+An ended run's cost is one figure, read from its booking, and no run reads as ended without it. `GET /runs/{id}`, the runs list and the stored `cost_usd` of an ended run now read the same sum of its booked requests, paid tool calls and decisions (each request counted once), where the view used to read pi's own price for an answer whose booking had not landed yet. A run's end waits for every booking whose write has begun (bounded at 30 s, with a warning when it gives up) before it writes the end, so the final request's booking is never left behind. The end's cost is read apart from its metrics, so metrics that time out no longer drop the cost.
+A model request cut with no answer and no usage (its runner lost mid-request) under a cap is booked at what the cap held for it, the most it can have cost (`runner.turn` `rule: "cut"`, `atMost: true`), so the run's cost stays known instead of turning unknown. A cost that counts one says so: the run's `cost` and the timeline's usage row carry `upper_bound: true`, the usage row reads "Cost: at most $0.97 over 2 model requests", and the console shows "at most $0.97". A cut with no hold (no cap) or a paid tool call that was cut stays unknown, as before.

@@ -231,6 +231,8 @@ export interface ModelUsage {
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
+  /** A cut request its host held a figure for: booked at that hold (runner.ts CUT_AT_HOLD), the most it can have cost. */
+  atMostUsd?: number;
   /** A paid step's hold given back unused (a workflow call node's, its effect never sent the paid request it held for):
    *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
    *  unpriced one. */

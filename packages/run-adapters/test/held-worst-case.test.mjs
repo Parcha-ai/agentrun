@@ -5,7 +5,7 @@
 // The booked cost itself is unchanged: such a request is still booked at an unknown price.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
+import { HarnessRunError, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from '@parcha/agentrun-kernel';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const key = 'chat:c1';
@@ -116,7 +116,20 @@ test('a request a crash cut off counts at the figure held for it in the next pro
   await third.bookCut();
   assert.equal(Math.round(third.spentUsd() * 1e6) / 1e6, 0.28, "the first at its cost, the cut one at its figure, the second process's at its cost");
   const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
-  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2 }], 'booked once, at an unknown price');
+  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2, bookedUsd: 0.25, rule: 'cut', atMost: true }], 'booked once, at its hold, marked the most it can have cost');
+  // Its cost as a person is shown it: known, the cut at its hold, said to be an upper bound; never blanked.
+  assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: 0.28, soFarUsd: 0.28, unpriced: 0, atMost: 1 });
+});
+
+test('a cut request with no hold to bound it ($0, a run with no cap) stays a cost no one knows', async () => {
+  const store = memorySessionStore();
+  const first = await port(store, 0);
+  await first.models.beforeRequest({ model: 'm' }); // left, and the process died before its answer
+  const second = await port(store, 0);
+  await second.bookCut();
+  const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
+  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 1 }], 'booked at an unknown price');
+  assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: null, soFarUsd: 0, unpriced: 1 });
 });
 
 test('a session written before held figures (no figure on the request) reads unknown, cut by a crash or cut short; a host that holds none keeps it so', async () => {

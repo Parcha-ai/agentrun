@@ -232,8 +232,8 @@ test("the walk's shape (chain run 9): a job answered for $1.554, its look-back c
   assert.ok(answers.includes(ANSWER), `the job's answer is the run's: ${JSON.stringify(answers)}`);
   const kept = await server.learning.proposal("run-1");
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.reason], ["dropped", "no_budget"], `the learning dropped for the cap, never the run: ${JSON.stringify(kept?.proposal)}`);
-  // The spend stays booked: the job's $1.554 and the cut look-back at its hold, within the cap. The run's cost shows what
-  // is known ($1.554) and the cut request as not priced, never $0.
+  // The spend stays booked: the job's $1.554 and the cut look-back at its hold, within the cap. The run's cost counts the
+  // cut request at that hold, the most it can have cost, and says so (upper_bound): known, never blanked, never $0.
   const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx)).entries;
   const asked = new Map(entries.filter((one) => one.kind === "runner.request").map((one) => [one.data.turn, one.data]));
   const turns = entries.filter((one) => one.kind === "runner.turn").map((one) => one.data);
@@ -245,7 +245,8 @@ test("the walk's shape (chain run 9): a job answered for $1.554, its look-back c
   assert.ok(near(answered, 1.554), `the job's answers booked at $1.554: ${answered}`);
   const total = answered + cuts[0];
   assert.ok(near(total, 3.467) && total <= CAP, `$3.467 booked, within the $5 cap: ${total}`);
-  assert.deepEqual([view.cost.usd, view.cost.cap_usd, view.cost.so_far_usd, view.cost.unpriced], [null, CAP, 1.554, 1], `the run's cost: $1.554 known, the cut request not priced: ${JSON.stringify(view.cost)}`);
+  assert.deepEqual([view.cost.usd, view.cost.cap_usd, view.cost.so_far_usd, view.cost.unpriced, view.cost.upper_bound], [3.467, CAP, undefined, undefined, true], `the run's cost: at most $3.467, the cut request at its hold: ${JSON.stringify(view.cost)}`);
+  assert.equal(row.costUsd, 3.467, "the stored cost is the same figure");
 });
 
 test("a job that answered after a tool call faulted on every restart, lost mid look-back: the next claim ends the run failed in the same words as without the takeover", { timeout: 180_000 }, async (t) => {

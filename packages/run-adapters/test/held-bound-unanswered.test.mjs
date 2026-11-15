@@ -89,7 +89,7 @@ test("a request booked lost (a gateway's timeout) counts for the cap at its hold
   near(asked[0], HOLD, "the next request's cap check sees it");
 });
 
-test("the run's cost with a request that has no answer is unknown, with the known part so far beside it; answered alone it is known", async () => {
+test("the run's cost with a request that has no answer is unknown, with the known part so far beside it; answered alone it is known; booked cut at its hold, known as at most", async () => {
   const store = memorySessionStore();
   const first = await port(store);
   await first.models.beforeRequest({ model: "m" });
@@ -99,7 +99,9 @@ test("the run's cost with a request that has no answer is unknown, with the know
   assert.deepEqual(sessionSpendOf(await records(store)).cost, { usd: null, soFarUsd: 0.01, unpriced: 1 }, "one with no answer: unknown, $0.01 known so far");
   const second = await port(store);
   await second.bookCut();
-  assert.deepEqual(sessionSpendOf(await records(store)).cost, { usd: null, soFarUsd: 0.01, unpriced: 1 }, "booked cut: still unknown");
+  // Booked cut by the next process at what was held for it (CUT_AT_HOLD): the most it can have cost, so the cost is known
+  // and says it counts one such figure, never blanked.
+  assert.deepEqual(sessionSpendOf(await records(store)).cost, { usd: 0.01 + HOLD, soFarUsd: 0.01 + HOLD, unpriced: 0, atMost: 1 }, "booked cut at its hold: known, at most");
 });
 
 test("the cap's admission holds a request at its whole input uncached, at the cache-write rate when that is dearer: a miss never costs more", async () => {

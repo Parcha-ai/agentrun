@@ -191,7 +191,8 @@ export interface ModelBooking {
    *  has no hold (never under a cap, which refuses a request it cannot price): unknown, never read as 0. */
   heldUsd(): number | null;
   /** Books, once, each paid request a crash cut off (a `runner.request` with no `runner.turn`): a `runner.turn` marked
-   *  `cut` at an unknown price, and a `request_end` saying so. A booked request is answered, so this is idempotent.
+   *  `cut`, at its hold as the most it can have cost (CUT_AT_HOLD) or, with none, at an unknown price, and a
+   *  `request_end` saying so. A booked request is answered, so this is idempotent.
    *  Call it before the session sends anything. */
   bookCut(): Promise<void>;
 }
@@ -234,14 +235,14 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   // the cap's, never a cost: a request without its own figure makes the cost unknown, the known part kept beside it.
   let soFarUsd = 0;
   let unpriced = 0;
+  let atMost = 0;
   // Each request's figure for the cap, in the order its spend is summed (`spentUsd` is their sum; null: no figure).
   const figures: { turn: number; usd: number | null }[] = [];
   for (const r of records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
     const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown; cut?: unknown; rule?: unknown };
-    // A request is booked once: a second runner.turn of a turn already answered (two bookings of one session that each
-    // read it open, a cut written twice) counts no money and no request again.
-    if (typeof data.turn === "number" && answered.has(data.turn)) continue;
+    // A request is booked once (rebooked): a second runner.turn of a turn already answered counts no money and no request.
+    if (rebooked(answered, typeof data.turn === "number" ? data.turn : undefined)) continue;
     const turn = data.turn ?? turns.find((t) => !answered.has(t)) ?? 0;
     answered.add(turn);
     // The figure it was booked at (bookRequest), as written. A record from before that has none: a request cut off with
@@ -252,11 +253,12 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     const figure = booked !== undefined ? (booked ?? undefined) : cut ? worst(turn) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0);
     spentUsd = spent(spentUsd, figure);
     figures.push({ turn, usd: figure ?? null });
-    // An answer with no price of its own (usd null) was booked at its hold for the cap: as a cost it is unknown, never
-    // the hold (0 with no cap), as main read an unpriced answer.
-    const own = answeredUnpriced(data) ? null : booked !== undefined ? booked : cut || data.usd === null ? null : data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null);
-    if (own === null) unpriced++;
-    else soFarUsd += own;
+    // Its own cost (turnCostOf): an answer with no price of its own is unknown, never the hold it counts at for the cap; a
+    // request cut with no answer and booked at its hold is that figure, the most it can have cost.
+    const own = turnCostOf(data);
+    if (own.usd === null) unpriced++;
+    else soFarUsd += own.usd;
+    if (own.atMost) atMost++;
   }
   const openHolds = new Set<number>();
   for (const turn of turns) {
@@ -269,7 +271,34 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     figures.push({ turn, usd: worst(turn) ?? null });
     unpriced++;
   }
-  return { turns, held, hosts, answered, openHolds, spentUsd, figures, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
+  return { turns, held, hosts, answered, openHolds, spentUsd, figures, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced, ...(atMost > 0 ? { atMost } : {}) } };
+}
+
+/** Whether a runner.turn books a request already booked: its turn (`key`, as the reader names it) is in `seen`, which it
+ *  joins otherwise. Every reader of a booking (sessionSpendOf, serve's bookedSpend) skips such a record, so a request is
+ *  counted once: two bookings of one session that each read it open, or a cut written twice, wrote it twice. A record
+ *  with no turn (written before turns were named) is never a repeat. */
+export function rebooked<K>(seen: Set<K>, key: K | undefined): boolean {
+  if (key === undefined) return false;
+  if (seen.has(key)) return true;
+  seen.add(key);
+  return false;
+}
+
+/** The rule (runner.turn `rule`) of a request cut with no answer that bookCut booked at what its host held for it: the
+ *  most it can have cost (its whole input uncached and the output it was sent with), marked `atMost`. */
+export const CUT_AT_HOLD = "cut";
+
+/** A booked request's own cost, from its runner.turn, as every reader of a run's cost reads it (the session's cost, the
+ *  run's stored cost and its views): what it was booked at, else its `usd`; null when no one knows it (an answer with no
+ *  price of its own booked at its hold for the cap, answeredUnpriced; a request cut with no hold). `atMost`: a request cut
+ *  with no answer, booked at its hold (CUT_AT_HOLD), so the figure is the most it can have cost, never less. */
+export function turnCostOf(data: { usd?: unknown; bookedUsd?: unknown; cut?: unknown; rule?: unknown; atMost?: unknown }): { usd: number | null; atMost: boolean } {
+  if (answeredUnpriced(data)) return { usd: null, atMost: false };
+  const booked = data.bookedUsd === null ? null : heldFigure(data.bookedUsd);
+  if (booked !== undefined) return { usd: booked, atMost: booked !== null && data.rule === CUT_AT_HOLD && data.atMost === true };
+  if (data.cut === true || data.usd === null) return { usd: null, atMost: false };
+  return { usd: data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null), atMost: false };
 }
 
 /** Whether a request ended with no price of its own (usd null) under a rule that books it at a figure of the host's: an
@@ -280,8 +309,9 @@ export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boole
   data.usd === null && typeof data.rule === "string" && (data.rule === "answered" || data.rule.startsWith("answered:") || data.rule === "stopped" || data.rule === "lost" || data.rule.startsWith("lost:"));
 
 /** A session's cost as a person is shown it: `usd` when every paid request has its own figure, else null with the known
- *  part so far (`soFarUsd`) and how many have none (`unpriced`). */
-export type SessionCost = { usd: number | null; soFarUsd: number; unpriced: number };
+ *  part so far (`soFarUsd`) and how many have none (`unpriced`). `atMost`, set when some: how many of the figures are a
+ *  cut request's hold (turnCostOf), so the cost is at most what it says. */
+export type SessionCost = { usd: number | null; soFarUsd: number; unpriced: number; atMost?: number };
 
 /** A request's booking its own write could not keep, as it would have been written and told: its runner.turn, and the
  *  request_end its host was never sent. */
@@ -599,10 +629,20 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     }
     if (numbers.length === 0) return;
     // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
-    // still have reached the provider before any answer; both are booked at an unknown price.
+    // still have reached the provider before any answer. Neither left a figure of its own (the process that would have
+    // read what it reported is gone): one its host held a figure for is booked at that hold, the most it can have cost
+    // (CUT_AT_HOLD, `atMost`), so the run's cost stays known and says it is an upper bound; one with no hold (no cap) is
+    // booked at an unknown price, as no one can bound it. A hold of $0 (no cap's) bounds nothing, and a paid tool call's
+    // (its runner.request's `paid`) is its fee as admitted, not what its provider may have charged: both stay unknown.
+    const modelTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => ((r.data as { paid?: unknown } | undefined)?.paid === undefined ? [inherited[i]!] : [])));
+    const boundOf = (turn: number): number | undefined => {
+      const hold = held.get(turn);
+      return hold !== undefined && hold > 0 && modelTurns.has(turn) ? hold : undefined;
+    };
     const cutOf = (turn: number): SessionRecord["data"] => {
       const providerIds = responses.get(turn);
-      return providerIds ? { usd: null, cut: true, turn, providerIds } : { usd: null, cut: true, turn };
+      const hold = boundOf(turn);
+      return { usd: null, cut: true, turn, ...(hold === undefined ? {} : { bookedUsd: hold, rule: CUT_AT_HOLD, atMost: true }), ...(providerIds ? { providerIds } : {}) };
     };
     await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: cutOf(turn) })));
     for (const turn of numbers) answered.add(turn);
@@ -610,7 +650,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     for (const turn of numbers) {
       const providerIds = responses.get(turn);
       const hosted = hosts.get(turn);
-      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(providerIds ? { providerIds } : {}) }, ...(hosted === undefined ? {} : { host: hosted }), ended: { end: "lost", label: "cut" } });
+      const hold = boundOf(turn);
+      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(hold === undefined ? {} : { atMostUsd: hold }), ...(providerIds ? { providerIds } : {}) }, ...(hosted === undefined ? {} : { host: hosted }), ended: { end: "lost", label: "cut" } });
     }
   };
   return {

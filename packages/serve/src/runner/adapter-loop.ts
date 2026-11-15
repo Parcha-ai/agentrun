@@ -52,7 +52,7 @@ import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutco
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, REFLECT_PREFIX, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -187,8 +187,15 @@ export interface AdapterRunSpec {
    *  its commit. Bounded (endPatchMs): a reader that stalls gives no patch, and the end is still written, its cost and
    *  metrics unknown (END_PATCH_UNKNOWN). */
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">>;
+  /** The run's cost for its end, read apart from the end's patch and in place of the patch's own `costUsd`: one cheap
+   *  read of its booking (metrics.ts runCostOf), so a patch whose metrics run past endPatchMs never takes the cost with
+   *  them. Bounded by endPatchMs too: late or failing, the cost is unknown (null). */
+  readonly endCost?: () => Promise<number | null>;
   /** The most the end's patch may take before the end is written without it. Default END_PATCH_MS. */
   readonly endPatchMs?: number;
+  /** The most a booking whose write has begun is waited for before an answer's cost, a park or the end goes on without
+   *  it. Default BOOKING_WRITE_MS. */
+  readonly bookingWriteMs?: number;
   /** Handed the run's own Harness commit once it opens (and after each restart's re-open): what a mark of the run's
    *  commits through, so a commit after the claim is lost is refused by the fence like any other. */
   readonly harnessReady?: (commit: Harness["commit"]) => void;
@@ -983,6 +990,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  fenced and lost, and its request read back at its hold. */
   let unbooked = 0;
   let bookedAll: (() => void)[] = [];
+  /** Of those, the ones whose booking has begun (the request answered or ended, its runner.turn on its way to the
+   *  store), and who waits for none: a booking under way is waited for past CLOSE_MS (bookingsSettled), so a busy store
+   *  never lets the end, or an answer's cost, go ahead of it. */
+  let bookingsWriting = 0;
+  let writtenAll: (() => void)[] = [];
   /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
    *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
@@ -1872,7 +1884,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const unsent = event.ended.end === "nothing" && event.ended.label === "never_left";
               // One on a free model (`free`: booked a known $0) is no cost unknown: its mark says so, and the usage row counts
               // it at $0, never cut.
-              const data = unsent ? { unsent: true } : event.usage.free ? { free: true } : {};
+              // One cut with no answer and booked at its hold (bookCut's CUT_AT_HOLD) is that figure, the most it can have
+              // cost: its mark says so, and the usage row counts it there, never as a cost no one knows.
+              const atMost = typeof event.usage.atMostUsd === "number" && Number.isFinite(event.usage.atMostUsd) ? { atMostUsd: event.usage.atMostUsd } : {};
+              const data = unsent ? { unsent: true } : event.usage.free ? { free: true } : atMost;
               // Not written when the journal sealed under it (the run's end landed first): a settled run reads its unanswered
               // mark cut all the same.
               await on.commit((tx) => tx.appendEntry(conversation.id, { kind: REQUEST_ENDED, data: data as unknown as JsonValue }), context).catch(() => undefined);
@@ -2057,6 +2072,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // session's proxy sees its upstream end, which can be after pi went idle).
         const port = booking.models;
         unbooked = 0;
+        bookingsWriting = 0;
         const counted: typeof port = {
           beforeRequest: async (request) => {
             // The CLI's next request of its main model after its question to the person: never admitted, it asks for the
@@ -2100,11 +2116,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             return ticket;
           },
           afterRequest: async (...args) => {
+            // Its booking has begun: waited for past CLOSE_MS, as long as its write takes (bookingsSettled).
+            bookingsWriting += 1;
             try {
               await hooks.beforeBooking?.();
               await port.afterRequest(...args);
             } finally {
+              bookingsWriting = Math.max(0, bookingsWriting - 1);
               unbooked = Math.max(0, unbooked - 1);
+              if (bookingsWriting === 0) for (const wake of writtenAll.splice(0)) wake();
               if (unbooked === 0) for (const wake of bookedAll.splice(0)) wake();
             }
           },
@@ -3394,20 +3414,42 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The end's patch from the run's spec (AdapterRunSpec.endPatch), bounded (END_PATCH_MS): late or failing, the end says
    *  its cost and metrics are unknown (END_PATCH_UNKNOWN). */
   async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">> {
-    if (!specNow?.endPatch) return {};
+    const spec = specNow;
+    if (!spec?.endPatch && !spec?.endCost) return {};
     let timer: NodeJS.Timeout | undefined;
-    const boundMs = specNow.endPatchMs ?? END_PATCH_MS;
+    const boundMs = spec.endPatchMs ?? END_PATCH_MS;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), boundMs)));
-    try {
-      const patch = await Promise.race([specNow.endPatch(data), late]);
-      if (patch === "late") {
-        console.warn(`[runner] its end's patch gave no answer within ${boundMs / 1000} s; the end is written with its cost and metrics unknown`);
+    // The cost, read apart (AdapterRunSpec.endCost): a patch whose metrics run late or fail never takes it with them.
+    const cost = spec.endCost
+      ? Promise.race([spec.endCost(), late]).then(
+          (usd) => {
+            if (usd !== "late") return usd;
+            console.warn(`[runner] its end's cost gave no answer within ${boundMs / 1000} s; the end is written with its cost unknown`);
+            return null;
+          },
+          (error: unknown) => {
+            console.warn(`[runner] its end's cost failed: ${said(error)}; the end is written with its cost unknown`);
+            return null;
+          },
+        )
+      : undefined;
+    const patched = async (): Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">> => {
+      if (!spec.endPatch) return {};
+      try {
+        const patch = await Promise.race([spec.endPatch(data), late]);
+        if (patch === "late") {
+          console.warn(`[runner] its end's patch gave no answer within ${boundMs / 1000} s; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
+          return END_PATCH_UNKNOWN;
+        }
+        return patch ?? {};
+      } catch (error) {
+        console.warn(`[runner] its end's patch failed: ${said(error)}; the end is written with its ${cost ? "metrics" : "cost and metrics"} unknown`);
         return END_PATCH_UNKNOWN;
       }
-      return patch ?? {};
-    } catch (error) {
-      console.warn(`[runner] its end's patch failed: ${said(error)}; the end is written with its cost and metrics unknown`);
-      return END_PATCH_UNKNOWN;
+    };
+    try {
+      const [patch, usd] = await Promise.all([patched(), cost]);
+      return cost ? { ...patch, costUsd: usd ?? null } : patch;
     } finally {
       clearTimeout(timer);
     }
@@ -3514,14 +3556,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** Waits, at most CLOSE_MS, until every paid request the session admitted is booked: a person's stop is booked at what
-   *  streamed once the session's proxy sees its upstream end. Past the bound the end is written anyway, and a request left
-   *  unbooked reads at its hold and bound, the worst it can have cost. */
+   *  streamed once the session's proxy sees its upstream end. Then, for a booking whose write has begun, as long as that
+   *  write takes (bookingWriteMs). Past the bounds the end is written anyway, and a request left unbooked reads at its
+   *  hold and bound, the worst it can have cost, and the run's cost unknown: never a known figure that leaves it out. */
   async function bookingsSettled(): Promise<void> {
     if (unbooked === 0) return;
     specNow?.hooks?.awaitingBookings?.();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
+    // A booking whose write has begun (its request answered) is waited for as long as its write takes, bounded
+    // (BOOKING_WRITE_MS): written after the end, it would be fenced and lost, and the run's cost read unknown for good.
+    if (bookingsWriting === 0) return;
+    const boundMs = specNow?.bookingWriteMs ?? BOOKING_WRITE_MS;
+    const written = await Promise.race([new Promise<boolean>((resolve) => writtenAll.push(() => resolve(true))), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), boundMs)))]);
+    clearTimeout(timer);
+    if (!written) console.warn(`[runner] ${bookingsWriting} paid request booking(s) still being written after ${boundMs / 1000} s; going on without them: each reads at its hold, and the run's cost unknown`);
   }
 
   /** The run's timeline says it went on after its runner was lost (RUN_RESUMED, `after: runner_lost`): one root entry,

@@ -1867,6 +1867,7 @@ class Cost(_CostRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
     plan: CostPlan
 
 
@@ -4684,6 +4685,7 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
     not_metered: int
 
 

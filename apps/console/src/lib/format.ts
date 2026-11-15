@@ -81,11 +81,15 @@ export const runEnded = (status: string | undefined | null): boolean => typeof s
 export const FREE_COST = "$0 · free model";
 const freeCost = (c: { usd: number | null; free?: boolean }) => c.usd === 0 && c.free === true;
 
+/** A known cost that counts a request cut with no answer at what its cap held for it (the server's `upper_bound`,
+ *  cutathold/1): the most the run can have cost, said "at most $0.25", never as the exact figure. */
+const atMost = (c: { upper_bound?: boolean }) => (c.upper_bound === true ? "at most " : "");
+
 /** A charge on a timeline row, in words: "$0.0018", or what is known so far ("so far $0.001, 1 not priced") when one of its
  *  charges has no price; on a run that has ended (`ended`), what is known without "so far" ("$0.001 known, 1 not priced"),
  *  as cost says the run's. */
-export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number }, { ended = false }: { ended?: boolean } = {}): string =>
-  u.usd !== null ? dollars(u.usd)
+export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number; upper_bound?: boolean }, { ended = false }: { ended?: boolean } = {}): string =>
+  u.usd !== null ? `${atMost(u)}${dollars(u.usd)}`
     : typeof u.so_far_usd === "number" ? (ended ? `${soFarDollars(u.so_far_usd)} known, ${u.unpriced ?? 0} not priced` : `so far ${soFarDollars(u.so_far_usd)}, ${u.unpriced ?? 0} not priced`)
     : "not priced";
 
@@ -109,7 +113,7 @@ function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
   if (freeCost(c)) return FREE_COST;
-  return `${dollars(c.usd)}${est(c)}`;
+  return `${atMost(c)}${dollars(c.usd)}${est(c)}`;
 }
 
 /** What a run used on the server's ChatGPT plan (chatgpt/1 `cost.plan`): its requests there and their tokens, which cost
