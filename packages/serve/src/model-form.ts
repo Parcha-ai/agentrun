@@ -47,8 +47,8 @@ export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): strin
   return [...plan, ...PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)))];
 }
 
-/** A model a person may pick that runs at $0 (local-models.ts isFree: its catalog price is all zeros), in the form it
- *  takes, with its context window in tokens. */
+/** A model a person may pick that runs at $0 (local-models.ts isFree, the kernel's freeModel on its catalog price: all
+ *  zeros, every tier's too), in the form it takes, with its context window in tokens. */
 export type FreeModel = { id: string; context_window: number };
 
 /** The free models offered for `harness` on this server, besides pickerCandidates' (harness.ts harnessOffers drops those
