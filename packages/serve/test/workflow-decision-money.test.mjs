@@ -589,7 +589,10 @@ test("a decision's hold is kept only once the driver has admitted its request: a
   // answered) or it did not (runner B asks it once). Either way the run counts it once at most: a hold kept before the
   // admission would be counted cut beside runner B's own, $0.80 for one $0.40 decision.
   assert.ok(asked.length <= 1, `asked at most once: ${asked.length}`);
-  assert.ok((ended.costUsd ?? 0) <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
+  // What the run counts: its cost when it knows it, else the most it can have cost (a hold reads apart, costUsd null);
+  // never a dead runner's hold beside a second ask in either.
+  const counted = ended.costUsd ?? ended.costAtMostUsd ?? 0;
+  assert.ok(counted <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
   if (asked.length === 1) assert.deepEqual([ended.state, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], ["ended", 0.4], `asked by runner B, booked at what it charged: ${JSON.stringify(ended)}`);
   // Not asked: runner A's write admitted the request, so runner B took the run over and escalated it, asked and never
   // answered, never a takeover that simply failed.

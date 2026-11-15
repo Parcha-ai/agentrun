@@ -323,6 +323,10 @@ test("a call node's hold is taken only once the driver has admitted its effect: 
   // $0.001 call. Held only inside the admission, A's hold is the admitted effect's: B never runs it again (the driver
   // refuses an admitted effect it cannot know), and the run counts that one hold.
   assert.equal(holds.length, 1, `one hold, never a dead runner's beside a second: ${JSON.stringify(holds.map((hold) => hold.model))}`);
-  assert.equal(eight(row.costUsd ?? 0), eight(PER_ANSWER), `the call counted once: ${JSON.stringify({ state: row.state, costUsd: row.costUsd, summary: row.summary })}`);
+  // The admitted effect's outcome is unknown, so its hold is the most the run can have cost (costAtMostUsd), never its
+  // cost (costUsd null).
+  const cost = { state: row.state, costUsd: row.costUsd, costAtMostUsd: row.costAtMostUsd, summary: row.summary };
+  assert.equal(row.costUsd, null, `a hold is never read as the run's cost: ${JSON.stringify(cost)}`);
+  assert.equal(eight(row.costAtMostUsd ?? 0), eight(PER_ANSWER), `the call counted once: ${JSON.stringify(cost)}`);
   assert.ok(origin.counts["CALL-ONE"] <= 1, `sent at most once: ${JSON.stringify(origin.counts)}`);
 });
