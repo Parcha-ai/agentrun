@@ -10,8 +10,6 @@
 // letters, digits, `.` and `-` (`apollo`, `api.strale.io`); an endpoint is its path less the leading `/`, in letters,
 // digits and `-._:{}/` (`people/match`, `people/{id}`). Its wire name is catalog.ts wireName's, hashed when long.
 
-import { WIRE_NAME } from "./catalog.js";
-
 const SERVER = "[a-z][a-z0-9-]{0,31}";
 const TOOL = "[A-Za-z0-9_-]{1,64}";
 const PROVIDER = "[a-z0-9][a-z0-9.-]{0,63}";
@@ -96,14 +94,13 @@ export function mcpServerOf(name: string): string | undefined {
  *  one place the console's picker and the save's blockers (runnable.ts) both read it. `hands` is the harnesses' own tools'
  *  server. */
 export const MCP_HANDS_WORDS = "names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.";
-/** Why `mcp__<server>__<tool>`, the name every harness calls the tool by, is not within the budget their names share
- *  (52 characters of letters, digits, `_` and `-`), or undefined when it is. */
-export function mcpWireProblem(server: string, tool: string): string | undefined {
-  const wire = `mcp__${server}__${tool}`;
-  return WIRE_NAME.test(wire) ? undefined : `is too long: ${wire} must be at most 52 characters, the budget every harness's tool names share.`;
-}
-/** MCP_HANDS_WORDS or mcpWireProblem's, whichever refuses the name; undefined when neither does. */
-export const mcpGrantNameProblem = (server: string, tool: string): string | undefined => (server === "hands" ? MCP_HANDS_WORDS : mcpWireProblem(server, tool));
+/** MCP_HANDS_WORDS when the grant names the server `hands`; undefined otherwise. A name's length refuses nothing: one whose
+ *  `mcp__<server>__<tool>` is past the budget every harness's names share is called by its hashed wire name (catalog.ts
+ *  wireName), and read back by lookup. */
+export const mcpGrantNameProblem = (server: string, _tool: string): string | undefined => (server === "hands" ? MCP_HANDS_WORDS : undefined);
+/** Why two granted catalog tools can't both be granted: the harnesses call both by one wire name (`wire`, catalog.ts
+ *  wireName), so neither could be told apart. Said after the later grant. */
+export const sameWireWords = (tool: string, other: string, wire: string): string => `${tool} and ${other} are called by one name on every harness (${wire}): grant one of them by name.`;
 /** Why `harness` drops or retypes the input of the catalog tool `tool` (its facts' schemaProblems, `dropped` the first,
  *  said under the tool's wire name): the words a save's blocker and a saved MCP server's read both say. */
 export const droppedWords = (tool: string, harness: string, dropped: string): string => `The tool ${tool} cannot be offered on ${harness}: ${dropped.replace(/^[A-Za-z0-9_-]+: /, "")}.`;

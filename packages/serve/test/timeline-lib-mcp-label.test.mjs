@@ -25,7 +25,7 @@ test("a long MCP tool's hashed wire name is labelled by its catalog name (option
   const rows = timelineOf([user("Fetch."), assistant([call("c1", wire, { channel: "C1" }), call("c2", wire, { channel: "C2" })]), result("c1", wire, "3 replies"), result("c2", wire, "Permission denied.", 1, refused)], { settled: true, catalog });
   assert.deepEqual(rows.filter((row) => row.kind.startsWith("tool")).map((row) => [row.tool_use_id, row.kind, row.summary]), [
     ["c1", "tool_use", `slack · ${LONG}`],
-    ["c2", "tool_use", `slack · ${LONG}`],
+    ["c2", "tool_use", `Refused: slack · ${LONG}`],
     ["c1", "tool_result", `slack · ${LONG}: ok`],
     ["c2", "tool_result", `Refused: slack · ${LONG}: Permission denied.`],
   ]);

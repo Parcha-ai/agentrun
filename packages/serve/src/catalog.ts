@@ -7,8 +7,9 @@ import { createHash } from "node:crypto";
 
 /** A wire name: at most 52 characters, not the adapter's 64. One CLI gives the model the name with a 12-character
  *  `mcp__hands__` prefix, and the model API's 64-character limit is on the name the model sees, so 52 is the budget that
- *  holds on every harness. The one constant the identity branch and the length check both read: a plain 53-64 character
- *  name of valid characters must not skip the mapping and come out over budget. */
+ *  holds on every harness. The identity branch reads it: a plain 53-64 character name of valid characters must not skip
+ *  the mapping and come out over budget. An MCP tool whose `mcp__<server>__<tool>` is past it (Composio's 58-character
+ *  `mcp__slack__SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION`) is granted and called by its hashed name. */
 export const WIRE_NAME = /^[A-Za-z0-9_-]{1,52}$/;
 
 /** A catalog name's wire name: itself when it already is one within the budget, else `:` and `/` to `__`, `.` to `_`,
