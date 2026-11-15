@@ -322,3 +322,97 @@ test("a stop while an MCP node's call runs cuts it at the server: the work never
   assert.equal(calls(fake, "slow_write").length, 1, "sent once");
   assert.ok(!fake.log.some((entry) => entry.method === "finished"), "the work never finished");
 });
+
+// One card per learned_workflow call, its MCP nodes the call's nested calls (NestedCalls): the card names every MCP action
+// set to ask with the shape of its arguments; the one allow lets those run with no second ask; an action the card did not
+// name parks the run as a call of its own; a deny refuses before any node runs; each node is booked on the run's one
+// ledger and held to its cap.
+const step = (label, tool, args, as) => ({ node: "call", label, via: "tool", tool, args, out: "Any", as, deadline_s: 60 });
+const chain = (name, steps, output) => ({
+  v: 2, name,
+  schemas: { In: { type: "object", properties: { a: { type: "number" }, b: { type: "number" }, q: { type: "string" } }, required: ["a", "b"] }, Any: {} },
+  input: { schemaId: "In" }, output: { schemaId: "Any", path: output },
+  root: { node: "chain", steps },
+});
+const runOf = (name, input) => `Call ${LEARNED_WORKFLOW_TOOL} with ${JSON.stringify({ name, input })}`;
+const ADD_THEN_PAID = chain("add-then-look", [step("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum"), step("look", "mcp:fake/paid", { query: "{q}" }, "found")], "sum");
+
+test("the card names every MCP action set to ask with the shape of its arguments, and none the workflow may run without asking", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "allow" } })).status, 200);
+  const flow = chain("three-actions", [...ADD_THEN_PAID.root.steps, step("write", "mcp:fake/slow_write", { line: "{q}", seconds: 0 }, "wrote")], "sum");
+  const runId = await learnedRun(server, "shapes", ["mcp:fake/add", "mcp:fake/paid", "mcp:fake/slow_write"], [flow], runOf("three-actions", { a: 2, b: 3, q: "ada" }));
+  const pending = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
+  const card = pending.args_preview ?? "";
+  for (const action of [{ tool: "mcp:fake/add", args: { a: "{a}", b: "{b}" } }, { tool: "mcp:fake/paid", args: { query: "{q}" } }]) {
+    assert.ok(card.includes(JSON.stringify(action)), `the card names ${action.tool} with its arguments' shape: ${card}`);
+  }
+  assert.ok(!card.includes("mcp:fake/slow_write"), `allowed, slow_write is not on the card: ${card}`);
+  assert.equal(calls(fake).length, 0, "nothing sent while it waits");
+});
+
+test("one allow of the card runs every MCP action it named, each once, with no second ask", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" } })).status, 200);
+  const runId = await learnedRun(server, "both", ["mcp:fake/add", "mcp:fake/paid"], [ADD_THEN_PAID], runOf("add-then-look", { a: 2, b: 3, q: "ada" }));
+  const pending = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
+  assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
+  // A second ask would leave the run waiting: it completes on the one allow.
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  assert.match(await answerOf(api, runId) ?? "", /5/);
+  assert.deepEqual([calls(fake, "add").length, calls(fake, "paid").length], [1, 1], "each named action ran once");
+});
+
+test("an MCP action the approved card did not name asks on its own: the run parks on it as a call nested in the workflow's, and its allow runs it once while the actions already run are never sent again", { timeout: 200_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "allow" } })).status, 200);
+  const flow = chain("add-then-write", [step("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum"), step("write", "mcp:fake/slow_write", { line: "x", seconds: 0 }, "wrote")], "sum");
+  const runId = await learnedRun(server, "off-card", ["mcp:fake/add", "mcp:fake/slow_write"], [flow], runOf("add-then-write", { a: 2, b: 3 }));
+  const card = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
+  assert.ok(!(card.args_preview ?? "").includes("mcp:fake/slow_write"), card.args_preview);
+  // slow_write is set to ask after the card was shown: the allow never covers it.
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "ask" } })).status, 200);
+  assert.equal(await answer(runId, card.id, { decision: "allow" }), 204);
+  const nested = await pendingOf(api, runId, "mcp:fake/slow_write", card);
+  assert.match(JSON.stringify(nested.args_preview ?? nested), /"line":"x"/, "the nested card shows the call's own arguments");
+  assert.deepEqual([calls(fake, "add").length, calls(fake, "slow_write").length], [1, 0], "the named action ran; the unnamed one waits unsent");
+  assert.equal(await answer(runId, nested.id, { decision: "allow" }), 204);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  assert.deepEqual([calls(fake, "add").length, calls(fake, "slow_write").length], [1, 1], "each sent once: the earlier one answered from its record");
+});
+
+test("a deny of any of its MCP actions refuses the workflow before any node runs, an allowed node before it included", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/add": { permission: "allow" }, "mcp:fake/delete_thing": { permission: "deny" } })).status, 200);
+  const flow = chain("add-then-delete", [step("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum"), step("delete", "mcp:fake/delete_thing", { id: "x" }, "gone")], "sum");
+  const runId = await learnedRun(server, "deny-later", ["mcp:fake/add", "mcp:fake/delete_thing"], [flow], runOf("add-then-delete", { a: 2, b: 3 }));
+  const { rows } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 90_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed", "refused, never put to a person");
+  assert.match(`${learnedResult(rows)?.text ?? ""} ${learnedResult(rows)?.tool_result_preview ?? ""}`, /add-then-delete was not run: .*mcp:fake\/delete_thing.*deny/s);
+  assert.equal(calls(fake).length, 0, "nothing sent, the allowed add included");
+});
+
+test("each MCP node is booked on the run's one ledger and held to its cap: the first runs and is charged, the next the cap has no room for is refused unsent and the run waits on a raise", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const fake = await addFake(t, api, { add: 0.05, paid: 0.05 });
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/*": { permission: "allow" } })).status, 200);
+  const runId = await learnedRun(server, "capped", ["mcp:fake/add", "mcp:fake/paid"], [ADD_THEN_PAID], runOf("add-then-look", { a: 2, b: 3, q: "ada" }), { max_cost_usd: 0.08 });
+  await follow(api, runId, ["input_required"], { deadlineMs: 90_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.pending?.kind, view.pending?.cap_usd, view.pending?.needs_usd], ["budget", 0.08, 0.05], JSON.stringify(view.pending));
+  assert.deepEqual([calls(fake, "add").length, calls(fake, "paid").length], [1, 0], "the second is refused unsent");
+  assert.equal(view.cost?.usd, 0.05, "the first node's price is the run's cost");
+});
