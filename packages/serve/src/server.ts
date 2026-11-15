@@ -1938,9 +1938,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
-   *  what the save stamps on it (its MCP pin, mcpListingOf; its monid pin, monidPinOf), each carrying from `previous`
-   *  (the revision it is built on) what its grants did not change. A revision that names no place is checked where it
-   *  would run (fallbackPlace). */
+   *  its pins (mcpListingOf, monidPinOf), each carrying from `previous` what its grants did not change. A revision that
+   *  names no place is checked where it would run (fallbackPlace). */
   async function saveable(revision: NewRevision, previous?: RevisionRow | null): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
@@ -1975,11 +1974,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { warnings: [...blockers.map(issueOf), ...usage], stamp: { ...(mcpPin ? { mcpPin } : {}), ...(monid ? { monidPin: monid } : {}) } };
   }
 
-  /** What a save of `revision` pins of the monid endpoints it grants (an agentic revision's), read against what monid lists
-   *  now on this server's monid key (monid.ts pinMonid), a grant `previous` made too carried from its pin: `monid` the pin
-   *  its runs read, never monid's listing, and a warning (monid.ts usageWords) for each endpoint priced by usage, at the
-   *  grant that named it or its wildcard. A grant that cannot be pinned refuses the save (422) at once, nothing saved.
-   *  Undefined when it grants none. */
+  /** An agentic `revision`'s monid pin (monid.ts pinMonid) and a warning per endpoint priced by usage; a grant that
+   *  cannot be pinned refuses the save (422). Undefined when it grants none. */
   async function monidPinOf(revision: NewRevision, previous?: RevisionRow | null): Promise<{ monid: MonidPinBody; warnings: InputIssue[] } | undefined> {
     if (revision.kind !== "agentic") return undefined;
     const tools = (revision.body as AgenticBody).tools ?? [];
@@ -2956,8 +2952,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // the same revision exactly one lands.
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision, on: RevisionRow | null) => {
-          // The pins of the revision this try builds on (commitAgent's read, a retry's newer one): a server down now keeps
-          // its MCP pin when the edit grants nothing new from it, and a monid grant it made too is not read again.
+          // The pins of the revision this try builds on (commitAgent's read, a retry's newer one) carry what it kept.
           const saved = await saveable(revision, on);
           warnings = saved.warnings;
           return saved.stamp;

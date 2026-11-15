@@ -95,9 +95,7 @@ export interface ClaimMcp {
   release(): void;
 }
 
-/** What a subagent may be given for the grant `grant` (subagent.ts sessionNames): the wire name of each of the run's
- *  catalog tools (`catalog`: its MCP tools and monid endpoints, monid-run.ts withMonid) the grant gives by the gate's keys
- *  (tool-gate.ts permissionKeys: the tool's own name, or its server's or provider's wildcard); else the grant's own. */
+/** The wire names a subagent's `grant` gives of the run's MCP and monid tools, by the gate's keys; else the grant's own. */
 export function catalogSessionNames(catalog: Pick<ClaimMcp, "tools" | "catalogOf"> | undefined, grant: string): string[] {
   const given = (catalog?.tools ?? []).flatMap((tool) => (permissionKeys(catalog!.catalogOf(tool.name) ?? "").includes(grant) ? [tool.name] : []));
   return given.length ? given : [wireName(grant)];

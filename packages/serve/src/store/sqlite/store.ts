@@ -296,9 +296,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
     // An earlier build of this version pinned each run's MCP tools at its first claim (mcp_pins) and kept no pin on a
     // revision: the server adds revisions.mcp_pin (schema.ts REVISIONS_MCP_PIN) and drops mcp_pins. A revision saved
-    // before has no pin until its first run here pins it (Agents.pinOnce); no run's pin moves to a revision. One that kept
-    // a revision's monid pin in its body gets revisions.monid_pin (schema.ts REVISIONS_MONID_PIN): such a revision runs
-    // with no monid endpoint until it is saved again.
+    // before has no pin until its first run here pins it (Agents.pinOnce); no run's pin moves to a revision. So for monid_pin.
     if (role === "server") {
       const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
       await connection.write([

@@ -77,8 +77,7 @@ const PRICE_FIX = "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
- *  server found at its start (place-offers.ts); none, every box is unavailable. `mcp`: each MCP server's tools as
- *  the revision's pin (or the registry) holds them; `monid`: the revision's monid pin. `offers`: the harnesses' offers
+ *  server found at its start (place-offers.ts); none, every box is unavailable. `monid`: its pin. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. `computerReady`: whether an agent's computer
  *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check.
  *  `shellOf`: where a run of an agent with that computer setting has its shell here now (resolve-computer.ts
@@ -136,11 +135,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // pinned build): that would offer the model another tool than the one granted, so its grant is refused here, at the
   // save. A bound or a format it only strips is not: the server still checks it, and its error reaches the model.
   const schemaProblems = revision.kind === "agentic" ? harnessOf(env, harness)?.facts?.schemaProblems : undefined;
-  /** What keeps the grant of `tool`, a catalog name (`mcp:` or `monid:`), from running here (the first thing), at `field`;
-   *  undefined when nothing does. An MCP server's tool runs when its saved snapshot lists it, a monid endpoint when the
-   *  save pinned it (`monid`: a grant monid does not list is refused as it is pinned, monid.ts pinMonid), each a host tool
-   *  on every harness; a workflow's nodes bind neither. The one check of a catalog grant, for an agentic revision's tools
-   *  and for every tool a workflow grants (grantedTools). */
+  /** What keeps the grant of `tool`, an `mcp:` or `monid:` name, from running here (the first thing), at `field`; undefined
+   *  when nothing does. The one check of a catalog grant, for an agentic revision's tools and a workflow's (grantedTools). */
   const catalogGrant = (field: string, tool: string): Blocker | undefined => {
     const refused = (message: string): Blocker => ({ field, reason: "not_an_option", message, host: false, tool });
     const isMonid = isMonidName(tool);
@@ -158,9 +154,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (isMonid && !env[MONID_KEY_ENV]?.trim()) return { field, reason: NOT_SET_UP, message: `The tool ${tool} needs ${keyNeeded([MONID_KEY_ENV])}.`, host: true, missing: { tool, vars: [MONID_KEY_ENV] } };
     if (named && !listed) return refused(`No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`);
     if (named && listed && !listedTool) return refused(`The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.map((t) => t.name).join(", ") || "none"}.`);
-    // Each tool the grant offers the model, by its catalog name, with the input schema it is offered with: the MCP tool as
-    // its server lists it, each pinned endpoint the grant names or its wildcard covers (the gate's keys, permissionKeys).
-    // One the harness would drop or retype (schemaProblems above) is refused here, never missing at the run.
+    // Each tool the grant offers (the gate's keys), refused here if the harness would drop or retype its input.
     const offered: [string, Record<string, unknown>][] = isMonid
       ? Object.entries(monid ?? {}).filter(([endpoint]) => permissionKeys(endpoint).includes(tool)).map(([endpoint, { input }]) => [endpoint, input])
       : listedTool?.inputSchema ? [[tool, listedTool.inputSchema]] : [];
@@ -217,8 +211,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     out.push({ field: "definition.workflow", reason: "not_an_option", message: `The workflow is not one this server can read: ${String((error as Error)?.message ?? error).slice(0, 500)}`, host: false });
     return out;
   }
-  // Every catalog tool a workflow grants, at its top level or on a node, is held to the one check (catalogGrant): refused
-  // at the save, never a workflow whose run goes without it or cannot launch.
+  // Every catalog tool a workflow grants, at its top level or on a node, is held to catalogGrant.
   const granted = await grantedTools(revision);
   for (const tool of granted.filter(isCatalogName)) {
     const index = (revision.tools ?? []).indexOf(tool);

@@ -4,9 +4,8 @@
 //
 // At the save (server.ts saveable, the one check of a create, an edit and an inline run): each grant is read against
 // monid's listing (a provider's wildcard: every endpoint it lists, GET /v1/endpoints; one endpoint: POST /v1/inspect),
-// and the pin (MonidPinBody) is stamped on the revision beside its MCP pin. A grant the agent's current revision made too
-// is carried from its pin, nothing read. A grant monid does not list is refused in words, so is one that
-// cannot be read now (no key, monid unreachable). A run reads its revision's pin and never monid's listing.
+// and the pin is stamped on the revision, a grant its current revision made too carried unread. A grant monid does not
+// list is refused in words, so is one that cannot be read now (no key, monid unreachable). A run reads only its pin.
 //
 // An endpoint priced by usage (per result, per unit, metered, a matrix or tier with a usage part) is pinned too, with no
 // fixed price, and the save's warnings name it (usageWords): monid can't cap what such a call charges. Its maxCost
@@ -217,8 +216,7 @@ export async function monidText(answer: MonidAnswer, work: Workspace, label: str
 
 /** The fixed USD price of one call priced `price` (monid's listing): a per-call amount; the dearest variant of a matrix
  *  of fixed prices; a tiered price's default and every tier added up (tiers add, so all of them is the most one call
- *  can be charged): what one call is held at, sent with it as its maxCost. Undefined for a price by usage, whose call is
- *  held at monid's estimate for its input, or one in another currency. */
+ *  can be charged): a call's hold and maxCost. Undefined for a price by usage, or one in another currency. */
 export function fixedUsd(price: unknown): number | undefined {
   if (!isObject(price)) return undefined;
   const of = (parts: readonly unknown[]) => (parts.every((part) => fixedUsd(part) !== undefined) ? parts.map((part) => fixedUsd(part)!) : undefined);
@@ -283,10 +281,9 @@ type MonidPinOutcome = { pin: MonidPinBody; warnings: { tool: string; message: s
 
 /** The monid grants among `grants` pinned against monid's listing on `key` (pinned at a save, never at a run): each
  *  provider's wildcard read as the endpoints monid lists for it now (at most MONID_WILDCARD_MAX), each endpoint inspected
- *  for its description, input and price. A grant the `previous` revision made too is carried from its pin, nothing read
- *  for it, as an MCP server's listing is (server.ts mcpListingOf). A grant monid lists nothing for is refused, as is every
- *  grant to read when there is no key or monid cannot be read. An endpoint with no fixed price (fixedUsd) is pinned with
- *  none, and warned of (usageWords). Undefined when no grant is monid's. */
+ *  for its description, input and price; a grant `previous` made too carries its pin, unread (as server.ts mcpListingOf).
+ *  A grant monid lists nothing for is refused, as is every grant to read with no key or monid unreadable. An endpoint
+ *  with no fixed price (fixedUsd) is pinned with none, and warned of (usageWords). Undefined when no grant is monid's. */
 export async function pinMonid(grants: readonly string[], options: { key: string | undefined; fetch?: typeof fetch; signal?: AbortSignal; sleep?: MonidOptions["sleep"]; previous?: { grants: readonly string[]; pin: MonidPinBody | null } }): Promise<MonidPinOutcome | undefined> {
   const pin: Record<string, MonidPinBody[string]> = {};
   const before = options.previous;

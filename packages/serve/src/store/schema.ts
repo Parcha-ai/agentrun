@@ -41,8 +41,7 @@ const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "
 /** A revision's MCP pin, as its save listed the tools (JSON, null when it grants no MCP tool). In STORE_DDL, and added at a
  *  server open to a store an earlier build of this version made (one that pinned each run in mcp_pins, dropped at that open). */
 export const REVISIONS_MCP_PIN = `ALTER TABLE revisions ADD COLUMN ${json("mcp_pin", true)}`;
-/** A revision's monid pin, as its save read monid's listing (JSON, null when it grants no monid endpoint). In STORE_DDL,
- *  and added at a server open to a store an earlier build of this version made (one that kept it in the body). */
+/** A revision's monid pin (JSON, null for none): in STORE_DDL, and added at a server open as REVISIONS_MCP_PIN is. */
 export const REVISIONS_MONID_PIN = `ALTER TABLE revisions ADD COLUMN ${json("monid_pin", true)}`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
