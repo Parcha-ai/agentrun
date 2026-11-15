@@ -42,6 +42,8 @@ test("the kind skills teach the registry's computer tools by name and scripting 
     // code mode has no `computer`, calls it by name. The skill names it in its Codex part alone.
     const codex = skill.text.split("**On Codex**")[1]?.split("\n\n")[0] ?? "";
     assert.match(codex, /\bcomputer_op\(\{op: "apps\.open"/, `${skill.name} tells Codex how to reach the apps`);
+    // Live (11-15): a model wrote a top-level `return` in 5 of 9 Codex scripts, a SyntaxError that ran nothing; told this, it did not.
+    assert.match(codex.replace(/\s+/g, " "), /has no top-level `return`.*a script's output goes through `text\(\.\.\.\)`/, `${skill.name} tells Codex a script's output goes through text()`);
     assert.equal(skill.text.replace(codex, "").match(/\bcomputer_op\b/g), null, `${skill.name} names computer_op only for Codex`);
     assert.match(skill.text, /\bcodemode\b/, `${skill.name} teaches codemode`);
     assert.equal((skill.text.match(/```(?:js|javascript)\n/g) ?? []).length, 1, `${skill.name} has one short script example`);
