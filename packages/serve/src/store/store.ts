@@ -934,8 +934,9 @@ export interface Settings {
   putIfAbsent(key: string, value: unknown): Promise<unknown>;
   /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
    *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
-   *  when the row changed since or is gone. */
-  replaceIf(key: string, was: unknown, value: unknown): Promise<boolean>;
+   *  when the row changed since or is gone. With `claim`, holds the run's shared row lock and checks its epoch/lease in
+   *  the same transaction as the setting update; a stale claim throws Fenced without changing the setting. */
+  replaceIf(key: string, was: unknown, value: unknown, claim?: Claim): Promise<boolean>;
   /** The key's row goes only while it still holds `was`, in one statement: true when it went. */
   removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
