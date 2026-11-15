@@ -3,10 +3,11 @@
 // (no archive, or archive: false); `archive: true` also takes its \Inbox label off. Elsewhere (a folders server) filing is
 // a move: with no archive, one call files the message and moves it out of the inbox to the folder `to` (UID MOVE),
 // creating it if missing, as archive: true does; only an explicit `archive: false` is refused in words, nothing moved;
-// the account holds as many messages. Its description, built for the server it is bound on, says which in one line.
-// The trash and junk folders are refused, by special use or by name, with nothing changed. It is allowed by default,
-// scoped to a run's thread as email_read and email_search are (`scope: "mailbox"` widens it). Its answer is {filed, message_id,
-// to, archived, subject}, and its timeline line, read from that answer, says "Filed <subject> under <to>".
+// the account holds as many messages, and the answer's note says "moved out of the inbox to <to>". Its description,
+// built for the server it is bound on, says which in one line. The trash and junk folders are refused, by special use or
+// by name, with nothing changed. It is allowed by default, scoped to a run's thread as email_read and email_search are
+// (`scope: "mailbox"` widens it). Its answer is {filed, message_id, to, archived, subject, note?} (the note on a move
+// only), and its timeline line, read from that answer, says "Filed <subject> under <to>".
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, follow, serve } from "./support.mjs";
@@ -50,6 +51,7 @@ test("on Gmail: email_file adds the label, creating it if missing, and the messa
     ["email_file", { message_id: "<f2@example.com>", to: "Receipts", archive: true }],
   ]);
   const [kept, archived] = saw;
+  // A label, not a move: no note on Gmail (deepEqual: no field beyond these).
   assert.deepEqual(kept, { filed: true, message_id: "<f1@example.com>", to: "Receipts", archived: false, subject: "Invoice 7" });
   assert.deepEqual(archived, { filed: true, message_id: "<f2@example.com>", to: "Receipts", archived: true, subject: "Newsletter" });
   assert.ok(faux.mailboxes().includes("Receipts"), `the missing label was created: ${faux.mailboxes()}`);
@@ -86,9 +88,9 @@ test("elsewhere (folders): with no archive one call files and moves the message 
     ["email_file", { message_id: "<f2@example.com>", to: "Archive", archive: true }],
   ]);
   assert.deepEqual(saw, [
-    { filed: true, message_id: "<f1@example.com>", to: "Receipts", archived: true, subject: "Invoice 7" },
-    { filed: true, message_id: "<f2@example.com>", to: "Archive", archived: true, subject: "Old thread" },
-  ]);
+    { filed: true, message_id: "<f1@example.com>", to: "Receipts", archived: true, subject: "Invoice 7", note: "moved out of the inbox to Receipts" },
+    { filed: true, message_id: "<f2@example.com>", to: "Archive", archived: true, subject: "Old thread", note: "moved out of the inbox to Archive" },
+  ], "the answer says the move: the model reads the answer, not the timeline");
   const after = holding(faux);
   assert.equal(after.total, before.total, "nothing deleted: as many messages as before");
   assert.deepEqual(after.by.INBOX, ["<f3@example.com>"]);
@@ -118,6 +120,7 @@ test("email_file's description says in one line what filing does on the connecte
     assert.equal(typeof description, "string", `${layout}: the model was handed email_file's description: ${said}`);
     assert.ok(description.includes(line), `${layout}: ${JSON.stringify(description)}`);
     assert.ok(!description.includes(other), `${layout}: not the other server's line: ${JSON.stringify(description)}`);
+    assert.ok(description.includes("Answers JSON {filed: true, message_id, to, archived, subject, note?}"), `${layout}: the answer's note is named: ${JSON.stringify(description)}`);
   }
 });
 
@@ -160,12 +163,12 @@ test("a run an email started files only within its thread; `scope: \"mailbox\"` 
   await follow(api, fired.run_id, ["completed"], { deadlineMs: 55_000 });
   const [apart, inThread] = sawOf((await api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer);
   assert.match(String(apart), /outside this run's thread/, JSON.stringify(apart));
-  assert.deepEqual(inThread, { filed: true, message_id: "<m1@example.com>", to: "Plans", archived: true, subject: "Plan" });
+  assert.deepEqual(inThread, { filed: true, message_id: "<m1@example.com>", to: "Plans", archived: true, subject: "Plan", note: "moved out of the inbox to Plans" });
   assert.deepEqual(faux.messages("INBOX").map((m) => m.messageId).sort(), ["<m3@example.com>", "<u1@example.com>"].sort(), "the message apart from the thread was not touched");
   assert.ok(!faux.mailboxes().includes("Elsewhere"), "nor its folder made");
 
   const { saw } = await ran(api, "wide", [["email_file", { message_id: "<u1@example.com>", to: "Elsewhere", archive: true }]]);
-  assert.deepEqual(saw, [{ filed: true, message_id: "<u1@example.com>", to: "Elsewhere", archived: true, subject: "Lunch" }], "a run with no thread files across the account");
+  assert.deepEqual(saw, [{ filed: true, message_id: "<u1@example.com>", to: "Elsewhere", archived: true, subject: "Lunch", note: "moved out of the inbox to Elsewhere" }], "a run with no thread files across the account");
   // The wide agent's own scope, read in a run a trigger started, is tried by the tool plane's check (tool-plane.ts), as
   // email_read's is: accepted above.
 });
