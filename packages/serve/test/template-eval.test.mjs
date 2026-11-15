@@ -205,6 +205,14 @@ test("a background shell call keeps its own name in the grading record, as the g
   assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
+test("a codemode script's call is graded as codemode on every harness, never as a computer kind's tool; a computer tool it called is graded as its kind", () => {
+  const rows = [
+    { kind: "tool_use", tool_use_id: "1", tool_name: "codemode", tool_input_preview: "return 1;" },
+    { kind: "tool_use", tool_use_id: "1/s1", tool_name: "computer_act", tool_input_preview: "{}" },
+  ];
+  for (const harness of ["pi", "claude-agent", "opencode"]) assert.deepEqual(callsOf(rows, harness).map((c) => c.tool), ["codemode", "desktop"], harness);
+});
+
 test("tool_used's at_least passes on that many matching calls or more, its args filtering first as count's do; count stays exact, and a grader gives one of the two", async (t) => {
   const search = (query) => ({ tool: "web_search", arguments: { query }, status: "success", result: "{}" });
   const record = { answer: "", calls: ["a", "b", "c", "d", "robots"].map(search), mcpCalls: [], files: [] };

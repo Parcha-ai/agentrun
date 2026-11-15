@@ -83,10 +83,22 @@ test("pi: an agent whose desktop's surface is tools is handed computer_observe, 
   assert.ok(!names.includes("codemode"), "no code mode among the session's tools");
 });
 
-test("pi: an agent whose desktop's surface is code is handed the hand-over alone of the computer's tools: its code mode is the script, and computer_observe, computer_act and computer_screenshot are not listed", async (t) => {
+test("pi: an agent whose desktop's surface is code is handed computer_script and the hand-over, as every harness is, and none of the per-step tools", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, surface: "code" } }, computer: fauxComposer });
   const names = toolNames(spec);
-  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_request_handoff"], JSON.stringify(names));
+  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_script", "computer_request_handoff"], JSON.stringify(names));
+});
+
+test("pi: a desktop run's codemode is the host's: pi carries no code mode of its own, and under desktop set to deny codemode is allowed while each computer tool a script would call is refused", async (t) => {
+  for (const surface of [undefined, "code"]) {
+    const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, ...(surface ? { surface } : {}) } }, settings: DENY_DESKTOP, computer: fauxComposer });
+    const own = (spec.adapter.ownTools ?? []).map((tool) => tool.name);
+    assert.ok(!own.includes("codemode"), `surface ${surface}: no pi-native codemode beside the host's: ${JSON.stringify(own)}`);
+    assert.equal(await spec.gate({ callId: "m1", tool: "codemode", args: { script: "return 1;" } }), "allow", `surface ${surface}: codemode is held to its own setting, not desktop's`);
+    for (const [tool, args] of [["computer_script", { code: "return 1;" }], ...(surface ? [] : [["computer_act", CLICK]])]) {
+      assert.deepEqual(await spec.gate({ callId: `n-${tool}`, tool, args }), { deny: deniedText("desktop") }, `surface ${surface}: ${tool} is refused in desktop's deny words`);
+    }
+  }
 });
 
 test("pi: a run with no computer is handed none of the desktop's tools", async (t) => {

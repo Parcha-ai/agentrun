@@ -50,7 +50,7 @@ test("a desktop whose agent has exec off (no exec group: a bench exec-deny agent
   const computer = fakeComputer(folder);
   const hello = { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
   const run = await runTools(localWorkspace(folder), { kind: "desktop", computer, hello, exec: false }, { mode: 1, context: ctx });
-  run.computer.guard.install(gate.script);
+  run.guard.install(gate.script);
   const script = (code) => run.hostTools(run.kindTools).find((tool) => tool.name === "computer_script").call({ code }, { callId: `c-${Math.random()}`, signal: new AbortController().signal });
   for (const code of ["await computer.shell.run('id');", "await computer.processes.start('xterm');"]) {
     const refused = await script(code);
