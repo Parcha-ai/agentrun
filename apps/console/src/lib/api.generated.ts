@@ -1606,6 +1606,18 @@ export interface operations {
       note: string;
     };
   };
+  finishChatGPTSignIn: {
+    body: {
+      redirect_url: string;
+    };
+    answer: {
+      state: "signed_out" | "pending" | "signed_in" | "expired";
+      email?: string;
+      plan?: string;
+      authorize_url?: string;
+      models?: string[];
+    };
+  };
   fireTrigger: {
     body: never;
     answer: {
@@ -1793,6 +1805,16 @@ export interface operations {
   getCapabilities: {
     body: never;
     answer: components["Capabilities"];
+  };
+  getChatGPTSignIn: {
+    body: never;
+    answer: {
+      state: "signed_out" | "pending" | "signed_in" | "expired";
+      email?: string;
+      plan?: string;
+      authorize_url?: string;
+      models?: string[];
+    };
   };
   getFile: {
     body: never;
@@ -4037,6 +4059,17 @@ export interface operations {
       revision: string;
     };
     answer: components["Agent"];
+  };
+  signOutChatGPT: {
+    body: never;
+    answer: never;
+  };
+  startChatGPTSignIn: {
+    body: never;
+    answer: {
+      authorize_url: string;
+      expires_at: string;
+    };
   };
   startLearnedWorkflowReplay: {
     body: {

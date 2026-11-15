@@ -39,7 +39,8 @@ export type RouteUsage = { input: number; output: number; cacheRead: number; cac
  *  when its model speaks no wire of the caller's. The fields of the learning grader's route (learning-ask.ts GraderRoute),
  *  and `cost` beside them. */
 export interface ModelRoute {
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
+  /** `plan`: a ChatGPT plan's route (provider.ts billing "plan"), billed to the plan: no price, its rules on the wire. */
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
   readonly model: string;
   /** The model as the run names it (`provider/model-id`, chooseModel's): what the `llm` tool's answer says it ran on,
    *  never the session provider the runner reaches it through. */
@@ -47,7 +48,7 @@ export interface ModelRoute {
   /** The catalog's entry for the model, as pi-ai's model of it takes it: on every wire, what it takes as input (whether it
    *  takes images) and its input limits (an image's most size), which pi's session and its read size an image by; on a
    *  wire that carries its reasoning (Responses), also whether it reasons, its window and its output ceiling. */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown };
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean };
   /** A request's price from its usage (the proxy's booking reads it): pi-ai's calculateCost, tiers included. */
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
@@ -109,10 +110,14 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // A model pi-ai speaks Responses to, for a caller that speaks it: that wire itself, where main sends it (provider.ts).
   if (target.api === "openai-responses" && wires.includes("openai-responses")) {
     const to = providerFor("openai-responses", env, chosen.model, "pi");
+    // A ChatGPT plan's model: billed to the plan, at no price here (unpriced, never $0), its instructions sent as a
+    // developer message (the plan takes no system one).
+    const onPlan = to.billing === "plan";
+    const plan = onPlan ? { price: () => null, unpriced: true as const } : {};
     return {
-      ...route, model: to.modelId,
-      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth },
-      like: settings,
+      ...route, model: to.modelId, ...plan,
+      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}) },
+      like: onPlan ? { ...settings, developerRole: true } : settings,
     };
   }
   return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };

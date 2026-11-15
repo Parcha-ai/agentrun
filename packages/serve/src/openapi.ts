@@ -195,6 +195,17 @@ const VALIDATED = {
     warnings: { type: "array", items: { type: "string" } },
   },
 };
+/** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
+const CHATGPT_SIGN_IN = {
+  type: "object", additionalProperties: false, required: ["state"],
+  properties: {
+    state: { enum: ["signed_out", "pending", "signed_in", "expired"], description: "`pending`: a sign-in waits for its address (POST /settings/chatgpt/sign-in/finish); `expired`: OpenAI refused to renew it, so nothing runs on the plan until a sign-in again." },
+    email: { type: "string", description: "The ChatGPT account's email, for display." },
+    plan: { type: "string", description: "The account's ChatGPT plan (`plus`, `pro`, ...), for display." },
+    authorize_url: { type: "string", format: "uri", description: "With `pending`: the link that sign-in opens." },
+    models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
+  },
+};
 /** GET /settings/tool-keys's answer (tool-keys.ts): each key's fields by name and where each is set, never a value. */
 const TOOL_KEYS_VIEW = closed({
   keys: {
@@ -2014,6 +2025,47 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  "/settings/chatgpt": {
+    get: {
+      operationId: "getChatGPTSignIn", tags: ["local"], summary: "This server's ChatGPT sign-in: its state, who and which plan, never a token",
+      description: "One sign-in per server, whose plan runs codex and pi with no key (`chatgpt/<model-id>`, capabilities' `models.source` `chatgpt` when no key is set). `expired`: OpenAI refused to renew it; sign in again. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CHATGPT_SIGN_IN, "The sign-in's state."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+    delete: {
+      operationId: "signOutChatGPT", tags: ["local"], summary: "Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here",
+      description: "Cancels a sign-in that waits, revokes the session at OpenAI's documented revocation endpoint (one try, 5 s) and removes the sealed sign-in whatever that answered: when OpenAI did not confirm it, disconnect AgentRun in ChatGPT's settings too. A run on a plan model after it fails saying the server is not signed in. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Signed out." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
+  "/settings/chatgpt/sign-in": {
+    post: {
+      operationId: "startChatGPTSignIn", tags: ["local"], summary: "Start signing in with ChatGPT: the link to open",
+      description: "Starts OpenAI's Sign in with ChatGPT for this server and answers the link a person opens. One waits at a time, for 10 minutes: a new start cancels the one waiting, whose address is then stale. On the machine the server runs on, the browser's return finishes it; elsewhere, paste the address the tab ended on (`127.0.0.1:1455/auth/callback?...`, the address OpenAI's sign-in returns to) to POST /settings/chatgpt/sign-in/finish. 400 in words when the sign-in can't start (another holds this machine's port 1455). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["authorize_url", "expires_at"], properties: { authorize_url: { type: "string", format: "uri", description: "OpenAI's page to sign in on." }, expires_at: DATE_TIME } }, "The sign-in, waiting."),
+        ...errors(400, 401, 403, 429, 500),
+      },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
+  "/settings/chatgpt/sign-in/finish": {
+    post: {
+      operationId: "finishChatGPTSignIn", tags: ["local"], summary: "Finish signing in with ChatGPT with the address the sign-in tab ended on",
+      description: "Takes the whole address the browser tab ended on, pasted, and finishes the sign-in that waits: its plan's models are read from OpenAI, and the sign-in is sealed here. 400 in words for an address that is not that sign-in's end (another address, a cancelled sign-in's, one with no code: the sign-in keeps waiting), with no sign-in waiting, or when OpenAI refuses it (start again). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["redirect_url"], properties: { redirect_url: { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true, description: "The address the sign-in tab ended on, whole." } } } } } },
+      responses: { "200": json(CHATGPT_SIGN_IN, "Signed in."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
   "/auth/session": {
     get: {
       operationId: "getAuthSession", tags: ["local"], summary: "Whether this browser has accounts, is signed in, and may save a secret",
@@ -3372,7 +3424,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const sourcesAdded = MODEL_SOURCES.filter((value) => Array.isArray(modelsSource.enum) && !modelsSource.enum.includes(value));
   if (sourcesAdded.length) {
     modelsSource.enum = [...modelsSource.enum!, ...sourcesAdded];
-    modelsSource.description = "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `managed`, `chatgpt` and `env` are the hosted API's.";
+    modelsSource.description = "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `chatgpt`: no key, and a person's ChatGPT plan signed in here (GET /settings/chatgpt), which runs codex and pi on its models (`chatgpt/<model-id>`) and no other harness (each harness's `reason` says it needs a key). `managed` and `env` are the hosted API's.";
     modelsSource["x-agentrun-serve"] = "models/2";
     fields.push(...sourcesAdded.map((value) => `Capabilities.models.source.${value}`));
   }

@@ -90,6 +90,7 @@ import { CAP_MODES } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
+import { ChatGPTPlan, planOf, PlanSignInRefused, withPlan } from "./chatgpt-plan.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
@@ -504,6 +505,10 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  { method: "GET", pattern: /^\/settings\/chatgpt$/, name: "getChatGPTSignIn" },
+  { method: "DELETE", pattern: /^\/settings\/chatgpt$/, name: "signOutChatGPT" },
+  { method: "POST", pattern: /^\/settings\/chatgpt\/sign-in$/, name: "startChatGPTSignIn" },
+  { method: "POST", pattern: /^\/settings\/chatgpt\/sign-in\/finish$/, name: "finishChatGPTSignIn" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
@@ -639,7 +644,17 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 /** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
  *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
  *  the offers probed again, never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" ")];
+
+/** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
+async function planStep<T>(step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (error) {
+    if (error instanceof PlanSignInRefused) throw new ApiError("bad_request", error.message);
+    throw error;
+  }
+}
 
 /** What a revision that names no model needs here (capabilities' `models.needs`): null when one runs, else chooseModel's
  *  `needs`, a provider's key or another model; and whether that model has a price here (`models.priced`: unpricedModels,
@@ -1016,7 +1031,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // settings, caps; a save or delete of a key, env and caps, and the offers only when what they are made from changed,
   // which no tool key is. So a write answers at once, and capabilities, save checks and run checks after it see it, with
   // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
-  let env = own(withSecrets(base, "all", storedKeys));
+  // The ChatGPT sign-in, sealed in the store: on every reading of env (chatgpt-plan.ts withPlan), so a plan model runs
+  // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
+  const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
+  await plan.load();
+  stops.push(async () => plan.close());
+  let env = withPlan(own(withSecrets(base, "all", storedKeys)), plan);
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
   // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
@@ -1047,13 +1067,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), so a key change needs no cache invalidation here.
-    env = own(withSecrets(base, "all", storedKeys));
+    env = withPlan(own(withSecrets(base, "all", storedKeys)), plan);
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
     const inputs = offersInputs(env);
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
+  };
+  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again. */
+  const planNow = async () => {
+    const was = plan.state;
+    if ((await plan.load()).state !== was) await keysChanged();
   };
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
@@ -2822,6 +2847,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Archil on or off, or saving a key, changes them. So does a shell on the runner (bash on Archil's serverless exec
       // in Mode 2): where there is one, the document is made again with it (cheap), its tools available with no box.
       const runnerShell = shellTools(await shellOf({ kind: "none" }));
+      await planNow();
       const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
       return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
     }
@@ -3437,6 +3463,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteToolKey":
         await toolKeys.remove(id);
         await keysChanged();
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      // The ChatGPT sign-in (chatgpt-plan.ts): a step it refuses is 400 in its words; its token is in no answer.
+      case "getChatGPTSignIn":
+        await planNow();
+        return send(res, 200, plan.view());
+      case "startChatGPTSignIn":
+        return send(res, 200, await planStep(() => plan.startSignIn()));
+      case "finishChatGPTSignIn": {
+        const body = (await bodyOf(req)) as { redirect_url?: unknown };
+        return send(res, 200, await planStep(() => plan.finishSignIn(body?.redirect_url)));
+      }
+      case "signOutChatGPT":
+        await plan.signOut();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":

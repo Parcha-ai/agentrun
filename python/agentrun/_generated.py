@@ -197,6 +197,8 @@ __all__ = [
     "FileUpload",
     "FileUploadUpload",
     "FilesResource",
+    "FinishChatGPTSignInBody",
+    "FinishChatGPTSignInResponse",
     "FireTriggerResponse",
     "FireTriggerResponseError",
     "ForgetSignInResponse",
@@ -233,6 +235,7 @@ __all__ = [
     "GetAgentResponseTemplate",
     "GetAgentResponseToolsItem",
     "GetCapabilitiesResponse",
+    "GetChatGPTSignInResponse",
     "GetFileResponse",
     "GetGitHubConnectionResponse",
     "GetGitHubConnectionResponseObject1",
@@ -638,6 +641,7 @@ __all__ = [
     "SkillFileInfo",
     "SkillFiles",
     "Source",
+    "StartChatGPTSignInResponse",
     "StartMcpOAuthBody",
     "StartMcpOAuthResponse",
     "StartRunBody",
@@ -2544,6 +2548,32 @@ class DisconnectGitHubResponse(TypedDict):
     note: str
 
 
+class FinishChatGPTSignInBody(TypedDict):
+    redirect_url: str
+
+
+class _FinishChatGPTSignInResponseRequired(TypedDict):
+    state: Literal["signed_out", "pending", "signed_in", "expired"]
+
+
+class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=False):
+    email: str
+    plan: str
+    authorize_url: str
+    models: list[str]
+
+
+class _GetChatGPTSignInResponseRequired(TypedDict):
+    state: Literal["signed_out", "pending", "signed_in", "expired"]
+
+
+class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
+    email: str
+    plan: str
+    authorize_url: str
+    models: list[str]
+
+
 GetGitHubConnectionResponse: TypeAlias = "GetGitHubConnectionResponseObject1 | GetGitHubConnectionResponseObject2"
 
 
@@ -2901,6 +2931,11 @@ class SaveComputerKeysResponseGpuPerGpu(TypedDict):
 
 class SaveComputerKeysResponsePersistent(TypedDict, total=False):
     images: list[str]
+
+
+class StartChatGPTSignInResponse(TypedDict):
+    authorize_url: str
+    expires_at: str
 
 
 class _StartMcpOAuthBodyRequired(TypedDict):
@@ -6345,6 +6380,8 @@ OPERATIONS: dict[str, Operation] = {
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getChatGPTSignIn": Operation(method="GET", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -6355,6 +6392,8 @@ OPERATIONS: dict[str, Operation] = {
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6608,6 +6647,14 @@ class LocalResource(Group):
         """Disconnect GitHub: the App's credentials gone from this server, and every github trigger off (DELETE /integrations/github)."""
         return self._call("disconnectGitHub", (), None, None, timeout=timeout)
 
+    def finish_chat_gptsign_in(self, body: FinishChatGPTSignInBody, *, timeout: float | None = None) -> FinishChatGPTSignInResponse:
+        """Finish signing in with ChatGPT with the address the sign-in tab ended on (POST /settings/chatgpt/sign-in/finish)."""
+        return self._call("finishChatGPTSignIn", (), body, None, timeout=timeout)
+
+    def get_chat_gptsign_in(self, *, timeout: float | None = None) -> GetChatGPTSignInResponse:
+        """This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt)."""
+        return self._call("getChatGPTSignIn", (), None, None, timeout=timeout)
+
     def get_git_hub_connection(self, *, timeout: float | None = None) -> GetGitHubConnectionResponse:
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
         return self._call("getGitHubConnection", (), None, None, timeout=timeout)
@@ -6639,6 +6686,14 @@ class LocalResource(Group):
     def save_computer_keys(self, provider: str, body: SaveComputerKeysBody, *, timeout: float | None = None) -> SaveComputerKeysResponse:
         """Save a computer provider's keys, sealed (PUT /computers/{provider}/keys)."""
         return self._call("saveComputerKeys", (provider,), body, None, timeout=timeout)
+
+    def sign_out_chat_gpt(self, *, timeout: float | None = None) -> None:
+        """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
+        return self._call("signOutChatGPT", (), None, None, timeout=timeout)
+
+    def start_chat_gptsign_in(self, *, timeout: float | None = None) -> StartChatGPTSignInResponse:
+        """Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in)."""
+        return self._call("startChatGPTSignIn", (), None, None, timeout=timeout)
 
     def test_computer(self, provider: str, *, timeout: float | None = None) -> TestComputerResponse:
         """Test a computer provider's account with its saved keys (POST /computers/{provider}/test)."""
