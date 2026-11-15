@@ -87,6 +87,18 @@ test("cited links come from the answer's text and every string of its JSON, each
   assert.deepEqual(checked(graderInput(grader, "task", run("(see https://en.example/wiki/Foo_(bar)).", search("https://en.example/wiki/Foo_(bar)")))), ["https://en.example/wiki/Foo_(bar) — matches call 1"]);
 });
 
+test("a URL that ends in punctuation or holds an apostrophe matches whole; punctuation around a link in a sentence never stops a match", () => {
+  const calls = search("https://en.example/wiki/Yahoo!", "https://en.example/wiki/O'Reilly_Media", "https://vendor.example/a");
+  const json = JSON.stringify({ sources: ["https://en.example/wiki/O'Reilly_Media", "https://en.example/wiki/Yahoo!"] });
+  const answer = `Yahoo: https://en.example/wiki/Yahoo!. See https://vendor.example/a. Quoted: 'https://vendor.example/a', and https://vendor.example/zz).\n\n\`\`\`json\n${json}\n\`\`\``;
+  assert.deepEqual(checked(graderInput(grader, "task", run(answer, calls))), [
+    "https://en.example/wiki/Yahoo! — matches call 1",
+    "https://vendor.example/a — matches call 1",
+    "https://vendor.example/zz — no matching call",
+    "https://en.example/wiki/O'Reilly_Media — matches call 1",
+  ]);
+});
+
 test("a run with no web_search or web_fetch call is graded on the prompt it always was, with no link check", () => {
   const bash = { tool: "bash", name: "bash", arguments: { command: "ls" }, status: "success", result: "notes.md" };
   const prompt = graderInput(grader, "task", run("See https://vendor.example/a", bash));

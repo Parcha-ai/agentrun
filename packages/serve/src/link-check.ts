@@ -16,8 +16,8 @@ export type CheckedCall = { tool: string; name?: string; arguments?: unknown; re
 export type CanonicalUrl = { base: string; query: Map<string, string[]> };
 
 const ELIDED = "…";
-const TEXT_URL = /https?:\/\/[^\s"'`<>\\]+/gi;
-const TRAILING = ".,;:!?*)]}";
+const TEXT_URL = /https?:\/\/[^\s"`<>\\]+/gi;
+const TRAILING = ".,;:!?*)]}'";
 
 type Obj = Record<string, unknown>;
 const isObj = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -61,9 +61,18 @@ function trimmed(raw: string): string {
   return url;
 }
 
-/** Every http(s) URL in `text`, in order; a markdown link's text and target (`[url](url)`) read as two. */
+/** The forms a URL found in text may end at, longest first: as found, then less one trailing punctuation mark at a time.
+ *  A URL can end in one (`/wiki/Yahoo!`), so which is the link is read from what matches, never guessed. */
+function formsOf(raw: string): string[] {
+  const forms = [raw];
+  for (let url = raw; url && TRAILING.includes(url.at(-1)!); ) forms.push((url = url.slice(0, -1)));
+  return forms;
+}
+
+/** Every http(s) URL in `text` as found, trailing punctuation included, in order; a markdown link's text and target
+ *  (`[url](url)`) read as two. */
 function urlsIn(text: string): string[] {
-  return [...text.matchAll(TEXT_URL)].flatMap((match) => match[0].split("](").filter((part) => /^https?:\/\//i.test(part)).map(trimmed));
+  return [...text.matchAll(TEXT_URL)].flatMap((match) => match[0].split("](").filter((part) => /^https?:\/\//i.test(part)));
 }
 
 /** Every string in `value`, property names aside. */
@@ -73,8 +82,9 @@ function stringsIn(value: unknown): string[] {
   return isObj(value) ? Object.values(value).flatMap(stringsIn) : [];
 }
 
-/** Every http(s) URL an answer cites, in order, each once: in its text, and in any string of its JSON (the whole answer,
- *  else its last json block), read from the parsed JSON so an escape in it never cuts a URL short. */
+/** Every http(s) URL an answer cites as found (trailing punctuation included: see formsOf), in order, each once: in its
+ *  text, and in any string of its JSON (the whole answer, else its last json block), read from the parsed JSON so an
+ *  escape in it never cuts a URL short. */
 export function citedLinks(answer: string): string[] {
   let found: string[];
   try {
@@ -124,13 +134,22 @@ export function linkCheck(answer: string, calls: readonly CheckedCall[]): string
   const cut = sources.flatMap((source, i) => (source?.cut ? [i + 1] : []));
   const seen = new Set<string>();
   const lines: string[] = [];
-  for (const link of citedLinks(answer)) {
+  const matchOf = (cited: CanonicalUrl) => called.findIndex((urls) => urls.some((url) => urlMatches(cited, url)));
+  for (const found of citedLinks(answer)) {
+    // The longest form that matches a call is the link; with none, the form less the punctuation around it.
+    let [link, at] = [trimmed(found), -1];
+    for (const form of formsOf(found)) {
+      const canonical = canonicalUrl(form);
+      const i = canonical ? matchOf(canonical) : -1;
+      if (i < 0) continue;
+      [link, at] = [form, i];
+      break;
+    }
     const cited = canonicalUrl(link);
     if (!cited) continue;
     const key = JSON.stringify([cited.base, [...cited.query].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))]);
     if (seen.has(key)) continue;
     seen.add(key);
-    const at = called.findIndex((urls) => urls.some((url) => urlMatches(cited, url)));
     lines.push(`${scrubUrls(link)} — ${at >= 0 ? `matches call ${at + 1}` : `no matching call${cut.length ? ` (${callsWord(cut)}'s links were cut)` : ""}`}`);
   }
   const intro =
