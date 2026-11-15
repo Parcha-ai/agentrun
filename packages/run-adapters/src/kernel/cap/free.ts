@@ -23,7 +23,8 @@ const zero = (rates: { input: number; output: number; cacheRead?: number; cacheW
 
 /** Whether `model` is a free model: one whose known price is $0 for every token, each tier's included. A model with no
  *  price (null), or none at all, is no free model: unknown, the dollar cap's to refuse; nor is an OpenRouter router
- *  (ROUTERS), whatever its catalog price; nor a ChatGPT plan's (CapModel.plan), whatever its listing. */
+ *  (ROUTERS), whatever its catalog price; nor a ChatGPT plan's (CapModel.plan), whatever its listing. The one rule: serve's
+ *  local-models.ts isFree, the model picker's free mark, reads it on the catalog entry's price. */
 export function freeModel(model: CapModel | undefined): boolean {
   if (!model || model.plan || ROUTERS.has(model.id)) return false;
   const price: ModelPrice | null = model.price;
