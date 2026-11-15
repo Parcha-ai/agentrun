@@ -85,6 +85,12 @@ export type TimelineEvent = {
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
 export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
+/** The call a nested call (the kernel's NestedCalls: a script's, tools_call's) was made in, read off its id
+ *  (`<callId>/<key>`); undefined for a call the model made itself. */
+export const nestingCallOf = (callId: string): string | undefined => {
+  const at = callId.lastIndexOf("/");
+  return at > 0 ? callId.slice(0, at) : undefined;
+};
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
@@ -904,7 +910,9 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
+          // A call the loop's record kept for a tool that nests (a script's, tools_call's) sits under that tool's call.
+          const nesting = entry.recordedCall ? nestingCallOf(id) : undefined;
+          const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
           calls.set(`${conv}:${id}`, opened);
@@ -942,7 +950,7 @@ function createProjector(options: TimelineOptions) {
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown, call?.use.parent_tool_use_id);
       if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
       add(row);
       if (!view.isError) {

@@ -36,6 +36,7 @@ import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
+import { META_TOOLS } from "../meta-tool-names.js";
 import { holdsSecret, LEARNING_LABEL, PROPOSAL, secretsShown } from "../learning.js";
 import type { RunPath } from "../learning-cost.js";
 import { reflects, type Reflect } from "../reflect-range.js";
@@ -237,6 +238,14 @@ export const learningRunIdOf = (runId: string, round = 1): string => (round > 1 
  *  A harness that names it another way reads as another tool, so its run is asked as before. */
 export const LEARNED_NAMES: ReadonlySet<string> = new Set([LEARNED_WORKFLOW_TOOL, `mcp__hands__${LEARNED_WORKFLOW_TOOL}`]);
 
+/** Over a run's timeline `rows`: whether a row is a call the job's model made, or its result: one at the top, or one a
+ *  script or tools_call made for it (a call nested in a META_TOOLS call, by any harness's name for it), never a
+ *  subagent's row or a call another tool nested (a learned workflow's own). */
+export function modelsOwn(rows: readonly TimelineEvent[]): (row: TimelineEvent) => boolean {
+  const named = new Map(rows.flatMap((row) => (row.kind === "tool_use" && row.tool_use_id ? [[row.tool_use_id, row.tool_name ?? ""] as const] : [])));
+  return (row) => !row.parent_tool_use_id || META_TOOLS.has((named.get(row.parent_tool_use_id) ?? "").replace(/^(?:mcp__hands__|hands_)/, ""));
+}
+
 /** Whether a run's job, by its timeline `rows` (the end-of-run turn's own, labelled LEARNING_LABEL, left out), gave
  *  nothing new to look back on: it called tools, every one of them learned_workflow (a workflow's own nested calls are
  *  its), each answering; no tool result failed or was refused; no error, approval or wait; and one message, its first,
@@ -246,11 +255,12 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
   const own = withoutFeedbackRounds(rows).filter((row) => row.agent_label !== LEARNING_LABEL);
   if (own.some((row) => row.kind === "error" || row.kind === "tool_approval_requested" || row.kind === "waiting")) return false;
   if (own.filter(isMessageRow).length !== 1) return false;
-  const calls = own.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id);
+  const models = modelsOwn(own);
+  const calls = own.filter((row) => row.kind === "tool_use" && models(row));
   if (!calls.length || calls.some((row) => !LEARNED_NAMES.has(row.tool_name ?? ""))) return false;
   const results = own.filter((row) => row.kind === "tool_result");
   if (results.some((row) => row.tool_status !== "success")) return false;
-  const answered = new Set(results.filter((row) => !row.parent_tool_use_id).map((row) => row.tool_use_id));
+  const answered = new Set(results.filter(models).map((row) => row.tool_use_id));
   return calls.every((row) => answered.has(row.tool_use_id));
 }
 
@@ -259,7 +269,8 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
  *  onlyLearnedWorkflows asks of a run with nothing new to look back on, `handed_back` when it called a learned workflow
  *  otherwise, `agent` when it called none. */
 export function runPathOf(rows: readonly TimelineEvent[]): RunPath {
-  const ran = rows.some((row) => row.agent_label !== LEARNING_LABEL && row.kind === "tool_use" && !row.parent_tool_use_id && LEARNED_NAMES.has(row.tool_name ?? ""));
+  const models = modelsOwn(rows);
+  const ran = rows.some((row) => row.agent_label !== LEARNING_LABEL && row.kind === "tool_use" && models(row) && LEARNED_NAMES.has(row.tool_name ?? ""));
   if (!ran) return "agent";
   return onlyLearnedWorkflows(rows) ? "workflow" : "handed_back";
 }
@@ -356,7 +367,8 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
   const cut = (text: string | null | undefined) => redactSecrets(String(text ?? ""), refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim().slice(0, TRACE_TEXT);
   const messages = rows.filter(isMessageRow);
   const failed = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id));
-  const calls = rows.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id).slice(0, TRACE_CALLS).map((row) => ({ tool: cut(row.tool_name), input: cut(row.tool_input_preview), ...(failed.has(row.tool_use_id) ? { failed: true as const } : {}) }));
+  const models = modelsOwn(rows);
+  const calls = rows.filter((row) => row.kind === "tool_use" && models(row)).slice(0, TRACE_CALLS).map((row) => ({ tool: cut(row.tool_name), input: cut(row.tool_input_preview), ...(failed.has(row.tool_use_id) ? { failed: true as const } : {}) }));
   const answer = rows.findLast((row) => row.kind === "final_answer")?.text;
   const first = messages[0];
   return { input: first ? cut(first.text ?? first.summary) : "", calls, answer: cut(answer), feedback: messages.slice(1).filter((row) => row.kind === "user_message").map((row) => cut(row.text ?? row.summary)) };
