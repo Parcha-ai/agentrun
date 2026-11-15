@@ -37,6 +37,7 @@ import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRe
 import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
+import { settingOfDefinition } from "./computer-setting.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
 import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
 
@@ -410,8 +411,10 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  // The run's computer kind, from its revision's setting (as the claim starts it): a computer tool's words name it.
+  const kind = settingOfDefinition(revision.body)?.computer.kind;
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
@@ -431,7 +434,7 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -474,9 +477,26 @@ export class RunGate {
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
   }
 
+  /** The settings key a call of `name` is held to, the one its refusal and its ask name: a computer tool's is the kind
+   *  whose setting decides it (kindSetting), any other's its session's name map. */
   private keyOf(name: string): string | undefined {
+    const kinds = this.kindKeysOf(name);
+    if (kinds) return this.kindSetting(name, kinds).key;
     const harness = this.where.harness ?? DEFAULT_HARNESS;
     return settingsKeyOf(harness, name, (this.names ??= nameMapOf(harness)));
+  }
+
+  /** A computer tool's settings keys (KIND_TOOLS), the run's own kind first (where.kind); undefined for any other tool. */
+  private kindKeysOf(tool: string): readonly string[] | undefined {
+    const keys = KIND_TOOLS.get(tool);
+    const kind = this.where.kind;
+    return keys && kind !== undefined && keys.includes(kind) ? [kind, ...keys.filter((key) => key !== kind)] : keys;
+  }
+
+  /** A computer tool's permission: the stricter of its kinds' settings (a desktop's and a phone's keys both hold it), and
+   *  the key that decided it, the run's own kind on a tie, so a phone run's refusal and ask say phone. */
+  private kindSetting(tool: string, kinds: readonly string[]): { permission: Permission; from: SettingFrom; key: string } {
+    return kinds.map((key) => ({ ...this.settingOf(tool, key), key })).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
   }
 
   /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
@@ -496,12 +516,10 @@ export class RunGate {
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
     if (META_TOOLS.has(tool)) return this.settingOf(tool, tool);
-    // A tool the desktop and the phone both have (every computer tool): the gate knows not the run's kind, so it is held to the
-    // stricter of both keys' settings, never more permissive than the run's own kind's.
-    const shared = KIND_TOOLS.get(tool);
-    if (shared && shared.length > 1) {
-      return shared.map((key) => this.settingOf(tool, key)).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
-    }
+    // A tool the desktop and the phone both have (every computer tool) is held to the stricter of both keys' settings,
+    // never more permissive than the run's own kind's.
+    const kinds = this.kindKeysOf(tool);
+    if (kinds) return this.kindSetting(tool, kinds);
     return this.settingOf(tool, this.keyOf(tool));
   }
 
