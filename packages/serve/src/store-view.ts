@@ -47,7 +47,7 @@ import {
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
-import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
+import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { type BookedSpend, bookedSpend, cliModelWorked, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
@@ -137,7 +137,9 @@ export const answerOf = (timeline: readonly TimelineEvent[]): string | null => {
  *  the code, as main served it; a provider's content-filter stop is `moderated`, in words a person can act on
  *  (content-filter.ts); every other failure is run_failed. */
 const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => {
-  const over = overCapMessage(summary);
+  // A run that reached its limit of requests on free models (the kernel cap's freeCeilingEnd) ends as its cap ends one: code
+  // spend_cap_reached, its message the words after the code.
+  const over = overCapMessage(summary) ?? freeCeilingMessage(summary);
   if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
   if (summary !== null && contentFiltered(summary)) return { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false };
   return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };

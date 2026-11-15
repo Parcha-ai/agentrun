@@ -8,12 +8,22 @@
 //
 // onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
+import type { Context } from "@earendil-works/chord/context";
 import { HOST_PHASE } from "../timeline/index.js";
 import {
   COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdIn, holdWords, takeEndedWords,
 } from "../computer-commands.js";
+import type { JournalReads } from "../store/store.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
+import { journalEntries } from "./journal-reader.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
+
+/** Whether the run's journal says a desktop or a phone of the run came up (a hold's up entry, which only a claim's pass
+ *  writes): what a later claim asks (computerForClaim's earlierUp) when it makes a fresh one and found no older
+ *  computer of the run to let go, its claim having let it go at its end (a server's stop). */
+export async function earlierUp(journal: JournalReads, context: Context): Promise<boolean> {
+  return holdIn((await journalEntries(journal, context)).map((entry) => ({ kind: entry.kind, data: entry.data }))).up;
+}
 
 /** One root entry, as the run's journal takes it. */
 export type RootEntry = { readonly kind: string; readonly data: Record<string, unknown> };

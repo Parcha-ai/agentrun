@@ -77,7 +77,9 @@ to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is 
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
 it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's (a DIR/.token from an earlier start is removed), and is never printed; DIR/.token's is
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
-published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
+published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is.
+AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most requests on free models ($0 in the catalog) a run makes, capped
+or not (ChatGPT-plan requests don't count): the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
@@ -113,6 +115,12 @@ times in place of its own count; --grader-model is the llm graders' model (defau
 model request from MODULE, as the server's --faux does. Progress goes to stderr, a summary to stdout, the whole report
 as JSON to --report FILE. Exit 0 when every case passed, 1 when one failed, 2 when the flags, the package or a case are
 wrong and nothing ran. Real runs cost money: each case's prompt.md caps each of its runs (max_cost_usd).`;
+
+if (process.argv[2] === "remote-bridge") {
+  const { runRemoteWorkerBridge } = await import("./native/remote-worker-bridge.js");
+  await runRemoteWorkerBridge();
+  process.exit(0);
+}
 
 if (process.argv[2] === "native") {
   const { nativeMain } = await import("./native/cli.js");

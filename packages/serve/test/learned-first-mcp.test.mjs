@@ -1,6 +1,7 @@
 // A learned workflow served first (runner/workflow-first.ts) whose call node names an MCP tool of the run: the step runs
 // the run's own learned_workflow tool as the loop wrapped it (adapter-loop.ts serveFirst, through `hosted`), so the MCP
-// node reaches the run's MCP (host-calls.ts withHostCalls) exactly as the agent's own call of the tool would: it runs
+// node reaches the run's MCP (adapter-loop.ts servedNested: a call nested in the workflow's) exactly as the agent's own
+// call of the tool would, gate first: it runs
 // once, its price is booked on the run, and the workflow answers alone with no agent turn. pi, on the faux model.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";

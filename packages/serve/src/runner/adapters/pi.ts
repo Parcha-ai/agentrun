@@ -525,8 +525,8 @@ export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS 
  *  Each one's end goes to the host (`ended`: PiSessionIO.nestedEnded), which keeps it on the run's record. */
 function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>, ended?: PiSessionIO["nestedEnded"]): NestedCalls {
   return {
-    async call(name, args, key) {
-      const result = await api.executeTool(name, args as JsonObject, context, { key });
+    async call(name, args, key, signal) {
+      const result = await api.executeTool(name, args as JsonObject, signal ? withAbortSignal(signal, context) : context, { key });
       const callId = `${api.callId}/${key}`;
       const codes = result.diagnostics.map((one) => one.code);
       const refused = (result.details as { [CALL_REFUSED]?: unknown } | undefined)?.[CALL_REFUSED] === true || codes.includes("blocked") || codes.includes("tool_unavailable");
@@ -552,7 +552,12 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
         fresh: touched.has(callId),
       };
     },
-    memo: (key, value) => api.memo(`nested:${key}`, value, context),
+    // A value given as a function is called only while the task holds none for `key`, so a rerun never calls it again.
+    async memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T> {
+      if (typeof value !== "function") return api.memo(`nested:${key}`, value, context) as Promise<T>;
+      const held = await api.memo(`nested:${key}`, context);
+      return (held !== undefined ? held : await api.memo(`nested:${key}`, await value(), context)) as T;
+    },
   };
 }
 

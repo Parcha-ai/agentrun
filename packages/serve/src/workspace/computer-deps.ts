@@ -253,9 +253,20 @@ const OS_NAMES: Readonly<Record<string, string>> = { linux: "Linux", windows: "W
 export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "provider" | "kind">): string => `Starting a ${kind} from ${provider}…`;
 
 /** The run's timeline phase once its claim's computer is connected (computerForClaim's onConnected): what it says it
- *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." */
-export const computerReadyWords = ({ provider, kind, hello }: ComputerSaid): string =>
-  `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
+ *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." A computer that
+ *  replaced an earlier claim's (`replaced`) says it is a new one, and, where the run's folder is on Archil and mounted in
+ *  it (`folderKept`), that the folder is kept. */
+export const computerReadyWords = ({ provider, kind, hello, replaced }: ComputerSaid): string => {
+  const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
+  if (!replaced) return ready;
+  return `${ready} It's a new ${kind}: the one before went with the run's earlier runner, and what was on it is gone.${replaced.folderKept ? " The run folder is kept." : ""}`;
+};
+
+/** What the run's model is told, once, on its next request after its claim gave it a computer that replaced an earlier
+ *  claim's (the adapter loop's computer note): the screen it saw and the refs it read are gone, and so is every file
+ *  outside the run's folder. `folderKept`: the folder is on Archil and mounted in the computer, so it is kept. */
+export const computerReplacedNote = ({ folderKept }: { readonly folderKept: boolean }): string =>
+  `Your computer was replaced after the runner was lost: the earlier screen and its refs are gone, and files outside the run folder are gone. Look at the screen again before acting.${folderKept ? " The run folder is kept." : ""}`;
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */

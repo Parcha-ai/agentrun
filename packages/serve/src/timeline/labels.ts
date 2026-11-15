@@ -92,9 +92,10 @@ export function foldLabel(tool: string, calls: readonly { input: string | null; 
   return subjects.length ? `${head}: ${list(subjects)}` : head;
 }
 
-/** The input worth showing: Grep's keys first, then the browser and file ones. */
+/** The input worth showing: Grep's keys first, then the browser and file ones, and last the app a computer's look or act
+ *  names (never what an act types: its steps; nor a codemode script, which can hold it). */
 export function inputPreview(args: Obj, max: number): string | null {
-  for (const key of ["description", "command", "query", "file_path", "url", "path", "code"]) {
+  for (const key of ["description", "command", "query", "file_path", "url", "path", "code", "app"]) {
     const value = str(args[key]);
     if (value) return cut(scrubUrls(value), max);
   }

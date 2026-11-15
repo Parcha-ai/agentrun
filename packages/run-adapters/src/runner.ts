@@ -82,6 +82,9 @@ export type BeforeRequest = (request: {
    *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
    *  admitted one at a time, so each check sees every request admitted before it. */
   inFlight: readonly InFlight[];
+  /** The run's requests on free models so far (runBooking, over every session of the run): each whose runner.request says
+   *  so (`freeRequest`), answered, in flight or cut, and each admitted that no record shows yet. Absent: not counted here. */
+  freeRequestsMade?: number;
 }) => void | Refusal | Admitted | Promise<void | Refusal | Admitted>;
 
 /** A host's refusal of a request: its words, and, from a spend cap, whether no raise could send it (`forGood`) and, for
@@ -94,15 +97,17 @@ export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd:
 
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
  *  one. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string };
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string; freeRequest?: true };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
  *  streamed, in tokens (one a byte), never more than `holdUsd`; without it, at `holdUsd`. `withoutNote`: a request that
  *  carries its host's note is admitted only as it was without it (the note's bytes did not fit): it goes without it.
  *  `note`: the host's record of the note this request carries, written on the request's `runner.turn` record once it
- *  ends, beside how it was booked, so a later process reads whether the note reached an answer. */
-export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue } };
+ *  ends, beside how it was booked, so a later process reads whether the note reached an answer. `freeRequest`: one of
+ *  the run's requests on a free model, which its ceiling on such requests counts: written on its runner.request (as
+ *  `freeRequest`), so the count holds it in every process, and a cut one books at $0 (bookCut). */
+export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue }; freeRequest?: true };
 
 /** An admission as a host gives it: with `free` when the request is on a free model (its known price is $0 for every
  *  token, with no fee beside), so it costs nothing however it ends: booked a known $0 (booking.ts), its own cost 0, its
@@ -442,9 +447,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    // Billed to a plan (Admitted.plan): said on its record, so a later process that books it cut books it so.
+    // Billed to a plan (Admitted.plan), or counted toward the run's free-model limit (Admitted.freeRequest): said on its
+    // record, so a later process that books it cut books it so, and the next count holds it. Never both (runCap).
     const onPlan = !!verdict && "plan" in verdict && verdict.plan === true;
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(onPlan ? { plan: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }) } }]);
+    const freeRequest = !!verdict && "freeRequest" in verdict && verdict.freeRequest === true;
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(onPlan ? { plan: true as const } : {}), ...(freeRequest ? { freeRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }) } }]);
     turns = turn;
     if (host !== undefined) hosts.set(turn, host);
     if (hold !== undefined) held.set(turn, hold);
@@ -587,6 +594,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       clearTimeout(timer);
     }
     const now = await writer.read().catch(() => options.records);
+    // Every record this pass appends after that read (a handed-on answer, a given-back hold, an owed step, a free cut), in
+    // order: a spend rebuilt from the session's records reads `now` and these, so a request booked earlier in the pass
+    // counts at what it was booked at, never at the hold `now` still has it open at.
+    const booked: SessionRecord[] = [];
+    const book = async (records: SessionRecord[]) => {
+      await append(records);
+      booked.push(...records);
+    };
     const bookedSince = sessionSpendOf(now).answered;
     for (const t of inherited) if (bookedSince.has(t)) answered.add(t);
     // A request an earlier booking in this process saw answer, whose runner.turn its store refused: written now as that
@@ -600,15 +615,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         return one ? [{ turn, ...one }] : [];
       });
       if (taken.length) {
-        const records = taken.map((one) => ({ kind: RUNNER_RECORDS.turn, data: one.data }));
-        await append(records);
+        await book(taken.map((one) => ({ kind: RUNNER_RECORDS.turn, data: one.data })));
         for (const one of taken) {
           handed.refused.delete(one.turn);
           answered.add(one.turn);
         }
         // Its spend read the request at its hold (or unknown); booked, it reads at what it was booked at. Only
         // before this booking's own requests: the spend is the session's records then.
-        if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...records]).spentUsd;
+        if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...booked]).spentUsd;
         for (const one of taken) {
           const hosted = hosts.get(one.turn);
           await emit({ type: "request_end", turn: one.turn, usage: one.usage, ...(hosted === undefined ? {} : { host: hosted }), ...(one.ended ? { ended: one.ended } : {}) });
@@ -629,20 +643,27 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       return data.owed === true && data.hold !== true ? [inherited[i]!] : [];
     }));
     const owed = left.filter((t) => !read.openHolds.has(t) && owedTurns.has(t) && (held.get(t) ?? 0) > 0);
-    const numbers = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t));
+    // A request on a free model (its runner.request says `freeRequest`, as the run's cap admitted it) an earlier process
+    // left open costs nothing whatever reached the provider: booked cut at a known $0 and marked `free`, as this process
+    // books its own (bookRequest's free), never unknown. Any other keeps the rule below.
+    const freeTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => {
+      const data = (r.data ?? {}) as { turn?: unknown; freeRequest?: unknown };
+      return data.freeRequest === true ? [typeof data.turn === "number" ? data.turn : i + 1] : [];
+    }));
+    const free = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && freeTurns.has(t));
+    const numbers = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && !free.includes(t));
     if (givenBack.length) {
-      await append(givenBack.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, givenBack: true } })));
+      await book(givenBack.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, givenBack: true } })));
       for (const turn of givenBack) answered.add(turn);
     }
     if (owed.length) {
-      await append(owed.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: held.get(turn)!, bookedUsd: held.get(turn)!, rule: "owed" } })));
+      await book(owed.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: held.get(turn)!, bookedUsd: held.get(turn)!, rule: "owed" } })));
       for (const turn of owed) {
         answered.add(turn);
         const hosted = hosts.get(turn);
         emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: held.get(turn)!, estimated: true }, ...(hosted === undefined ? {} : { host: hosted }) });
       }
     }
-    if (numbers.length === 0) return;
     // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
     // still have reached the provider before any answer. Neither left a figure of its own (the process that would have
     // read what it reported is gone): one its host held a figure for is booked at that hold, the most it can have cost
@@ -651,6 +672,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // (its runner.request's `paid`) is its fee as admitted, not what its provider may have charged: both stay unknown.
     // One billed to a person's plan (its runner.request's `plan`) costs the run $0 however it ended: booked cut at $0,
     // marked as the plan's (`billing`), a known figure, never an unknown that blanks the run's cost.
+    // Each request left open is in exactly one class, taken in this order: given back (an open hold-only step), owed (its
+    // figure settled at admission), free (`freeRequest`: a known $0, `free`), then `numbers`, where a plan request books $0
+    // billing "plan" and any other at its hold (`atMost`) or unknown. A request is never both free and plan: the cap marks
+    // a plan request `plan` before it looks at free, and freeModel refuses a plan model, so no plan request is admitted
+    // `freeRequest`.
     const modelTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => ((r.data as { paid?: unknown } | undefined)?.paid === undefined ? [inherited[i]!] : [])));
     const onPlan = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => ((r.data as { plan?: unknown } | undefined)?.plan === true ? [inherited[i]!] : [])));
     const boundOf = (turn: number): number | undefined => {
@@ -663,6 +689,23 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const hold = boundOf(turn);
       return { usd: null, cut: true, turn, ...(hold === undefined ? {} : { bookedUsd: hold, rule: CUT_AT_HOLD, atMost: true }), ...(providerIds ? { providerIds } : {}) };
     };
+    if (free.length) {
+      await book(free.map((turn) => {
+        const providerIds = responses.get(turn);
+        return { kind: RUNNER_RECORDS.turn, data: { usd: 0, cut: true, turn, ...(providerIds ? { providerIds } : {}), bookedUsd: 0, rule: "lost:cut", free: true } };
+      }));
+      for (const turn of free) {
+        answered.add(turn);
+        const providerIds = responses.get(turn);
+        const hosted = hosts.get(turn);
+        emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0, cut: true, free: true, ...(providerIds ? { providerIds } : {}) }, ...(hosted === undefined ? {} : { host: hosted }), ended: { end: "lost", label: "cut" } });
+      }
+      // Its spend read the request at its hold (or unknown); booked, it reads at $0. Only before this booking's own
+      // requests: the spend is the session's records then, every one this pass booked above included (a handed-on answer
+      // at what it reported, an owed step at its booked figure).
+      if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...booked]).spentUsd;
+    }
+    if (numbers.length === 0) return;
     await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: cutOf(turn) })));
     for (const turn of numbers) answered.add(turn);
     // The spend already counts each of them, at its hold or as unknown: booking them adds nothing.

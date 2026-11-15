@@ -13,7 +13,7 @@ import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../
 import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
-import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
+import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
 import { PAST_RUNS, type PastRun, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
@@ -572,7 +572,8 @@ function readsSkill(call: { tool: string; args: Record<string, unknown> }, name:
 export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], args: ReadonlyMap<string, { tool: string; args: Record<string, unknown> }> = new Map(), laid: Pick<Laid, "skills"> = { skills: [] }, loads: readonly string[] = []): LearnedUse {
   const job = rows.filter((row) => !reflects(reflect as Reflect | undefined, row.id));
   const results = new Map(job.flatMap((row) => (row.kind === "tool_result" && row.tool_use_id ? [[row.tool_use_id, row.tool_status] as const] : [])));
-  const calls = job.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id && row.tool_use_id).flatMap((row) => {
+  const models = modelsOwn(job);
+  const calls = job.filter((row) => row.kind === "tool_use" && models(row) && row.tool_use_id).flatMap((row) => {
     const call = args.get(row.tool_use_id!);
     return call ? [{ id: row.tool_use_id!, ...call }] : [];
   });

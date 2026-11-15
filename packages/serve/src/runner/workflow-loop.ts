@@ -388,10 +388,12 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
   }
 
   /** A step's spend cap held it: the run parks with the cap's pending budget (an `agentrun.budget` entry, the run's row in
-   *  the cap's words), or fails when no raise could fix it (parkOf). A later claim's raise resumes the workflow. */
+   *  the cap's words), or fails when no raise could fix it (parkOf). A later claim's raise resumes the workflow. A run with
+   *  no dollar cap (no cap rule) refused for good, at its limit on free-model requests, fails the same way, in the
+   *  refusal's words: handed back for another claim, it would meet the same refusal again. */
   async function parkAtCap(claim: Claim, refusal: CapRefusal): Promise<LoopEnd> {
     const journal = deps.journal(claim);
-    const parked = spec?.cap?.park(refusal);
+    const parked = spec?.cap ? spec.cap.park(refusal) : spec && refusal.forGood ? { outcome: "failed" as const, error: refusal.message } : undefined;
     if (!parked) return { state: "interrupted" };
     if (parked.outcome === "failed") return await writeEnd(journal, BACKGROUND_CONTEXT, { state: "failed", summary: parked.error });
     // A workflow's pause names the node whose step waits at the cap (null when it is not known), as its pending budget shows.
