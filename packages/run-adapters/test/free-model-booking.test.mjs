@@ -82,7 +82,7 @@ for (const [how, fetch] of [['cut part way', cut], ['reset once it left', reset]
 }
 
 test("under a cap, a free model's request that failed, was retried, cut or stopped books a known $0, marked free", async () => {
-  for (const ended of [{ end: 'lost', label: 'error_after', began: true }, { end: 'lost', label: 'retried' }, { end: 'lost', label: 'cut' }, { end: 'stopped', streamedTokens: 10 }]) {
+  for (const ended of [{ end: 'lost', label: 'error_after', began: true }, { end: 'lost', label: 'retried' }, { end: 'lost', label: 'cut' }, { end: 'stopped', streamedTokens: 10 }, { end: 'answered', usd: null }]) {
     const { turn, cost, spentUsd } = await bookedUnder(FREE, 1, ended);
     assert.deepEqual([turn?.usd, turn?.bookedUsd, turn?.free], [0, 0, true], `${JSON.stringify(ended)}: ${JSON.stringify(turn)}`);
     assert.deepEqual(cost, KNOWN_ZERO, `${JSON.stringify(ended)}: a known $0`);
@@ -90,10 +90,7 @@ test("under a cap, a free model's request that failed, was retried, cut or stopp
   }
 });
 
-test("a guard: on a model the cap lists at $0, an answer its path priced at no figure, and a request billed to a plan, are never free: unknown as before", async () => {
-  const answered = await bookedUnder(FREE, undefined, { end: 'answered', usd: null });
-  assert.deepEqual([answered.turn?.usd, answered.turn?.free], [null, undefined], `an answer with no price: ${JSON.stringify(answered.turn)}`);
-  assert.deepEqual([answered.cost.usd, answered.cost.unpriced], [null, 1]);
+test("a guard: a request billed to a plan (listed at $0, paid by the plan) is never free: no price here, as before", async () => {
   const store = memorySessionStore();
   const cap = runCap({ sessions: store, capUsd: () => undefined, modelOf: () => FREE });
   const booking = await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: cap.before });

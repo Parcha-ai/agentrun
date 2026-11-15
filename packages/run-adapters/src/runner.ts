@@ -499,9 +499,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const note = notes.get(turn);
       notes.delete(turn);
       // On a free model nothing it was billed for costs anything: its own cost is a known $0, never unknown. A cost its
-      // provider reported above $0 is a cost all the same: booked as it is, never free. So is an answer its path priced at
-      // no figure (its route knows no price, whatever the cap lists), and a request billed to a plan (no price here).
-      const free = freeTurns.delete(turn) && usage.billing === undefined && (usage.usd === 0 || (usage.usd === null && ended?.end !== "answered"));
+      // provider reported above $0 is a cost all the same: booked as it is, never free. A request billed to a plan is the
+      // plan's, at no price here, whatever its listing says: never free.
+      const free = freeTurns.delete(turn) && usage.billing === undefined && (usage.usd === null || usage.usd === 0);
       if (free) usage = { ...usage, usd: 0, free };
       // Its hidden reasoning counts beside all it sent, less the reasoning it sent: max(0, budget - reasoning bytes), so
       // reasoning that streamed is not counted twice and answer text never stands in for it.
