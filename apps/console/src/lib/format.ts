@@ -62,8 +62,9 @@ const soFarDollars = (usd: number) => {
   return `$${whole}.${places.replace(/0+$/, "").padEnd(2, "0")}`;
 };
 
-/** The cost known so far, when the server can't give the whole (costsofar/1: `so_far_usd` and `unpriced`, sent only while
- *  `usd` is null); undefined when it says neither. */
+/** The cost known so far, when the server can't give the whole (costsofar/1: `so_far_usd` and `unpriced` while `usd` is
+ *  null); undefined when it says neither, or when `usd` is known (beside an `upper_bound` the server sends them too, and
+ *  the bound is what is said). */
 export const soFar = (c: Cost | null | undefined): (Cost & { so_far_usd: number; unpriced: number }) | undefined =>
   c && c.usd === null && typeof c.so_far_usd === "number" && typeof c.unpriced === "number" ? (c as Cost & { so_far_usd: number; unpriced: number }) : undefined;
 

@@ -2,6 +2,7 @@
 // committed to the run's store (`agentrun.decisions`), so a run shows its verdicts beside its model nodes' rows. The
 // rows are read from the released store, as the rest of a workflow run's rows are.
 import { CAPS, costLabel, cut, endedUsage, scrubUrls, type TimelineEvent } from "./timeline/index.js";
+import { costWordsOf, usageParts } from "./runner/metrics.js";
 
 type Answer = { type?: unknown; noul?: unknown; choice?: unknown; score?: unknown; legend?: unknown; confidence?: unknown; probabilities?: unknown };
 type Receipt = Record<string, unknown>;
@@ -116,20 +117,17 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
     rest.splice(before < 0 ? rest.length : before, 0, row);
   }
   const costs = decisions.map((row) => row.usage?.usd ?? null);
-  const spent = costs.every((usd) => usd !== null) ? (costs as number[]).reduce((a, b) => a + b, 0) : null;
   const models = at < 0 ? { usd: 0, requests: 0 } : (rows[at]?.usage ?? { usd: null, requests: 0 });
-  // Rounded off float noise only: a decision costs millionths of a dollar, and the row agrees with the run's cost.
-  const usd = models.usd === null || spent === null ? null : Math.round((models.usd + spent) * 1e12) / 1e12;
+  // The model row and the decisions joined by the one rule (costWordsOf): the model row taken apart by its own figures
+  // (usageParts: a bound's exact part known, its holds bounded), each decision's cost known or not priced. Any charge of
+  // no known cost: unknown, the exact charges alone known and every hold not priced; every charge known: their sum, at
+  // most while a hold is in it. A model row that says nothing of an unknown cost leaves nothing said here either.
+  const decided = { known: costs.reduce<number>((a, b) => a + (b ?? 0), 0), bounded: 0, atMost: 0, unpriced: costs.filter((cost) => cost === null).length };
+  const cost = costWordsOf([usageParts(at < 0 ? undefined : models), decided]);
   const base = at < 0 ? { ...decisions.at(-1)!, id: "decisions:usage", agent_label: null, text: null } : rows[at]!;
-  // While the total is unknown: the known charges' sum and how many have no price (costsofar/1), the model row's and the
-  // decisions' together; none when the model row says neither.
-  const modelsSoFar = models.usd !== null ? { known: models.usd, unpriced: 0 } : models.so_far_usd !== undefined && models.unpriced !== undefined ? { known: models.so_far_usd, unpriced: models.unpriced } : undefined;
-  const unpriced = (modelsSoFar?.unpriced ?? 0) + costs.filter((cost) => cost === null).length;
-  const soFar = usd === null && modelsSoFar && unpriced > 0 ? { so_far_usd: Math.round((modelsSoFar.known + costs.reduce<number>((a, b) => a + (b ?? 0), 0)) * 1e6) / 1e6, unpriced } : undefined;
   const dollars = (n: number) => (n === 0 ? "$0" : n < 0.0001 ? "<$0.0001" : `$${n.toFixed(4)}`);
-  // The model row's figure counts a request cut at its hold (runner.ts CUT_AT_HOLD): the total is then the most it can be.
-  const bound = usd !== null && models.upper_bound === true;
-  const said = usd !== null ? `${bound ? "at most " : ""}${dollars(usd)}` : soFar ? `${dollars(soFar.so_far_usd)} known, ${soFar.unpriced} not priced,` : "unknown";
+  const soFar = cost.so_far_usd !== undefined && cost.unpriced !== undefined ? { so_far_usd: cost.so_far_usd, unpriced: cost.unpriced } : undefined;
+  const said = cost.usd !== null ? `${cost.upper_bound ? "at most " : ""}${dollars(cost.usd)}` : soFar ? `${dollars(soFar.so_far_usd)} known, ${soFar.unpriced} not priced,` : "unknown";
   const summary = `${label}: ${said} over ${models.requests === null ? 'an unavailable model request count' : plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
-  return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests === null ? null : models.requests + decisions.length, ...(soFar ?? {}), ...(bound ? { upper_bound: true as const } : {}) } }];
+  return [...rest, { ...base, kind: "usage", summary, usage: { usd: cost.usd, requests: models.requests === null ? null : models.requests + decisions.length, ...(soFar ?? {}), ...(cost.upper_bound ? { upper_bound: true as const } : {}) } }];
 }

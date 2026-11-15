@@ -110,16 +110,39 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
 const floatNoiseOff = (usd: number): number => Math.round(usd * 1e12) / 1e12;
 
 /** A cost of charges as a usage row or a run's cost block says it (costsofar/1, cutathold/1), by the kernel's one rule
- *  (costOfParts) over `parts`, its float noise rounded off (floatNoiseOff): `usd` their sum, `upper_bound` when it counts a cut request at its
- *  hold; or, while one has no known cost, `usd` null, `so_far_usd` the charges' own figures alone and `unpriced` how many
- *  have none, held ones included. `extraUnpriced`: charges with no figure beside the parts' (a CLI's model work no booking
- *  read). */
+ *  (costOfParts) over `parts`, its float noise rounded off (floatNoiseOff): `usd` their sum, `upper_bound` when it counts
+ *  a cut request at its hold, with `so_far_usd` the charges' own figures alone and `unpriced` how many it counts at their
+ *  hold beside it; or, while one has no known cost, `usd` null, `so_far_usd` the charges' own figures alone and `unpriced`
+ *  how many have none, held ones included. A bound always says its exact part, so whatever joins these words with more
+ *  charges (usageParts, then this again) never has to take the bound for spend. A part that is null is a cost no one
+ *  knows that says nothing of itself (a usage row of an older run with no costsofar/1 fields, decisions that could not be
+ *  read): the cost is unknown and nothing is said beside it. `extraUnpriced`: charges with no figure beside the parts' (a
+ *  CLI's model work no booking read). This is the one join: every reader that combines a usage row with more charges
+ *  goes through it. */
 export type CostWords = { readonly usd: number | null; readonly so_far_usd?: number; readonly unpriced?: number; readonly upper_bound?: true };
-export function costWordsOf(parts: readonly CostParts[], extraUnpriced = 0): CostWords {
-  const cost = costOfParts([...parts, { known: 0, bounded: 0, atMost: 0, unpriced: extraUnpriced }]);
+export function costWordsOf(parts: readonly (CostParts | null)[], extraUnpriced = 0): CostWords {
+  if (parts.some((part) => part === null)) return { usd: null };
+  const all = [...(parts as CostParts[]), { known: 0, bounded: 0, atMost: 0, unpriced: extraUnpriced }];
+  const cost = costOfParts(all);
   const round = floatNoiseOff;
   if (cost.usd === null) return { usd: null, so_far_usd: round(cost.soFarUsd), unpriced: cost.unpriced };
-  return { usd: round(cost.usd), ...(cost.atMost ? { upper_bound: true as const } : {}) };
+  if (!cost.atMost) return { usd: round(cost.usd) };
+  // The exact part: the charges' own figures, never a hold (costOfParts' soFarUsd counts the holds once every charge is).
+  return { usd: round(cost.usd), so_far_usd: round(all.reduce((sum, part) => sum + part.known, 0)), unpriced: cost.atMost, upper_bound: true };
+}
+
+/** A usage row's cost (TimelineEvent.usage, or a cost block in the same words) as the kernel's parts, for a join
+ *  (costWordsOf): an exact figure is `known`; a bound is its exact part (`so_far_usd`) known and the rest bounded over its
+ *  `unpriced` holds, or, from a row that says no exact part, the whole bounded over one hold, never spend; an unknown cost
+ *  is its known part and its unpriced count. Null: an unknown cost that says neither. No row (undefined): nothing spent. */
+export function usageParts(usage: { readonly usd: number | null; readonly so_far_usd?: number; readonly unpriced?: number; readonly upper_bound?: true } | undefined): CostParts | null {
+  if (usage === undefined) return { known: 0, bounded: 0, atMost: 0, unpriced: 0 };
+  const said = usage.so_far_usd !== undefined && usage.unpriced !== undefined;
+  if (usage.usd !== null && usage.upper_bound === true) {
+    return said ? { known: usage.so_far_usd!, bounded: Math.max(0, usage.usd - usage.so_far_usd!), atMost: usage.unpriced!, unpriced: 0 } : { known: 0, bounded: usage.usd, atMost: 1, unpriced: 0 };
+  }
+  if (usage.usd !== null) return { known: usage.usd, bounded: 0, atMost: 0, unpriced: 0 };
+  return said ? { known: usage.so_far_usd!, bounded: 0, atMost: 0, unpriced: usage.unpriced! } : null;
 }
 
 /** A run's cost, by the one rule every reader of it takes (the end's stored cost_usd, GET /runs/{id} and the runs list of
@@ -131,12 +154,16 @@ export function costWordsOf(parts: readonly CostParts[], extraUnpriced = 0): Cos
  *  most `usd`. `requests`: how many requests the run booked (0: it booked none, and its cost is not this booking's to say).
  *  `unbooked`: a CLI harness's model worked with no request booked (cliModelWorked: its requests went past its model
  *  proxy), one charge with no price, so the cost is unknown, never the $0 an empty booking sums to. */
-export type RunCost = { readonly usd: number | null; readonly known: number; readonly unpriced: number; readonly atMost: number; readonly requests: number };
+export type RunCost = CostParts & { readonly usd: number | null; readonly requests: number };
 export function runCostOf(entries: readonly EntryLike[], { unbooked = false }: { readonly unbooked?: boolean } = {}): RunCost {
   const parts = [bookedSpend(entries, "model"), bookedSpend(entries, "paid"), bookedSpend(entries, "decisions")];
   const cost = costOfParts([...parts, { known: 0, bounded: 0, atMost: 0, unpriced: unbooked && parts[0]!.requests === 0 ? 1 : 0 }]);
   const round = floatNoiseOff;
-  return { usd: cost.usd === null ? null : round(cost.usd), known: round(cost.soFarUsd), unpriced: cost.unpriced, atMost: cost.atMost ?? 0, requests: parts.reduce((sum, part) => sum + part.requests, 0) };
+  // Its parts as one (CostParts, so its words are costWordsOf([cost])): `known` the requests' own figures alone, a hold
+  // never among them; while the cost is known, `bounded` and `atMost` its holds, else every hold counted in `unpriced`.
+  const known = round(parts.reduce((sum, part) => sum + part.known, 0));
+  const usd = cost.usd === null ? null : round(cost.usd);
+  return { usd, known, bounded: usd === null ? 0 : Math.max(0, round(usd - known)), unpriced: cost.unpriced, atMost: cost.atMost ?? 0, requests: parts.reduce((sum, part) => sum + part.requests, 0) };
 }
 
 /** A run's cost as its end stores it (the run row's cost_usd and cost_upper_bound): its figure, and whether that is the most
@@ -235,7 +262,8 @@ export function runMetrics(
   // The run's cost from its usage row, as serve/src/runs.ts costOf reads it: the usage row's usd (null unknown, 0 before
   // any request). The usage row is the one the settled timeline appends from the run's request-cost marks.
   const usage = timelineOf(entries, { settled: true }).findLast((row) => row.kind === "usage");
-  const costUsd = usage ? (usage.usage?.usd ?? null) : 0;
+  // An exact reader: a cost that counts a hold (`upper_bound`) is the most the run can have cost, unknown here.
+  const costUsd = usage ? (usage.usage?.upper_bound === true ? null : (usage.usage?.usd ?? null)) : 0;
   return {
     metrics: { ...counted, ...(options.effort !== undefined ? { effort: options.effort } : {}), ...(options.model !== undefined ? { model: options.model } : {}) },
     costUsd,

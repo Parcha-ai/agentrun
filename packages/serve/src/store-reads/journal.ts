@@ -375,7 +375,8 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
     : unbooked
     ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
     : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
-  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(usd === null ? { so_far_usd: cost.so_far_usd!, unpriced: cost.unpriced! } : {}), ...(notMetered ? { not_metered: notMetered } : {}), ...(free ? { free: true as const } : {}), ...(cost.upper_bound ? { upper_bound: true as const } : {}) };
+  // Its so-far figures whenever the words say them: while the cost is unknown, and beside a bound (its exact part and holds).
+  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(cost.so_far_usd !== undefined && cost.unpriced !== undefined ? { so_far_usd: cost.so_far_usd, unpriced: cost.unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}), ...(free ? { free: true as const } : {}), ...(cost.upper_bound ? { upper_bound: true as const } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

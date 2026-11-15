@@ -61,10 +61,12 @@ export type TimelineEvent = {
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage
    *  row. `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
-   *  charged an unknown amount or cut). Absent when `usd` is known. `free`, on the usage row: its $0 is because every
-   *  model request went to a free model (one whose known price is $0 for every token), each booked so; absent otherwise.
-   *  `upper_bound`, on the usage row: `usd` counts a request cut with no answer at what was held for it, the most it can
-   *  have cost, so the run cost at most `usd`; absent otherwise. */
+   *  charged an unknown amount or cut). Beside `upper_bound`, the sum of the charges' own figures (never a hold) and how
+   *  many requests `usd` counts at their hold. Absent when `usd` is known and exact. `free`, on the usage row: its $0 is
+   *  because every model request went to a free model (one whose known price is $0 for every token), each booked so;
+   *  absent otherwise. `upper_bound`, on the usage row: `usd` counts a request cut with no answer at what was held for it,
+   *  the most it can have cost, so the run cost at most `usd`; absent otherwise. A reader that joins this row with more
+   *  charges takes it apart by those figures (serve's usageParts), never `usd` as spend. */
   usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true; upper_bound?: true };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
@@ -524,7 +526,8 @@ function createMeter() {
    *  cost no one knows (an answer or summary with none, a stopped request's, a paid tool charge), each still pending, each
    *  request cut before any answer, and each paid tool call a settled run never settled. A request cut and booked at its
    *  hold (its end mark's `atMostUsd`) counts at that figure, the most it can have cost, kept apart from the exact
-   *  charges by the kernel's rule (costOfParts): with every charge counted the cost is their sum, `upper_bound`; with one
+   *  charges by the kernel's rule (costOfParts): with every charge counted the cost is their sum, `upper_bound`, with the
+   *  exact charges as `so_far_usd` and the holds as `unpriced` beside it; with one
    *  of no known cost, the hold is a ceiling that bounds nothing, so it joins no `so_far_usd` and counts as `unpriced`.
    *  `beside`: requests booked beside the entries (a pi run's side requests, TimelineOptions.side), joined by that rule. */
   function usage(settled: boolean, beside?: SideSpend, holdsUnpriced = false): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number; not_metered?: number; upper_bound?: true } | undefined {
@@ -552,7 +555,9 @@ function createMeter() {
     const charges = paidCalls.size + cutCalls;
     // A reader that says no "at most" (TimelineOptions.holdsUnpriced) reads a hold as a cost no one knows.
     if (unpriced > 0 || (holdsUnpriced && holds > 0)) return { usd: null, requests: count, charges, so_far_usd: round(exact), unpriced: unpriced + holds, ...unmetered };
-    return { usd: round(exact + bounded), requests: count, charges, ...(holds > 0 ? { upper_bound: true as const } : {}), ...unmetered };
+    // A bound says its exact part and how many holds it counts beside it, so a reader that joins this row with more
+    // charges (serve's costWordsOf over usageParts) never takes the hold for spend.
+    return { usd: round(exact + bounded), requests: count, charges, ...(holds > 0 ? { so_far_usd: round(exact), unpriced: holds, upper_bound: true as const } : {}), ...unmetered };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.

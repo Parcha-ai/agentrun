@@ -39,17 +39,15 @@ import {
   statusOf,
   WITHHELD_SIGN_IN,
   WITHHELD_TITLE,
-  costView,
-  boundOf,
+  costWordsOfView,
   freeOf,
-  soFarOf,
   usersOf,
   withAsks,
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
-import { type BookedSpend, bookedSpend, cliModelWorked, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
+import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
@@ -463,12 +461,17 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // are unknown. An end that wrote no cost (a spec that reads none) left the column alone: the booking is the answer then.
   const booked = run.endCost;
   const said = booked !== undefined && run.endSaidCost === true;
-  const usd = booked ? (said ? (stored ?? storedAtMost ?? null) : booked.usd) : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
-  // A hold booked as a bound is never spend: while the total is unknown, each such request counts as not priced.
-  const counted = booked ? (usd === null && booked.usd === null ? { so_far_usd: booked.known, unpriced: booked.unpriced } : undefined) : usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced + decisions.atMost } : undefined) : undefined;
-  // Its figure counts a request cut with no answer at its hold (runner.ts CUT_AT_HOLD): the most it can have cost. An ended
-  // run's says so as its end stored it beside the figure (cost_upper_bound), the bound the list and the column read too.
-  const upper = booked ? (usd !== null && (said ? storedAtMost !== null : booked.atMost > 0) ? { upper_bound: true as const } : undefined) : imported ? undefined : boundOf(run.rows, usd, decisions?.atMost);
+  // Its cost in the Cost's words (CostWords), each figure by the one rule (costWordsOf): a hold is never spend, so while
+  // the total is unknown each held request counts as not priced, and a bound says its exact part and held count beside it.
+  // A run still going or ended unbooked: its usage row joined with its decisions' booking (costWordsOfView). An imported
+  // run: what the import stored, exact. An ended run that booked its requests: its booking's words, or, where its end
+  // stored a figure, that figure, with what the booking says beside it only where the two agree (the same unknown, the
+  // same bound); a bound its end stored is said so (cost_upper_bound), the bound the list and the column read too.
+  const bookedWords = booked ? costWordsOf([booked]) : undefined;
+  const words = !booked ? (imported ? { usd: stored ?? null } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!.usd === null ? bookedWords! : { usd: null };
+  const usd = words.usd;
+  const counted = words.so_far_usd !== undefined && words.unpriced !== undefined ? { so_far_usd: words.so_far_usd, unpriced: words.unpriced } : undefined;
+  const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
   // A request billed to a ChatGPT plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
   // $0, so it is in no unpriced count; what it used on the plan is said beside the figure.
   const plan = run.plan;
