@@ -30,15 +30,28 @@ import type { ClaimMcp } from "./mcp-run.js";
 
 /** The run's monid endpoints, as the loop's catalog seam reads them. */
 export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf">;
+/** A template eval case's monid fake (template-eval.ts, `monid:` in its case.yaml): `unavailable`, monid unreachable. */
+export type MonidFake = "unavailable";
+/** Which monid fake, if any, a run's endpoints answer from, by the agent the run is of: the eval's own runner's alone. */
+export type MonidFakes = (agentId: string) => MonidFake | undefined;
+
+/** The fetch of a monid that can't be reached: it fails as undici's fetch does when the host refuses the connection, so
+ *  monidClient says it in its own words (monid.ts failure). Nothing is sent. */
+const UNREACHABLE: typeof fetch = async () => {
+  throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) });
+};
 
 /** One host tool per endpoint of `pin`, on the claim's environment `env` (its key, and the tests' fake under faux), an
  *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log;
- *  `capped`, whether the run has a spend cap now (its launch's, read at each call). */
-export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string, capped: () => boolean = () => false): ClaimMonid | undefined {
+ *  `capped`, whether the run has a spend cap now (its launch's, read at each call). `fake`: a template eval case's monid
+ *  fake (AdapterSpecDeps.monidFakes), `unavailable`: each call goes as it does with monid unreachable, its price read
+ *  first and failing, so it is never sent, and nothing is held or booked. */
+export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string, capped: () => boolean = () => false, fake?: MonidFake): ClaimMonid | undefined {
   const names = Object.keys(pin ?? {});
   if (!pin || !names.length) return undefined;
   const catalog = new Map<string, string>();
   const clientOf = async () => {
+    if (fake === "unavailable") return monidClient({ key: "", fetch: UNREACHABLE });
     const faux = await fauxFetch(env, FAUX_MONID_ENV);
     return monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
   };
@@ -124,6 +137,9 @@ export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.Process
         const ledger = paidLedger();
         if (!ledger) return { text: JSON.stringify({ error: unbookedRefusal(name) }), isError: true };
         const input = (args ?? {}) as Json;
+        // monid unreachable (a template eval's fake): the call goes as a fixed price's does, its price read first, which
+        // fails, so it is never sent; with nothing sent, nothing is held or booked.
+        if (fake === "unavailable") return { text: await monidText(await fixedThenRun(name, at, input, 0, context.signal), work(), at.provider), isError: true };
         // A fixed price is held as pinned, the cap asked before monid is; one priced by usage at monid's estimate.
         const fixedUsd = pinned.usd;
         const held = fixedUsd !== null ? { usd: fixedUsd, basis: "the price monid listed for it when the agent was saved" } : await usageHeld(ledger, name, at, input, context.callId, context.signal);
