@@ -73,7 +73,7 @@ test("a key a claim opens from the store is cut by the runner's one redactor: a 
   await putSealedKey(server, SEAL_KEY, "MONID_API_KEY", STORED);
   // A monid endpoint, pinned as a save pins it (monid.ts pinMonid).
   const monidPin = { [ENRICH]: { description: "Enrich a person.", input: { type: "object", properties: { body: { type: "object" } } }, usd: 0.003 } };
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", tools: [ENRICH], toolSettings: { [ENRICH]: { permission: "allow" } }, monidPin } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", tools: [ENRICH], toolSettings: { [ENRICH]: { permission: "allow" } } }, monidPin });
   const launch = { input: { content: "Enrich it." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();

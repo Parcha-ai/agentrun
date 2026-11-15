@@ -141,6 +141,7 @@ export interface components {
       default_model: string | null;
       steer: boolean;
       reason?: string;
+      needs?: ("key" | "chatgpt")[];
       installs?: "on_first_use";
     }[];
     tools: {
@@ -216,6 +217,10 @@ export interface components {
     so_far_usd?: number;
     unpriced?: number;
     overshoot_bound_usd?: number;
+    plan?: {
+      requests: number;
+      tokens: number;
+    };
   };
   Definition: unknown & components["DefinitionInput"];
   DefinitionInput: {
@@ -1617,6 +1622,7 @@ export interface operations {
       email?: string;
       plan?: string;
       authorize_url?: string;
+      expires_at?: string;
       models?: string[];
     };
   };
@@ -1815,6 +1821,7 @@ export interface operations {
       email?: string;
       plan?: string;
       authorize_url?: string;
+      expires_at?: string;
       models?: string[];
     };
   };

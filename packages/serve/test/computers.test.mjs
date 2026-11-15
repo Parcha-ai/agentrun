@@ -124,17 +124,18 @@ const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps 
 const MODE2_SANDBOX = (article, label, kind = "sandbox") =>
   `${article} ${label} ${kind} can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (Settings → Computers)`;
 
-test("Mode 2: Docker's sandbox can't mount the owner's disk, nor can Daytona's (saying why); Modal's and E2B's need Archil's image in the owner's account, keys or not; Agent37's sandbox and desktop are ready with their keys (its prepareImage registers the box image); a desktop, phone or browser is offered", async (t) => {
+test("Mode 2: Docker's sandbox can't mount the owner's disk, nor can Daytona's (saying why); E2B's needs Archil's image in the owner's account, keys or not; Modal's sandbox and Agent37's sandbox and desktop are ready with their keys (their prepareImage answers the box image); a desktop, phone or browser is offered", async (t) => {
   const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret", AGENT37_SSH_KEY: "not-a-secret-either" };
   const { routes } = await setup(t, { mode: "disk", env });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
   assert.equal(providerOf(view, "sandbox", "daytona").why, DAYTONA_NO_DISK);
-  for (const [id, article, label] of [["modal", "A", "Modal"], ["e2b", "An", "E2B"]]) {
-    assert.deepEqual([providerOf(view, "sandbox", id).ready, providerOf(view, "sandbox", id).why], [false, MODE2_SANDBOX(article, label)], `${id}: its keys are saved, and still not ready`);
-    assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: id }), MODE2_SANDBOX(article, label), `${id}: claimRefusal says the same`);
-  }
-  assert.equal(kindOf(view, "sandbox").offered, true, "Agent37's sandbox mounts the owner's disk");
+  assert.deepEqual([providerOf(view, "sandbox", "e2b").ready, providerOf(view, "sandbox", "e2b").why], [false, MODE2_SANDBOX("An", "E2B")], "e2b: its key is saved, and still not ready");
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "e2b" }), MODE2_SANDBOX("An", "E2B"), "e2b: claimRefusal says the same");
+  // Modal prepares its image (the box image's public tag, pulled by Modal at the first create): ready once its keys are saved.
+  assert.deepEqual([providerOf(view, "sandbox", "modal").ready, providerOf(view, "sandbox", "modal").why], [true, undefined], "modal: its keys are saved, so it is ready");
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "modal: claimRefusal lets it");
+  assert.equal(kindOf(view, "sandbox").offered, true, "Modal's and Agent37's sandboxes mount the owner's disk");
   assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
   // E2B's desktop would mount the disk (it has files and exec), so it needs the same image.
   assert.deepEqual([providerOf(view, "desktop", "e2b").ready, providerOf(view, "desktop", "e2b").why], [false, MODE2_SANDBOX("An", "E2B", "desktop")], "e2b's desktop: its key is saved, and still not ready");
@@ -424,9 +425,11 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   for (const gpu of [{ type: "H100", count: 1 }, { type: "T4", count: 1 }, { type: "H100", count: 2 }, undefined]) {
     assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) }), DAYTONA_NO_DISK, JSON.stringify(gpu));
   }
-  // A Modal sandbox can't start in Mode 2 yet (Archil's image isn't in the owner's account): refused for that first, GPUs or none.
-  for (const gpu of [{ type: "T4", count: 1 }, undefined]) {
-    assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal", ...(gpu ? { gpu } : {}) }), MODE2_SANDBOX("A", "Modal"), JSON.stringify(gpu));
+  // A Modal sandbox starts in Mode 2 from the box image its prepareImage() answers; a Modal GPU sandbox runs on gVisor,
+  // where Archil's mount isn't proven, so it is still refused, in the GPU's own words.
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "no GPUs: ready");
+  for (const gpu of [{ type: "T4", count: 1 }, { type: "H100", count: 8 }]) {
+    assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal", gpu }), `${noFolder("Modal")} (Settings → Computers)`, JSON.stringify(gpu));
   }
   const local = (await setup(t)).routes;
   assert.match(await local.claimRefusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^Docker can't give this agent's computer its GPUs: this provider offers no GPU/);
