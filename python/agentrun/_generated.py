@@ -3970,9 +3970,15 @@ class GetRunLearningResponseObjectWorkflowsItem(_GetRunLearningResponseObjectWor
 
 
 class GetRunLearningResponseObjectGraded(TypedDict):
+    run_id: str
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
+    path: Literal["agent", "handed_back", "workflow", "replay"]
+    workflow: str | None
+    workflow_digest: str | None
+    feedback: Literal["revise", "look_back"] | None
+    feedback_status: Literal["running", "ended", "not_run"] | None
 
 
 class GetRunLearningDiffResponse(TypedDict):

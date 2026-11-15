@@ -2282,9 +2282,15 @@ export interface operations {
         pending?: true;
       }[];
       graded?: {
+        run_id: string;
         correct: boolean;
         source: "feedback" | "eval";
         graded_at: string;
+        path: "agent" | "handed_back" | "workflow" | "replay";
+        workflow: string | null;
+        workflow_digest: string | null;
+        feedback: "revise" | "look_back" | null;
+        feedback_status: "running" | "ended" | "not_run" | null;
       };
     } | null;
   };

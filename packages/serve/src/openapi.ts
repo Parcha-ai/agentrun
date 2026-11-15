@@ -17,7 +17,7 @@ import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
-import { FEEDBACK_ROUNDS } from "./runner/feedback-round.js";
+import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { LOOP_COMPILES_MAX, LOOP_POINTS_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
@@ -1093,6 +1093,18 @@ const TEMPLATE_APPLIED = closedWith({
   },
 });
 const TRIGGER_ERRORS = "The triggers are rows in the server's store, read as they are now. A store busy with another write answers 409 home_busy, retryable: send it again.";
+/** A run's grade (learn/promote.ts gradeView): what PUT /runs/{run_id}/grade answers (GRADE, with `expected`) and GET
+ *  /runs/{run_id}/learning reads back (`graded`, never `expected`). */
+const GRADE_FIELDS = {
+  run_id: { type: "string" },
+  correct: { type: "boolean", description: "Whether the run's answer was right." },
+  source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." },
+  graded_at: DATE_TIME,
+  path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
+  workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
+  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
+  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
+};
 const RUN_LEARNING = {
   oneOf: [
     closedWith({
@@ -1119,7 +1131,7 @@ const RUN_LEARNING = {
       }, "What the run's job did with the learned skills and workflows it was offered, apart from `skills` and `workflows`, the ones it learned."),
     }, {
       ...LEARNING_NOTES,
-      graded: { ...closed({ correct: { type: "boolean", description: "Whether the grade said its answer was right." }, source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." }, graded_at: DATE_TIME }), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it: the newest, since a later grade replaces it. Absent when it has none kept." },
+      graded: { ...closedWith({ ...GRADE_FIELDS, feedback_status: { enum: [...FEEDBACK_STATUSES, null], description: "How the round the grade opened (`feedback`) stands, read from its run's journal and its steer's row (no clock compared): `running` until it settles; `ended`, its run took the grade's words and ended after them; `not_run`, its run ended before it took them (its claim refused, say), so the round never ran: grade it again to ask once more. null for a grade that opened none." } }, {}), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it and the PUT answered it, never its `expected`: the newest, since a later grade replaces it, and how the round it opened stands. Absent when it has none kept." },
     }),
     { type: "null" },
   ],
@@ -1209,16 +1221,7 @@ const LEARNING_EVAL = closed({
   recorded_at: { type: "string", format: "date-time" },
 }, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
-const GRADE = closedWith({
-  run_id: { type: "string" },
-  correct: { type: "boolean", description: "Whether the run's answer was right." },
-  source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." },
-  graded_at: DATE_TIME,
-  path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
-  workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
-  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
-  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again." },
-}, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
+const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The graded inputs it was decided on." },
   agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's recorded answer." },
