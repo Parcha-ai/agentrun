@@ -242,11 +242,100 @@ export function answerTierProblems(doc: unknown): string[] {
   return problems;
 }
 
+/** The property names that make an answer carry quotes. */
+const QUOTE_KEYS: ReadonlySet<string> = new Set(["quote", "quotes"]);
+const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The first place in `schema` (a draft's output schema, its `#/definitions/<id>` refs read from the draft's catalog)
+ *  holding a quote: its keys from the answer down, "[]" for an array's items. */
+function quoteSiteOf(schema: unknown, schemas: Record<string, unknown>): string[] | undefined {
+  const seen = new Set<unknown>();
+  const walk = (node: unknown, at: string[]): string[] | undefined => {
+    if (!isObject(node) || seen.has(node) || at.length > 16) return undefined;
+    seen.add(node);
+    const ref = typeof node.$ref === "string" ? /^#\/definitions\/(.+)$/.exec(node.$ref)?.[1] : undefined;
+    if (ref !== undefined && Object.hasOwn(schemas, ref)) { const found = walk(schemas[ref], at); if (found) return found; }
+    if (isObject(node.properties)) for (const [key, inner] of Object.entries(node.properties)) {
+      if (QUOTE_KEYS.has(key)) return isObject(inner) && (inner.type === "array" || inner.items !== undefined) ? [...at, key, "[]"] : [...at, key];
+      const found = walk(inner, [...at, key]);
+      if (found) return found;
+    }
+    for (const key of ["items", "additionalProperties"] as const) { const found = walk(node[key], key === "items" ? [...at, "[]"] : at); if (found) return found; }
+    for (const key of ["anyOf", "oneOf", "allOf"] as const) if (Array.isArray(node[key])) for (const inner of node[key] as unknown[]) { const found = walk(inner, at); if (found) return found; }
+    return undefined;
+  };
+  return walk(schema, []);
+}
+
+/** Every node of a workflow document's own tree (its chains, branches and bodies; a composed workflow node, not its child). */
+function eachNode(root: unknown, visit: (node: Record<string, unknown>) => void): void {
+  const walk = (node: unknown): void => {
+    if (!isNode(node)) return;
+    visit(node);
+    for (const child of childNodes(node)) walk(child);
+  };
+  walk(root);
+}
+
+/** Whether a node fetches: a call node, or one with a call under it (a composed workflow's included). */
+function fetches(node: unknown): boolean {
+  if (!isNode(node)) return false;
+  if (node.node === "call") return true;
+  if (node.node === "workflow") return fetches((node.workflow as { root?: unknown } | null)?.root);
+  return childNodes(node).some(fetches);
+}
+
+/** Why a draft's quote check is not code: its answer carries quotes (a `quote` or `quotes` property in its output schema)
+ *  and it fetches pages (a call step), yet no escalate holds on quote_missing over the answer, or that escalate reads as a
+ *  page a key no call step fetched (a model's summary of a page is no page). A judge or an `ask` is never the quote check:
+ *  H5's judge flagged 149 of 170 answers while 416 of 429 quotes were in the pages, and could not tell the 8 answers
+ *  quoting text no page held from the rest; code can. One line, in words the compile retry acts on. */
+export function quoteCheckProblems(doc: unknown): string[] {
+  if (!isObject(doc)) return [];
+  const output = isObject(doc.output) ? doc.output : {};
+  const answerPath = typeof output.path === "string" ? output.path : "";
+  const schemas = isObject(doc.schemas) ? doc.schemas : {};
+  const schemaId = typeof output.schemaId === "string" ? output.schemaId : "";
+  if (!answerPath || !Object.hasOwn(schemas, schemaId)) return [];
+  const site = quoteSiteOf(schemas[schemaId], schemas);
+  if (!site) return [];
+  const fetched: string[] = [];
+  const checks: { label: string; pages: unknown[] }[] = [];
+  eachNode(doc.root, (node) => {
+    const key = writeKeyOf(node);
+    if (typeof key === "string" && fetches(node) && !fetched.includes(key)) fetched.push(key);
+    const when = node.node === "escalate" && isObject(node.when) ? node.when : undefined;
+    if (when?.predicate === "quote_missing" && typeof when.path === "string" && (when.path === answerPath || when.path.startsWith(`${answerPath}.`))) {
+      checks.push({ label: String(node.label ?? "(no label)").slice(0, 64), pages: Array.isArray(when.pages) ? when.pages : [] });
+    }
+  });
+  if (!fetched.length) return [];
+  if (!checks.length) {
+    // The predicate the retry can write: the list the quotes sit in and the field each holds its quote at, when the
+    // schema says one; else a placeholder path it fills in.
+    const last = site.length - 1;
+    const within = (end: number) => [answerPath, ...site.slice(0, end)].join(".");
+    let path = "<the answer's list of quotes>", field = "";
+    if (site[last] === "[]" && !site.slice(0, last).includes("[]")) path = within(last); // a list of quote strings
+    else if (site[last - 1] === "[]" && !site.slice(0, last - 1).includes("[]")) { path = within(last - 1); field = `, "field": ${JSON.stringify(site[last])}`; } // records, each holding its quote
+    else if (!site.includes("[]")) path = within(site.length); // one quote
+    const where = `${schemaId}.${site.join(".").replace(/\.\[\]/g, "[]")}`;
+    return [`the answer carries quotes (${where.slice(0, 120)}) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": ${JSON.stringify(path)}${field}, "pages": ${JSON.stringify(fetched)}} (pages: the state keys its call steps write), never a judge`];
+  }
+  const problems: string[] = [];
+  for (const { label, pages } of checks) for (const page of pages) {
+    const head = typeof page === "string" ? page.split(".")[0] : "";
+    if (!fetched.includes(head)) problems.push(`the quote_missing escalate ${JSON.stringify(label)} reads ${JSON.stringify(String(page).slice(0, 64))} as a page, which no call step fetched: its pages are the state keys its call steps write (${fetched.join(", ")})`);
+  }
+  return problems;
+}
+
 /** What a run may write of a skill or a workflow draft (`place`), by itself: a good folder name, never a deletion, a
  *  regular file within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a skill's
  *  front matter (skillProblems), with no `status`, which is the host's; a draft the DSL validates against `tools` with
- *  no node that runs code (draftProblems), whose answering step runs on the agent's model (answerTierProblems); a README
- *  that names its folder and says what the draft is for. */
+ *  no node that runs code (draftProblems), whose answering step runs on the agent's model (answerTierProblems), whose
+ *  quotes of the pages it fetched are checked in code (quoteCheckProblems); a README that names its folder and says what
+ *  the draft is for. */
 function learnedChecked(change: Change, place: LearnedPlace, refused: (text: string) => boolean, input: CheckInput, add: Add): void {
   const { path } = change;
   nameScanned(path, refused, add);
@@ -265,8 +354,11 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
     const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.decisions, input.workflowAdapters);
-    // A draft the DSL reads parses: its answering step is held to the agent's model.
-    if (!problems.length) problems.push(...answerTierProblems(JSON.parse(text)).map((detail) => ({ rule: "workflow" as const, detail })));
+    // A draft the DSL reads parses: its answering step is held to the agent's model, and its quote check to code.
+    if (!problems.length) {
+      const doc = JSON.parse(text);
+      problems.push(...[...answerTierProblems(doc), ...quoteCheckProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail })));
+    }
     for (const { rule, detail } of problems) add(rule, detail, path);
     // A draft the checks pass whose dry run failed: its wiring breaks at run time, before any node is paid for.
     const dry = input.dryRuns?.[path];

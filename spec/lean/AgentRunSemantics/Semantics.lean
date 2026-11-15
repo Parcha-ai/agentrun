@@ -236,6 +236,77 @@ def scalarMatches : Option Value → Scalar → Bool
   | some (.bool a), .bool b => a == b
   | _, _ => false
 
+/-! ### `quote_missing` (`predicates.ts`, `quoteCheck`)
+
+Characters are read as `Char.toLower`, `Char.isWhitespace` and `Char.isAlphanum` read them, which is ASCII; the
+TypeScript side lowercases, collapses whitespace and reads letters and digits by Unicode, and counts a quote's length in
+UTF-16 units. It also stops reading page strings 64 levels deep. The conformance cases are ASCII and shallow. -/
+
+/-- Lowercase, curly quotes straight, en and em dashes `-`. -/
+def quoteMark (c : Char) : Char :=
+  if c == '‘' || c == '’' then '\'' else
+  if c == '“' || c == '”' then '"' else
+  if c == '–' || c == '—' then '-' else c.toLower
+
+/-- The runs of characters between those `sep` holds, empty ones dropped; `cur` is the run so far, reversed. -/
+def runsOf (sep : Char → Bool) : List Char → List Char → List (List Char)
+  | [], cur => if cur.isEmpty then [] else [cur.reverse]
+  | c :: cs, cur =>
+    if sep c then (if cur.isEmpty then runsOf sep cs [] else cur.reverse :: runsOf sep cs [])
+    else runsOf sep cs (c :: cur)
+
+def joinRuns : List (List Char) → List Char
+  | [] => []
+  | [w] => w
+  | w :: ws => w ++ ' ' :: joinRuns ws
+
+/-- `quoteText`: marked, each whitespace run one space, trimmed. -/
+def quoteNorm (s : String) : List Char := joinRuns (runsOf Char.isWhitespace (s.toList.map quoteMark) [])
+
+/-- The looser reading: letters and digits alone, each run joined by one space. -/
+def quoteLoose (cs : List Char) : List Char := joinRuns (runsOf (fun c => !c.isAlphanum) cs [])
+
+def infixOf (n : List Char) : List Char → Bool
+  | [] => n.isEmpty
+  | h :: t => n.isPrefixOf (h :: t) || infixOf n t
+
+mutual
+/-- Every string under a page value. -/
+def pageStrings : Value → List String
+  | .str s => [s]
+  | .arr xs => pageStringsList xs
+  | .obj kvs => pageStringsFields kvs
+  | _ => []
+def pageStringsList : List Value → List String
+  | [] => []
+  | v :: vs => pageStrings v ++ pageStringsList vs
+def pageStringsFields : List (String × Value) → List String
+  | [] => []
+  | (_, v) :: rest => pageStrings v ++ pageStringsFields rest
+end
+
+/-- The quotes at a path: a string or a list of strings; with `field`, the string at `field` of each record. -/
+def quotesAt : Option Value → Option Path → List String
+  | some (.str s), none => [s]
+  | some (.arr xs), none => xs.filterMap fun | .str s => some s | _ => none
+  | some (.arr xs), some f => xs.filterMap fun r => match getPathP r f with
+    | some (.str s) => some s
+    | _ => none
+  | some (.obj kvs), some f => match getPathP (.obj kvs) f with
+    | some (.str s) => [s]
+    | _ => []
+  | _, _ => []
+
+/-- `quoteCheck(...).missed > 0`: a quote of 8 or more characters, normalised, is neither in the pages' joined text
+nor, read as letters and digits, in theirs. -/
+def quotesMissing (v : Value) (path : Path) (field : Option Path) (pages : List Path) : Bool :=
+  let quotes := ((quotesAt (getPathP v path) field).map quoteNorm).filter fun q => decide (8 ≤ q.length)
+  let text := quoteNorm (String.intercalate "\n" (pages.flatMap fun p => match getPathP v p with
+    | some x => pageStrings x
+    | none => []))
+  let loose := quoteLoose text
+  quotes.any fun q => !(infixOf q text || (!(quoteLoose q).isEmpty && infixOf (quoteLoose q) loose))
+
 /-- `predicateMatches` for the mechanical predicates. -/
 def mechHolds (v : Value) : Pred → Bool
   | .fieldEquals p x => scalarMatches (getPathP v p) x
@@ -265,6 +336,7 @@ def mechHolds (v : Value) : Pred → Bool
     | some (.num _), "number" | some (.str _), "string" | some (.bool _), "boolean"
     | some (.arr _), "array" | some (.obj _), "object" | some .null, "null" => true
     | _, _ => false
+  | .quoteMissing p f pages => quotesMissing v p f pages
   | .not q => !mechHolds v q
   | .ask .. => false
 

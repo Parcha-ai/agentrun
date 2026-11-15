@@ -190,7 +190,7 @@ Over a cap is refused, never cut.
 | `skill_outcome` | a skill from a run whose job did not complete |
 | `too_many_skills` | a skill added or changed past the first |
 | `too_many_workflows` | a workflow draft added or changed past the first |
-| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, one whose answering step (the model node writing the key `output.path` reads) names tier `fast`, a README that does not name its folder or has no description, or one of the two files without the other |
+| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, one whose answering step (the model node writing the key `output.path` reads) names tier `fast`, one whose answer carries quotes of pages it fetched with no code quote check (below), a README that does not name its folder or has no description, or one of the two files without the other |
 | `no_tool_list` | a draft that names a tool, checked with no tool list |
 | `executable_node` | a draft with a `code` node, or a call via shell or executor |
 
@@ -200,6 +200,17 @@ Over a cap is refused, never cut.
 - Text shaped like a secret: well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys, JSON web
   tokens, Standard Webhooks signing secrets (`whsec_`), URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
+- The quote check is code. A draft whose output schema has a `quote` or `quotes` property (its `#/definitions` refs,
+  items and `anyOf`/`oneOf`/`allOf` read) and which fetches pages (a call step, under any chain, branch or body) must
+  have an escalate whose `when` is the DSL's `quote_missing` over the answer (its `path` at or under `output.path`),
+  and each of its `pages` must be a key a fetching step writes (a call's `as`, or a map's or composed workflow's with a
+  call under it): a model's summary of a page is no page. Without one the draft is refused, the detail naming the
+  predicate to write. A judge or an `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
+  question flagged 149 of 170 answers while 416 of 429 quotes were in the fetched pages, and it could not tell the 8
+  answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
+  straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters
+  are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
+  reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 - A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked

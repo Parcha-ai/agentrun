@@ -153,6 +153,10 @@ export const GUARD_THRESHOLD = 0.7;
 const guardOf = (signal: "self" | "jev" | "both") => ({ signal, threshold: GUARD_THRESHOLD });
 const guardText = (signal: "self" | "jev" | "both") => `\`"guard": {"signal": "${signal}", "threshold": ${GUARD_THRESHOLD}}\``;
 
+/** The quote check a compiled workflow's answer gets when it quotes fetched pages (check.ts quoteCheckProblems refuses a
+ *  draft without it): code, never a judge. */
+const QUOTE_CHECK_RULE = "An answer that quotes pages a call step fetched is checked in code: an escalate on `{\"predicate\": \"quote_missing\", \"path\": \"<the answer's quotes, e.g. answer.evidence>\", \"field\": \"quote\", \"pages\": [<the keys the call steps write>]}` hands back an answer quoting text no fetched page holds. Never ask a judge, an `ask` or a guard whether quotes are verbatim.";
+
 /** This host's addendum to the DSL's author contract: the node kinds it runs, and its rules, each one the checks hold a
  *  draft to (learn/skills.ts draftProblems; propose.ts). `jev`: the run can call Jev (one of its decision providers,
  *  not denied), so every step is asked for a guard Jev reads. */
@@ -171,6 +175,7 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
         "There is no guardStep callback: author no step guard, including self, jev or both. Do not assume hosted decision or confidence machinery.",
         `At most 128 static nodes. Never automatically retry a delegated tool call. An agent node uses at most ${LEARNED_MAX_TURNS} max_turns and never context fork.`,
         "The workflow's declared input takes the caller's fields. output.path selects the job's actual answer in its required format; use a declared formatter callback when necessary.",
+        QUOTE_CHECK_RULE,
       ],
     };
   }
@@ -192,6 +197,7 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
         ? `Give every ${judgment} step a guard ${guardText("both")}: its own confidence and one Jev check of its output against its input, read together. The step submits its confidence beside its record, so its output schema has no confidence field${judges ? "; a judge, pick or sift step reads its weakest answer" : ""}. Give every extract and call step a guard ${guardText("jev")}: it reports no confidence of its own, so Jev alone checks it. Each threshold starts at ${GUARD_THRESHOLD}; the host refits it on graded runs.`
         : `Give every ${judgment} step a guard ${guardText("self")}: the step submits its confidence beside its record, so its output schema has no confidence field${judges ? "; a judge, pick or sift step reads its weakest answer" : ""}. This run cannot call Jev: a guard reads \`self\` alone, never \`jev\` or \`both\`, and an extract or call step takes no guard.`,
       "An escalate step hands back a case the job's own rules send to a person, on a value a step wrote (`field_equals`, `in`); an unsure step is the guard's to hand back, not an escalate's.",
+      QUOTE_CHECK_RULE,
     ],
   };
 }

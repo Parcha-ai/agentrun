@@ -106,6 +106,10 @@ partial def pred (j : Json) : P Pred := do
     | some (.arr xs) => pure (.isIn path (← xs.toList.mapM scalar))
     | _ => throw "in needs values"
   | "field_type" => pure (.fieldType path (strD j "type"))
+  | "quote_missing" => match get? j "pages" with
+    | some (.arr xs) => pure (.quoteMissing path ((get? j "field").bind fun | .str s => some (splitPath s) | _ => none)
+        (xs.toList.filterMap fun | .str s => some (splitPath s) | _ => none))
+    | _ => throw "quote_missing needs pages"
   | "not" => pure (.not (← pred ((get? j "of").getD .null)))
   | "ask" => pure (.ask ((get? j "gte").bind fun | .num n => some (toRat n) | _ => none)
       ((get? j "state").map tmpl))

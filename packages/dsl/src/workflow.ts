@@ -1,7 +1,7 @@
 import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
-import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
+import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, quoteCheck, type AcceptPredicate } from "./predicates.js";
 import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, GUARD_FIELDS, GUARD_SIGNALS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type GuardSignal, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
@@ -579,7 +579,10 @@ function containsReportNode(node: WorkflowNode | undefined): boolean {
 }
 const PREDICATES: ReadonlySet<string> = new Set(WORKFLOW_PREDICATES);
 
-function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; type?: unknown; of?: unknown; instructions?: unknown; gte?: unknown; state?: unknown }): string[] {
+/** Whether one dotted state path is the other or lies under it. */
+const pathsOverlap = (a: string, b: string): boolean => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+
+function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; type?: unknown; of?: unknown; instructions?: unknown; gte?: unknown; state?: unknown; field?: unknown; pages?: unknown }): string[] {
   const out: string[] = [];
   if (pred.predicate === "in") {
     if (!String(pred.path || "").trim()) out.push("in needs a path");
@@ -592,6 +595,15 @@ function predicateShapeErrors(pred: { predicate: string; path?: string; values?:
   if (pred.predicate === "field_type") {
     if (!String(pred.path || "").trim()) out.push("field_type needs a path");
     if (!(FIELD_TYPES as readonly unknown[]).includes(pred.type)) out.push(`field_type needs a type of ${FIELD_TYPES.join("|")}, not ${JSON.stringify(pred.type) ?? "none"}`);
+  }
+  if (pred.predicate === "quote_missing") {
+    const path = String(pred.path || "").trim();
+    if (!path) out.push("quote_missing needs a path (the quote, or the list of them)");
+    if (pred.field !== undefined && !(typeof pred.field === "string" && pred.field.trim())) out.push("quote_missing.field must name the quote in each item: a non-empty path");
+    const pages = pred.pages;
+    if (!Array.isArray(pages) || !pages.length || pages.some((page) => typeof page !== "string" || !page.trim())) out.push("quote_missing needs pages: a non-empty list of state paths holding the text of the pages this run fetched");
+    // A page path that is the quotes, or holds them, or sits inside them, finds every quote in itself.
+    else if (path) for (const page of pages as string[]) if (pathsOverlap(page, path)) out.push(`quote_missing reads its quotes as a page: pages names "${page}", which overlaps path "${path}"`);
   }
   if (pred.predicate === "not" && (!pred.of || typeof pred.of !== "object" || Array.isArray(pred.of))) out.push(`not needs "of", one mechanical predicate`);
   if (pred.predicate === "ask") {
@@ -977,7 +989,13 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
     pred = negated(pred);
     if (!reachability || reachability.unknowable || !pred || typeof pred !== "object") return;
     const available = produced ?? reachability.available;
-    const { predicate, path: at, key } = pred as { predicate?: unknown; path?: unknown; key?: unknown };
+    const { predicate, path: at, key, pages } = pred as { predicate?: unknown; path?: unknown; key?: unknown; pages?: unknown };
+    // quote_missing reads its pages too: a page no input key or earlier node writes holds no text, so every quote misses.
+    if (predicate === "quote_missing" && Array.isArray(pages)) for (const page of pages) {
+      if (typeof page !== "string" || !page.trim()) continue;
+      const head = page.split(".")[0];
+      if (!available.has(head)) fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${label}): ${field}.pages reads "${page}" but no input key or earlier node produces "${head}"; every quote would miss`);
+    }
     const read = predicate === "no_new_items" ? key : predicate === "ask" ? undefined : at;
     if (typeof read !== "string" || !read.trim()) return;
     const head = read.split(".")[0];
@@ -1590,6 +1608,11 @@ export class EscalationSignal extends Error {
 }
 
 async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>, deps: WorkflowDeps, at: { label: string; kind: "loop" | "escalate" }, workflow?: Workflow): Promise<{ holds: boolean; detail?: Record<string, unknown> }> {
+  // A quote check says how many quotes it read and how many no page holds, as counts: never their text.
+  if (pred.predicate === "quote_missing") {
+    const { checked, missed } = quoteCheck(pred, state);
+    return { holds: missed > 0, detail: { quotes_checked: checked, quotes_missed: missed } };
+  }
   if (pred.predicate !== "ask") return { holds: predicateMatches(pred, state) };
   const ask = pred as AskPredicate;
   const asked = ask.state ? interpolateValue(ask.state, state, at.label) : promptStateOf(state, workflow);

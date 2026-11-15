@@ -13,7 +13,13 @@ export type AcceptPredicate =
   | { predicate: "field_equals"; path: string; value: string | number | boolean }
   | { predicate: "in"; path: string; values: Array<string | number | boolean> }
   | { predicate: "field_type"; path: string; type: FieldType }
+  | QuoteMissingPredicate
   | NotPredicate;
+
+/** Holds when a quote at `path` is in none of the page text at `pages`. `path` names a quote (a string) or a list of them;
+ *  with `field`, a list (or one record) of records, each holding its quote at `field`. Each of `pages` names a state value
+ *  this run wrote, a call's result most often: every string under it is page text. */
+export type QuoteMissingPredicate = { predicate: "quote_missing"; path: string; field?: string; pages: string[] };
 
 /** Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation. */
 export type NotPredicate = { predicate: "not"; of: AcceptPredicate };
@@ -58,6 +64,48 @@ function hasType(value: unknown, type: FieldType): boolean {
   }
 }
 
+/** A quote shorter than this, normalised, is not checked: too short to say which page it came from. */
+export const QUOTE_MIN_CHARS = 8;
+const QUOTE_MARKS: Readonly<Record<string, string>> = { "‘": "'", "’": "'", "“": "\"", "”": "\"", "–": "-", "—": "-" };
+/** A quote or a page as quote_missing compares them: lowercase, curly quotes straight, en and em dashes "-", each run of
+ *  whitespace one space, trimmed. */
+export const quoteText = (text: string): string =>
+  text.toLowerCase().replace(/[‘’“”–—]/g, (mark) => QUOTE_MARKS[mark]!).replace(/\s+/g, " ").trim();
+/** The looser reading: the letters and digits of `text` alone, each run joined by one space. */
+const quoteTokens = (text: string): string => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join(" ");
+/** How deep under a page path strings are read: past it a value is no page. */
+const PAGE_DEPTH = 64;
+
+function pageStrings(value: unknown, out: string[], depth = 0): void {
+  if (typeof value === "string") out.push(value);
+  else if (depth < PAGE_DEPTH && value !== null && typeof value === "object") for (const inner of Array.isArray(value) ? value : Object.values(value)) pageStrings(inner, out, depth + 1);
+}
+
+function quotesAt(value: unknown, field: string | undefined): string[] {
+  if (field === undefined) return typeof value === "string" ? [value] : Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const records = Array.isArray(value) ? value : isRecord(value) ? [value] : [];
+  return records.map((record) => getPath(record, field)).filter((quote): quote is string => typeof quote === "string");
+}
+
+/** quote_missing's reading of `value`: how many quotes it checked (each at least QUOTE_MIN_CHARS once normalised) and how
+ *  many of them are in no page. A quote is found when its normalised text is in the pages' (joined, then normalised), or
+ *  when its letters and digits are in theirs; the pages are only what `value` holds, the run's own state. Counts alone:
+ *  no quote or page text leaves here. */
+export function quoteCheck(predicate: QuoteMissingPredicate, value: unknown): { checked: number; missed: number } {
+  const quotes = quotesAt(getPath(value, predicate.path), predicate.field).map(quoteText).filter((quote) => quote.length >= QUOTE_MIN_CHARS);
+  if (!quotes.length) return { checked: 0, missed: 0 };
+  const strings: string[] = [];
+  for (const page of predicate.pages) pageStrings(getPath(value, page), strings);
+  const text = quoteText(strings.join("\n"));
+  const tokens = quoteTokens(text);
+  const missed = quotes.filter((quote) => {
+    if (text.includes(quote)) return false;
+    const loose = quoteTokens(quote);
+    return !(loose && tokens.includes(loose));
+  }).length;
+  return { checked: quotes.length, missed };
+}
+
 export function predicateMatches(predicate: StopPredicate | AcceptPredicate, value: unknown): boolean {
   switch (predicate.predicate) {
     case "field_equals":
@@ -89,6 +137,8 @@ export function predicateMatches(predicate: StopPredicate | AcceptPredicate, val
     }
     case "field_type":
       return hasType(getPath(value, predicate.path), predicate.type);
+    case "quote_missing":
+      return quoteCheck(predicate, value).missed > 0;
     case "not":
       // A judged `of` reaches the default case below and throws: validation refuses it first.
       return !predicateMatches(predicate.of, value);
