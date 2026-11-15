@@ -426,18 +426,18 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // decision is made and booked once. A throw of `work` (a cap's refusal, a stop) records nothing: the next run calls it
   // again. Kept boxed, so an answer of undefined is recorded too. Run with no nested calls (main's process, a test's
   // registration), a node's answer is its own.
-  // A node the DSL runs again at the same place (each check of a poll, each attempt of a retry) gets a key of its own each
-  // time: its first time the key itself, then `-1`, `-2`, in the order it ran them, which a rerun repeats, since each
-  // repeat follows the answer before it. Only one node runs at one place, so no other node's runs move the count.
+  // A node the DSL runs again at the same place (each check of a poll, each attempt of a retry) gets a key of its own for
+  // each answer recorded there: the key itself, then `-1`, `-2`. The count moves only once an answer is recorded
+  // (`answered`), so an attempt that recorded nothing (a throw of `fixed`'s work) leaves its key to the next attempt, and
+  // a rerun, reading the same answers in the same order, reaches the same keys. Only one node runs at one place, so no
+  // other node's runs move the count.
   const seen = new Map<string, number>();
-  const once = (key: string): string => {
-    const ran = seen.get(key) ?? 0;
-    seen.set(key, ran + 1);
-    return ran ? `${key}-${ran}` : key;
-  };
+  const at = (key: string): string => (seen.get(key) ? `${key}-${seen.get(key)}` : key);
+  const answered = (key: string): void => void seen.set(key, (seen.get(key) ?? 0) + 1);
   const fixed = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
     if (!nested) return work();
-    const box = (await nested.memo(once(key), async () => JSON.parse(JSON.stringify({ value: await work() })) as JsonValue)) as { value?: T };
+    const box = (await nested.memo(at(key), async () => JSON.parse(JSON.stringify({ value: await work() })) as JsonValue)) as { value?: T };
+    answered(key);
     return box.value as T;
   };
   const judged = run.decisions ? await learnedJudge(run, run.decisions) : undefined;
@@ -487,7 +487,10 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
       // the node's own signal too, so a sibling's failure or the node's deadline cuts it at the server.
       const name = run.mcpTools?.get(tool);
       if (!name || !nested) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
-      const answer = await nested.call(name, given, once(nestedKey(node.label, executionPath, item)), own);
+      // Every answer of a nested call is recorded, an error's too, so each moves the count.
+      const key = nestedKey(node.label, executionPath, item);
+      const answer = await nested.call(name, given, at(key), own);
+      answered(key);
       if (answer.refused || answer.isError || answer.interrupted) throw new Error(answer.text);
       return mcpValue(answer.text);
     }
