@@ -3,7 +3,7 @@
 // after it, each on a data directory of its own, gets a link to that install, never a copy. The install's own checks
 // (the entry's `lacking`) take the link as it is. A stand-in install, no npm and no network.
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { scratch } from "./support.mjs";
@@ -62,6 +62,32 @@ test("two local evals at once install once, and neither reads the install before
   await Promise.all([first, second].map((data) => evalServer(data, sharedInstaller(root, install)).ensure()));
   assert.equal(installs.length, 1, "one install for both");
   for (const data of [first, second]) assert.equal(CLAUDE.lacking(installDirOf(data, CLAUDE.id), PINS), undefined, "each eval's harness is whole once its install resolves");
+});
+
+test("a shared root another user could write to is never read: the eval installs into its own data, as before", async (t) => {
+  const [root, data] = [await scratch(t), await scratch(t)];
+  // A tree that passes `lacking`, planted where the shared install would be, in a root anyone may write to.
+  const planted = standIn();
+  await planted.install(CLAUDE, installDirOf(root, `${CLAUDE.id}@${PINS.version}-${PINS.platform}`), PINS);
+  chmodSync(root, 0o777);
+  const { installs, install } = standIn();
+  await evalServer(data, sharedInstaller(root, install)).ensure();
+  const dir = installDirOf(data, CLAUDE.id);
+  assert.deepEqual(installs, [dir], "installed into the eval's own data");
+  assert.ok(!lstatSync(dir).isSymbolicLink(), "no link to the planted tree");
+});
+
+test("a relative root links to where the install is", async (t) => {
+  const [base, data] = [await scratch(t), await scratch(t)];
+  const { installs, install } = standIn();
+  const cwd = process.cwd();
+  process.chdir(base);
+  t.after(() => process.chdir(cwd));
+  await evalServer(data, sharedInstaller("evals", install)).ensure();
+  const dir = installDirOf(data, CLAUDE.id);
+  assert.equal(installs.length, 1);
+  assert.equal(realpathSync(dir), realpathSync(installDirOf(join(base, "evals"), `${CLAUDE.id}@${PINS.version}-${PINS.platform}`)));
+  assert.equal(CLAUDE.lacking(dir, PINS), undefined);
 });
 
 test("a run's claim on an eval's data with no install yet links the shared one, which an eval before it installed", async (t) => {
