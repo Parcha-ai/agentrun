@@ -147,7 +147,6 @@ import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendo
 import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
-import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
@@ -1768,23 +1767,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
    *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
-  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> {
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions }> {
     const revision = (entry ?? (await needAgent(id))).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
-    const [{ learnedDraftTools }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
+    const [{ learnedDraftTools }, { permissionFrom }] = await Promise.all([import("./tools.js"), import("./tool-gate.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
     // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
-    const { tools, gated, deniedBy, asked } = learnedDraftTools(body.tools ?? [], (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
-    // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
-    const ask = { asked, fits: learnedAskFits };
+    const { tools, gated, deniedBy } = learnedDraftTools(body.tools ?? [], (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // A draft's decision nodes (LS-07), as a run's learning end checks them: on this server's decision providers (its
     // keys, saved ones among them: env), each held to the gate by its bare id; deny alone refuses one.
     const [{ decisionProvidersIn }, { DECISION_PROVIDER_KEYS }] = await Promise.all([import("./decisions.js"), import("./tool-plane.js")]);
     const providers = await decisionProvidersIn(env);
-    if (!providers) return { tools, gated, deniedBy, ask };
+    if (!providers) return { tools, gated, deniedBy };
     const decided: Record<string, string> = {};
     const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
     for (const provider of DECISION_PROVIDER_KEYS) {
@@ -1793,7 +1790,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       decided[provider] = permission;
       if (permission === "deny") decisionDeniedBy[provider] = from as "agent" | "server" | "default";
     }
-    return { tools, gated, deniedBy, ask, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
+    return { tools, gated, deniedBy, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;

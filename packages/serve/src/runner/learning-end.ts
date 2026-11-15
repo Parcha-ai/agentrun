@@ -510,10 +510,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
-async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; asked: string[]; decisions?: DraftDecisions; outputSchema?: unknown }> {
+async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions; outputSchema?: unknown }> {
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
-  if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {}, asked: [] };
+  if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string; outputSchema?: unknown };
   // The agent's output schema, which a learned workflow's answer is served shaped to (answer-json.ts answerAsServed): the
   // compile turn is told it and a draft's dry run holds its answer to it.
@@ -526,11 +526,11 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   const approvals = body.approvals === "never" ? "never" : "ask";
   // `deniedBy`: where each deny was set (the agent's tool settings, the server's, a default), which a left-out draft's
   // words name.
-  const { tools, gated, deniedBy, asked } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
+  const { tools, gated, deniedBy } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
   // A draft's decision nodes (LS-07): the host's decision providers, each held to the gate by its bare id as the run's
   // gate holds it (tool-plane.ts DECISION_PROVIDER_KEYS); deny alone refuses one.
   const providers = await deps.decisionProviders?.();
-  if (!providers) return { tools, gated, deniedBy, asked, ...shaped };
+  if (!providers) return { tools, gated, deniedBy, ...shaped };
   const decided: Record<string, string> = {};
   const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
   for (const id of DECISION_PROVIDER_KEYS) {
@@ -539,7 +539,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
     decided[id] = permission;
     if (permission === "deny") decisionDeniedBy[id] = from as "agent" | "server" | "default";
   }
-  return { tools, gated, deniedBy, asked, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy }, ...shaped };
+  return { tools, gated, deniedBy, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy }, ...shaped };
 }
 
 /** The commit main of the agent's learning folder is at now; none for a folder with no main yet. */
@@ -558,14 +558,12 @@ async function mainOf(deps: LearningEndDeps, agentId: string): Promise<string | 
 async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; notesSeed?: string; revised?: { workflow: string; base: string }; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
-    const { tools, gated, deniedBy, asked, decisions, outputSchema } = await draftTools(deps, input.runId);
-    // #2424's card rule (learnedAskFits): a draft whose ask-set MCP tools would not all show on its approval card is refused.
-    const { learnedAskFits } = await import("../learned-workflow.js");
+    const { tools, gated, deniedBy, decisions, outputSchema } = await draftTools(deps, input.runId);
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), ...(input.revised ? { revised: input.revised } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}), ...(outputSchema !== undefined ? { outputSchema } : {}) });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), ...(input.revised ? { revised: input.revised } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}), ...(outputSchema !== undefined ? { outputSchema } : {}) });
     } finally {
       await folder.end();
     }
