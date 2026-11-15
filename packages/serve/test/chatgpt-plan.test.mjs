@@ -721,6 +721,26 @@ test("a sign-in waiting listens for its loopback callback on this test process's
   });
 });
 
+test("a sign-in waiting still listens while another process holds 127.0.0.1:1455 (a live sign-in, `codex login`)", { timeout: 30_000, skip: process.platform !== "linux" && "only Linux gives each process a loopback address of its own" }, async (t) => {
+  fakeOpenAI(t);
+  const { createServer, createConnection } = await import("node:net");
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  // Held here for the test; where something on this machine already holds it, that holds it just the same.
+  const holder = createServer((socket) => socket.destroy());
+  const held = await new Promise((resolve, reject) => {
+    holder.once("error", (error) => (error.code === "EADDRINUSE" ? resolve(false) : reject(error)));
+    holder.listen(1455, "127.0.0.1", () => resolve(true));
+  });
+  if (held) t.after(() => new Promise((resolve) => holder.close(resolve)));
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32) });
+  t.after(() => plan.close());
+  await plan.startSignIn();
+  await new Promise((resolve, reject) => {
+    const socket = createConnection({ host: CALLBACK_HOST, port: 1455 }, () => (socket.destroy(), resolve()));
+    socket.once("error", reject);
+  });
+});
+
 test("the plan's reader prints its state alone: util.inspect of a run's environment and of the reader shows no token, and revocation goes to auth.openai.com alone", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan, withPlan } = await import("../dist/chatgpt-plan.js");

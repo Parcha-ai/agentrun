@@ -18,7 +18,7 @@ const USAGE = (tool) => `${tool} is priced by usage: monid can't cap what it cha
 /** The pin the agent `id`'s current revision holds, as its runs read it. */
 const pinOf = async (store, id) => {
   const [current] = (await store.agents.revisions(id)).slice(-1);
-  return current.body.monidPin;
+  return current.monidPin;
 };
 
 test("monid:apollo/* resolves at the save to the endpoints monid lists for apollo, each pinned with its input and price", async (t) => {
@@ -85,7 +85,46 @@ test("an inline agent's version already run keeps the pin its first run stamped:
   assert.equal(await inspects(), 1, "a later run of the version reads its stored pin, not monid's listing now");
   const next = await api("POST", "/runs", { ...inline, external: { ...inline.external, version: 2 } });
   assert.equal(next.status, 202, JSON.stringify(next.body));
-  assert.equal(await inspects(), 2, "a new version is pinned at its first run");
+  assert.equal(await inspects(), 1, "a new version's first run is its save: one granting what the agent's current revision grants carries that pin, nothing read");
+});
+
+test("an edit that leaves the monid grants as they were reads nothing of monid's and keeps the pin; a grant it adds is read alone", async (t) => {
+  const log = join(await scratch(t), "monid-calls.ndjson");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });
+  const reads = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line).path);
+  const tools = ["monid:apollo/*", "monid:faux/person/enrich"];
+  assert.equal((await api("POST", "/agents", agent("kept", { tools }))).status, 201);
+  const first = await reads();
+  assert.ok(first.some((path) => path.startsWith("/v1/endpoints")) && first.includes("/v1/inspect"), JSON.stringify(first));
+  const pinned = await pinOf(store, "kept");
+  const edited = await api("PUT", "/agents/kept/definition", { definition: { instructions: "Answer in one line.", tools } });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.deepEqual(await reads(), first, "the listing is not read again");
+  assert.deepEqual(await pinOf(store, "kept"), pinned, "the same pin");
+  assert.deepEqual(edited.body.warnings.filter((warning) => warning.reason === "priced_by_usage").map(({ field, message }) => ({ field, message })), [{ field: "definition.tools[0]", message: USAGE("monid:apollo/news_articles/search") }], "a kept endpoint priced by usage is still said");
+  const added = await api("PUT", "/agents/kept/definition", { definition: { instructions: "Answer in one line.", tools: [...tools, "monid:metered/rows"] } });
+  assert.equal(added.status, 200, JSON.stringify(added.body));
+  assert.deepEqual((await reads()).slice(first.length), ["/v1/inspect"], "the added grant alone is read");
+  assert.deepEqual(Object.keys(await pinOf(store, "kept")), [...Object.keys(pinned), "monid:metered/rows"].sort());
+});
+
+test("an endpoint already pinned under a kept grant is not read again when a wildcard or named grant over it is added", async (t) => {
+  const log = join(await scratch(t), "monid-calls.ndjson");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });
+  const reads = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const named = "monid:apollo/people/match";
+  assert.equal((await api("POST", "/agents", agent("over", { tools: [named] }))).status, 201);
+  const pinned = (await pinOf(store, "over"))[named];
+  const before = (await reads()).length;
+  assert.equal((await api("PUT", "/agents/over/definition", { definition: { instructions: "Answer.", tools: [named, "monid:apollo/*"] } })).status, 200);
+  assert.ok(!(await reads()).slice(before).some((call) => call.endpoint === "/people/match"), "the kept endpoint is not inspected again");
+  assert.deepEqual((await pinOf(store, "over"))[named], pinned, "its pin as saved");
+  assert.equal((await api("POST", "/agents", agent("over2", { tools: ["monid:apollo/*"] }))).status, 201);
+  const wild = (await reads()).length;
+  assert.equal((await api("PUT", "/agents/over2/definition", { definition: { instructions: "Answer.", tools: ["monid:apollo/*", named] } })).status, 200);
+  assert.deepEqual((await reads()).slice(wild), [], "a named grant of an endpoint its kept wildcard pinned reads nothing");
 });
 
 test("a monid grant saved with no monid key is refused: it cannot be pinned", async (t) => {
@@ -118,10 +157,21 @@ test("an endpoint whose input the agent's harness refuses is refused at the save
     const [issue, ...more] = saved.body.error.fields;
     assert.deepEqual(more, [], "the one endpoint, once");
     assert.equal(issue.field, "definition.tools[1]", JSON.stringify(issue));
-    assert.match(issue.message, /^The monid endpoint monid:tagger\/tag cannot be offered on codex: \/properties\/body\/patternProperties: patternProperties is not supported by Codex/, issue.message);
+    assert.match(issue.message, /^The tool monid:tagger\/tag cannot be offered on codex: \/properties\/body\/patternProperties: patternProperties is not supported by Codex/, issue.message);
   }
   assert.equal((await api("GET", "/agents/tagger-codex")).status, 404, "nothing saved");
   const pi = await api("POST", "/agents", agent("tagger-pi", { tools: ["monid:tagger/*"] }));
   assert.equal(pi.status, 201, JSON.stringify(pi.body));
   assert.deepEqual(Object.keys(await pinOf(store, "tagger-pi")), ["monid:tagger/tag"]);
+});
+
+test("a carried pin is still held to the harness when the monid key is gone: a move to a harness that refuses its input is refused, never only the key's warning", async (t) => {
+  withEnv(t, {}, ["MONID_API_KEY"]);
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: KEY } })).status, 204);
+  assert.equal((await api("POST", "/agents", agent("carried", { tools: ["monid:tagger/tag"] }))).status, 201);
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  const moved = await api("PUT", "/agents/carried/definition", { definition: { harness: "codex", instructions: "Answer in one line.", tools: ["monid:tagger/tag"] } });
+  assert.equal(moved.status, 422, JSON.stringify(moved.body));
+  assert.match(JSON.stringify(moved.body.error?.fields ?? moved.body), /The tool monid:tagger\/tag cannot be offered on codex: /, "the harness's refusal, not the missing key");
 });

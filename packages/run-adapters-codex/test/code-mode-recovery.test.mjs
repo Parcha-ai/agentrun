@@ -4,9 +4,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { openDrive } from '@parcha/agentrun-kernel/kernel';
-import { openTurn, placeSubmissions, recoveryNote, toolBridge } from '@parcha/agentrun-kernel/process';
+import { bridgeTool, openTurn, placeSubmissions, recoveryNote, toolBridge } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { codexToolName } from '../dist/adapter.js';
 import { codeMode, NESTED_STREAM } from '../dist/code-mode.js';
+import { markParked } from '../dist/scripts.js';
+
+/** A host tool as the adapter bridges it, with the hooks these tests read: by Codex's name for it, a parked call marked. */
+const codexTool = (host) => bridgeTool(host, { name: codexToolName(host.name), parked: markParked });
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const hang = () => new Promise(() => {});
@@ -73,14 +78,13 @@ async function parkedExec(call, lines = []) {
 }
 
 test("a completed computer tool's call, which the rollout holds as the value's JSON (what a script was sent), is completed after a restart, never interrupted, so it is not run again", async () => {
-  const { kernelTool } = await import('../dist/adapter.js');
   const { scriptAnswer } = await import('../dist/code-mode.js');
   const value = { steps: [{ route: 'semantic', verified: true }], state: 's2' };
   const host = { name: 'computer_act', description: 'computer_act', inputSchema: { type: 'object' }, replay: 'never', call: async () => ({ text: '1. press: semantic, verified', structured: value }) };
   const sent = scriptAnswer({ contentItems: [{ type: 'inputText', text: '1. press: semantic, verified' }], success: true }, { structured: value });
   const lines = [JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'DynamicToolCall', id: 'exec-1', tool: 'computer_act', status: 'completed', success: true, content_items: sent.contentItems } } })];
   const output = await parkedExec(async (drive) => {
-    const bridge = toolBridge(drive, [kernelTool(host)], { live: false });
+    const bridge = toolBridge(drive, [codexTool(host)], { live: false });
     assert.equal((await bridge.call('computer_act', { steps: [{ press: '@e3' }] }, 'exec-1')).isError, false);
   }, lines);
   assert.match(output, /\n1\. computer_act completed: /);
@@ -89,7 +93,6 @@ test("a completed computer tool's call, which the rollout holds as the value's J
 });
 
 test("a resumed script that repeats a completed computer call gets the JSON the first call got, with no prose before it", async () => {
-  const { kernelTool } = await import('../dist/adapter.js');
   const { scriptAnswer } = await import('../dist/code-mode.js');
   const value = { steps: [{ route: 'semantic', verified: true }], state: 's2' };
   const args = { steps: [{ press: '@e3' }] };
@@ -101,7 +104,7 @@ test("a resumed script that repeats a completed computer call gets the JSON the 
   await first.submit({ id: 's1', kind: 'prompt', text: 'Press it.' });
   await placeSubmissions(first, [first.pending()[0]]);
   const since = openTurn(first.state()).since;
-  await toolBridge(first, [kernelTool(host)], { live: false }).call('computer_act', args, 'exec-1');
+  await toolBridge(first, [codexTool(host)], { live: false }).call('computer_act', args, 'exec-1');
   const next = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
   const ties = [{ callId: 'exec-1', exec: EXEC, since }];
   const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties.map((data) => ({ data })) : []) };
@@ -119,11 +122,10 @@ test("a resumed script that repeats a completed computer call gets the JSON the 
 const WAITING = "This mcp:fake/add call waits for a person's approval; the run pauses here and continues with the result when they answer.";
 
 test("a cut-off exec tells a nested MCP call the host parked that it was waiting for a person's approval and did not run, never that it completed", async () => {
-  const { kernelTool } = await import('../dist/adapter.js');
   const output = await parkedExec(async (drive) => {
     // The run's MCP tool, a host tool like any other, by the name Codex is given it (mcp_fake__add).
     const host = { name: 'mcp__fake__add', description: 'Adds.', inputSchema: { type: 'object' }, replay: 'never', call: async () => ({ text: WAITING, parked: true }) };
-    const bridge = toolBridge(drive, [kernelTool(host)], { live: false });
+    const bridge = toolBridge(drive, [codexTool(host)], { live: false });
     assert.equal((await bridge.call('mcp_fake__add', { a: 2, b: 3 }, 'exec-1')).text, WAITING, 'the model is told it waits');
   });
   assert.match(output, /\n1\. mcp_fake__add was waiting for a person's approval and did not run; it was not run again\./);
@@ -131,10 +133,9 @@ test("a cut-off exec tells a nested MCP call the host parked that it was waiting
 });
 
 test("a cut-off exec tells a nested host tool's call the host parked the same: it was waiting for a person's approval and did not run", async () => {
-  const { kernelTool } = await import('../dist/adapter.js');
   const output = await parkedExec(async (drive) => {
     const host = { name: 'web_fetch', description: 'web_fetch', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: WAITING.replace('mcp:fake/add', 'web_fetch'), parked: true }) };
-    const bridge = toolBridge(drive, [kernelTool(host)], { live: false });
+    const bridge = toolBridge(drive, [codexTool(host)], { live: false });
     assert.equal((await bridge.call('web_fetch', { url: 'https://example.com' }, 'exec-1')).isError, false);
   });
   assert.match(output, /\n1\. web_fetch was waiting for a person's approval and did not run; it was not run again\./);
@@ -144,7 +145,6 @@ test("a cut-off exec tells a nested host tool's call the host parked the same: i
 /** An exec whose script's nested MCP call the host's gate parked (a person's approval: the call never reached its intent),
  *  cut when the run parked, then resumed by the next drive under `gate`: the exec's recovered output, and what ran. */
 async function gateParkedExec(gate, repair = 'note') {
-  const { kernelTool } = await import('../dist/adapter.js');
   const ran = [];
   const host = { name: 'mcp__fake__add', description: 'Adds.', inputSchema: { type: 'object' }, replay: 'never', call: async (args) => (ran.push(args), { text: String(args.a + args.b) }) };
   const store = memorySessionStore();
@@ -153,7 +153,7 @@ async function gateParkedExec(gate, repair = 'note') {
   await placeSubmissions(first, [first.pending()[0]]);
   const since = openTurn(first.state()).since;
   const parked = new AbortController();
-  const held = toolBridge(first, [kernelTool(host)], { live: false, gate: async () => ({ ask: true }) }).call('mcp_fake__add', { a: 2, b: 3 }, 'exec-1', parked.signal);
+  const held = toolBridge(first, [codexTool(host)], { live: false, gate: async () => ({ ask: true }) }).call('mcp_fake__add', { a: 2, b: 3 }, 'exec-1', parked.signal);
   await pause(20);
   parked.abort();
   await assert.rejects(held, /was parked/);
@@ -164,7 +164,7 @@ async function gateParkedExec(gate, repair = 'note') {
   const kept = [];
   const journal = { append: (stream, data) => kept.push([stream, data]), flush: async () => {}, read: async (stream) => [...(stream === NESTED_STREAM ? ties : []), ...kept.filter(([s]) => s === stream).map(([, data]) => data)].map((data) => ({ data })) };
   const asked = [];
-  const bridge = toolBridge(next, [kernelTool(host)], { live: false, gate: async (call) => (asked.push(call.callId), gate(call)) });
+  const bridge = toolBridge(next, [codexTool(host)], { live: false, gate: async (call) => (asked.push(call.callId), gate(call)) });
   const injected = [];
   const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge, log() {}, lines: [], rpc: () => ({ request: async (_method, params) => { injected.push(...params.items); } }), guard: (p) => p, threadId: () => 't', tries: 1 });
   if (repair === 'ended') {
@@ -181,7 +181,7 @@ async function gateParkedExec(gate, repair = 'note') {
     // The process stops before the wait's output reaches Codex: the next drive recovers the same turn again.
     const again = async () => {
       const later = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
-      const laterBridge = toolBridge(later, [kernelTool(host)], { live: false, gate: async (call) => (asked.push(call.callId), gate(call)) });
+      const laterBridge = toolBridge(later, [codexTool(host)], { live: false, gate: async (call) => (asked.push(call.callId), gate(call)) });
       const laterMode = codeMode({ ctx: later, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: laterBridge, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
       const laterItems = [{ type: 'function_call_output', call_id: wait.callId, output: '' }];
       await laterMode.recoverItems(laterItems, [wait], [], since, true);

@@ -302,7 +302,7 @@ test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no oth
   assert.equal(asked.image, snapshot, "the snapshot the owner named, trimmed");
   assert.deepEqual(provider.check(asked), [], "Daytona's check takes it");
   assert.equal(spec(entryOf("e2b"), "sandbox", {}).image, entryOf("e2b").defaultImage.sandbox, "E2B keeps its own default");
-  assert.equal(spec(entryOf("modal"), "sandbox", {}).image, entryOf("modal").defaultImage.sandbox, "Modal keeps its own default");
+  assert.equal("image" in spec(entryOf("modal"), "sandbox", {}), false, "Modal names none: its prepareImage() answers the box image");
   assert.equal(spec(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE, "Docker keeps its recipe");
   for (const env of [{}, { AGENTRUN_DAYTONA_SNAPSHOT: "" }, { AGENTRUN_DAYTONA_SNAPSHOT: "  " }]) {
     assert.equal(computerSpecOf(env)(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT, JSON.stringify(env));
@@ -329,10 +329,11 @@ test("a cloud phone under a list, the server's default or the operator's, or wit
   assert.deepEqual(provider.check({ ...spec(entryOf("phone-harness"), "phone", { networks, maxLifetimeMs }), network: { allow: [...DEFAULT_BOX_ALLOW] } }).map((one) => one.field), ["network"], "the list the spec asked before is refused");
 });
 
-test("a vendor that prepares its image (Agent37) names none in the spec, and the owner's Docker image and Docker's recipe are Docker's alone", () => {
+test("a vendor that prepares its image (Agent37, Modal) names none in the spec, and the owner's Docker image and Docker's recipe are Docker's alone", () => {
   const owned = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "owner/box:1" });
   for (const spec of [owned, computerSpecOf({})]) {
     for (const kind of ["sandbox", "desktop"]) assert.equal("image" in spec(entryOf("agent37"), kind, {}), false, `agent37 ${kind}: its prepareImage() answers it`);
+    assert.equal("image" in spec(entryOf("modal"), "sandbox", {}), false, "modal sandbox: its prepareImage() answers it");
   }
   assert.deepEqual([owned(entryOf("docker"), "sandbox", {}).image, owned(entryOf("docker"), "desktop", {}).image], ["owner/box:1", "owner/box:1"]);
   assert.equal(computerSpecOf({})(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE);

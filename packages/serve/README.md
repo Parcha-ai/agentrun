@@ -749,8 +749,10 @@ passes the binding's conformance cases (below) needs no change here.
   mounts the run's folder from its disk, which needs Archil's image in your own vendor account. Agent37 puts it there
   itself: its descriptor says `prepareImage`, so a run's first claim registers our public box image as a template of the
   key's workspace (`agentrun-box-<recipe hash>`) and waits once, saying it is pulling. Its sandbox and desktop are
-  ready once the keys work. This server can't put the image in a Modal or E2B account yet, so Settings shows those not
-  ready, an agent's save warns, and a run's start refuses them (409) before any computer is made. An E2B desktop mounts
+  ready once the keys work. Modal's descriptor says `prepareImage` too, and it answers our public box image by its
+  registry tag, which Modal pulls at a computer's first create in a workspace, so a Modal sandbox is ready once the keys
+  work. This server can't put the image in an E2B account yet, so Settings shows E2B not ready, an agent's save warns,
+  and a run's start refuses it (409) before any computer is made. An E2B desktop mounts
   the folder as well (it has files and exec), so it is refused in the same words. Docker's sandbox is refused, since it
   cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
 

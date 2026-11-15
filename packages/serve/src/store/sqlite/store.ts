@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, REVISIONS_MCP_PIN, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -56,7 +56,7 @@ export type SqliteStoreOptions = (
 };
 
 type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null; external_ref: string | null };
-type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number; external_version: string | null; mcp_pin: string | null };
+type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number; external_version: string | null; mcp_pin: string | null; monid_pin: string | null };
 type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null; tries: number };
 type TriggerRecord = {
   id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null;
@@ -94,7 +94,7 @@ function triggerSet(patch: TriggerPatch, at: number): { set: string; params: Sql
 }
 
 const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at, external_ref";
-const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at, external_version, mcp_pin";
+const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at, external_version, mcp_pin, monid_pin";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
@@ -138,7 +138,7 @@ const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, descrip
 const revisionOf = (r: RevisionRecord): RevisionRow => ({
   id: r.id, agentId: r.agent_id, parent: r.parent_id, kind: r.kind, body: JSON.parse(r.body), skills: r.skills === null ? null : JSON.parse(r.skills),
   note: r.note, package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at, externalVersion: r.external_version,
-  mcpPin: r.mcp_pin === null ? null : JSON.parse(r.mcp_pin),
+  mcpPin: r.mcp_pin === null ? null : JSON.parse(r.mcp_pin), monidPin: r.monid_pin === null ? null : JSON.parse(r.monid_pin),
 });
 const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused, tries: r.tries });
 const triggerOf = (r: TriggerRecord): TriggerRow => ({
@@ -296,11 +296,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
     // An earlier build of this version pinned each run's MCP tools at its first claim (mcp_pins) and kept no pin on a
     // revision: the server adds revisions.mcp_pin (schema.ts REVISIONS_MCP_PIN) and drops mcp_pins. A revision saved
-    // before has no pin until its first run here pins it (Agents.pinOnce); no run's pin moves to a revision.
+    // before has no pin until its first run here pins it (Agents.pinOnce); no run's pin moves to a revision. So for monid_pin.
     if (role === "server") {
-      const pinned = await connection.get<{ name: string }>("SELECT name FROM pragma_table_info('revisions') WHERE name = 'mcp_pin'");
+      const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
       await connection.write([
-        ...(pinned ? [] : [{ sql: REVISIONS_MCP_PIN }]),
+        ...(columns.has("mcp_pin") ? [] : [{ sql: REVISIONS_MCP_PIN }]),
+        ...(columns.has("monid_pin") ? [] : [{ sql: REVISIONS_MONID_PIN }]),
         { sql: "DROP TABLE IF EXISTS mcp_pins" },
         { sql: "DROP TABLE IF EXISTS browser_viewers" },
         { sql: SECOND_ANSWERS_REFUSED, params: [(options.now ?? Date.now)()] },
@@ -440,10 +441,10 @@ class SqliteStore implements Store {
       const agent = await tx.get<{ current_revision: string | null }>("SELECT current_revision FROM agents WHERE id = ?", agentId);
       if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
       if (ifCurrent !== undefined && agent.current_revision !== ifCurrent) throw new RevisionMoved(agentId, agent.current_revision);
-      await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at, mcp_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at, mcp_pin, monid_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         revision.id, agentId, agent.current_revision, revision.kind, json(revision.body),
         revision.skills === undefined || revision.skills === null ? null : json(revision.skills),
-        revision.note ?? null, revision.package === undefined ? null : json(revision.package), at, pinText(revision.mcpPin));
+        revision.note ?? null, revision.package === undefined ? null : json(revision.package), at, pinText(revision.mcpPin), pinText(revision.monidPin));
       await tx.run("UPDATE agents SET current_revision = ? WHERE id = ?", revision.id, agentId);
     };
     const writeScopes = async (tx: SqliteExecutor, triggerId: string, scopes: readonly TriggerScope[]) => {
@@ -864,9 +865,9 @@ class SqliteStore implements Store {
             revisionId = existing.id;
           } else {
             revisionId = revision.id;
-            await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, external_version, created_at, mcp_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, external_version, created_at, mcp_pin, monid_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
               revisionId, mapped.id, mapped.current_revision, revision.kind, json(revision.body),
-              revision.skills === undefined || revision.skills === null ? null : json(revision.skills), revision.note ?? null, null, revision.version, at, pinText(revision.mcpPin));
+              revision.skills === undefined || revision.skills === null ? null : json(revision.skills), revision.note ?? null, null, revision.version, at, pinText(revision.mcpPin), pinText(revision.monidPin));
             await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
           }
           // The run, its origin and its launch, in the same transaction as the agent and the revision.

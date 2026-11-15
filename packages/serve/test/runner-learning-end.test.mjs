@@ -252,12 +252,12 @@ test("the compile ask describes each tool a call node may run, by the server's o
   assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
 });
 
-test("the compile ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
+test("the compile ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
   const takes = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
   const gives = { type: "object", properties: { id: { type: "string" } } };
   // create_issue allowed, delete_issue denied, github's unset (ask: its learned_workflow call asks once, #2424).
   const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:linear/delete_issue": { permission: "deny" } };
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/*"], toolSettings: settings, learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/create_pull_request"], toolSettings: settings, learning: true }, compiling(), async (server) => {
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [
       { name: "create_issue", description: "Create an issue in a team", input_schema: takes, output_schema: gives },
       { name: "delete_issue", description: "Delete an issue", input_schema: { type: "object" } },
@@ -277,7 +277,7 @@ test("the compile ask describes each MCP tool a call node may run by its server'
 
 test("with no one to answer an ask (the store's approvers row: the server's accounts off), the compile ask offers no MCP tool set to ask: its learned call would be refused at once (#2424); one set to allow is still offered (LS-07)", async (t) => {
   const { writeApprovers } = await import("../dist/server-approvers.js");
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/*"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/create_pull_request"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, compiling(), async (server) => {
     await writeApprovers(server.settings, false);
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue in a team", input_schema: { type: "object" } }] });
     await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object" } }] });
@@ -301,7 +301,7 @@ test("a run's workflow draft whose ask-set MCP tools would not all fit on its le
     root: { node: "chain", steps: names.map((name, i) => ({ node: "call", label: `Call ${i}`, via: "tool", tool: `mcp:linear/${name}`, args: { title: "{title}" }, out: "R", as: `r${i}`, deadline_s: 30 })) },
   };
   const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-issues\n---\ndescription: Files the week's issues; use when asked to file them\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/*"], learning: true }, async (dir) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", ...names.map((name) => `mcp:linear/${name}`)], learning: true }, async (dir) => {
     const seed = await seedOf(dir, "agent-1");
     return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
   }, async (server) => {
