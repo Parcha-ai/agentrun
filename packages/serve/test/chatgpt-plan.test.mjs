@@ -81,7 +81,8 @@ function fakeOpenAI(t) {
       return new Response(null, { status: 200 });
     }
     if (url.href === "https://api.openai.com/v1/models" && request.method === "GET") {
-      if (!liveAccess(request)) return Response.json({ error: { message: "bad token" } }, { status: 401 });
+      if (o.modelsDelayMs) await new Promise((resolve) => setTimeout(resolve, o.modelsDelayMs));
+      if (!liveAccess(request))return Response.json({ error: { message: "bad token" } }, { status: 401 });
       return Response.json({ object: "list", data: ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "text-embedding-3-small"].map((id) => ({ id, object: "model" })) });
     }
     if (url.href === "https://api.openai.com/v1/responses" && request.method === "POST") {
@@ -432,4 +433,37 @@ test("the renewal lease across two processes on one SQLite store: a live lease s
   assert.equal(await serverStore.sealedKeys.get(PLAN_ROW), undefined);
   assert.equal((await new one.ChatGPTPlan({ store: serverStore, sealKey }).load()).view().state, "signed_out");
   await assert.rejects(new two.ChatGPTPlan({ store: runnerStore, sealKey }).token(), (error) => error instanceof two.PlanUnavailable && /not signed in/.test(error.message), "the next token() says signed out");
+});
+
+test("a sign-out while a sign-in is finishing (its model list still out) wins: the sign-in is dropped and revoked, the row stays gone", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const sealed = new Map();
+  const settings = new Map();
+  const store = {
+    sealedKeys: {
+      get: async (name) => sealed.get(name),
+      put: async (name, bytes) => void sealed.set(name, bytes),
+      replaceIf: async (name, was, bytes) => (sealed.has(name) && Buffer.from(sealed.get(name)).equals(Buffer.from(was)) ? (sealed.set(name, bytes), true) : false),
+      remove: async (name) => void sealed.delete(name),
+    },
+    settings: { putIfAbsent: async (key, value) => (settings.has(key) ? settings.get(key) : (settings.set(key, value), value)) },
+  };
+  const plan = new ChatGPTPlan({ store, sealKey: randomBytes(32) });
+  t.after(() => plan.close());
+  // OpenAI's model list answers slowly: the sign-in has its tokens and is still listing the plan's models.
+  openai.modelsDelayMs = 500;
+  const { authorize_url } = await plan.startSignIn();
+  const finishing = plan.finishSignIn(callbackFor(authorize_url));
+  finishing.catch(() => undefined);
+  const started = Date.now();
+  while (openai.codes === 0 && Date.now() - started < 5_000) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openai.codes, 1, "the sign-in's code was exchanged");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await plan.signOut();
+  await finishing.catch(() => undefined);
+  assert.equal(sealed.get(PLAN_ROW), undefined, "the sign-out's removal stands: no sign-in row written after it");
+  assert.equal(plan.view().state, "signed_out");
+  assert.equal((await new ChatGPTPlan({ store, sealKey: randomBytes(32) }).load()).view().state, "signed_out");
+  assert.ok(openai.revoked.some((revoked) => revoked.token === openai.issued.at(-1).refresh), "the dropped sign-in is revoked at OpenAI");
 });
