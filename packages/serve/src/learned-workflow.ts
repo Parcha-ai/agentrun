@@ -72,14 +72,16 @@ const LEARNED_ASK_CARD_BYTES = ARGS_PREVIEW_BYTES - 128;
 /** What a learned_workflow call's card shows of the MCP actions set to ask that the workflow can call: how their
  *  arguments are filled in, then each action with its arguments' shape, as many as the card's preview shows whole
  *  (LEARNED_ASK_CARD_BYTES). The card leads with these (the call's own input after them), so they are never cut behind a
- *  long input. An action past the bound is not named, so its call asks on its own as it runs, never approved unseen. */
+ *  long input. An action past the bound is not named, so its call asks on its own as it runs, never approved unseen; and
+ *  since an approval passes by tool (learnedApprovedTools), a tool with any action past the bound is not named at all. */
 export function learnedAskShown(asks: readonly LearnedAction[]): Record<string, unknown> {
   const shown: LearnedAction[] = [];
   for (const action of asks) {
     if (Buffer.byteLength(JSON.stringify({ mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: [...shown, action] }), "utf8") > LEARNED_ASK_CARD_BYTES) break;
     shown.push(action);
   }
-  return { mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: shown };
+  const cut = new Set(asks.slice(shown.length).map((action) => action.tool));
+  return { mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: shown.filter((action) => !cut.has(action.tool)) };
 }
 
 /** The fields of a learned_workflow call's card that only the gate writes (learnedAskShown): one of the same name in the
@@ -424,9 +426,18 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // decision is made and booked once. A throw of `work` (a cap's refusal, a stop) records nothing: the next run calls it
   // again. Kept boxed, so an answer of undefined is recorded too. Run with no nested calls (main's process, a test's
   // registration), a node's answer is its own.
+  // A node the DSL runs again at the same place (each check of a poll, each attempt of a retry) gets a key of its own each
+  // time: its first time the key itself, then `-1`, `-2`, in the order it ran them, which a rerun repeats, since each
+  // repeat follows the answer before it. Only one node runs at one place, so no other node's runs move the count.
+  const seen = new Map<string, number>();
+  const once = (key: string): string => {
+    const ran = seen.get(key) ?? 0;
+    seen.set(key, ran + 1);
+    return ran ? `${key}-${ran}` : key;
+  };
   const fixed = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
     if (!nested) return work();
-    const box = (await nested.memo(key, async () => JSON.parse(JSON.stringify({ value: await work() })) as JsonValue)) as { value?: T };
+    const box = (await nested.memo(once(key), async () => JSON.parse(JSON.stringify({ value: await work() })) as JsonValue)) as { value?: T };
     return box.value as T;
   };
   const judged = run.decisions ? await learnedJudge(run, run.decisions) : undefined;
@@ -472,10 +483,11 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (tool && isMcpName(tool)) {
       // An MCP tool of the run, as a call nested in this one (`nested`): asked at the gate as its own tool with the
       // arguments the workflow resolved (its deny, its argument pins, its ask: one the approved card named passes, any
-      // other parks the run for a person), then recorded, flushed and booked on the run's one ledger as its own call.
+      // other parks the run for a person), then recorded, flushed and booked on the run's one ledger as its own call. On
+      // the node's own signal too, so a sibling's failure or the node's deadline cuts it at the server.
       const name = run.mcpTools?.get(tool);
       if (!name || !nested) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
-      const answer = await nested.call(name, given, nestedKey(node.label, executionPath, item));
+      const answer = await nested.call(name, given, once(nestedKey(node.label, executionPath, item)), own);
       if (answer.refused || answer.isError || answer.interrupted) throw new Error(answer.text);
       return mcpValue(answer.text);
     }

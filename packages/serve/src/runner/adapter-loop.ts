@@ -2407,7 +2407,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
          *  part way), then run as this loop wraps the tool (its record, its flush and booking, the stop's abort). The call
          *  is never run again, so a value is its first run's as it is. */
         const servedNested = (outer: string): NestedCalls => ({
-          async call(name, args, key) {
+          async call(name, args, key, own) {
             const tool = tools.find((one) => one.name === name);
             if (!tool) return { text: `${name} is no tool of this run.`, isError: true, refused: true, fresh: true };
             const callId = `${outer}/${key}`;
@@ -2419,7 +2419,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (given !== "allow" && !learnedApprovedTools(await approvedCardOver(callId, spec.gate?.askedAs?.(LEARNED_WORKFLOW_TOOL) ?? LEARNED_WORKFLOW_TOOL)).has(catalog)) {
               return { text: `This ${asked} call needs a person's approval, which a learned workflow run first cannot wait for; it was not run.`, isError: true, refused: true, fresh: true };
             }
-            const got = await tool.call(args, { callId, signal: stopAbort.signal });
+            const got = await tool.call(args, { callId, signal: own ? AbortSignal.any([stopAbort.signal, own]) : stopAbort.signal });
             return { text: got.text, ...(got.isError ? { isError: true } : {}), ...(got.images?.length ? { images: got.images } : {}), ...(got.structured !== undefined ? { structured: got.structured } : {}), fresh: true };
           },
           memo: async (_key, value) => (typeof value === "function" ? value() : value),

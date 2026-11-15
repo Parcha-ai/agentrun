@@ -138,12 +138,12 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
   /** The session's tools as calls nested in `outer` (NestedCalls): each through its own run, gate first, keyed
    *  `tool:<outer>/<key>`, so a rerun of `outer` gets a recorded one's answer and never runs it twice. */
   const nestedIn = (outer: string, signal: AbortSignal): NestedCalls => ({
-    async call(name, args, key) {
+    async call(name, args, key, own) {
       const run = runs.get(name);
       if (!run) return { text: `unknown tool: ${name}`, isError: true, refused: true, fresh: true };
       const callId = `${outer}/${key}`;
       const fresh = !ctx.isMemoized(toolKey(callId));
-      const { interrupted, ...result } = await run(args, callId, signal, true);
+      const { interrupted, ...result } = await run(args, callId, own ? AbortSignal.any([signal, own]) : signal, true);
       return { ...result, ...(interrupted ? { interrupted: true as const } : {}), fresh };
     },
     // A value the call's first run fixed, as a replay-safe effect of its own: its rerun reads the first one. A value given
@@ -314,7 +314,7 @@ export function bridgeTool(tool: AdapterTool, hooks: BridgeHooks = {}): HostTool
       const callId = (io.stepId ?? '').replace(/^tool:/, '').replace(/#\d+$/, '');
       const attempt = Number(/#(\d+)$/.exec(io.stepId ?? '')?.[1] ?? 0);
       hooks.start?.({ callId, attempt, args: input });
-      const nested = io.nested && hooks.nestedName ? { call: (name: string, args: Record<string, unknown>, key: string) => io.nested!.call(hooks.nestedName!(name), args, key), memo: io.nested.memo } : io.nested;
+      const nested = io.nested && hooks.nestedName ? { call: (name: string, args: Record<string, unknown>, key: string, signal?: AbortSignal) => io.nested!.call(hooks.nestedName!(name), args, key, signal), memo: io.nested.memo } : io.nested;
       const result = await tool.call(input, { callId, signal: io.signal, attempt, ...(nested ? { nested } : {}) });
       if (result.parked && hooks.parked) await hooks.parked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
