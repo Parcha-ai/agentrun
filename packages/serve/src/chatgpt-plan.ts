@@ -158,6 +158,9 @@ export class ChatGPTPlan implements PlanReader {
   /** Moved on by each sign-in started and each sign-out: a sign-in keeps its credential only while it is unmoved since it
    *  started, so a sign-out (or a newer sign-in) while it finishes wins. */
   #epoch = 0;
+  /** Set when a sign-in dropped by a sign-out (keep) could not have its revocation confirmed by OpenAI: that sign-out
+   *  answers revoked false. Cleared at each sign-out's start. */
+  #droppedUnconfirmed = false;
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
   constructor(deps: ChatGPTPlanDeps) {
@@ -350,7 +353,7 @@ export class ChatGPTPlan implements PlanReader {
     let previousRevoked: boolean | undefined;
     for (;;) {
       if (epoch !== this.#epoch) {
-        await this.revoke(credential);
+        if (!(await this.revoke(credential))) this.#droppedUnconfirmed = true;
         return;
       }
       const was = await this.#deps.store.sealedKeys.get(CHATGPT_PLAN_ROW);
@@ -503,11 +506,13 @@ export class ChatGPTPlan implements PlanReader {
    *  a live lease (that renewal revokes the pair it gets when its write back finds the row gone, but OpenAI's word on it
    *  is not this answer's to give). */
   async signOut(): Promise<{ revoked: boolean }> {
+    this.#droppedUnconfirmed = false;
     this.#epoch += 1;
     const finishing = this.#pending;
     this.cancel();
     await finishing?.result.catch(() => undefined);
-    let revoked = true;
+    // A sign-in past its browser step, dropped by this sign-out (keep), whose revocation OpenAI didn't confirm.
+    let revoked = !this.#droppedUnconfirmed;
     for (;;) {
       const bytes = await this.#deps.store.sealedKeys.get(CHATGPT_PLAN_ROW);
       if (bytes === undefined) break;
@@ -515,7 +520,8 @@ export class ChatGPTPlan implements PlanReader {
       const renewing = row?.lease !== undefined && row.lease.until > (await this.storeNow());
       if (!(await this.#deps.store.sealedKeys.removeIf(CHATGPT_PLAN_ROW, bytes))) continue;
       // A row that does not open (sealed under another key) is removed, its tokens beyond reach to revoke.
-      revoked = row ? (await this.revoke(row.credential)) && !renewing : false;
+      const removed = row ? (await this.revoke(row.credential)) && !renewing : false;
+      revoked = revoked && removed;
       break;
     }
     this.#snapshot = undefined;
