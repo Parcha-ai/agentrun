@@ -25,7 +25,7 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_OP_TOOL, computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
@@ -85,6 +85,25 @@ const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
   for (const def of [...computerToolDefs("desktop", []), ...computerToolDefs("phone", [])]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
   return keys;
 })();
+/** A script's computer op (computer_op's `op`) that runs on the computer what one of the run's own tools runs, held to
+ *  that tool's setting: the shell is bash's, a program started to run on (processes.start) bash_background's (bash's
+ *  setting, and a read-only bash policy refuses it), a file's write is write's, a file's read, listing or stat is
+ *  read's. The other ops (apps, raw input) are the computer kind's, computer_op's own key (KIND_TOOLS). */
+const OP_HELD_AS: Readonly<Record<string, string>> = Object.freeze({ "shell.run": "bash", "processes.start": "bash_background", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
+/** The ops whose command runs in the computer's shell. */
+const SHELL_OPS: ReadonlySet<string> = new Set(["shell.run", "processes.start"]);
+
+/** The tool a call of `name` with `args` is held to, with the arguments that tool's gate reads, where it is not its own:
+ *  a computer_op whose op runs what one of the run's own tools runs (OP_HELD_AS), with its command and cwd, or its path.
+ *  Undefined for any other call. */
+export function heldAs(name: string, args: unknown): { readonly tool: string; readonly args: unknown } | undefined {
+  if (name !== COMPUTER_OP_TOOL) return undefined;
+  const { op, args: given } = (args ?? {}) as { op?: unknown; args?: unknown };
+  const tool = typeof op === "string" && Object.hasOwn(OP_HELD_AS, op) ? OP_HELD_AS[op]! : undefined;
+  if (tool === undefined) return undefined;
+  const fields = (given !== null && typeof given === "object" ? given : {}) as Record<string, unknown>;
+  return { tool, args: SHELL_OPS.has(op as string) ? { command: fields.command, ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}) } : { path: fields.path } };
+}
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** A session's `{name -> settings key}` map (nameMapOf). */
 export type NameMap = ReadonlyMap<string, string>;
@@ -436,6 +455,12 @@ export class RunGate {
       const setting = this.setting(name);
       return setting.permission === "deny" ? { deny: deniedText(name, name, setting.from, options.replayed ? "unknown" : "no") } : "allow";
     }
+    // A script's computer op that runs what one of the run's own tools runs (heldAs: its shell, its files) is that tool's
+    // call, decided as on a computer, where it runs: a desktop that mounts no folder has a computer to run a command on,
+    // so shell.run and processes.start follow bash's one setting alike, as the run's own tools on a computer do. It is a
+    // computer tool too: the kind's deny (desktop or phone set to deny) refuses it first, in the kind's words, below.
+    const held = heldAs(name, args);
+    if (held && this.policy(name) !== "deny") return this.onComputer().decide(held.tool, held.args, options);
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
     const ran = options.replayed ? "unknown" : "no";
@@ -455,9 +480,16 @@ export class RunGate {
   }
 
   /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
-   *  own name; a name nothing maps, as it came. */
-  askedAs(name: string): string {
+   *  own name; a script's computer op with `args` by the tool it is held to (heldAs); a name nothing maps, as it came. */
+  askedAs(name: string, args?: unknown): string {
+    const held = heldAs(name, args);
+    if (held) return this.askedAs(held.tool);
     return shellToolOf(name) ?? this.keyOf(name) ?? name;
+  }
+  private computerGate?: RunGate;
+  /** This gate as on a computer: where a script's computer op runs (heldAs), whatever the run's own shell is. */
+  private onComputer(): RunGate {
+    return (this.computerGate ??= new RunGate({ ...this.where, computer: true }, this.readServerSettings, this.overrides, this.approvers, this.approvals));
   }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */

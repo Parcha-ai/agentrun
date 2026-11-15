@@ -63,6 +63,7 @@ import { HELD_KIND, heldWords } from "../computer-held.js";
 import { CALL_KIND, CALL_MS, COMPUTER_CALL } from "../computer-channel.js";
 import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../computer-calls.js";
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
+import type { ScriptComputer } from "../workspace/run-tools.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, FIT_TOLERANCE, freeModel, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -118,7 +119,7 @@ function cardOf<A extends Record<string, unknown> | undefined>(tool: string, sho
  *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
  *  call run again after an earlier attempt that may have been sent, so a refusal's words never say nothing was sent. */
 export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean }) => GateAnswer | Promise<GateAnswer>) & {
-  readonly askedAs?: (tool: string) => string;
+  readonly askedAs?: (tool: string, args?: unknown) => string;
   /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
    *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
   readonly permission?: (tool: string) => Promise<"allow" | "ask" | "deny">;
@@ -212,6 +213,9 @@ export interface AdapterRunSpec {
    *  (workspace/computer-hold.ts): the loop commits the hold's changes to the run's journal, which the server reads
    *  (computer-routes.ts), and applies the person's take-over and hand-back rows to it (runner/computer-journal.ts). */
   readonly computer?: LoopComputer;
+  /** The run's desktop or phone as a codemode script gets it (RunTools.computer): the script's `computer` (meta-tools.ts),
+   *  each of its calls a nested call of the run's computer tools. Absent: a script has no `computer`. */
+  readonly scriptComputer?: ScriptComputer;
   /** What the model is told once its claim gave it a computer in place of an earlier claim's (computer-deps.ts
    *  computerReplacedNote): placed in this pass's first main-model request that can carry a note, as the cap's wrap-up
    *  is (ModelPort.note), so it reaches every harness mid-turn, and written as the server's row (COMPUTER_NOTE) once that
@@ -2093,11 +2097,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           },
         });
-        const own: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map(hosted);
+        const facts = builtinHarness(spec.adapter.id)?.facts;
         // tools_search, tools_call and codemode over the session's tools (meta-tools.ts), on every harness (codemode on
         // each but one that runs scripts of its own): what they call is called nested, each call asked about and recorded
         // as its own tool's. A search finds a tool whose setting is not deny; an MCP tool's setting is its catalog name's.
         const settingOf = spec.gate?.permission;
+        // A meta tool whose setting is deny is not offered at all, rather than offered and refused.
+        const allowed = async (name: string) => !settingOf || (await settingOf(name).catch(() => "deny" as const)) !== "deny";
+        const hostCodemode = facts?.ownCodemode !== true && (await allowed(CODEMODE));
+        // A tool the spec binds for a script's nested calls alone (deferred: a desktop's computer_op, and its step tools
+        // under its surface "code") is listed wherever the host offers no codemode to call it: on a harness that runs
+        // scripts in its own code mode, which reaches only the tools it is handed (Codex's exec), and on a run whose
+        // codemode is set to deny, so the computer is never out of the model's reach.
+        const listedFor = ({ deferred: _, ...tool }: HostTool): HostTool => tool;
+        const own: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map((tool) => (!hostCodemode && tool.deferred ? listedFor(tool) : tool)).map(hosted);
         // The harness's own tools beside them (pi's subagent, its browser's): found and called by name as the host's are,
         // run by the harness as its own nested calls. Never called here: a nested call reaches them through the harness.
         const native: HostTool[] = (spec.adapter.ownTools ?? []).filter((one) => !own.some((tool) => tool.name === one.name)).map((one) => ({
@@ -2111,9 +2124,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // model finds them with tools_search and runs them with tools_call (still the tool's own call at the gate). Claude
         // Code defers them itself (its ToolSearch, on under the same test), so it is offered neither. Under the threshold
         // every tool is listed and there is no search or call. codemode is offered as it always was.
-        const facts = builtinHarness(spec.adapter.id)?.facts;
-        // A meta tool whose setting is deny is not offered at all, rather than offered and refused.
-        const allowed = async (name: string) => !settingOf || (await settingOf(name).catch(() => "deny" as const)) !== "deny";
         // Deferred only when the model can both find and run what it hid: with either helper denied every tool stays listed,
         // so denying a helper never takes an otherwise allowed tool out of reach.
         // The one verdict for every harness: one with a tool search of its own (Claude Code's) follows it too, handed it as
@@ -2123,9 +2133,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const metas = metaTools({
           tools: () => [...own, ...native],
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
-          codemode: facts?.ownCodemode !== true && (await allowed(CODEMODE)),
+          codemode: hostCodemode,
           discovery: { search: offered, call: offered },
           ...(facts?.hostName ? { hostName: facts.hostName } : {}),
+          ...(spec.scriptComputer ? { computer: spec.scriptComputer } : {}),
         });
         const tools: HostTool[] = [...own.map((one): HostTool => (offered && isCatalogWire(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
         // The session's model port, counting what it admitted and has not booked yet (a stop's booking comes once the
@@ -2963,7 +2974,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (call.nested === true && decision === "ask" && learnedApprovedTools(await approvedCardOver(call.callId, spec.gate?.askedAs?.(LEARNED_WORKFLOW_TOOL) ?? LEARNED_WORKFLOW_TOOL)).has(tool)) decision = "allow";
       // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's own;
       // an MCP call by its catalog name (tool) either way, never pi's wire name, and so are its call and its price.
-      const asked = spec.gate?.askedAs?.(tool) ?? tool;
+      // A script's computer op is asked about by the tool it is held to (RunGate.askedAs with its arguments: bash for its
+      // shell, write or read for its files).
+      const asked = spec.gate?.askedAs?.(tool, call.args) ?? tool;
       // A call a person was asked about and has not answered, refused now because its tool is set to deny (a bare "deny",
       // or the gate's own words for it): the deny answers the ask first (deniedBySetting), a deny of theirs standing. The
       // model reads the gate's words (main's, from refusal-words.ts) either way.
