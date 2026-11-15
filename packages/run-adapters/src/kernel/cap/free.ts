@@ -7,6 +7,7 @@
 import { type BeforeRequest, RUNNER_RECORDS } from "../../runner.js";
 import type { SessionRecord } from "../../types.js";
 import { SPEND_CAP_REACHED } from "./words.js";
+import { SERVER_NOTE_LABEL } from "./wrap-up.js";
 import type { CapModel, ModelPrice } from "./types.js";
 
 /** The requests on a free model a run may make by default. */
@@ -56,7 +57,7 @@ export function freeWrapUpDue(limit: number, made: number): { left: number } | u
 }
 
 /** The note's words, once per run and limit (the dollar cap's wrap-up note carries them, the same mechanism). */
-export const freeWrapUpWords = (left: number): string => `${left} free-model request${left === 1 ? "" : "s"} left in this run, this one included: finish now with your answer.`;
+export const freeWrapUpWords = (left: number): string => `${SERVER_NOTE_LABEL}${left} free-model request${left === 1 ? "" : "s"} left in this run, this one included: finish now with your answer.`;
 
 /** The requests counted toward the free limit that `records` (a session's runner records) hold: each runner.request marked
  *  `freeRequest`, answered, in flight or cut. The one count, runBooking's and the wrap-up's. */

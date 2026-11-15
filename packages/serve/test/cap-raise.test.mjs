@@ -20,6 +20,8 @@ const raise = (api, runId, body) => api("PATCH", `/runs/${runId}`, body);
  *  places the note before the guard has priced anything), in the same words: the note came due at step 0. Under a $2
  *  raise none is due at step 0 (the typical request is its input and a 4,096-token answer, $0.41, not its hold). */
 const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
+/** The same as the model is told it: labelled as the server's note (the row says the words after the label). */
+const TOLD = (words) => `AgentRun server note: ${words}`;
 
 /** A run under a $0.05 cap, paused at it: its first request (least $0.1024) is refused. */
 async function paused(api, id) {
@@ -48,7 +50,7 @@ test("a run paused at its cap, its cap raised, goes on: one follow-up turn in th
   assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")], JSON.stringify(said(rows)));
   assert.ok(!rows.some((row) => row.kind === "user_message" && row.text === CONTINUE("$1")), "the follow-up is never the person's message");
   // The faux model answers on its request's last user text: the follow-up, the note inside that request's body after it.
-  assert.equal(run.result.final_answer, `On ${CONTINUE("$1")}<system-reminder>${WRAP_UP_FIRST("$1")}</system-reminder>: done.`);
+  assert.equal(run.result.final_answer, `On ${CONTINUE("$1")}<system-reminder>${TOLD(WRAP_UP_FIRST("$1"))}</system-reminder>: done.`);
   // The claim that took the raise admitted the follow-up's request at the raise: the cap holds its least, $0.1024, over the
   // launch's $0.05, so a gate still reading the launch's cap in that claim would refuse it and pause the run again
   // (Manuel's beta.32 run read $0.001 there). One cap park in its journal, the first, and the run completed.

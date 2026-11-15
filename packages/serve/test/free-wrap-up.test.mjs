@@ -37,7 +37,9 @@ test("a free model's run is told once, 3 requests before its limit: the request 
   assert.equal(sent.length, 10, "the run's 10 requests all went");
   // Its 8th request is the first with 3 left (8, 9 and 10): it carries the note; the 7 before it carry none, the 2 after none.
   assert.deepEqual(sent.map((call, i) => (call.note === null ? null : i + 1)).filter((n) => n !== null), [8], "one request carried it, the 8th");
-  assert.equal(reminderIn(sent[7].note).trim(), WORDS(3));
+  // The model is told it as the server's note (SERVER_NOTE_LABEL, as every note the server tells it); the server's row,
+  // labelled already, says the words after the label.
+  assert.equal(reminderIn(sent[7].note).trim(), `AgentRun server note: ${WORDS(3)}`);
   assert.deepEqual(rows.map((row) => row.text), [WORDS(3)], "one row of the server's says so");
 });
 
