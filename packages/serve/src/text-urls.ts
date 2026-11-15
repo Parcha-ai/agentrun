@@ -44,6 +44,13 @@ export function targetEnd(text: string, from = 0, to = text.length): number {
   return end;
 }
 
+/** Where a markdown target in angle brackets (`text` from `from`, the character after its "<") ends: the index of its ">",
+ *  or -1 where whitespace, another "<" or `to` comes first (no such target: read it as targetEnd does). */
+function angledEnd(text: string, from: number, to: number): number {
+  for (let end = from; end < to && !/[\s<]/.test(text[end]!); end++) if (text[end] === ">") return end;
+  return -1;
+}
+
 /** A string that is one URL whole (a JSON field holding a link means all of it, its last character too), trimmed of the
  *  whitespace around it; else undefined. */
 export function wholeUrl(text: string): string | undefined {
@@ -73,8 +80,11 @@ export function* linksWritten(text: string): Generator<WrittenLink> {
     let from = found.index + pieces[0]!.length + 2;
     for (let i = 1; i < pieces.length; i++) {
       // Each target but the last ends by the next "](" in the URL; the last may run on past where TEXT_URL stopped.
-      const end = targetEnd(text, from, i < pieces.length - 1 ? from + pieces[i]!.length : text.length);
-      yield { raw: text.slice(from, end), exact: text[end] === ")" };
+      const to = i < pieces.length - 1 ? from + pieces[i]!.length : text.length;
+      // A target in angle brackets (CommonMark's `](<https://a/b>)`) is what they hold, its ">" its end.
+      const angled = text[from] === "<" ? angledEnd(text, from + 1, to) : -1;
+      const end = angled >= 0 ? angled : targetEnd(text, from, to);
+      yield angled >= 0 ? { raw: text.slice(from + 1, angled), exact: true } : { raw: text.slice(from, end), exact: text[end] === ")" };
       at.lastIndex = Math.max(at.lastIndex, end);
       from += pieces[i]!.length + 2;
     }
