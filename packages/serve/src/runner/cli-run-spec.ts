@@ -45,7 +45,7 @@ import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
-import type { ComputerSetting } from "../computer-setting.js";
+import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { hadComputer } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -105,6 +105,9 @@ type RevisionBody = {
   readonly checkout?: Checkout;
   /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
   readonly outputSchema?: unknown;
+  /** The agent's computer setting, or its place (computer-setting.ts settingOfDefinition): the run's computer kind. */
+  readonly computer?: unknown;
+  readonly place?: unknown;
 };
 
 /** The run's model and the catalog that prices it, as main chooses a CLI run's (app.ts wireModels and runModels): on the
@@ -350,7 +353,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does, with
@@ -398,8 +401,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
-  // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
-  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
+  // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts), with the kind's
+  // skill of a desktop or a phone (the revision's computer setting), in the harness's skill list beside the revision's.
+  const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
   // A learning run's seed laid as the pi spec lays it (runner/learning-seed.ts), its learned skills then in the skill list
   // the harness is handed (its native skills, or the prompt's), its learned workflows the ones learned_workflow runs.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
@@ -416,7 +420,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
     })
     : undefined;
-  const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, check, { onDemand: readsFiles(granted) });
+  const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills, ...(seedLaid?.skills ?? [])], ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them, on the

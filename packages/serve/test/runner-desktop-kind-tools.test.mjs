@@ -11,7 +11,7 @@
 // a grey screen. Loopback only: no provider, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -30,6 +30,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { CODEX_STANDIN_ENV } = await import("../dist/adapters.js");
+const { KIND_SKILLS } = await import("../dist/workspace/index.js");
 
 /** The desktop's tools, as the kernel's registry lists them: imported, never retyped. */
 const DESKTOP = computerToolsFor(["screen", "input.pointer", "input.keys"]);
@@ -160,9 +161,11 @@ function keepingHomes(spec, dir, kept) {
 }
 
 /** A codex run on the runner path, on Codex's stand-in, its agent's computer --faux's desktop, whose model calls `tool`
- *  with `args` (its first message is the stand-in's call). `settings`: the server's tool settings. Returns the tools
- *  Codex was handed and the call's answer from Codex's session record (undefined when none came within 15 s). */
-async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
+ *  with `args` (its first message is the stand-in's call). `settings`: the server's tool settings; `composer`: the
+ *  claim's computers (--faux's, or a stand-in). Returns the tools Codex was handed, the call's answer from Codex's
+ *  session record (undefined when none came within 15 s), and the skills in its CODEX_HOME/skills, each name to its
+ *  SKILL.md. */
+async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP, composer = fauxComposer) {
   const was = process.env.AGENTRUN_CODEX_STANDIN;
   process.env.AGENTRUN_CODEX_STANDIN = "1";
   t.after(() => (was === undefined ? delete process.env.AGENTRUN_CODEX_STANDIN : (process.env.AGENTRUN_CODEX_STANDIN = was)));
@@ -195,7 +198,7 @@ async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
     AGENT_MODEL_PRICE: "1,2,0.5",
   };
   const log = [];
-  const { computerForClaim, computerDeps } = fauxComposer({ store, sealKey });
+  const { computerForClaim, computerDeps } = composer({ store, sealKey });
   const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey, routeOf: async () => assert.fail("a CLI run takes no pi route"), log: (line) => log.push(line), computerForClaim, computerDeps };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
@@ -224,8 +227,34 @@ async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
   const by = Date.now() + 15_000;
   while (!outputs().length && Date.now() < by) await new Promise((resolve) => setTimeout(resolve, 50));
   const lines = record();
-  return { handed: (lines[0].payload.dynamic_tools ?? []).map((given) => given.name), calls: lines.filter((line) => line.payload?.type === "function_call").map((line) => line.payload.name), answer: outputs()[0] };
+  const skillsDir = join(homes[0], "skills");
+  const skills = existsSync(skillsDir) ? Object.fromEntries(readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, "SKILL.md"))).map((name) => [name, readFileSync(join(skillsDir, name, "SKILL.md"), "utf8")])) : {};
+  return { handed: (lines[0].payload.dynamic_tools ?? []).map((given) => given.name), calls: lines.filter((line) => line.payload?.type === "function_call").map((line) => line.payload.name), answer: outputs()[0], skills };
 }
+
+/** A claim's computers with none to give: a phone setting's run with no phone, for what the claim lays from the setting
+ *  alone. */
+const noComposer = () => ({ computerForClaim: async () => ({ release: async () => {} }) });
+
+test("codex: a desktop run's CODEX_HOME/skills holds desktop-computer, as Codex lists a revision's own skills", { timeout: 120_000 }, async (t) => {
+  const { skills } = await codexCall(t, "read", { path: ".agents/skills/desktop-computer/SKILL.md" });
+  assert.deepEqual(Object.keys(skills), ["desktop-computer"], "the kind skill is Codex's own");
+  assert.equal(skills["desktop-computer"], KIND_SKILLS.desktop.text);
+});
+
+test("codex: a phone run's CODEX_HOME/skills holds phone-computer, and the model's read of .agents/skills/phone-computer/SKILL.md answers it", { timeout: 120_000 }, async (t) => {
+  const { skills, answer } = await codexCall(t, "read", { path: ".agents/skills/phone-computer/SKILL.md" }, undefined, { kind: "phone", provider: "phone-harness" }, noComposer);
+  assert.deepEqual(Object.keys(skills), ["phone-computer"], "the kind skill is Codex's own");
+  assert.equal(skills["phone-computer"], KIND_SKILLS.phone.text);
+  assert.ok(answer?.includes("# Using a phone"), `the read answered the skill: ${answer?.slice(0, 300)}`);
+});
+
+test("pi: phone set to deny refuses a phone run's computer_act and a script's nested computer_op in phone's words", async (t) => {
+  const { spec } = await specFor(t, { body: { tools: ["read"], computer: { kind: "phone", provider: "phone-harness" } }, settings: { phone: { permission: "deny" } } });
+  for (const [tool, args] of [["computer_act", CLICK], ["computer_op", { op: "apps.open", args: { id: "com.android.settings" } }], ["computer_op", { op: "input.act", args: { actions: [] } }]]) {
+    assert.deepEqual(await spec.gate({ callId: `p-${tool}`, tool, args }), { deny: deniedText("phone") }, `${tool} is refused in phone's deny words`);
+  }
+});
 
 test("codex: a run of an agent whose computer is a desktop is handed computer_screenshot, computer_act and computer_request_handoff, and the model's computer_screenshot call runs", { timeout: 120_000 }, async (t) => {
   const { handed, calls, answer } = await codexCall(t, "computer_screenshot", {});
