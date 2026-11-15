@@ -159,6 +159,22 @@ for (const [key, picked, mode] of [[true, true, ""], [true, true, "errors"], [tr
   });
 }
 
+test("a fetched URL with an apostrophe in its path shows no query value on its timeline row: the preview the API serves scrubs the query after the apostrophe too", { timeout: 60_000 }, async (t) => {
+  await calls(t, false);
+  const { api } = await serve(t, { fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
+  assert.equal((await api("POST", "/agents", { definition: { id: "quoted", name: "quoted", instructions: "Read.", tools: ["web_fetch"] } })).status, 201);
+  const asked = "http://public.example/O'Reilly?token=held-query-value";
+  const started = await api("POST", "/agents/quoted/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify([asked])}` } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
+  assert.equal(results.length, 1, JSON.stringify(results));
+  assert.ok(results[0].includes(`"url":"http://public.example/O'Reilly?token=…"`), results[0]);
+  // The person's own message keeps its URL whole; every row of the call scrubs it.
+  const tools = JSON.stringify(rows.filter((row) => row.kind.startsWith("tool")));
+  assert.equal(tools.includes("held-query-value"), false, tools);
+});
+
 /** The line after a page's JSON that tells the model where it is in the page, if any. */
 const where = (page, name = "web_fetch") => web.webFetchText(page, name).slice(JSON.stringify(page).length + 1) || undefined;
 

@@ -112,9 +112,9 @@ export interface CodexPolicyOptions {
    *  `tool_choice` naming the search is then refused. Absent: the live search is offered whenever `webSearch` is on. */
   searchAllowed?: () => Promise<boolean>;
   /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
-   *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
-   *  latest answer, which is known here before Codex can run anything of it. */
-  announce?: { response(): void; exec(callId: string): void; failed(): void; end(): void };
+   *  `exec(callId, input)` for each code-mode `exec` call it holds, with its script. The session ties a script's nested
+   *  calls to the `exec` of the latest answer, which is known here before Codex can run anything of it. */
+  announce?: { response(): void; exec(callId: string, input?: string): void; failed(): void; end(): void };
   /** The route is a person's ChatGPT plan (its access token the credential), whose Responses API keeps rules of its own:
    *  no `max_output_tokens` is sent (none is clamped or added: the proxy limits no output and counts no input on it), the
    *  keys it does not take are dropped (PLAN_DROPPED_KEYS), a system-role message is refused in words, each request names
@@ -458,7 +458,7 @@ function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): {
       return;
     }
     const item = isPlain(event) && event.type === "response.output_item.done" && isPlain(event.item) ? event.item : undefined;
-    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id);
+    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id, typeof item.input === "string" ? item.input : "");
   };
   const endLine = () => {
     const done = line;
