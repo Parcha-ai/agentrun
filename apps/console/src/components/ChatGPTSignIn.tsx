@@ -134,7 +134,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
       </p>
       <label className="block">
         <span className="caps mb-2 block text-small font-semibold">The sign-in tab's address</span>
-        <Input ref={field} name="redirect_url" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" placeholder="http://127.0.0.1:1455/auth/callback?code=…"
+        <Input ref={field} name="redirect_url" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" placeholder="127.0.0.1:1455/auth/callback?code=…"
           onInput={() => setTyped(!!field.current?.value.trim())} />
       </label>
       {alert}
