@@ -430,7 +430,7 @@ in the kernel's tool registry, keyed by these groups.
   | --- | --- |
   | docker | none |
   | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
-  | modal | sandbox: `MODAL_DEFAULT_IMAGE` ("debian:bookworm-slim") |
+  | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
@@ -1262,8 +1262,8 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
   `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` and
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
-- **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline, image and the most its
-  deadline may reach, and a GPU computer's GPUs) and the caller's. Modal takes 10 tags, 512 bytes of them, names and
+- **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline and image, and a GPU
+  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them, names and
   values together (the host's `labels`): the adapter's `check()` counts them as create gives them, its own at their
   longest, and refuses past either in words with no call; create refuses the same words first. An Archil computer's mount label records the
   folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still

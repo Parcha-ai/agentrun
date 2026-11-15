@@ -2,7 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
-import { runnerCloseBoundMs } from "./runner.js";
+import { type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -34,10 +34,10 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  holds each paired computer's socket in this process, so a run here takes one. Returns the runner and a close() that
  *  stops both and closes its store. */
 export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
-  const { startRunner } = await import("./runner.js");
+  const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
-  const { openRunnerStore, runEnv, runnerComputers } = await import("./main.js");
+  const { openRunnerStore, runEnv, runnerComputers, troubleLine } = await import("./main.js");
   // The server's store, the runner's one way in (main.ts openRunnerStore, store/open.ts): Postgres when this process's
   // AGENTRUN_STORE_URL secret names one, else SQLite in the data directory; a schema it does not know is RunnerRefused.
   const { store } = await openRunnerStore(dataDir, process.env, (message) => void process.stderr.write(`agentrun-serve runner: ${message}\n`), undefined);
@@ -73,9 +73,18 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const { sweepEndedScratch } = await import("./scratch-sweep.js");
   await sweepEndedScratch(store, dataDir, { log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // Its run start and end lines go where the server's lines do (print.ts runLine), the one stdout; `onLine` is where a
-  // launcher in this process (a test) reads them instead.
+  // launcher in this process (a test) reads them instead. A claim it lost and an error (a renew or a stop that failed)
+  // are said in its name as the runner subcommand says them (main.ts troubleLine: a lost claim on stdout, an error on
+  // stderr), so a lapse of its claims shows its cause.
   const { runLine } = await import("../print.js");
-  const runner = startRunner({ store, createLoop, memory: runnerMemory(store), onEvent: (event) => { const line = runLine(event); if (line) (onLine ?? console.log)(line); }, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  const name = runnerName();
+  const said = (event: RunnerEvent) => {
+    const trouble = troubleLine(name, event);
+    if (trouble) return void (onLine ?? (event.type === "error" ? console.error : console.log))(trouble);
+    const line = runLine(event);
+    if (line) (onLine ?? console.log)(line);
+  };
+  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store), onEvent: said, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");

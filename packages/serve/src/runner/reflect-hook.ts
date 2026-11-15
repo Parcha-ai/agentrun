@@ -243,10 +243,13 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // workflow's conflict base in every check of the turn, so an answer written over an older main never overwrites a
       // change made after it.
       let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
+      /** An attempt the cap refused, or whose spend took the run past it: the learning is dropped as the look-back's is. */
+      let capped = false;
       const result = await compileTurn<Checked>({
         ask: async (prompt, attempt, left) => {
           const keep: Record<string, string | number | null> = { ...(workflowOnly ? { answered_at: answeredAt, job_cost_usd: job } : {}), ...(revised ? { compile_base: revised.base } : {}) };
           const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}`, ...(Object.keys(keep).length ? { keep } : {}) });
+          if ("failed" in said_ && CAP_REFUSAL.test(said_.failed.message)) capped = true;
           if (workflowOnly) firstAsk(said_.kept);
           const base = said_.kept?.compile_base;
           if (revised && typeof base === "string") revised = { ...revised, base };
@@ -259,6 +262,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         ...(deps.compileDeadlineMs !== undefined ? { deadlineMs: deps.compileDeadlineMs } : {}),
         now,
       });
+      // closeLearning, as the look-back's turn when the cap has no room: the learning is dropped no_budget, never graded
+      // on a cap it has passed or cannot fit.
+      if (capped) return close([droppedRow(turn, "no_budget", said.noBudget)]);
       if (result.kept?.checked.state === "proposed") {
         const { workflow, from_notes } = result.record!;
         turn = turnOf(result.kept.answer);
