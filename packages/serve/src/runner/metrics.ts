@@ -90,6 +90,22 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, models, tokens };
 }
 
+/** The run's model requests billed to a ChatGPT plan (runner.turn `billing` "plan", booked at no price, chatgpt-plan.ts):
+ *  how many and their tokens (input, output and cache, as each booking reported them). Each is one of bookedSpend's
+ *  `unpriced` (and of a pi run's usage row's): a plan request has no price here, and none is owed here either. */
+export function planSpend(entries: readonly EntryLike[]): { readonly requests: number; readonly tokens: number } {
+  let requests = 0;
+  let tokens = 0;
+  for (const e of entries) {
+    if (e.kind !== RUNNER_RECORDS.turn) continue;
+    const d = (e.data ?? {}) as { billing?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Record<string, unknown> };
+    if (d.billing !== "plan" || d.givenBack === true || d.unsent === true) continue;
+    requests += 1;
+    for (const key of ["input", "output", "cacheRead", "cacheWrite"]) if (typeof d.usage?.[key] === "number") tokens += d.usage[key] as number;
+  }
+  return { requests, tokens };
+}
+
 /** An agent run's cost as its end commit stores it: its model requests' (`model`), its paid tool calls' (`paid`, the
  *  run's ledger.paid) and its decisions' (`decisions`, a learned workflow's decision nodes, LS-07: bookedSpend over
  *  their own session's records, so one that reported no cost is unknown, never the cap's hold for it), summed; null (unknown) when any of them is. Never a known figure that leaves an unknown part out. */
