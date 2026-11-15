@@ -272,13 +272,14 @@ test("a monid: unavailable case's monid call answers as monid unreachable does, 
 });
 
 test("a monid: case checks: unavailable only, on a package that grants a monid endpoint, and only on the eval's own server", async (t) => {
-  const dir = await monidPackage(t, ["monid:faux/person/enrich"], {});
+  const said = { "said.md": "type: regex\npattern: monid" };
+  const dir = await monidPackage(t, ["monid:faux/person/enrich"], said);
   writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
   assert.deepEqual(caseProblems(dir), [], "unavailable on a package that grants an endpoint reads");
   await assert.rejects(evalTemplate({ dir, cases: ["monid"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/monid: monid fakes the package's monid endpoints on the eval's own server alone: run it without --server/.test(e.message));
   writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: down\n");
   assert.match(caseProblems(dir).join("\n"), /evals\/monid\/case\.yaml: monid is unavailable \(not "down"\)/);
-  const bare = await monidPackage(t, [], {});
+  const bare = await monidPackage(t, ["web_search"], said);
   writeFileSync(join(bare, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
   assert.match(caseProblems(bare).join("\n"), /evals\/monid\/case\.yaml: monid fakes the package's monid endpoints, and it grants none/);
 });

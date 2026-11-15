@@ -102,7 +102,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply grants, always a
   list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
   the agent starts with: `MEMORY.md` and its notes), `web` (fakes `web_search` and `web_fetch` for the case's runs),
-  `now` (the case's clock).
+  `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
   `web_fetch` fails as a page that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
@@ -120,6 +120,12 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   harness gets the same fake: on claude-agent and codex their own web search is never offered to a `web:` case's runs.
   The package's `tools` must name `web_search` or `web_fetch`. Only the eval's own server honours `web`, so a case with
   it refuses to run with `--server`.
+- `monid: unavailable`: every call of a monid endpoint the package grants answers as it does when monid can't be
+  reached (`... was not sent: monid's price for it could not be read before the call (monid could not be reached: fetch
+  failed).`): never sent, nothing held or charged, and shown in the timeline under its monid name, so a `tool_used`
+  grader counts it. The apply still reads monid's listing to pin the endpoints (free, no run), so the agent sees the
+  tools it sees live and needs `MONID_API_KEY` as a live eval does. The package must grant a monid endpoint; only the
+  eval's own server honours `monid`, so a case with it refuses `--server`. `unavailable` is its only value.
 - `now: 2026-11-14T09:00:00Z`, a date and time with its offset: each run's current date and time. The run's environment
   line says that day ("Today is 2026-11-14 (UTC)"), as does claude-agent's turn date, and each `llm` grader is told it,
   so a rubric can say "the run's date". A tool that reads the machine's clock (a shell's `date`, a browser's page) and

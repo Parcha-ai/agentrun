@@ -20,7 +20,8 @@ import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
-import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
+import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
+import type { MonidFake } from "./runner/monid-run.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
@@ -56,7 +57,7 @@ export const GRADER_NAME = "Template eval grader";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "learning", "now"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -105,6 +106,9 @@ export type EvalCase = {
   /** What the case's runs' web_search and web_fetch answer from in place of the web (web-fake.ts): the eval's own server's
    *  runner alone binds it. Absent: the web. */
   web?: WebFake;
+  /** How the case's runs' monid endpoints answer in place of monid (runner/monid-run.ts): `unavailable`, as monid
+   *  unreachable does, never sent. The eval's own server's runner alone binds it. Absent: monid. */
+  monid?: MonidFake;
   /** The notes a run's agent starts with (not MEMORY.md, which the server builds from them). */
   learning: { file: string; text: string }[];
   graders: Grader[];
@@ -320,6 +324,14 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
         if (parsed !== undefined) web = webFixtureOf(parsed, `${at}/${path}`, bad);
       }
     }
+    // The case's monid fake: every call of the package's monid endpoints unsent, monid unreachable (runner/monid-run.ts).
+    let monid: MonidFake | undefined;
+    if (c.monid !== undefined) {
+      const kind = (tool: string) => parseToolName(tool)?.kind;
+      if (c.monid !== "unavailable") bad(`${at}/case.yaml: monid is unavailable (not ${JSON.stringify(c.monid)})`);
+      else if (!(pkg.tools ?? []).some((tool) => kind(tool) === "monid" || kind(tool) === "monid-provider")) bad(`${at}/case.yaml: monid fakes the package's monid endpoints, and it grants none`);
+      else monid = "unavailable";
+    }
     const learning: EvalCase["learning"] = [];
     if (c.learning !== undefined) {
       const folder = inside(root, c.learning, "dir");
@@ -350,7 +362,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -821,8 +833,9 @@ export type EvalOptions = {
  *  ended (cancelled at each case's end), and the package's triggers its applies made (deleted). */
 type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
 /** `webs`: each run's web fake by its agent's id, read by the eval's own runner (runner/beside.ts webFakes). `clocks`:
- *  each run's clock by its agent's id, read the same way (runner/beside.ts clockOf). */
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; webs: Map<string, WebFake>; clocks: Map<string, Date> };
+ *  each run's clock by its agent's id, read the same way (runner/beside.ts clockOf), and `monids` each run's monid fake
+ *  (runner/beside.ts monidFakes). */
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; webs: Map<string, WebFake>; clocks: Map<string, Date>; monids: Map<string, MonidFake> };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 /** A run's tokens, model requests and tool calls as its end wrote them (GET /stats over the run's agent: an eval makes a
  *  fresh agent for each run). `input` excludes cached input: the whole prompt is `input + cache_read + cache_write`.
@@ -868,6 +881,11 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   if (options.server && clocked.length) throw new CaseError(options.dir, clocked.map((one) => `evals/${one.name}: now sets its runs' clock on the eval's own server alone: run it without --server`));
   // Each run's clock, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
   const clocks = new Map<string, Date>();
+  // A monid fake is bound by the eval's own runner, in this process: a named server's runs would call monid for real.
+  const unreached = cases.filter((one) => one.monid !== undefined);
+  if (options.server && unreached.length) throw new CaseError(options.dir, unreached.map((one) => `evals/${one.name}: monid fakes the package's monid endpoints on the eval's own server alone: run it without --server`));
+  // Each run's monid fake, by the agent the eval made for it (runOnce), read the same way.
+  const monids = new Map<string, MonidFake>();
   const started = new Date().toISOString();
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
   let close = async () => undefined as unknown;
@@ -892,7 +910,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), clockOf: (agentId) => clocks.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), clockOf: (agentId) => clocks.get(agentId), monidFakes: (agentId) => monids.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -907,7 +925,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
   const ctx: Ctx = {
-    api, pkg, options, made, log, webs, clocks,
+    api, pkg, options, made, log, webs, clocks, monids,
     graderAgent: async () => {
       if (grader) return grader;
       const agent = expectOk("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: GRADER_NAME, description: "Grades a template eval's runs against a rubric: answers {pass, reason}.", instructions: GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, max_cost_usd: GRADER_CAP_USD, ...(options.graderModel ? { model: options.graderModel } : {}) } }));
@@ -1028,6 +1046,8 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   if (one.web !== undefined) ctx.webs.set(agentId, one.web);
   // The case's clock, for this run's agent alone, before its run can be claimed.
   if (one.now !== undefined) ctx.clocks.set(agentId, new Date(instantOf(one.now)!));
+  // The case's monid fake, for this run's agent alone, before its run can be claimed.
+  if (one.monid !== undefined) ctx.monids.set(agentId, one.monid);
   const runId = await startRun(ctx, agentId, { input: runInput(one.input, one.fields), ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.
