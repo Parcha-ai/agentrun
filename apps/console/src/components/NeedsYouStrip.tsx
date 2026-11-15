@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
-import { cost, soFar, runTitle } from "@/lib/format";
+import { cost, planOf, soFar, runTitle } from "@/lib/format";
 import { waitingWords } from "@/lib/learning";
 import { ago, choicesOf, failureCount, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
@@ -281,7 +281,8 @@ function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at:
   const [problem, setProblem] = useState<string | null>(null);
   const usd = run.cost?.usd;
   // A cost not known whole says what is known so far, when the server says it (costsofar/1): cost() reads "so far …".
-  const spent = usd === 0 ? "nothing spent yet" : typeof usd === "number" ? `${cost(run.cost)} so far` : soFar(run.cost) ? cost(run.cost) : "cost not known yet";
+  // A run on the ChatGPT plan says its tokens there, never "nothing spent yet".
+  const spent = planOf(run.cost) ? `${cost(run.cost)} so far` : usd === 0 ? "nothing spent yet" : typeof usd === "number" ? `${cost(run.cost)} so far` : soFar(run.cost) ? cost(run.cost) : "cost not known yet";
   return (
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
       <span className="size-2 shrink-0 bg-run-active ring-4 ring-run-active/[0.18]" aria-hidden />

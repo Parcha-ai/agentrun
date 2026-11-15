@@ -139,5 +139,6 @@ test("a harness whose binary is missing or off its pins at the start says to res
   // A setting fixes it, and a save of a key checks the harnesses again (server.ts): no restart named.
   delete process.env.OPENAI_API_KEY;
   const keyless = await offers({ AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: unpinned }) });
-  assert.deepEqual([keyless.codex.available, keyless.codex.reason], [false, "codex needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL."]);
+  // This server signs in with ChatGPT, so the reason names that fix too.
+  assert.deepEqual([keyless.codex.available, keyless.codex.reason], [false, "codex needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL; or sign in with ChatGPT (Settings → Model keys) to run it on your ChatGPT plan."]);
 });
