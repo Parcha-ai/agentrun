@@ -147,6 +147,9 @@ export class ChatGPTPlan implements PlanReader {
   private pending: Pending | undefined;
   /** An access token OpenAI refused (refused): token() renews rather than send it again. */
   private refusedAccess: string | undefined;
+  /** Moved on by each sign-in started and each sign-out: a sign-in keeps its credential only while it is unmoved since it
+   *  started, so a sign-out (or a newer sign-in) while it finishes wins. */
+  private epoch = 0;
   private readonly watchers = new Set<(tokens: string[]) => void>();
   constructor(private readonly deps: ChatGPTPlanDeps) {}
 
@@ -244,6 +247,8 @@ export class ChatGPTPlan implements PlanReader {
   /** Starts a sign-in (one at a time: a new start cancels the one waiting) and gives the address to open. It lasts 10
    *  minutes: the loopback callback finishes it where the browser runs on this machine; elsewhere finishSignIn does. */
   async startSignIn(): Promise<{ authorize_url: string; expires_at: string }> {
+    // A sign-in still finishing drops its credential (keep): this one is the person's latest.
+    const epoch = ++this.epoch;
     const before = this.pending;
     this.cancel();
     // pi-ai's callback listener on :1455 closes as its login ends: the one cancelled ends before this one listens.
@@ -261,19 +266,13 @@ export class ChatGPTPlan implements PlanReader {
       notify: (event) => void (event.type === "auth_url" ? linked(event.url) : undefined),
       prompt: (prompt) => (prompt.type === "manual_code" ? Promise.race([pasted, new Promise<string>((_, reject) => prompt.signal?.addEventListener("abort", () => reject(new Error("closed")), { once: true }))]) : Promise.reject(new Error("not asked here"))),
     }, { getDeviceId: () => hostId, agentName: AGENT_NAME });
-    const result = login.then(async (credential) => {
-      if (this.pending?.abort === abort) {
-        clearTimeout(this.pending.timer);
-        this.pending = undefined;
-      }
-      await this.keep(credential as Credential);
-    }, (error: unknown) => {
-      if (this.pending?.abort === abort) {
-        clearTimeout(this.pending.timer);
-        this.pending = undefined;
-      }
-      throw error;
-    });
+    const settle = () => {
+      if (this.pending?.abort !== abort) return;
+      clearTimeout(this.pending.timer);
+      this.pending = undefined;
+    };
+    // Pending until the credential is kept or dropped, so a sign-out meanwhile cancels it (keep's epoch).
+    const result = login.then((credential) => this.keep(credential as Credential, epoch)).finally(settle);
     result.catch(() => undefined);
     const authorizeUrl = await Promise.race([link, result.then(() => undefined, (error: unknown) => {
       throw new PlanSignInRefused(/in use/.test(String((error as Error)?.message)) ? "Another sign-in holds this machine's port 1455: finish or cancel it, then start again." : "The sign-in could not start: try again.");
@@ -314,11 +313,17 @@ export class ChatGPTPlan implements PlanReader {
     return this.view();
   }
 
-  /** A credential from the sign-in, checked and sealed with what a view shows. */
-  private async keep(credential: Credential): Promise<void> {
+  /** A credential from the sign-in started at `epoch`, checked and sealed with what a view shows. A sign-out or a newer
+   *  sign-in since then wins: the credential is dropped, never written, and revoked at OpenAI. */
+  private async keep(credential: Credential, epoch: number): Promise<void> {
     if (credential.scopes && !credential.scopes.includes(DIRECT_SCOPE)) throw new Error(`the grant did not include ${DIRECT_SCOPE}`);
     this.hold(credential);
-    await this.write({ v: 1, state: "signed_in", credential, ...whoOf(credential.access), models: await this.listModels(credential.access) });
+    const models = await this.listModels(credential.access);
+    if (epoch !== this.epoch) {
+      await this.revoke(credential);
+      return;
+    }
+    await this.write({ v: 1, state: "signed_in", credential, ...whoOf(credential.access), models });
     this.deps.log?.({ chatgpt: "signed_in" });
     await this.deps.changed?.();
   }
@@ -445,26 +450,30 @@ export class ChatGPTPlan implements PlanReader {
   /** Signs out: any sign-in waiting cancelled, the session revoked at OpenAI (its documented revocation endpoint, with the
    *  refresh token), then the row removed whatever the revocation said. `revoked`: whether OpenAI confirmed it. */
   async signOut(): Promise<{ revoked: boolean }> {
+    // A sign-in finishing now drops its credential (keep).
+    this.epoch += 1;
     this.cancel();
     const row = await this.read();
-    let revoked = false;
-    if (row) {
-      try {
-        const config = (await (await fetch(OPENID_CONFIGURATION, { signal: AbortSignal.timeout(5_000) })).json()) as { revocation_endpoint?: unknown };
-        const endpoint = typeof config.revocation_endpoint === "string" ? new URL(config.revocation_endpoint) : undefined;
-        if (endpoint?.protocol === "https:") {
-          const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: row.credential.refresh, token_type_hint: "refresh_token", client_id: row.credential.clientId }), signal: AbortSignal.timeout(5_000) });
-          revoked = response.ok;
-        }
-      } catch {
-        revoked = false;
-      }
-    }
+    const revoked = row ? await this.revoke(row.credential) : false;
     await removeSealedKey(this.deps.store, CHATGPT_PLAN_ROW);
     this.snapshot = undefined;
     this.deps.log?.({ chatgpt: "signed_out", revoked: String(revoked) });
     await this.deps.changed?.();
     return { revoked };
+  }
+
+  /** `credential`'s session revoked at OpenAI (its documented revocation endpoint, with the refresh token): whether OpenAI
+   *  confirmed it. Never throws. */
+  private async revoke(credential: Credential): Promise<boolean> {
+    try {
+      const config = (await (await fetch(OPENID_CONFIGURATION, { signal: AbortSignal.timeout(5_000) })).json()) as { revocation_endpoint?: unknown };
+      const endpoint = typeof config.revocation_endpoint === "string" ? new URL(config.revocation_endpoint) : undefined;
+      if (endpoint?.protocol !== "https:") return false;
+      const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: credential.refresh, token_type_hint: "refresh_token", client_id: credential.clientId }), signal: AbortSignal.timeout(5_000) });
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
 
   /** Stops the sign-in waiting, at the server's close. */
