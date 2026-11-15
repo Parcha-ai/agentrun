@@ -124,6 +124,39 @@ test("a script stopped by a parked call lists each earlier call's result as the 
   ], answer.text);
 });
 
+test("a stopped script lists a call's string value as the script read it: its structured string, never its fuller text", async () => {
+  // As computer_script answers one that showed text('note') and returned 'saved': text "note\nsaved", value "saved".
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { text: "note\nsaved", structured: "saved", fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const answer = await codemode.call({ script: "const said = await tools.write_file({});\nawait tools.send_email({});\nreturn said;" }, { signal: new AbortController().signal, nested });
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(lines[0], `1. write_file completed: "saved". Its effect is done; it was not run again.`, answer.text);
+});
+
+test("a script reads a nested call's image with its pixels: image(...) shows it, a returned one is the answer's image, and no text carries its data", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  // As a computer tool answers a screenshot: its value with the image's data left out, the data in its images.
+  const shot = { text: "A screenshot, 1280x800.", images: [{ data: PNG, mimeType: "image/png" }], structured: { type: "image", mimeType: "image/png", width: 1280, height: 800 } };
+  const nested = { call: async () => ({ ...shot, fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const run = (script) => codemode.call({ script }, { signal: new AbortController().signal, nested });
+  const shown = await run("const shot = await tools.web_search({});\nimage(shot);\nreturn { width: shot.width, data: typeof shot.data };");
+  assert.equal(shown.isError, undefined, shown.text);
+  assert.deepEqual(shown.structured, { width: 1280, data: "string" }, shown.text);
+  assert.deepEqual(shown.images, [{ data: PNG, mimeType: "image/png" }], "image(shot) shows the screenshot's pixels");
+  const returned = await run("return await tools.web_search({});");
+  assert.deepEqual(returned.images, [{ data: PNG, mimeType: "image/png" }], "a returned screenshot is the answer's image");
+  assert.deepEqual(returned.structured, shot.structured, "the value keeps its image's place, without its data");
+  for (const answer of [shown, returned]) assert.ok(!answer.text.includes(PNG), `no text carries the image's data: ${answer.text}`);
+  // Stopped after it, the screenshot's line names the image, never its data.
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const again = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { ...shot, fresh: false }), memo: async () => first };
+  const stopped = await codemode.call({ script: "await tools.web_search({});\nawait tools.send_email({});" }, { signal: new AbortController().signal, nested: again });
+  assert.match(stopped.text, /1\. web_search completed: \{"type":"image","mimeType":"image\/png","width":1280,"height":800\}\./, stopped.text);
+  assert.ok(!stopped.text.includes(PNG), stopped.text);
+});
+
 /** A pi run of `script` over the suite's tools, its gate `gate(call)`: what each suite tool ran, and the last tool result. */
 async function gatedRun(t, script, gate) {
   const opened = await stores({ runners: 1 });

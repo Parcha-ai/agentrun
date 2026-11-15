@@ -96,6 +96,13 @@ function lastResult(requests) {
   return { text: typeof content === "string" ? content : (content ?? []).map((part) => (part.type === "text" ? part.text : "")).join(""), isError: results.at(-1)?.is_error === true };
 }
 
+/** The base64 data of each image in the newest tool result the provider got. */
+function lastImages(requests) {
+  const results = requests.flatMap((body) => (body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : []))).filter((part) => part.type === "tool_result");
+  const content = results.at(-1)?.content;
+  return (Array.isArray(content) ? content : []).filter((part) => part.type === "image").map((part) => part.source?.data);
+}
+
 /** The rows of each call `codemode` made, by tool: its own tool_use and tool_result rows, under the script's id. */
 function nestedRows(rows) {
   const id = rows.find((row) => row.kind === "tool_use" && row.tool_name === CODEMODE)?.tool_use_id;
@@ -116,6 +123,18 @@ test("a script calls the computer's tools as tools.<name>, each a nested call: t
   assert.deepEqual(computer.calls.map(([method]) => method).filter((method) => method !== "hello"), ["screen.shot", "input.actions", "input.actions"], "each call reached the computer once");
   const nested = nestedRows(await runTimeline(server, "run-1", ctx));
   assert.deepEqual(nested.filter((row) => row.kind === "tool_use").map((row) => row.tool_name), ["computer_screenshot", "computer_act", "computer_act"], "each is a call of its own on the timeline");
+});
+
+test("a screenshot a script takes reaches the model with its pixels when the script shows it with image(...) or returns it, as a direct call's does", async (t) => {
+  for (const script of ["const shot = await tools.computer_screenshot({});\nimage(shot);\nreturn { width: shot.width };", "return await tools.computer_screenshot({});"]) {
+    const { tools } = await desktop();
+    const { requests } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools);
+    const result = lastResult(requests);
+    assert.equal(result.isError, false, result.text);
+    assert.deepEqual(lastImages(requests), [PNG], `${script}: the screenshot's pixels are in the script's answer`);
+    assert.match(result.text, /"width":\s*1280/, result.text);
+    assert.ok(!result.text.includes(PNG), `${script}: its text never carries the image's data`);
+  }
 });
 
 test("each computer call a script makes carries its own computer_calls on its own result row, as a direct call's does: the app and each step's element and chord, never what it typed", async (t) => {
