@@ -127,7 +127,9 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
   const unpriced = (modelsSoFar?.unpriced ?? 0) + costs.filter((cost) => cost === null).length;
   const soFar = usd === null && modelsSoFar && unpriced > 0 ? { so_far_usd: Math.round((modelsSoFar.known + costs.reduce<number>((a, b) => a + (b ?? 0), 0)) * 1e6) / 1e6, unpriced } : undefined;
   const dollars = (n: number) => (n === 0 ? "$0" : n < 0.0001 ? "<$0.0001" : `$${n.toFixed(4)}`);
-  const said = usd !== null ? dollars(usd) : soFar ? `${dollars(soFar.so_far_usd)} known, ${soFar.unpriced} not priced,` : "unknown";
+  // The model row's figure counts a request cut at its hold (runner.ts CUT_AT_HOLD): the total is then the most it can be.
+  const bound = usd !== null && models.upper_bound === true;
+  const said = usd !== null ? `${bound ? "at most " : ""}${dollars(usd)}` : soFar ? `${dollars(soFar.so_far_usd)} known, ${soFar.unpriced} not priced,` : "unknown";
   const summary = `${label}: ${said} over ${models.requests === null ? 'an unavailable model request count' : plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
-  return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests === null ? null : models.requests + decisions.length, ...(soFar ?? {}) } }];
+  return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests === null ? null : models.requests + decisions.length, ...(soFar ?? {}), ...(bound ? { upper_bound: true as const } : {}) } }];
 }

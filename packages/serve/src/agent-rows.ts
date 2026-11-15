@@ -22,7 +22,7 @@ export type RunState = "running" | "completed" | "failed" | "stopped" | "escalat
 export type ImportedFrom = { source: ImportSource; session: string };
 /** A run as a list reads it. `archivedAt`: when the run (or its agent) was archived; `importedFrom`: set on a run imported
  *  from another harness's session. */
-export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string; archivedAt?: string; importedFrom?: ImportedFrom };
+export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; costUpperBound?: true; summary?: string; archivedAt?: string; importedFrom?: ImportedFrom };
 /** What starts a run: `key`, the caller's name for it (1 to 256 characters), and `fingerprint`, what was asked, kept to
  *  tell a retry from another request under the same key. */
 export type RunOrigin = { key: string; fingerprint?: string };

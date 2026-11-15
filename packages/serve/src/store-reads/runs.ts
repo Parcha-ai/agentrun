@@ -25,6 +25,9 @@ export interface RunRowView {
   readonly startedAt: string;
   readonly endedAt?: string;
   readonly costUsd?: number;
+  /** An ended run's stored cost is the most it can have cost, not its cost (the run row's cost_upper_bound): said "at
+   *  most". Absent otherwise, and on a run still going (its booked-so-far spend). */
+  readonly costUpperBound?: true;
   readonly summary?: string;
   readonly archivedAt?: string;
   readonly importedFrom?: ImportedFrom;
@@ -69,6 +72,7 @@ function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind,
     startedAt: isoOf(run.startedAt),
     ...(over && run.endedAt !== null ? { endedAt: isoOf(run.endedAt) } : {}),
     ...(cost !== null ? { costUsd: cost } : {}),
+    ...(over && cost !== null && run.costUpperBound ? { costUpperBound: true as const } : {}),
     ...(over && run.summary !== null ? { summary: run.summary } : {}),
     ...(archivedAt !== null ? { archivedAt: isoOf(archivedAt) } : {}),
     ...(run.importedFrom !== null ? { importedFrom: { source: run.importedFrom.source, session: run.importedFrom.session } } : {}),

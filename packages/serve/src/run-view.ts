@@ -86,6 +86,12 @@ export function freeOf(rows: readonly TimelineEvent[], usd: number | null): { fr
   return usd === 0 && usageOf(rows)?.usage?.free === true ? { free: true } : undefined;
 }
 
+/** Whether a run's known cost counts a request cut at its hold (runner.ts CUT_AT_HOLD), so it is the most the run can have
+ *  cost: its usage row says so (`upper_bound`), or its decisions booked one (`decisionsAtMost`). Never for an unknown cost. */
+export function boundOf(rows: readonly TimelineEvent[], usd: number | null, decisionsAtMost = 0): { upper_bound: true } | undefined {
+  return usd !== null && (decisionsAtMost > 0 || usageOf(rows)?.usage?.upper_bound === true) ? { upper_bound: true } : undefined;
+}
+
 /** An amount in an over-cap row's or failure's words, to the cent ($0.38020940000000003 is $0.38; $1 is $1), as money
  *  says it; `centsUp` to the cent above, for what a run went over by, so it never reads $0 or under. */
 export const cents = (usd: number): string => money(Math.round(usd * 100) / 100);

@@ -222,6 +222,10 @@ test("a request its runner was lost in, before any answer or usage, is booked at
   assert.equal(row.costUsd, total, "the stored cost counts the cut at its hold, never unknown");
   assert.deepEqual({ usd: view.cost.usd, upper_bound: view.cost.upper_bound, unpriced: view.cost.unpriced }, { usd: total, upper_bound: true, unpriced: undefined }, `the view says the same figure, as the most it can be: ${JSON.stringify(view.cost)}`);
   assert.equal(listed.costUsd, total);
+  // The bound is stored beside the figure in the end's commit (the run row's cost_upper_bound), and the list says it as
+  // the view does: no reader of the stored cost takes the most it can have cost for its cost.
+  assert.equal(row.costUpperBound, true, "the stored cost is marked the most the run can have cost");
+  assert.equal(listed.costUpperBound, true, `the list row says at most: ${JSON.stringify(listed)}`);
   assert.equal(usage?.usage?.upper_bound, true, `the usage row marks it: ${JSON.stringify(usage)}`);
   assert.match(usage.summary, /at most \$/, "and says it in words");
 });
@@ -243,6 +247,7 @@ test("a ChatGPT plan request its runner was lost in, before any answer, is booke
   });
   const records = JSON.stringify(entries.filter((e) => /^runner\./.test(e.kind)).map((e) => [e.kind, e.data]));
   assert.deepEqual({ stored: row.costUsd, listed: listed.costUsd ?? null, view: view.cost.usd, unpriced: view.cost.unpriced, upper_bound: view.cost.upper_bound }, { stored: 0, listed: 0, view: 0, unpriced: undefined, upper_bound: undefined }, `the stored cost, the list and the view read a known $0, never unknown: ${JSON.stringify(view.cost)} ${records}`);
+  assert.deepEqual([row.costUpperBound, listed.costUpperBound], [false, undefined], "a cost the plan paid is exact, never stored as a bound");
   assert.equal(first("runner.request")[0]?.plan, true, `its record says it is the plan's: ${records}`);
   assert.deepEqual(first("runner.turn"), [{ usd: null, cut: true, turn: 1, bookedUsd: 0, rule: "cut", billing: "plan" }], "booked once, cut, at $0, the plan's");
   assert.equal(view.cost.plan?.requests, 2, `what it used on the plan counts both requests, the cut one too: ${JSON.stringify(view.cost)}`);
@@ -256,4 +261,23 @@ test("the end's metrics read past its bound: the cost, read apart from them, is 
   assert.equal(row.metrics, null, "the metrics are unknown");
   assert.equal(listed.costUsd, REQUEST_USD);
   assert.equal(view.cost.usd, REQUEST_USD);
+});
+
+test("the end's cost read fails once: the end reads it again, and the stored cost, the list and the view read the booked figure", { timeout: 120_000 }, async (t) => {
+  const warned = [];
+  t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
+  let reads = 0;
+  const { row, view, listed } = await endedRun(t, (spec) => ({ ...spec, endCost: async () => ((reads += 1) === 1 ? Promise.reject(new Error("the store is busy")) : spec.endCost()) }));
+  assert.equal(row.state, "ended");
+  assert.deepEqual([row.costUsd, listed.costUsd ?? null, view.cost.usd], [REQUEST_USD, REQUEST_USD, REQUEST_USD], `one figure on every reader: ${JSON.stringify(warned)}`);
+  assert.equal(reads, 2, "read twice");
+});
+
+test("the end's cost read fails every time: the end stores it unknown, and the view says the same as the list and the stored cost", { timeout: 120_000 }, async (t) => {
+  const warned = [];
+  t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
+  const { row, view, listed } = await endedRun(t, (spec) => ({ ...spec, endCost: async () => Promise.reject(new Error("the store is down")) }));
+  assert.equal(row.state, "ended");
+  assert.deepEqual([row.costUsd, listed.costUsd ?? null, view.cost.usd], [null, null, null], `one answer on every reader: ${JSON.stringify(view.cost)}`);
+  assert.ok(warned.some((line) => /its end's cost failed .*the end is written with its cost unknown/.test(line)), `the end says why: ${JSON.stringify(warned)}`);
 });

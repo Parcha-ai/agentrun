@@ -163,6 +163,9 @@ export interface RunRow {
   /** A parked run's backoff after a failed resume: its untaken commands wait for it, a stop and its wake_at do not. */
   readonly backoffUntil: number | null;
   readonly costUsd: number | null;
+  /** Whether `costUsd` is the most the run can have cost, not its cost: it counts a request cut with no answer at what its
+   *  cap held for it (runner.ts CUT_AT_HOLD). Written with the cost at the run's end; false for an unknown cost. */
+  readonly costUpperBound: boolean;
   readonly metrics: unknown;
   readonly summary: string | null;
   /** How the run ended beside its state (RunOutcome), null for a plain completion, a failure, or a run not ended. */
@@ -182,6 +185,9 @@ export interface RunRow {
 export interface RunPatch {
   readonly state?: RunState;
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost (RunRow.costUpperBound): read only with `costUsd`, which always
+   *  writes it (absent: false). */
+  readonly costUpperBound?: boolean;
   readonly metrics?: unknown;
   readonly summary?: string | null;
   /** How the run ended (RunOutcome), set in its end commit; null clears it. */

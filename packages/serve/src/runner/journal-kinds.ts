@@ -336,6 +336,9 @@ export interface EndData {
   /** What the run cost, as its end knows it: null when unknown, which clears a cost an earlier end of the run stored (a
    *  follow-up's end). Absent: the stored cost is left as it is. */
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost, not its cost (the store's RunRow.costUpperBound): it counts a
+   *  request cut with no answer at what its cap held for it. Written with the cost; absent, false. */
+  readonly costUpperBound?: boolean;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it

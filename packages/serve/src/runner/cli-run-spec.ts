@@ -64,7 +64,7 @@ import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, cliModelWorked, cliRunMetrics, runCostOf } from "./metrics.js";
+import { bookedSpend, cliModelWorked, cliRunMetrics, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
@@ -692,7 +692,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // spent what no booking read: unknown, never the $0 an empty booking sums to. One cheap read, apart from the metrics.
     endCost: async () => {
       const all = (await journalEntries(deps.journal(claim), context)) as never;
-      return runCostOf(all, { unbooked: cliModelWorked((await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context)) as never) }).usd;
+      return endCostOf(runCostOf(all, { unbooked: cliModelWorked((await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context)) as never) }));
     },
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);

@@ -59,7 +59,7 @@ import { piAdapter } from "./adapters/pi.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
-import { bookedSpend, cliRunMetrics, runCostOf, runMetrics } from "./metrics.js";
+import { bookedSpend, cliRunMetrics, endCostOf, runCostOf, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
@@ -795,7 +795,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // that reported none is unknown, never the cap's hold for it). A request a cancel or a stop cut while it streamed is
     // booked at no known cost (the provider may bill what it streamed), so the run's cost is unknown, never the $0 its cut
     // answer carries. One cheap read, apart from the metrics below, so metrics that run late never take the cost with them.
-    endCost: async () => runCostOf((await journalEntries(deps.journal(claim), context)) as never).usd,
+    endCost: async () => endCostOf(runCostOf((await journalEntries(deps.journal(claim), context)) as never)),
     // The end's metrics, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics). A pi run adds its effort, no model (metrics.ts).
     endPatch: async () => {

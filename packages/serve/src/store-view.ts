@@ -40,6 +40,7 @@ import {
   WITHHELD_SIGN_IN,
   WITHHELD_TITLE,
   costView,
+  boundOf,
   freeOf,
   soFarOf,
   usersOf,
@@ -412,9 +413,10 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const decisions = booked.requests ? booked : undefined;
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
-  // An ended run's cost by the one rule its end stored it by (metrics.ts runCostOf), read in the same snapshot as its
-  // state: never a view of the run ended with a figure its end did not write. A workflow's end stores it by the same rule
-  // (workflow-spec.ts); a native run's end reads its own, so it keeps the reading below.
+  // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
+  // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
+  // workflow's end stores it by the same rule (workflow-spec.ts); a native run's end reads its own, so it keeps the
+  // reading below.
   const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
   const endCost = bookedCost?.requests ? bookedCost : undefined;
   return { ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, ...(endCost ? { endCost } : {}) };
@@ -443,13 +445,18 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
-  // An ended run that booked its requests reads its booking (runCostOf), the one rule its end stored its cost by, in the
-  // snapshot that read its state: never an answer's own price that its booking committed after, never ended without it.
+  // An ended run that booked its requests reads the cost its end stored by its booking (runCostOf), the answer the list,
+  // usage and stats read too: one figure on every reader. Its end reads that cost again when a read fails
+  // (loop.ts readAgain), so a null is kept only when the booking could not be read within the end's bound. The booking,
+  // read in the snapshot that read its state, adds only what the stored figure agrees with: what is known so far when both
+  // are unknown.
   const booked = run.endCost;
-  const usd = booked ? booked.usd : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
-  const counted = booked ? (booked.usd === null ? { so_far_usd: booked.known, unpriced: booked.unpriced } : undefined) : usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
-  // Its figure counts a request cut with no answer at its hold (runner.ts CUT_AT_HOLD): the most it can have cost.
-  const upper = booked && booked.atMost > 0 ? { upper_bound: true as const } : undefined;
+  const usd = booked ? (stored ?? null) : imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
+  // A hold booked as a bound is never spend: while the total is unknown, each such request counts as not priced.
+  const counted = booked ? (usd === null && booked.usd === null ? { so_far_usd: booked.known, unpriced: booked.unpriced } : undefined) : usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced + decisions.atMost } : undefined) : undefined;
+  // Its figure counts a request cut with no answer at its hold (runner.ts CUT_AT_HOLD): the most it can have cost. An ended
+  // run's says so as its end stored it beside the figure (cost_upper_bound), the bound the list and the column read too.
+  const upper = booked ? (usd !== null && run.runRow.costUpperBound ? { upper_bound: true as const } : undefined) : imported ? undefined : boundOf(run.rows, usd, decisions?.atMost);
   // A request billed to a ChatGPT plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
   // $0, so it is in no unpriced count; what it used on the plan is said beside the figure.
   const plan = run.plan;

@@ -41,6 +41,7 @@ const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" 
  *  its submission, a CLI's record writes it once, and a claim that finds it on the record never asks again. */
 const OUTPUT_RETRY_ORIGIN: MessageOrigin = { kind: "server", reason: "output_retry" };
 const OUTPUT_RETRY_REQUEST = "agentrun:output-retry";
+type EndCost = Required<Pick<EndData, "costUsd" | "costUpperBound">>;
 /** Whether the run had its one retry: the input entry the retry wrote (pi's submission, a CLI's record) with the model's
  *  answer after it. One written and never answered (a runner lost between a CLI's record and its send) is not had: the
  *  claim that opens the session again sends it, under the same request id, so it is written once. */
@@ -52,7 +53,7 @@ import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutco
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, REFLECT_PREFIX, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -195,8 +196,9 @@ export interface AdapterRunSpec {
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">>;
   /** The run's cost for its end, read apart from the end's patch and in place of the patch's own `costUsd`: one cheap
    *  read of its booking (metrics.ts runCostOf), so a patch whose metrics run past endPatchMs never takes the cost with
-   *  them. Bounded by endPatchMs too: late or failing, the cost is unknown (null). */
-  readonly endCost?: () => Promise<number | null>;
+   *  them. Bounded by endPatchMs too: a read that fails is read again (END_COST_TRIES in all, within the bound), and
+   *  late or failing every time, the cost is unknown (null), the answer every reader of the ended run then gives. */
+  readonly endCost?: () => Promise<EndCost>;
   /** The most the end's patch may take before the end is written without it. Default END_PATCH_MS. */
   readonly endPatchMs?: number;
   /** The most a booking whose write has begun is waited for before an answer's cost, a park or the end goes on without
@@ -3482,25 +3484,23 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   /** The end's patch from the run's spec (AdapterRunSpec.endPatch), bounded (END_PATCH_MS): late or failing, the end says
    *  its cost and metrics are unknown (END_PATCH_UNKNOWN). */
-  async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">> {
+  async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "costUpperBound" | "metrics">> {
     const spec = specNow;
     if (!spec?.endPatch && !spec?.endCost) return {};
     let timer: NodeJS.Timeout | undefined;
     const boundMs = spec.endPatchMs ?? END_PATCH_MS;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), boundMs)));
-    // The cost, read apart (AdapterRunSpec.endCost): a patch whose metrics run late or fail never takes it with them.
-    const cost = spec.endCost
-      ? Promise.race([spec.endCost(), late]).then(
-          (usd) => {
-            if (usd !== "late") return usd;
-            console.warn(`[runner] its end's cost gave no answer within ${boundMs / 1000} s; the end is written with its cost unknown`);
-            return null;
-          },
-          (error: unknown) => {
-            console.warn(`[runner] its end's cost failed: ${said(error)}; the end is written with its cost unknown`);
-            return null;
-          },
-        )
+    // The cost, read apart (AdapterRunSpec.endCost): a patch whose metrics run late or fail never takes it with them. A
+    // read that fails is read again within the same bound (END_COST_TRIES): the stored cost is every reader's answer
+    // (the list, the view, usage), so a null there is kept only when the booking could not be read at all.
+    const endCost = spec.endCost;
+    const cost = endCost
+      ? readAgain(endCost, late, (error, tries, last) =>
+          console.warn(last ? `[runner] its end's cost failed ${tries} times, last: ${said(error)}; the end is written with its cost unknown` : `[runner] its end's cost failed: ${said(error)}; read again`),
+        ).then((answer): EndCost => {
+          if (answer === "late") console.warn(`[runner] its end's cost gave no answer within ${boundMs / 1000} s; the end is written with its cost unknown`);
+          return answer === "late" || answer === "failed" ? { costUsd: null, costUpperBound: false } : answer;
+        })
       : undefined;
     const patched = async (): Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">> => {
       if (!spec.endPatch) return {};
@@ -3517,8 +3517,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
     };
     try {
-      const [patch, usd] = await Promise.all([patched(), cost]);
-      return cost ? { ...patch, costUsd: usd ?? null } : patch;
+      const [patch, read] = await Promise.all([patched(), cost]);
+      return read ? { ...patch, ...read } : patch;
     } finally {
       clearTimeout(timer);
     }
@@ -3685,7 +3685,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const late = stopReason as StopReason | undefined;
     const lateStop = late?.kind === "command" && !take.includes(late.commandId) ? late : undefined;
     if (lateStop) take = [...take, lateStop.commandId];
-    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop ? stopEnd(lateStop.cancel) : {}) };
+    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd, ...(patch.costUpperBound ? { costUpperBound: true } : {}) } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop ? stopEnd(lateStop.cancel) : {}) };
     const run = {
       state: data.state,
       // An end's summary is its own: with none, a wait's summary the row still says (a question's, a hand-over's: HELD_WAITS
@@ -3693,7 +3693,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       ...(data.summary ? { summary: data.summary } : {}),
       ...(!data.summary ? { summary: null } : {}),
       ...(data.outcome !== undefined ? { outcome: data.outcome } : {}),
-      ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
+      ...(data.costUsd !== undefined ? { costUsd: data.costUsd, costUpperBound: data.costUpperBound === true } : {}),
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
     };
     // A person's stop or cancel withdraws every call still waiting for its answer, in the end's own commit: the approval

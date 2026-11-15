@@ -11,7 +11,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 
 const test = sqliteAdapterTests(nodeTest, "an earlier version's data directory files");
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, SCHEMA_VERSION } = await import("../dist/store/index.js");
 
 function dataDir(t) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-earlier-"));
@@ -150,6 +150,40 @@ test("a store an earlier build of this version made (no revisions.mcp_pin, a per
   // A second open finds the column and adds nothing.
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
+});
+
+test("a store an earlier build of this version made (no runs.cost_upper_bound) opens: a runner refuses it until the server adds the column, and a run ended before reads its cost as no bound", async (t) => {
+  const dir = dataDir(t);
+  const first = await openSqliteStore({ dataDir: dir, role: "server" });
+  await first.agents.create({ id: "agent-old", name: "agent-old" }, { id: "rev-old", kind: "agentic", body: { instructions: "Answer." } });
+  await first.runs.create({ id: "run-old", agentId: "agent-old", revisionId: "rev-old" });
+  const claim = await first.claim("run-old", "runner-a", { leaseMs: 60_000 });
+  await first.runs.update(claim, { state: "ended", costUsd: 0.5 });
+  await first.close();
+  const raw = new DatabaseSync(join(dir, "store.sqlite"));
+  try {
+    raw.exec("ALTER TABLE runs DROP COLUMN cost_upper_bound");
+  } finally {
+    raw.close();
+  }
+  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), /Start the AgentRun server to add the bound beside each run's cost/, "a runner, which writes the bound at each end, waits for the server");
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  try {
+    const check = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
+    try {
+      assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, SCHEMA_VERSION, "the store stays at its version");
+      const column = check.prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('runs') WHERE name = 'cost_upper_bound'").get();
+      assert.deepEqual({ ...column }, { name: "cost_upper_bound", type: "INTEGER", notnull: 1, dflt_value: "0" }, "the open adds runs.cost_upper_bound, 0 by default");
+    } finally {
+      check.close();
+    }
+    const row = await store.runs.get("run-old");
+    assert.deepEqual([row.costUsd, row.costUpperBound], [0.5, false], "a run ended before reads its stored cost as exact, as it was read then");
+  } finally {
+    await store.close();
+  }
+  const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+  await runner.close();
 });
 
 

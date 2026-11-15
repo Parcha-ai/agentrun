@@ -53,7 +53,7 @@ import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
-import { runCostOf } from "./metrics.js";
+import { endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
@@ -858,10 +858,11 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
  *  at what it was booked at, never the cap's figure for it (an answer with no price of its own is unknown, never its
  *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
  *  before a response). With no journal to read, unknown. */
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!booking) return {};
   if (!journalOf) return { costUsd: null };
-  return { costUsd: runCostOf((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never).usd };
+  // With whether the figure is the most it can have cost (a request cut at its hold counted in it), stored beside it.
+  return endCostOf(runCostOf((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never));
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
