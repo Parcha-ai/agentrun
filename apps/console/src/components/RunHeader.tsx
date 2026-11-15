@@ -8,7 +8,9 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { goBack } from "@/lib/back";
-import { costOfCap, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
+import { ManageUsage } from "@/components/ChatGPTSignIn";
+import { PLAN_NO_DOLLARS } from "@/lib/chatgpt";
+import { costOfCap, isEstimate, planOf, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { runPlaceWords } from "@/lib/place";
@@ -20,8 +22,10 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive
 /** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
 const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  if (known) return soFarNote(known, { ended });
-  return c && c.usd !== null && isEstimate(c) ? "A local estimate, not a bill" : undefined;
+  const plan = planOf(c) ? PLAN_NO_DOLLARS : undefined;
+  if (known) return plan ? `${soFarNote(known, { ended })} ${plan}` : soFarNote(known, { ended });
+  if (c && c.usd !== null && isEstimate(c)) return plan ? `A local estimate, not a bill. ${plan}` : "A local estimate, not a bill";
+  return plan;
 };
 
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
@@ -41,6 +45,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
+  const onPlan = !!planOf(run.cost);
   return (
     <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
       <nav className="caps flex min-w-0 items-center gap-2 text-label text-muted-foreground" aria-label="Breadcrumb">
@@ -68,8 +73,9 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
-            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
-              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}</span>}
+            {/* A run on the ChatGPT plan says so, with where its usage is managed: ChatGPT's settings, in a new tab. */}
+            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}{onPlan && <> · <ManageUsage /></>}</span>
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{onPlan && <> · <ManageUsage /></>}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>

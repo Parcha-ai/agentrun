@@ -2643,6 +2643,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Cost: {
     ...SO_FAR,
     overshoot_bound_usd: { type: "number", minimum: 0, description: "Set when the run has a cap: the most its model requests in flight could cost beyond what its cap holds them at, when one misses the cache (`cap_mode` expected: each one's input uncached less its input expected, rounded up to a millionth). 0 with none in flight, under strict, and for a request priced with nothing cached. The cap never lets output pass it, so this is all a run can go over its cap by.", "x-agentrun-serve": "capmode/1" },
+    plan: {
+      type: "object", additionalProperties: false, required: ["requests", "tokens"],
+      properties: {
+        requests: { type: "integer", minimum: 1, description: "How many of its model requests were billed to the ChatGPT plan." },
+        tokens: { type: "integer", minimum: 0, description: "The tokens those requests used: input, output and cache reads and writes." },
+      },
+      description: "Set when the run made a model request on the server's ChatGPT plan (a `chatgpt/<id>` model). Those requests cost no dollars here: they are in neither `usd` nor `unpriced`, so a run whose only unpriced requests were on the plan has a known `usd`. The plan's own limits apply to them.",
+      "x-agentrun-serve": "chatgpt/1",
+    },
   },
   RunCreate: {
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server whose \`auth.type\` is per_run (422 at \`mcp_auth.<server>\` otherwise, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },

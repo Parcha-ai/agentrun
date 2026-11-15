@@ -63,6 +63,7 @@ __all__ = [
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
     "Cost",
+    "CostPlan",
     "CreateAgentBody",
     "CreateAgentResponse",
     "CreateFileBody",
@@ -1507,6 +1508,12 @@ class Cost(_CostRequired, total=False):
     so_far_usd: float
     unpriced: int
     overshoot_bound_usd: float
+    plan: CostPlan
+
+
+class CostPlan(TypedDict):
+    requests: int
+    tokens: int
 
 
 Effort: TypeAlias = "Literal[\"low\", \"medium\", \"high\"]"

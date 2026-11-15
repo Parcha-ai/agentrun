@@ -28,9 +28,9 @@ describe("a run's cost on a ChatGPT plan", () => {
   });
 
   it("a mixed run says the dollars, then + ChatGPT plan", () => {
-    expect(cost(MIXED)).toBe("$0.0123 est. + ChatGPT plan");
+    expect(cost(MIXED)).toBe("$0.01 est. + ChatGPT plan");
     expect(cost({ ...MIXED, usd: null, so_far_usd: 0.0123, unpriced: 1 }, { ended: true })).toBe("$0.0123 est. known · 1 not priced + ChatGPT plan");
-    expect(costOfCap(MIXED, 1)).toBe("$0.0123 est. + ChatGPT plan · cap $1.00");
+    expect(costOfCap(MIXED, 1)).toBe("$0.01 est. + ChatGPT plan · cap $1.00");
   });
 
   it("a run with no plan request reads as before", () => {

@@ -347,6 +347,10 @@ export type Cost = {
   so_far_usd?: number;
   unpriced?: number;
   overshoot_bound_usd?: number;
+  plan?: {
+    requests: number;
+    tokens: number;
+  };
 };
 
 export type Effort = "low" | "medium" | "high";

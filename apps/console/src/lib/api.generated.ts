@@ -216,6 +216,10 @@ export interface components {
     so_far_usd?: number;
     unpriced?: number;
     overshoot_bound_usd?: number;
+    plan?: {
+      requests: number;
+      tokens: number;
+    };
   };
   Definition: unknown & components["DefinitionInput"];
   DefinitionInput: {

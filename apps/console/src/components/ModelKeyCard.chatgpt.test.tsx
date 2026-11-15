@@ -112,7 +112,7 @@ describe("NoModelBanner and the ChatGPT sign-in", () => {
 
   it("source chatgpt: the plan is signed in, so the bar names the plan's default model and no key", () => {
     const html = renderToStaticMarkup(createElement(NoModelBanner, { needs: "model", settings: true, source: "chatgpt", model: "chatgpt/gpt-6.1-sol" }));
-    expect(html).toContain("doesn't run here");
+    expect(html).toContain("This server&#x27;s default model doesn&#x27;t run here");
     const plain = renderToStaticMarkup(createElement(NoModelBanner, { needs: "key", settings: true, source: "providers" }));
     expect(plain).not.toContain("ChatGPT");
   });
