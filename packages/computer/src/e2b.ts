@@ -9,7 +9,6 @@ import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
-import { shellLine } from "./hosted/scripts.js";
 import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { ComputerSpec, Refusal } from "./provider.js";
@@ -135,6 +134,13 @@ const KEEPALIVE_HEADER = "Keepalive-Ping-Interval";
 const KEEPALIVE_S = "50";
 /** The Connect codes envd's process calls answer (connectrpc Code), as this provider's codes. */
 const CONNECT_CODES: Record<number, ComputerErrorCode> = { 1: "aborted", 3: "invalid", 4: "timeout", 5: "not_found", 7: "denied", 8: "limit", 16: "denied" };
+/** What create makes root's alone in every E2B computer, before anything else (HostFacts.rootOnly). */
+const ROOT_ONLY: readonly string[] = ["/usr/local", "/usr/bin/envd", "/etc/inittab"];
+/** Root's command, as envd starts it: /bin/sh by its path, no login shell, the argv as its own words. */
+const ROOT_SHELL = "/bin/sh";
+const ROOT_SHELL_ARGS = ["-c", 'exec "$@"', "sh"];
+/** The PATH root's command runs with: the system's directories alone, none of /usr/local. */
+const ROOT_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
 
 
 /** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
@@ -194,6 +200,8 @@ class E2BHost implements MachineHost {
 		vendorAgentPorts: [ENVD_PORT],
 		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
 		windowManager: true,
+		// System paths whose permissions E2B's template build sets wider than root's, on its templates and ours alike.
+		rootOnly: ROOT_ONLY,
 	};
 	readonly #Sandbox: SdkSandboxClass;
 	readonly #connection: E2BConnectionOptions;
@@ -300,9 +308,9 @@ class E2BHost implements MachineHost {
 	}
 
 	/**
-	 * A process as root through envd's Process.Start stream, as commands.run starts one (index.mjs:5123-5146): `bash -l -c`
-	 * and the argv quoted, root by the Basic header (authenticationHeader, index.mjs:1896-1900), and envd's keepalive
-	 * every 50 s. Its stdout and stderr are the bytes each data event carries, passed on as they come: commands.run would
+	 * A process as root through envd's Process.Start stream, the call commands.run makes (index.mjs:5123-5146) without its
+	 * login shell: /bin/sh by its path runs the argv as its own words, with PATH the system's directories alone, root by the
+	 * Basic header (authenticationHeader, index.mjs:1896-1900), and envd's keepalive every 50 s. Its stdout and stderr are the bytes each data event carries, passed on as they come: commands.run would
 	 * decode them as UTF-8 text first. No deadline on the stream (timeoutMs 0, which the Connect transport reads as none,
 	 * connect-web connect-transport.js:145-150), so envd never ends it (start.go:39-44); the start alone is bounded by
 	 * ctx. Writes go one sendStdin at a time, in order; end is closeStdin; kill SIGKILLs it and lets go of its stream.
@@ -314,7 +322,7 @@ class E2BHost implements MachineHost {
 		const requestTimeoutMs = this.#requestMs;
 		const stream = new AbortController();
 		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
-			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin: true },
+			{ process: { cmd: ROOT_SHELL, args: [...ROOT_SHELL_ARGS, ...argv], envs: { PATH: ROOT_PATH } }, stdin: true },
 			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
 		)[Symbol.asyncIterator]();
 		// The start, within ctx: a stream that gives no start event in time, or the caller's abort, is let go of.

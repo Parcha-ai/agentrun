@@ -3,9 +3,9 @@
 // the deadline and extend, delete-then-wait-gone, nothing left behind after any failed step, the Archil mount, and the
 // pid1 branch. No vendor, no network.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -221,6 +221,73 @@ test("the sockets script, run by sh: each socket a pattern names loses others' a
 		assert.equal(statSync(other).mode & 0o777, 0o777, "a socket no pattern names is left alone");
 		assert.equal(statSync(target).mode & 0o777, 0o777, "a link is never followed");
 		assert.equal(statSync(join(root, "dbus-file")).mode & 0o777, 0o666, "a file that is not a socket is left alone");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a host's rootOnly paths are made root's alone before anything of the create's is in the machine, on a child and a pid1 host alike; a host with none runs nothing; one that fails refuses the computer", async () => {
+	const paths = ["/usr/local", "/usr/bin/envd"];
+	const { provider, fake } = setup({}, { facts: { rootOnly: paths } });
+	const ref = made(await create(provider));
+	assert.deepEqual(runsOf(fake, only(fake).id).slice(0, 5), ["run root-only", "run install", "run sockets", "run start", "run stdio"], "first, before the install and init");
+	assert.deepEqual(fake.uploads.map(({ rootOnly }) => rootOnly), [paths], "made root's alone before the daemon's upload");
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE, ACCEPTED_NOTE], "nothing said");
+	assert.deepEqual(hostedCommands({ rootOnly: paths }).rootOnly.slice(4), paths, "each path one argument");
+	const pid1 = setup({}, { facts: { ...USER_FACTS, rootOnly: paths } });
+	made(await create(pid1.provider));
+	assert.equal(runsOf(pid1.fake, only(pid1.fake).id)[0], "run root-only", "a pid1 host's too, before its install");
+	assert.deepEqual(pid1.fake.uploads.map(({ rootOnly }) => rootOnly), [paths]);
+	const none = setup();
+	made(await create(none.provider));
+	assert.ok(!runsOf(none.fake, only(none.fake).id).includes("run root-only"), "a host that names none runs no script");
+	const failing = setup({}, { facts: { rootOnly: paths }, rootOnlyFail: "/usr/local/x is not root's alone" });
+	const refused = await create(failing.provider);
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /making system paths root's alone failed \(exit 5\): \/usr\/local\/x is not root's alone/);
+	assert.deepEqual(failing.fake.uploads, [], "no daemon went in");
+	assert.ok(!failing.fake.events.some(({ what }) => what === "run install" || what === "run start"), "nothing installed or started");
+	await nothingLeft(failing.fake, "a computer whose system paths would not close");
+});
+
+test("the root-only script, run by sh: group and other write go from each path and everything under it, an owner not root is made root or refused, a link inside is never followed, a missing path is skipped, a path that is a link refuses", { skip: process.getuid?.() === 0 ? "run as root, every file here is already root's" : false }, () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-root-only-"));
+	try {
+		// Not root here: the script reaches root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const local = join(root, "local");
+		mkdirSync(join(local, "sbin"), { recursive: true });
+		writeFileSync(join(local, "sbin", "helper"), "#!/bin/sh\n");
+		writeFileSync(join(root, "single"), "");
+		const outside = join(root, "outside");
+		writeFileSync(outside, "");
+		symlinkSync(outside, join(local, "sbin", "link"));
+		for (const path of [local, join(local, "sbin"), join(local, "sbin", "helper"), join(root, "single"), outside]) chmodSync(path, 0o777);
+		// Root here is this test's user, whose files these are; chown is a stand-in that only records what it was asked.
+		const chowned = join(root, "chowned");
+		writeFileSync(join(bin, "chown"), `#!/bin/sh\necho "$*" >> '${chowned}'\n`, { mode: 0o755 });
+		const run = (paths) => {
+			const argv = hostedCommands({ rootOnly: paths }).rootOnly;
+			return spawnSync(argv[0], argv.slice(1), { env: { PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+		};
+		const ran = run([local, join(root, "single"), join(root, "absent")]);
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		for (const path of [local, join(local, "sbin"), join(local, "sbin", "helper"), join(root, "single")]) assert.equal(statSync(path).mode & 0o777, 0o755, path);
+		assert.equal(statSync(outside).mode & 0o777, 0o777, "a link inside is never followed");
+		assert.equal(existsSync(chowned), false, "nothing already root's is chowned");
+		const linked = join(root, "linked");
+		symlinkSync(local, linked);
+		const refused = run([linked]);
+		assert.equal(refused.status, 6);
+		assert.match(refused.stdout, /is a symbolic link/);
+		// An entry another user owns: chown is asked to make root its owner (the link itself, -h), and one still not root's
+		// (the stand-in changed nothing) fails the script, though its mode lets no other user write it.
+		const owned = run(["/etc/passwd"]);
+		assert.equal(owned.status, 5, owned.stdout + owned.stderr);
+		assert.match(owned.stdout, /^\/etc\/passwd is not root's alone$/m);
+		assert.equal(readFileSync(chowned, "utf8"), `-h ${process.getuid()} /etc/passwd\n`);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
