@@ -2777,17 +2777,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         if (failingStop?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(failingStop.cancel), [failingStop.commandId], await cutRows(claim, spec, "stopped"));
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
-        const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
+        // The run's status is how its job's own turn ended (`data`), whatever the step spends after it: learning spend that
+        // takes the run past its cap is the learning's (askEndOfRun reads overCap after each of its turns), never the run's.
+        const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed", overCap);
         if (step.kind === "stopped") return await writeEnd(harness, root, gate, stopEnd(stopReason?.kind === "command" ? stopReason.cancel : undefined), [step.commandId], await cutRows(claim, spec, "stopped-looking"));
         if (step.kind === "interrupted") return await interrupted(stopReason?.kind ?? "its claim's signal aborted");
-        // The end-of-run turn is one more paid answer: one that passed the cap ends the run in the cap's words (overCap,
-        // read again once its booking settled), as a job's answer that passed it does, never completed. An end already
-        // failed keeps its own words.
-        if (data.state !== "failed") {
-          await bookingsSettled();
-          const overAtEnd = await overCap();
-          if (overAtEnd) data = { state: "failed", summary: overAtEnd };
-        }
         return await writeEnd(harness, root, gate, data, [], step.also, failedWith);
       }
     } catch (error) {
@@ -3259,8 +3253,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   /** The end-of-run step (stepOf: the spec's, else LoopDeps.endOfRun), asked once: the rows to stage with the end; `stopped` when a person's stop
    *  came during it; `interrupted` when the claim was lost or the runner is closing (no end is written, and the next claim
-   *  asks it again). A step that throws on its own writes the end without rows: the run's end never waits on it. */
-  async function endOfRunStep(claim: Claim, spec: AdapterRunSpec, outcome: "completed" | "failed"): Promise<{ kind: "rows"; also: readonly AlsoRow[] } | { kind: "stopped"; commandId: number } | { kind: "interrupted" }> {
+   *  asks it again). A step that throws on its own writes the end without rows: the run's end never waits on it. `over`:
+   *  the claim's overCap, read after each turn the step asks (askEndOfRun). */
+  async function endOfRunStep(claim: Claim, spec: AdapterRunSpec, outcome: "completed" | "failed", over: () => Promise<string | undefined>): Promise<{ kind: "rows"; also: readonly AlsoRow[] } | { kind: "stopped"; commandId: number } | { kind: "interrupted" }> {
     const cut = (): { kind: "stopped"; commandId: number } | { kind: "interrupted" } | undefined => {
       if (stopReason?.kind === "command") return { kind: "stopped", commandId: stopReason.commandId };
       if (stopReason || deps.signal.aborted) return { kind: "interrupted" };
@@ -3270,7 +3265,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!step) return { kind: "rows", also: [] };
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
     try {
-      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: keptOf(claim) });
+      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: keptOf(claim) });
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
       return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`), { kind: "rows", also: [] });
@@ -3318,8 +3313,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The end-of-run turn: one more turn through the run's session, its request id one per round of the run (a repeat is
    *  answered from its submission, so a later claim never asks the model again; a follow-up's end is the next `round`,
    *  asked anew), its writes under work/.learning/ refused while it runs. `again`: its re-ask, a request of its own (one
-   *  per round too). Aborted at `deadlineMs`. A stop or a lost claim cuts it: it throws, and the step sees why. */
-  async function askEndOfRun(claim: Claim, prompt: string, deadlineMs: number, again = false, round = 1, keep?: EndOfRunKept, step?: string): Promise<EndOfRunAnswer> {
+   *  per round too). Aborted at `deadlineMs`. A stop or a lost claim cuts it: it throws, and the step sees why. `over`:
+   *  the claim's overCap, read once the turn's booking settled. */
+  async function askEndOfRun(claim: Claim, over: () => Promise<string | undefined>, prompt: string, deadlineMs: number, again = false, round = 1, keep?: EndOfRunKept, step?: string): Promise<EndOfRunAnswer> {
     if (!session || !harness || !gate || !root) throw new Error("the run's session is not open");
     const on = harness;
     const conversation = root;
@@ -3371,6 +3367,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         learningRefused = undefined;
         return withKept({ failed: { code: "refused", message: capped.refuse } });
       }
+      // The run's booked spend once this turn's settled (its cut requests at their worst case, an earlier claim's too): past
+      // the cap, the turn fails in the cap's words (overCap), and the learning is dropped as a refusal drops it
+      // (reflect-hook.ts CAP_REFUSAL: no_budget), its spend still booked. The run keeps the end its job's turn gave it.
+      await bookingsSettled();
+      const passed = await over();
+      if (passed) return withKept({ failed: { code: "refused", message: passed } });
       const record = await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
       if (turnStatus !== "completed" || record?.status !== "done") return withKept({ failed: { code: "unanswered", message: "the end-of-run turn gave no answer" } });
       const answer = (await entriesOf(gate.journal, conversation.id, context)).find((entry) => entry.id === record.answer);
