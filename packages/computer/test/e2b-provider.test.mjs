@@ -33,7 +33,7 @@ const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer",
 const LINUX_GROUPS = ["exec", "files", "processes"];
 const BARE = "e2b_bare_key_must_never_be_used";
 /** The public box template release.yml's box-e2b job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
-const BOX_TEMPLATE = `miguels-project-7446/agentrun-archil-${createHash("sha256")
+const BOX_TEMPLATE = `agentrun-oss/agentrun-archil-${createHash("sha256")
 	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
 	.digest("hex")
 	.slice(0, 12)}`;
@@ -544,7 +544,7 @@ test("E2B's descriptor says it prepares its image and names no default image: ev
 		assert.equal(name in (await import("../dist/index.js")), false, name);
 	}
 	const { BOX_E2B_PUBLISHER, boxE2bTemplate } = await import("../dist/box-image.js");
-	assert.equal(BOX_E2B_PUBLISHER, "miguels-project-7446", "the E2B team release.yml's box-e2b job publishes from");
+	assert.equal(BOX_E2B_PUBLISHER, "agentrun-oss","the E2B team release.yml's box-e2b job publishes from");
 	assert.equal(boxE2bTemplate(), BOX_TEMPLATE);
 });
 
