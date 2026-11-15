@@ -589,6 +589,9 @@ interface CliRecord {
   nestedIn(callId: string, parent: string): void;
   /** The calls parked at their gate and never sent, still with no end: what a stop withdraws on the record. */
   unsentParked(): string[];
+  /** The calls whose start is marked `nests` (a tool that only nests calls; a harness's own call that calls nest in, Codex's
+   *  `exec`) still with no end: what a run's end closes, interrupted, after the rows of the calls they made. */
+  openNests(): string[];
   /** An end written elsewhere in a commit of the loop's own (the stop's withdrawal, in its end's commit): kept as this
    *  record's. */
   noteEnd(callId: string, status: CallStatus, output?: string): void;
@@ -779,6 +782,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         }
         await append(KINDS.callStart, { callId, tool, input, replaySafe, ...(nests ? { nests } : {}), ...parentOf(callId), ...(cwd ? { cwd } : {}) });
         started.set(callId, false);
+        if (nests) nesting.add(callId);
       });
     },
     async park(callId, tool, input, replaySafe) {
@@ -807,6 +811,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     },
     nestedIn: (callId, parent) => void parents.set(callId, parent),
     unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
+    openNests: () => [...nesting].filter((callId) => started.get(callId) === false),
     noteEnd(callId, status, output) {
       started.set(callId, true);
       ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
@@ -1033,6 +1038,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
+  /** The writes of the harness's own calls (SessionIO.ownCalls) not yet settled: the run's end waits for them, so it never
+   *  closes interrupted an exec whose own end is on its way. */
+  const ownWrites = new Set<Promise<void>>();
+  const ownWrite = (write: Promise<void>): Promise<void> => {
+    ownWrites.add(write);
+    const settled = () => void ownWrites.delete(write);
+    write.then(settled, settled);
+    return write;
+  };
   /** A CLI's turn cut at its question to the person (TurnCut): armed by the call's end, asked for by the next request. */
   const askCut = turnCut();
   /** Whether this loop sent the run its output retry (sendOutputRetry): never a second, even when its turn gave no answer. */
@@ -1865,7 +1879,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         /** A main-model request as the run's cap prices it at admission (RunCap.asked: its model, its whole input uncached),
          *  for the wrap-up's note and what the run keeps back to answer. A request the note takes is measured as its client
-         *  sent it (NoteRequest), by its bytes. */
+         *  sent it (NoteRequest), by the input count its admission reads (a provider's or a local count, else its bytes). */
         const pricedOf = (model: string, asked?: Omit<PricedRequest, "model">) => theCap().asked({ ...asked, model });
         /** A main-model request's figures as the run's cap prices them (kernel cap requestFigures), for what it keeps back. */
         const figuresOf = (model: string, asked?: Omit<PricedRequest, "model">): RequestFigures | undefined => {
@@ -1894,8 +1908,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // figures), one request at a time: from its take until that request's admission ends, then, admitted carrying it
         // (`turn`), until that request ends. Told once that request is answered (afterRequest); given back for the next
         // request by a refusal, a dropped note, or an end with no answer (an error status, a 429, a lost or cut stream).
-        // A request that took it and left before its admission (its client gone while the proxy counted its tokens, a body
-        // the proxy refused) gives it back as it goes (noteReturned). WRAP_UP_OFFER_MS is only the backstop for a take that
+        // A request that took it and left before its admission (a note its policy could not place, an error) gives it back
+        // as it goes (noteReturned). WRAP_UP_OFFER_MS is only the backstop for a take that
         // never reaches its admission and is never given back: past it, a later request may take the note. An admitted
         // request always ends (the proxy books each one once), so no backstop is needed from there.
         let carried: (ServerNote & { at: number; turn?: number }) | undefined;
@@ -2360,14 +2374,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (askCut.armed && event.type === "tool_start") askCut.disarm();
           theRecord.onEvent(event);
         };
-        // A call of the CLI's own that its host tool calls run inside (Codex's code-mode `exec`): on its record as a call, never
-        // run again after a crash (a crash ends it interrupted, as its CLI's resume answers it), and each call it makes named
-        // under it, so its rows read as a codemode script's do on every other harness.
+        // A call of the CLI's own that its host tool calls run inside (Codex's code-mode `exec`): on its record as a call, and
+        // each call it makes named under it, so its rows read as a codemode script's do on every other harness. Its start is
+        // marked `nests`, so a crash leaves it open: its harness ends it (ownCalls.ended) from its CLI's own answer to it after
+        // the resume, which comes after the rows of the calls it made, never as an interrupted end ahead of them. One no answer
+        // of its CLI ends (a stop while it waits, a crash no resume follows) the run's end closes, interrupted (openNests).
         const ownCalls: OwnCalls | undefined = record
           ? {
-              opened: (callId, name, input) => record.start(callId, name, input, false).catch(unlessSealed),
+              opened: (callId, name, input) => ownWrite(record.start(callId, name, input, false, true).catch(unlessSealed)),
               nestedIn: (callId, parent) => record.nestedIn(callId, parent),
-              ended: (callId, output, failed) => record.end(callId, failed ? "failed" : "done", output).catch(unlessSealed),
+              ended: (callId, output, failed) => ownWrite(record.end(callId, failed ? "failed" : "done", output).catch(unlessSealed)),
             }
           : undefined;
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
@@ -3860,6 +3876,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const ends = cliRecord ?? (await openCliRecord(on, theGate.journal, context, now, undefined, true));
     const recordEnds = ends.unsentParked();
     const notRun = data.state === "stopped" ? STOPPED_WHILE_WAITING : ENDED_WHILE_WAITING;
+    // A call that only nests calls (a harness's own: Codex's `exec`) still open when the run ends: nothing will end it now
+    // (a stop while its call waited, a crash whose next drive never resumed its CLI's thread), so it ends with the run,
+    // interrupted, after the rows of its calls (their withdrawals above it in this commit). Its own end on its way is
+    // written first.
+    while (ownWrites.size > 0) await Promise.allSettled([...ownWrites]);
+    const cutOpen = ends.openNests();
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);
@@ -3867,6 +3889,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await on.commit(async (tx) => {
         for (const answer of withdrawn) await tx.appendEntry(conversation.id, { kind: KINDS.answer, data: answer as unknown as JsonValue });
         for (const callId of recordEnds) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "refused", output: notRun, at: now() } as unknown as JsonValue });
+        for (const callId of cutOpen) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "interrupted", at: now() } as unknown as JsonValue });
         // A turn the run ends while it is open (a stop or cancel cut it, or the run failed in it) ends with the run.
         if (cliRecord?.openTurn()) await tx.appendEntry(conversation.id, { kind: KINDS.turnEnd, data: { status: data.state === "failed" ? "failed" : data.state === "stopped" ? "interrupted" : "completed" } as unknown as JsonValue });
         if (failedWith !== undefined) await tx.appendEntry(conversation.id, { kind: PI_ASSISTANT, model: [cliErrorAnswer(specNow?.adapter.id ?? "cli", failedWith, now())] as never });
@@ -3879,6 +3902,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     await ended;
     for (const callId of recordEnds) ends.noteEnd(callId, "refused", notRun);
+    for (const callId of cutOpen) ends.noteEnd(callId, "interrupted");
     return data.state === "failed" ? { state: "failed", error: { code: "run-failed", message: data.summary ?? "the run failed" } } : { state: data.state };
   }
 

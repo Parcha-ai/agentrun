@@ -284,15 +284,16 @@ export interface ModelPort {
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
   /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
    *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
-   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+   *  sent it, measured before the note is placed (NoteRequest), so the host prices it as its admission will. */
   note?(model: string, request?: NoteRequest): string | undefined;
   /** The note `note` gave back: the request that took it left before its admission (its client gone, a refusal or an
    *  error before `beforeRequest`), so it was never sent, and the host may give it to the next request at once. */
   noteReturned?(note: string): void;
 }
 
-/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
- *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+/** A request about to take its host's note, as its client sent it: its input bound (the provider's count or the local
+ *  count where the proxy took one, else its bytes) and the output it asks for and needs at least, as the model proxy reads
+ *  them: ModelRequest's figures without the note (its `inputTokensMaxWithoutNote`), the same ones the cap admits it by. */
 export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
@@ -351,7 +352,9 @@ export interface OwnCalls {
    *  row (a refused or parked one's too) names its parent. */
   nestedIn(callId: string, parent: string): void;
   /** The call ended with `output`, `failed` when the harness's stream says it did not do its work (Codex's "Script failed"),
-   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). */
+   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). A crash leaves an opened call
+   *  open on the host's record: the harness ends it after the resume, from its CLI's answer to it (Codex's recovered exec
+   *  output), so its end comes after the rows of the calls it made. */
   ended(callId: string, output: string, failed: boolean): Promise<void>;
 }
 

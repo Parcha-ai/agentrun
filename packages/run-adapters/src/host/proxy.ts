@@ -1076,9 +1076,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy", ...(code ? { code } : {}) } }));
   };
 
-  /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: its client
-   *  gone while it was counted, a refusal, an error) is given back to the host then, however it left, so the next request
-   *  can take it at once. From its admission on the note is the admission's: given back by its refusal, else held by the
+  /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: a body with
+   *  the note that could not be serialized, an error) is given back to the host then, however it left, so the next
+   *  request can take it at once. A request is counted before it takes one, so a client that goes while its request is
+   *  counted never holds the note. From its admission on the note is the admission's: given back by its refusal, else held by the
    *  request until its end (afterRequest), which tells it if answered and gives it back if not. */
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     const taken: { note?: string } = {};
@@ -1147,46 +1148,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
-    // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
-    // session's model whose policy can place it takes it, once, before the body is measured, so the cap admits its bytes.
-    // Only the turn's own request (ProviderPolicy.answers): a side call on the session's model (a title, a summary, when
-    // the client has no small model) takes none. One the policy fails to place is dropped, said once; the request goes as
-    // the client sent it. The body as the client sent it is kept (`plain`): a request the cap admits only without the
-    // note's bytes goes as that (ModelTicket.noteDropped).
-    let noted = false;
-    let plain: Record<string, unknown> | undefined;
-    // Never on the host's own request (`host`): the note is for the harness's model, in its own conversation, so a host
-    // request is neither measured for it nor noted.
-    if (!route.free && asked === model && host === undefined && (policy.answers ? policy.answers(body) : true) && policy.addNote && hooks.note) {
-      // The request as its client sent it, measured first, so the host prices it as its admission will (the wrap-up's least).
-      let request: NoteRequest = {};
-      try {
-        const measured = inputTokensMaxOf(policy, body, JSON.stringify(body), say);
-        const askedOut = policy.outputAsked?.(body);
-        const leastOut = policy.outputLeast?.(body);
-        const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
-        request = { ...(count(measured) === undefined ? {} : { inputTokensMax: measured as number }), ...(count(askedOut) === undefined ? {} : { outputTokensAsked: askedOut as number }), ...(count(leastOut) === undefined ? {} : { outputTokensLeast: leastOut as number }) };
-      } catch {
-        request = {};
-      }
-      const note = hooks.note(asked, request);
-      // Taken: given back (serve) unless this request brings it to its admission, below. One the policy fails to place
-      // goes back too: this request goes without it.
-      if (note) taken.note = note;
-      if (note) {
-        try {
-          const without = body;
-          body = policy.addNote(body, note);
-          plain = without;
-          noted = true;
-        } catch (error) {
-          say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
-          taken.note = undefined;
-          try { hooks.noteReturned?.(note); } catch { /* the host's to say */ }
-        }
-      }
-    }
-    // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
+    // The body as its client sent it, and the most input tokens it can be billed for, measured before the runner is asked:
+    // its bytes here, then the provider's count or the policy's local count below, and only then a note (the wrap-up's),
+    // which is decided on that same figure.
     let sent: string;
     try {
       sent = JSON.stringify(body);
@@ -1195,17 +1159,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       return refuse(res, 500, "the body could not be serialized", req);
     }
     let inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
-    // The same, of the body as the client sent it, when a note was placed: the cap checks the request without the note.
-    let plainSent: string | undefined;
-    let inputTokensMaxWithoutNote: number | undefined;
-    if (plain) {
-      try {
-        plainSent = JSON.stringify(plain);
-        inputTokensMaxWithoutNote = inputTokensMaxOf(policy, plain, plainSent, say);
-      } catch {
-        plainSent = undefined;
-      }
-    }
+    /** Its byte bound, kept: a note adds to the bound what it adds to this. */
+    const byteBound = inputTokensMax;
     // What the body asks for at most, and the least it may be limited to, as the policy reads them. One the policy cannot
     // read leaves the request's worst case unknown: its input is unmeasured.
     const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
@@ -1283,8 +1238,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // An answer request on an upstream that is its provider's own (policy.countInput): its input bound is the provider's
     // exact count when that is below its bytes, so a small cap admits a turn its bytes would not: the cap holds each
     // request at its whole input uncached, and the count is that input to the token. A count that fails or times out
-    // leaves the byte bound, and never holds the request up for long. A noted request is counted with its note, which
-    // bounds it without the note too (the note only adds).
+    // leaves the byte bound, and never holds the request up for long. The body is counted as its client sent it, before
+    // any note (below).
     // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
     /** The provider's count, when it gave one: then no local count is taken, even when the provider's is the higher. */
     let counted: number | undefined;
@@ -1300,20 +1255,55 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         res.off("close", onGone);
       }
       if (gone.signal.aborted || res.destroyed) return;
-      if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
-        inputTokensMax = counted;
-        if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
-      }
+      if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) inputTokensMax = counted;
     }
     // A request its provider did not count (no counter, a gateway, a side or host request, a count that failed): its input
-    // bound is the policy's local count (countInputLocally, its margin included) when that is below its bytes. The body
-    // without the note is counted on its own.
+    // bound is the policy's local count (countInputLocally, its margin included) when that is below its bytes.
     if (counted === undefined && !route.free && inputTokensMax !== undefined && policy.countInputLocally) {
       const local = await localInputOf(policy, body, say);
-      const localPlain = plain && inputTokensMaxWithoutNote !== undefined ? await localInputOf(policy, plain, say) : undefined;
       if (res.destroyed) return;
       if (local !== undefined && inputTokensMax !== undefined && local < inputTokensMax) inputTokensMax = local;
-      if (localPlain !== undefined && inputTokensMaxWithoutNote !== undefined && localPlain < inputTokensMaxWithoutNote) inputTokensMaxWithoutNote = localPlain;
+    }
+    // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
+    // session's model whose policy can place it takes it, once, now that it is measured as its admission reads it
+    // (NoteRequest: the input bound above, a count where there is one, and the output it asks for and needs), so the note
+    // comes due on the figures the cap admits it by, never on its bytes where it was counted. Only the turn's own request
+    // (ProviderPolicy.answers): a side call on the session's model (a title, a summary, when the client has no small model)
+    // takes none, nor does the host's own (`host`): the note is for the harness's model, in its own conversation. One the
+    // policy fails to place, or whose body it cannot measure, is given back, said once; the request goes as the client sent
+    // it. The noted request's bound is that figure and the note's own bytes (what the body grows by, with what its policy
+    // says the provider adds for it): a token covers at least a byte, so it is never under what the noted request bills.
+    // The body as the client sent it is kept (`plain`): a request the cap admits only without the note's bytes goes as
+    // that (ModelTicket.noteDropped).
+    let noted = false;
+    let plain: Record<string, unknown> | undefined;
+    let plainSent: string | undefined;
+    let inputTokensMaxWithoutNote: number | undefined;
+    if (!route.free && asked === model && host === undefined && answering && policy.addNote && hooks.note) {
+      const note = hooks.note(asked, { ...(inputTokensMax === undefined ? {} : { inputTokensMax }), ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }) });
+      if (note) {
+        // Taken: given back (serve) unless this request brings it to its admission, below.
+        taken.note = note;
+        try {
+          const withNote = policy.addNote(body, note);
+          const withNoteSent = JSON.stringify(withNote);
+          const grown = inputTokensMaxOf(policy, withNote, withNoteSent, say);
+          if (grown === undefined || byteBound === undefined || grown < byteBound) throw new Error("the body with the note could not be measured");
+          if (inputTokensMax !== undefined) {
+            inputTokensMaxWithoutNote = inputTokensMax;
+            inputTokensMax += grown - byteBound;
+          }
+          plain = body;
+          plainSent = sent;
+          body = withNote;
+          sent = withNoteSent;
+          noted = true;
+        } catch (error) {
+          say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+          taken.note = undefined;
+          try { hooks.noteReturned?.(note); } catch { /* the host's to say */ }
+        }
+      }
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;

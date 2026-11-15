@@ -71,8 +71,11 @@ App ids come from `computer.apps.list()`: call it before `computer.apps.open`. T
 `tools.computer_observe(...)` and `tools.computer_act(...)`.
 
 **On Codex** there is no `codemode` and no `computer`: Codex runs scripts in its own code mode, which calls the tools in
-your list, and each call answers JSON text to parse. The phone's apps are `computer_op` there, one call per op with its
-arguments, named as `computer`'s methods are: `computer_op({op: "apps.open", args: {id: "com.android.settings"}})`.
+your list. The phone's apps are `computer_op` there, one call per op with its arguments, named as `computer`'s methods
+are: `computer_op({op: "apps.open", args: {id: "com.android.settings"}})`. Every answer is text, and a failed op never
+throws: an op that ran answers JSON, so `JSON.parse` it. A refused op answers the gate's words, which open with
+`Permission denied:` or `The user denied this`, or give the tool's name then `is read-only for this agent, so this call
+was refused:` or `can't be called:`. A failed op answers its error's words. Neither is JSON: check before you parse.
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
 screenshot pixels, for what the app's window can't reach: a swipe from the screen's top edge opens the notification
