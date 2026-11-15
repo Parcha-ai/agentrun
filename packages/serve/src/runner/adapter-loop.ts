@@ -907,9 +907,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: (() => Promise<void>) | undefined;
-  /** While the end-of-run turn runs (or a claim found it open: lookingBackOpen): a steer is left for the end, its writes
-   *  and edits under work/.learning/ are refused (REFLECT_NOTE_ONLY), and its requests are learning's, never the job's:
-   *  the cap's wrap-up note is never told to it, and a refusal of one never parks the run (learningRefused). */
+  /** From the end-of-run step's start (or a claim that found its turn open: lookingBackOpen, from its session's open)
+   *  until the claim ends: a steer is left for the end, writes and edits under work/.learning/ are refused
+   *  (REFLECT_NOTE_ONLY), and every request is learning's, never the job's: the cap's wrap-up note is never told to it,
+   *  and a refusal of one never parks the run (learningRefused). Held between the step's asks too: a turn a takeover
+   *  resumed may send its next request while the step still reads an earlier answer. */
   let reflecting = false;
   /** A cap refusal of a request of the end-of-run turn, until that turn's ask reads it: the run has answered, so it parks
    *  nothing; the ask fails in the refusal's words, and the learning is dropped as the cap's short room drops it
@@ -2823,6 +2825,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       heldNow = undefined;
       channelNow = undefined;
       handingBack = false;
+      reflecting = false;
+      learningRefused = undefined;
       deps.live?.(() => undefined);
       // A tool host's beforeRelease, when no end or park let it go first (a shutdown, a lost claim): the Harness still open.
       // A restart within the claim is no release. What it writes after a lost claim is refused by the fence, as any write.
@@ -3292,6 +3296,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const step = stepOf(spec);
     if (!step) return { kind: "rows", also: [] };
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
+    // Every request from here is learning's, between the step's asks too, until the claim ends (reflecting).
+    reflecting = true;
     try {
       const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: keptOf(claim) });
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
@@ -3359,7 +3365,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const seen = servedNow && specNow ? { job: specNow.input, served: { workflow: servedNow.workflow, answer: cut(servedNow.answer) } } : undefined;
       prompt = `${feedbackAsk({ ...feedbackNow, text: cut(feedbackNow.text) }, seen)}\n\n${prompt}`;
     }
-    reflecting = true;
     let timer: NodeJS.Timeout | undefined;
     try {
       // A turn already answered (an earlier claim's) is read from its submission; a CLI's record answers one it already
@@ -3407,7 +3412,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       return withKept({ ended: true, answer: answerText(answer) });
     } finally {
       clearTimeout(timer);
-      reflecting = false;
     }
   }
 

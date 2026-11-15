@@ -56,11 +56,15 @@ async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf })
   const server = await openSqliteStore({ dataDir: dir, role: "server", now });
   const stores = [];
   const runners = [];
-  /** The requests held on a lost runner, each failed at the end. */
+  /** The requests and commits held on a lost runner, each failed at the end; once it ends, one asked fails at once. */
   const hung = [];
+  let ending = false;
+  const hold = () => (ending ? Promise.reject(new Error("the test ended")) : new Promise((_, reject) => hung.push(reject)));
   t.after(async () => {
-    // What the lost runners hold fails first (their held requests, their frozen commits), so their close ends too.
-    for (const fail of hung) fail(new Error("the test ended"));
+    // What the lost runners hold fails first (their held requests, their frozen commits), so their close ends too, and
+    // a commit they try while closing fails at once.
+    ending = true;
+    for (const fail of hung.splice(0)) fail(new Error("the test ended"));
     for (const runner of runners) await runner.close().catch(() => {});
     for (const store of stores) await store.close().catch(() => {});
     await server.close().catch(() => {});
@@ -114,7 +118,7 @@ async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf })
       const value = Reflect.get(target, key, target);
       if (typeof value !== "function") return value;
       if (key !== "commit") return value.bind(target);
-      return (...args) => (frozen.has(name) ? new Promise((_, reject) => hung.push(reject)) : value.apply(target, args));
+      return (...args) => (frozen.has(name) ? hold() : value.apply(target, args));
     },
   });
   const start = async (name) => {
@@ -227,19 +231,53 @@ test("the walk's shape: a job answered at $1, its look-back cut twice and booked
 
 test("a capped pi run lost mid compile turn: the next claim takes the open compile turn as learning's; the run ends completed with its answer, its learning dropped no_budget, never parked", { timeout: 120_000 }, async (t) => {
   // The look-back answers on the first claim; the compile turn's request is out at the loss, booked cut at its hold
-  // (about $0.50, strict), which leaves the cap no room for another.
+  // (about $0.50, strict), which leaves the cap no room for another. On the next claim pi resumes the open compile turn as
+  // its session opens; its request is held at the cap's read of the spend beside the run until the step has read the
+  // look-back's answer again (its `asked`), so the cap refuses it between the step's two asks, never inside one: still
+  // learning's request there, never a park.
   const COMPILE = { mode: "new", reference: "REF", notes: [{ file: "retry-slowly.md", text: NOTE }], traces: [], tools: [], judges: false };
   const proposed = { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "retry-slowly.md", text: NOTE }], asked: ["Follow the script."] } };
+  let compileOut = false;
+  let release = () => {};
+  const lookBackRead = new Promise((resolve) => (release = resolve));
+  let refusedNow = () => {};
+  const refused = new Promise((resolve) => (refusedNow = resolve));
+  const order = [];
   const hook = () => createReflectHook({
     facts: async () => ({ learns: true, costUsd: 0 }),
     promptFacts: async () => ({ active: 0 }),
-    asked: async () => ({ asked: ["Follow the script."] }),
+    asked: async () => {
+      if (compileOut) {
+        order.push("look-back read");
+        release();
+        let timer;
+        await Promise.race([refused, new Promise((resolve) => (timer = setTimeout(resolve, 20_000)))]).finally(() => clearTimeout(timer));
+      }
+      return { asked: ["Follow the script."] };
+    },
     check: async () => proposed,
     compileFacts: async () => COMPILE,
     newRunId: () => "run-1-learning",
   });
-  const { server, store, row, sent } = await lostRun(t, { capUsd: 0.52, runCap: { modelOf: () => SONNET, mode: "strict" }, held: isCompile, losses: 1, priceOf: () => undefined, endOfRunOf: hook });
+  const runCap = {
+    modelOf: () => SONNET,
+    mode: "strict",
+    // Only the resumed compile request's read waits: the cap's check before a request (adapter-loop.ts beforeRequest,
+    // read through overCap) once the compile turn is out; never the claim's own reads at its open or the step's.
+    beside: async () => {
+      if (compileOut && /beforeRequest/.test(new Error().stack ?? "")) await lookBackRead;
+      return 0;
+    },
+    judged: (_request, answer) => {
+      if (!compileOut || !answer || !("refuse" in answer) || order.includes("compile refused")) return;
+      order.push("compile refused");
+      refusedNow();
+    },
+  };
+  const held = (body) => isCompile(body) && (compileOut = true);
+  const { server, store, row, sent } = await lostRun(t, { capUsd: 0.52, runCap, held, losses: 1, priceOf: () => undefined, endOfRunOf: hook });
   assert.equal(sent.filter(isCompile).length, 1, `the compile turn went out once, at the loss: ${sent.length} requests`);
+  assert.deepEqual(order, ["look-back read", "compile refused"], "the resumed compile request was refused between the step's asks");
   const budgets = await rootEntries(store, "agentrun.budget");
   const wrapUps = await rootEntries(store, "agentrun.cap_wrapup");
   assert.deepEqual(budgets, [], `no budget pause for learning spend: ${JSON.stringify(budgets)}`);
