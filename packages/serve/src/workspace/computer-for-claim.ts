@@ -106,8 +106,9 @@ export interface ComputerForClaimDeps {
   readonly sealKey: Buffer | undefined;
   readonly providers: ProviderMakers;
   /** What a computer of `kind` is made with, besides its labels and its mount: image, lifetime, network (from `run`).
-   *  `image`: the one the setting's configuration names, over the kind's default. */
-  readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">, run: ComputerRun, image?: string) => Omit<ComputerSpec, "labels" | "mount">;
+   *  `image`: the one the setting's configuration names, over the kind's default. No image: a provider that prepares
+   *  its own (prepareImage), which the claim starts from. */
+  readonly spec: (entry: ProviderEntry, kind: Exclude<ComputerSettingKind, "none">, run: ComputerRun, image?: string) => Omit<ComputerSpec, "labels" | "mount" | "image"> & { readonly image?: string };
   /** A provider key's value by its name, as the server reads it (key-meta.ts keyReader: the environment's, else the
    *  saved one). Absent: the saved one alone, opened with `sealKey`. */
   readonly keyOf?: (name: string) => Promise<string | undefined>;
@@ -585,7 +586,9 @@ export async function computerForClaim(
       // configuration that names its image starts from it, else the kind's default.
       const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
       const ready = await readyImage(entry, provider, signal, deps.onImageWait);
-      const spec: ComputerSpec = { ...asked, ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}) };
+      const image = ready ?? asked.image;
+      if (image === undefined) throw new Error(`${entry.label} names no image for its ${kind} computer and prepares none`);
+      const spec: ComputerSpec = { ...asked, image, labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}) };
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {

@@ -11,11 +11,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
-import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
+import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
 import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
+import type { KindCapabilities } from "../kinds.js";
 import { RUN_LABEL } from "../labels.js";
 import { checkMount, type MountReadBack, readBackOf } from "../mount.js";
 import {
@@ -135,6 +136,8 @@ export const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 export const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;
 /** The most extend may move the deadline to: create's time plus the cap, by this machine's clock, as init was given. */
 export const MAX_LABEL = `${COMPUTER_LABEL}.max-deadline`;
+/** A GPU computer's GPUs, type:count: a retry and attach read them here, so no vendor need read them back. */
+export const GPU_LABEL = `${COMPUTER_LABEL}.gpu`;
 const NAME = /^computer-[0-9a-f]{12}$/;
 const MACHINE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const USER = /^(\d+):(\d+)$/;
@@ -177,7 +180,8 @@ const STAGING = "/tmp/agentrun-computerd-";
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu", "owner"]);
+/** The spec's fields the adapter passes on or holds itself: a size goes in the request, for the host's check to refuse. */
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu", "owner", "cpus", "memoryMb"]);
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 const alive = (state: Machine["state"]) => state !== "gone";
@@ -222,6 +226,14 @@ function specUserOf(value: unknown): string | undefined {
 	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
 }
 
+/** The GPUs a machine's GPU_LABEL records (type:count), as a spec's gpu field; none where it records none. */
+function gpuOf(written: string | undefined): { gpu?: { type: string; count: number } } {
+	const at = written?.lastIndexOf(":") ?? -1;
+	if (written === undefined || at < 1) return {};
+	const count = Number(written.slice(at + 1));
+	return isWhole(count) ? { gpu: { type: written.slice(0, at), count } } : {};
+}
+
 /** The caller's labels of a machine: every one but the adapter's own namespace and the Archil mount's. */
 const callerLabels = (labels: Record<string, string>) => Object.fromEntries(Object.entries(labels).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== ARCHIL_MOUNT_LABEL));
 
@@ -235,8 +247,6 @@ interface Made {
 	commands: HostedCommands;
 	/** Who the daemon runs as, uid:gid: the provider's daemon user, or the spec's where the host takes one. */
 	user: string;
-	/** The runtime the host says this request runs (facts.runtime), which the probe's kernel is held to. */
-	runtime?: "vm" | "gvisor";
 }
 
 type Extend = (ref: ComputerRef, ttlMs: number, context?: CallContext) => Promise<Result<{ deadline: Date }>>;
@@ -248,6 +258,8 @@ export class HostedProvider implements ComputerProvider {
 	/** The vendor's machines, for the live sweep (conformance/sweep.ts); nothing else reaches past the provider to them. */
 	readonly host: MachineHost;
 	readonly extend?: Extend;
+	/** The host's descriptor's configuration of this provider's kind: its groups and GPUs. */
+	readonly #configuration: KindCapabilities;
 	readonly #label: string;
 	readonly #fail: ReturnType<typeof failFor>;
 	readonly #daemonPath: string;
@@ -278,14 +290,17 @@ export class HostedProvider implements ComputerProvider {
 			onNote,
 			archilEgress,
 		} = options;
-		const { id, label } = host.descriptor;
+		const { id, label, capabilities } = host.descriptor;
+		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
+		const configuration = capabilities.find((one) => one.kind === kind);
+		if (configuration === undefined) throw new Error(`${label} offers no ${kind} computer`);
 		this.id = id;
 		this.host = host;
+		this.#configuration = configuration;
 		this.#label = label;
 		this.#fail = failFor(id);
 		this.#onNote = onNote;
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
-		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
 		}
@@ -315,9 +330,10 @@ export class HostedProvider implements ComputerProvider {
 		if (host.extend) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
 	}
 
-	/** The computer's facts, from the host's and the adapter's options alone. */
+	/** The computer's facts, from the descriptor, the host's facts and the adapter's options alone. */
 	capabilities(): ComputerCapabilities {
 		const { facts, descriptor } = this.host;
+		const { gpu } = this.#configuration;
 		return {
 			kind: this.#kind,
 			lifetime: facts.lifetime,
@@ -327,12 +343,12 @@ export class HostedProvider implements ComputerProvider {
 			isolation: facts.isolation,
 			os: "linux",
 			daemon: facts.daemon,
-			groups: ["exec", "files", "processes", ...(this.#desktop ? DESKTOP_GROUPS : [])],
+			groups: [...this.#configuration.groups],
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
 			mount: [...descriptor.mounts],
 			vendorAgentPorts: [...facts.vendorAgentPorts],
-			...(facts.gpu === undefined ? {} : { gpu: structuredClone(facts.gpu) }),
+			...(gpu === undefined ? {} : { gpu: structuredClone(gpu) }),
 			...(facts.user === undefined ? {} : { user: [...facts.user] }),
 		};
 	}
@@ -348,7 +364,7 @@ export class HostedProvider implements ComputerProvider {
 		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil" && (capabilities.mount ?? []).includes("archil");
 		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.host.descriptor.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
 		const daemonUser = `${this.#uid}:${this.#gid}`;
-		const asked = this.#takesUser() ? given.user : undefined;
+		const asked = this.#takesUser ? given.user : undefined;
 		if (asked !== undefined) {
 			const user = specUserOf(asked);
 			if (user === undefined) refuse("user", "user must be a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it");
@@ -371,17 +387,16 @@ export class HostedProvider implements ComputerProvider {
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		const entries = labels === undefined ? [] : typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
-		const bad = entries === undefined ? "labels must map names to strings" : (entries.map(([key, value]) => labelProblem(key, value)).find(Boolean) ?? this.#labelCount(entries.length, given));
+		const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 		if (bad) refuse("labels", bad);
 		else if (typeof image === "string" && (!archil || ["disk", "region", "folder"].every((key) => typeof (mount as Record<string, unknown>)[key] === "string"))) {
-			const over = this.#labelBytes(given as unknown as ComputerSpec);
-			if (over) refuse(archil ? "mount" : "labels", over);
+			const over = this.#labelsOver(given as unknown as ComputerSpec);
+			if (over) refuse(archil && over.bytes ? "mount" : "labels", over.why);
 		}
 		refusals.push(...checkGpu(given.gpu, capabilities, mount));
-		const taken = new Set<string>(this.host.facts.specFields ?? []);
 		for (const [field, value] of Object.entries(given)) {
-			if (SPEC_FIELDS.has(field) || taken.has(field) || value === undefined) continue;
-			if (field === "cpus" || field === "memoryMb" || field === "pids") refuse(field, `${a(label)} computer has the size of its image: name an image of the size you need, not ${field}`);
+			if (SPEC_FIELDS.has(field) || (field === "user" && this.#takesUser) || value === undefined) continue;
+			if (field === "pids") refuse(field, `${a(label)} computer has the size of its image: name an image of the size you need, not ${field}`);
 			else if (field === "user") refuse(field, `${a(label)} computer's daemon runs as the provider's daemon user (${daemonUser}), never as one a spec names`);
 			else if (field === "workdir") refuse(field, `${a(label)} computer works in ${WORK}, its home; a spec cannot name another`);
 			else refuse(field, `${a(label)} computer does not support ${field}`);
@@ -390,40 +405,35 @@ export class HostedProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	/** Whether the host takes a spec's user (facts.specFields): then a computer's daemon runs as the one a spec names. */
-	#takesUser(): boolean {
-		return (this.host.facts.specFields ?? []).includes("user");
+	/** Whether the host takes a spec's user (facts.user): then a computer's daemon runs as the one a spec names. */
+	get #takesUser(): boolean {
+		return this.host.facts.user !== undefined;
 	}
 
 	/** Who one create's daemon runs as, uid:gid: the spec's user where the host takes one, else the provider's daemon user. */
 	#userOf(spec: ComputerSpec): string {
-		return (this.#takesUser() ? specUserOf(spec.user) : undefined) ?? `${this.#uid}:${this.#gid}`;
+		return (this.#takesUser ? specUserOf(spec.user) : undefined) ?? `${this.#uid}:${this.#gid}`;
 	}
 
-	/** The labels create would give a spec's computer, the adapter's own at their longest (#labelsOf). */
-	#longestLabels(spec: Record<string, unknown>, caller: boolean): Record<string, string> {
+	/**
+	 * Why a spec's labels, with the adapter's own (#labelsOf, as create gives them, each deadline an ISO time at its
+	 * longest), are more, or come to more bytes, than the vendor takes (facts.labels); undefined when they fit.
+	 */
+	#labelsOver(spec: ComputerSpec): { bytes: boolean; why: string } | undefined {
+		const { count, bytes: max } = this.host.facts.labels ?? {};
 		const at = new Date(0).toISOString();
-		return this.#labelsOf({ ...spec, labels: caller ? spec.labels : {} } as unknown as ComputerSpec, "computer-000000000000", at, at);
-	}
-
-	/** Why a spec's labels, with the adapter's own, are more than the vendor takes; undefined when they fit. */
-	#labelCount(count: number, spec: Record<string, unknown>): string | undefined {
-		const max = this.host.facts.labelRules?.max;
+		const labels = this.#labelsOf(spec, "computer-000000000000", at, at);
+		const keys = Object.keys(labels);
+		if (count !== undefined && keys.length > count) {
+			// labelProblem refuses a caller's label of the adapter's names, so the two never overlap.
+			const own = keys.length - Object.keys(spec.labels ?? {}).length;
+			return { bytes: false, why: `${a(this.#label)} computer carries at most ${count} labels, the adapter's own among them, and this one's would carry ${keys.length}, ${own} of them the adapter's: give at most ${count - own} labels` };
+		}
 		if (max === undefined) return undefined;
-		const own = Object.keys(this.#longestLabels(spec, false)).length;
-		return count + own > max ? `${a(this.#label)} computer takes ${max} labels, ${own} of them the provider's own: ${count} is ${count + own - max} too many` : undefined;
-	}
-
-	/** Why a spec's labels, with the adapter's own at their longest, come to more bytes than the vendor takes; undefined when they fit. */
-	#labelBytes(spec: ComputerSpec): string | undefined {
-		const { maxBytes, measure = "pairs" } = this.host.facts.labelRules ?? {};
-		if (maxBytes === undefined) return undefined;
-		const labels = this.#longestLabels(spec as unknown as Record<string, unknown>, true);
 		const sizes = Object.entries(labels).map(([key, value]) => [key, Buffer.byteLength(key) + Buffer.byteLength(value)] as const);
-		const bytes = measure === "json" ? Buffer.byteLength(JSON.stringify(labels)) : sizes.reduce((sum, [, size]) => sum + size, 0);
-		if (bytes <= maxBytes) return undefined;
-		const how = measure === "json" ? "as JSON" : "names and values together";
-		return `${a(this.#label)} computer's labels come to at most ${maxBytes} bytes, ${how}, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder or labels`;
+		const bytes = sizes.reduce((sum, [, size]) => sum + size, 0);
+		if (bytes <= max) return undefined;
+		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder or labels` };
 	}
 
 	/** A host call bounded by ms, the caller's signal when given. */
@@ -459,7 +469,8 @@ export class HostedProvider implements ComputerProvider {
 	#labelDiffer(spec: ComputerSpec, name: string, labels: Record<string, string>, seen: string): string[] {
 		const asked = this.#labelsOf(spec, name, labels[DEADLINE_LABEL] ?? "", labels[MAX_LABEL] ?? "");
 		const differ = Object.entries(asked)
-			.filter(([key, value]) => key !== DEADLINE_LABEL && key !== MAX_LABEL && labels[key] !== value)
+			// The GPUs' label is read back as the spec's gpu, held where the user and network are (#again).
+			.filter(([key, value]) => key !== DEADLINE_LABEL && key !== MAX_LABEL && key !== GPU_LABEL && labels[key] !== value)
 			.map(([key, value]) => `label ${key}: asked ${show(value)}, ${seen} ${show(labels[key])}`);
 		const extra = Object.keys(callerLabels(labels)).filter((key) => !Object.hasOwn(asked, key));
 		if (extra.length > 0) differ.push(`labels ${extra.join(", ")}: ${seen}, never asked for`);
@@ -542,10 +553,9 @@ export class HostedProvider implements ComputerProvider {
 				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
-				// The image and an Archil mount are in the labels; the user, the network, and the GPUs where the vendor reads them
-				// back, are read back. A vendor that reads no GPU back (Modal) cannot show a drift in it, nor any vendor in a size.
-				const gpu = this.host.facts.gpuReadBack ? (["gpu"] as const) : [];
-				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...gpu]) : [];
+				// The image, an Archil mount and the GPUs are in the labels; the user and the network are read back. No vendor
+				// shows a drift in a size.
+				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu"]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
@@ -576,6 +586,7 @@ export class HostedProvider implements ComputerProvider {
 			[IMAGE_LABEL]: spec.image,
 			[MAX_LABEL]: maxDeadline,
 			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}),
+			...(typeof spec.gpu?.type === "string" && typeof spec.gpu.count === "number" ? { [GPU_LABEL]: `${spec.gpu.type}:${spec.gpu.count}` } : {}),
 		};
 	}
 
@@ -608,25 +619,21 @@ export class HostedProvider implements ComputerProvider {
 			nonce: randomBytes(16).toString("hex"),
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
-			...(this.host.facts.daemon === "child" && this.host.facts.vendorSockets !== undefined ? { vendorSockets: this.host.facts.vendorSockets } : {}),
 		});
-		const taken = new Set(this.host.facts.specFields ?? []);
 		const request: MachineRequest = {
 			name,
 			image: spec.image,
 			labels,
-			...(this.host.facts.lifetime === "vendor" ? { lifetimeMs } : {}),
-			// An Archil computer's root reaches Archil, so its vendor network is open: its tools' none is init's own, read
-			// back by the probe from inside, as the tool user, like every network none here.
-			network: archil ? "open" : "none",
+			lifetimeMs,
+			// An Archil computer's root reaches Archil, so its machine has egress: its tools' none is init's own, read back
+			// by the probe from inside, as the tool user, like every network none here.
+			egress: archil,
 			...(this.host.facts.daemon === "pid1" ? { command: commands.entrypoint } : {}),
 			...(spec.gpu === undefined ? {} : { gpu: spec.gpu }),
-			...(taken.has("cpus") && spec.cpus !== undefined ? { cpus: spec.cpus } : {}),
-			...(taken.has("memoryMb") && spec.memoryMb !== undefined ? { memoryMb: spec.memoryMb } : {}),
-			...(taken.has("workdir") && spec.workdir !== undefined ? { workdir: spec.workdir } : {}),
-			...(taken.has("user") && spec.user !== undefined ? { user } : {}),
+			...(spec.cpus === undefined ? {} : { cpus: spec.cpus }),
+			...(spec.memoryMb === undefined ? {} : { memoryMb: spec.memoryMb }),
+			...(this.#takesUser && spec.user !== undefined ? { user } : {}),
 		};
-		const runtime = this.host.facts.runtime?.(request);
 		const { createMs } = this.#timeouts;
 		// Never signalled, only raced: an aborted call could leave a machine made whose id never came back. One that lands
 		// after this gave up is deleted by its id; one whose answer never comes, by its name.
@@ -646,7 +653,7 @@ export class HostedProvider implements ComputerProvider {
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
 		this.#requests.made(name);
-		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user, ...(runtime === undefined ? {} : { runtime }) } });
+		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user } });
 	}
 
 	/** Deletes a machine create gives up on, then waits, under the caller's signal, until get answers none for it. */
@@ -737,7 +744,7 @@ export class HostedProvider implements ComputerProvider {
 	 * Everything between the vendor's answer and a computer that passed the read-back, whose value is what the read-back
 	 * recorded that does not refuse it (notes).
 	 */
-	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands, user, runtime }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands, user }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
 		const { uploadMs, execMs } = this.#timeouts;
 		const running = await this.#running(ref, signal);
 		if (!running.ok) return running;
@@ -761,7 +768,9 @@ export class HostedProvider implements ComputerProvider {
 		// The run's folder, after the daemon is in place (serve runs it) and before init starts: no tool program runs before
 		// it is mounted. A folder mounted for a computer create then gives up on is let go before the delete, never signalled.
 		const started = async () => {
-			const done = await this.#start(spec, ref, commands, { user, ...(runtime === undefined ? {} : { runtime }) }, signal);
+			const gpu = spec.gpu !== undefined;
+			const isolation = (gpu ? this.#configuration.gpu?.isolation : undefined) ?? this.host.facts.isolation;
+			const done = await this.#start(spec, ref, commands, { user, isolation, gpu }, signal);
 			return done.ok && installer !== undefined ? ok([installer, ...done.value]) : done;
 		};
 		if (spec.mount?.kind !== "archil") return started();
@@ -785,14 +794,12 @@ export class HostedProvider implements ComputerProvider {
 	async #start(spec: ComputerSpec, ref: ComputerRef, commands: HostedCommands, want: Expected, signal?: AbortSignal): Promise<Result<string[]>> {
 		const closed: string[] = [];
 		if (this.host.facts.daemon === "child") {
-			// The vendor's own sockets outside /run, closed to the computer's user before any program of its runs.
-			if (commands.sockets !== undefined) {
-				const shut = await runToExit(this.host, ref.id, commands.sockets, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `closing ${this.#label}'s own sockets in ${ref.name}` });
-				if (!shut.ok) return shut;
-				if (shut.value.exitCode !== 0) return this.#fail("refused", `closing ${this.#label}'s own sockets to the computer's user failed (exit ${shut.value.exitCode}): ${`${shut.value.stdout} ${shut.value.stderr}`.trim().slice(0, 300)}`);
-				const found = closedSocketsOf(shut.value.stdout);
-				closed.push(`${this.#label}'s own sockets closed to the computer's user: ${found.join(", ") || `none found (${(this.host.facts.vendorSockets ?? []).join(", ")})`}`);
-			}
+			// The session buses in /tmp, closed to the computer's user before any program of its runs.
+			const shut = await runToExit(this.host, ref.id, commands.sockets, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `closing the session buses in /tmp in ${ref.name}` });
+			if (!shut.ok) return shut;
+			if (shut.value.exitCode !== 0) return this.#fail("refused", `closing the session buses in /tmp to the computer's user failed (exit ${shut.value.exitCode}): ${`${shut.value.stdout} ${shut.value.stderr}`.trim().slice(0, 300)}`);
+			const found = closedSocketsOf(shut.value.stdout);
+			if (found.length > 0) closed.push(`session buses in /tmp closed to the computer's user: ${found.join(", ")}`);
 			const init = await runToExit(this.host, ref.id, commands.start, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `starting the daemon in ${ref.name}` });
 			if (!init.ok) return init;
 			if (init.value.exitCode !== 0) return this.#fail("refused", `starting the daemon failed (exit ${init.value.exitCode}): ${`${init.value.stdout} ${init.value.stderr}`.trim().slice(0, 500)}`);
@@ -864,12 +871,12 @@ export class HostedProvider implements ComputerProvider {
 			if (!probe.ok) return probe;
 			user = `${probe.value.uid}:${probe.value.gid}`;
 			drift.push(...probeNetworkDrift(probe.value));
-			if (want.runtime !== undefined) drift.push(...runtimeDrift(want.runtime, probe.value.kernel));
+			drift.push(...runtimeDrift(want, probe.value.kernel));
 			notes.push(...probeNotes(probe.value, network));
 		}
 		// Which way init fenced its programs, as hello read it back: said once a way other than the plain one was taken.
 		if (starting && current.hello.fence === "userns-netns") {
-			notes.push(`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${want.runtime ?? "this machine"} may not make one itself`);
+			notes.push(`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${want.isolation ?? "this machine"} may not make one itself`);
 		}
 		const said = user === undefined ? {} : { user };
 		if (archil === undefined) return drift.length === 0 ? { ...ok(notes), ...said } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
@@ -1046,7 +1053,7 @@ export class HostedProvider implements ComputerProvider {
 			try {
 				// A host that takes a spec's user made this computer's daemon run as the one its spec named: read back, never root
 				// (an Archil computer's is the tool user); every other runs as the provider's daemon user.
-				const want = this.#takesUser() ? (archil === undefined ? {} : { user: ARCHIL_USER }) : { user: `${this.#uid}:${this.#gid}` };
+				const want = this.#takesUser ? (archil === undefined ? {} : { user: ARCHIL_USER }) : { user: `${this.#uid}:${this.#gid}` };
 				const inside = await this.#checkInside(opened.value, name, network, false, want, signal, archil);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
@@ -1065,13 +1072,13 @@ export class HostedProvider implements ComputerProvider {
 			...ref,
 			spec: {
 				image,
-				user: (this.#takesUser() ? user : undefined) ?? `${this.#uid}:${this.#gid}`,
+				user: (this.#takesUser ? user : undefined) ?? `${this.#uid}:${this.#gid}`,
 				network,
 				workdir: WORK,
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
 				...(mount === undefined ? {} : { mount }),
-				...(machine.gpu === undefined ? {} : { gpu: machine.gpu }),
+				...gpuOf(machine.labels[GPU_LABEL]),
 			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
@@ -1191,12 +1198,12 @@ export class HostedProvider implements ComputerProvider {
 		const extend = this.host.extend?.bind(this.host);
 		if (!extend) return this.#fail("unsupported", `${a(this.#label)} computer's deadline cannot move`);
 		const moved = await this.#call(`${this.#label}'s end of ${ref.name}`, (ctx) => extend(ref.id, new Date(target), ctx), this.#timeouts.requestMs, signal);
-		if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label}'s end did not move, so nothing did: ${moved.error.message}`);
+		if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label} did not move ${ref.name}'s end, so nothing did: ${moved.error.message}`);
 		const after = await this.#get(ref.id, signal);
 		const end = after.ok && after.value !== undefined ? deadlineOf(after.value) : undefined;
 		if (end === undefined) {
-			const why = after.ok ? `${ref.name} read back with no end` : after.error.message;
-			return this.#fail(after.ok ? "gone" : after.error.code, `${this.#label}'s end was asked to move, and reading it back failed: ${why}; init's deadline did not move`);
+			const why = !after.ok ? after.error.message : after.value === undefined ? `${ref.name} is gone` : `${ref.name} reads back no deadline`;
+			return this.#fail(!after.ok ? after.error.code : after.value === undefined ? "gone" : "refused", `${this.#label} was asked to move ${ref.name}'s end, and reading it back failed: ${why}; init's deadline did not move`);
 		}
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return this.#fail(opened.error.code, `${ref.name}'s end moved to ${end.toISOString()}, and init's deadline did not: ${opened.error.message}`);
@@ -1438,17 +1445,19 @@ function oldestFirst(machines: Machine[]): (a: Machine, b: Machine) => number {
 	return (a, b) => (dated && at(a) !== at(b) ? at(a) - at(b) : byId(a, b));
 }
 
-/** What the read-back inside a computer holds it to, beside its spec: its daemon's user and its runtime. */
+/** What the read-back inside a computer holds it to, beside its spec: its daemon's user and the isolation declared. */
 interface Expected {
 	user?: string;
-	runtime?: "vm" | "gvisor";
+	/** The isolation declared for this computer: a GPU computer's own where its GPUs declare one (Modal's gVisor). */
+	isolation?: ComputerCapabilities["isolation"];
+	gpu?: boolean;
 }
 
-/** The probe's kernel against the runtime declared: gVisor exactly where the host runs one (a pid1 host's GPU), a VM's elsewhere. */
-function runtimeDrift(runtime: "vm" | "gvisor", kernel: string): string[] {
+/** The probe's kernel against the isolation declared: gVisor exactly where it says gvisor, never where it says vm. */
+function runtimeDrift({ isolation, gpu }: Expected, kernel: string): string[] {
 	const gvisor = /gvisor/i.test(kernel);
-	if (runtime === "vm" && gvisor) return [`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(kernel)})`];
-	if (runtime === "gvisor" && !gvisor) return [`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(kernel)})`];
+	if (isolation === "vm" && gvisor) return [`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(kernel)})`];
+	if (isolation === "gvisor" && !gvisor) return [`runtime: declared gVisor${gpu ? " (a GPU computer)" : ""}, read back another kernel (${JSON.stringify(kernel)})`];
 	return [];
 }
 

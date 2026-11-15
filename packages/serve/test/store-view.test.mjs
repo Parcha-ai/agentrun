@@ -265,6 +265,20 @@ test("approval ids are unique within a run, and an approve names exactly the cal
   await assert.rejects(approve(store, moment, "nope", "allow"), /no tool call nope waiting for approval/);
 });
 
+test("a call priced by usage waits with \"priced by usage\" as its card's price", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Search." }, title: "Usage", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Search.", timestamp: T0 }] };
+  const ask = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.ask", data: { callId: "c1", tool: "monid:faux/person/search", args: { body: { name: "Ada", limit: 3 } }, requestedAt: iso(T0 + 1_000), price: "priced by usage" } };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: ask }], context);
+  await store.release(claim);
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.deepEqual([view.pending?.kind, view.pending?.price], ["approval", "priced by usage"]);
+});
+
 // The budget pending a parked run waits on, as its agentrun.budget entry holds it (the kernel cap's parkOf), with the raise
 // that would send its refused step. Both an agentic and a workflow run park the same way.
 const budgetEntry = (id, { cap_usd = 0.5, spent_usd = 0.3, needs_usd = 1, least_cap_usd = 1.3, suggested_cap_usd = 11, words = "Out of budget. Raise the cap to at least $1.30 to continue." } = {}) =>

@@ -4,12 +4,13 @@
 // PROMOTE_BAR of the agent's; a `both` guard's fit (logistic over [self, jev], Platt-style) is refit first when the rows
 // hold at least FIT_MIN_ROWS with at least FIT_MIN_WRONG wrong, else kept. A guard may also be switched off (OFF: it never
 // hands back, and the revision drops it): the cheapest setting of all, so a guard whose p says nothing of right and wrong
-// goes. So may an escalate node a replay recorded instead of obeying (learn/promote.ts softEscalatesOf), on the same rule:
+// goes. So may an escalate node a replay recorded instead of obeying (the DSL's softEscalates), on the same rule:
 // one that stops right drafts is dropped from its chain, one that stops wrong ones stays. Pure: the rows in, the new
 // workflow text and what changed out; runner/promotion.ts reads the rows (replays and graded served runs) and writes the
 // revision.
+import { softEscalates } from "@parcha/agentrun-dsl";
 import type { GuardRow } from "../learned-nodes.js";
-import { answerCorrect, PROMOTE_BAR, type RefitGuard, type ReplayRow, type ReplayScore, sameAnswer, SOFT_ESCALATE_THRESHOLD, softEscalatesOf, walkGuards } from "./promote.js";
+import { answerCorrect, PROMOTE_BAR, type RefitGuard, type ReplayRow, type ReplayScore, sameAnswer, SOFT_ESCALATE_THRESHOLD, walkGuards } from "./promote.js";
 import { workflowNodes } from "./workflow-nodes.js";
 
 /** A switch set off: the guard or the escalate never hands back. Never a threshold the DSL takes (one is in (0, 1)). */
@@ -154,10 +155,10 @@ const rankAbove = (a: readonly number[], b: readonly number[]): boolean => {
   return false;
 };
 
-/** The escalates of `doc` a refit may switch off: each a replay records (softEscalatesOf) that is a step of a chain with
+/** The escalates of `doc` a refit may switch off: each a replay records (softEscalates) that is a step of a chain with
  *  a step that is no escalate, so the chain keeps a step once they are dropped. */
 function switchableEscalates(doc: unknown): Set<string> {
-  const soft = softEscalatesOf(doc);
+  const soft = softEscalates(doc);
   const out = new Set<string>();
   for (const { node, prefix } of workflowNodes(doc)) {
     if (node.node !== "chain" || !Array.isArray(node.steps)) continue;

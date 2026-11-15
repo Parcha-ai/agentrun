@@ -214,7 +214,7 @@ export type SecretMeta = {
 
 export type InputIssue = {
   field: string;
-  reason: "missing" | "wrong_type" | "not_allowed" | "not_an_option" | "too_short" | "too_long" | "too_few" | "too_many" | "bad_format" | "duplicate" | "invalid" | "not_set_up_here" | "redirect" | "not_https" | "too_many_tools" | "tools_too_large" | "reserved" | "expired" | "registration_unavailable";
+  reason: "missing" | "wrong_type" | "not_allowed" | "not_an_option" | "too_short" | "too_long" | "too_few" | "too_many" | "bad_format" | "duplicate" | "invalid" | "not_set_up_here" | "redirect" | "not_https" | "too_many_tools" | "tools_too_large" | "reserved" | "expired" | "registration_unavailable" | "priced_by_usage";
   expected?: string;
   message: string;
   fix?: string;
@@ -298,7 +298,7 @@ export type RunSummary = {
     call_id: string;
     args_preview: string;
     requested_at: string;
-    price?: number | "not metered";
+    price?: number | "not metered" | "priced by usage";
     destructive?: true;
   } | {
     kind: "budget";
@@ -545,7 +545,7 @@ export type Run = {
     call_id: string;
     args_preview: string;
     requested_at: string;
-    price?: number | "not metered";
+    price?: number | "not metered" | "priced by usage";
     destructive?: true;
   } | {
     kind: "budget";
@@ -2696,6 +2696,11 @@ export type GetRunLearningResponse = {
     name: string;
     pending?: true;
   }>;
+  graded?: {
+    correct: boolean;
+    source: "feedback" | "eval";
+    graded_at: string;
+  };
 } | null;
 
 /** What the run proposed, file by file (GET /runs/{run_id}/learning/diff). */

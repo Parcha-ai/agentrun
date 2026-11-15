@@ -7,7 +7,7 @@
 // agent path and answers alone on at least one input, else holds it; a held digest gets one refit over the replay's rows
 // (learn/refit.ts: its guards' thresholds, and its guards and recorded escalates on or off), a new revision that serves
 // when the refit clears the bar. A replay records an escalate that reads a judge's field instead of obeying it
-// (learn/promote.ts softEscalatesOf): it scores as a hand-back where it fired, and the refit may switch it off. Fewer than
+// (the DSL's softEscalates): it scores as a hand-back where it fired, and the refit may switch it off. Fewer than
 // REPLAY_MIN graded inputs: the digest is promoted on its passing dry run, as before, and its record says so. A serving
 // digest is checked once per REFIT_EVERY more graded runs it served: its thresholds refit (a new revision when they move
 // and still clear the bar), and held when its graded runs fall below the bar. A hand-back is the agent's answer, never a
@@ -53,7 +53,7 @@ import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
-import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
+import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
 import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
@@ -456,7 +456,7 @@ async function answerOf(store: PromotionDeps["store"], runId: string, context: C
   }
 }
 
-const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: { tool?: unknown; unmarked?: unknown } }; guards?: unknown; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
+const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: Skipped }; guards?: unknown; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 
 /** What a replay run did, read from its row alone: answered, handed back or skipped at a write once it ended as such; any
  *  other end, or one not ended (past the replay's deadline), failed: no evidence either way. */
@@ -516,7 +516,7 @@ async function replayRows(deps: Pick<PromotionDeps, "store" | "agentId" | "conte
       of,
       recorded: { answer: await answerOf(store, of, context), correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}) },
       outcome,
-      ...(stoppedAt && typeof stoppedAt.tool === "string" ? { skipped: { tool: stoppedAt.tool, ...(stoppedAt.unmarked === true ? { unmarked: true as const } : {}) } } : {}),
+      ...(stoppedAt ? { skipped: stoppedAt } : {}),
       answer: outcome === "answered" ? await answerOf(store, run.id, context) : null,
       guards: Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [],
     });

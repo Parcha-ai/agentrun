@@ -20,7 +20,7 @@ import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent,
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
-import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid } from "./monid.js";
+import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
@@ -74,9 +74,9 @@ import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
-import { LABEL_MAX, openFeedbackRound } from "./runner/feedback-round.js";
+import { openFeedbackRound } from "./runner/feedback-round.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
+import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -1977,8 +1977,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (never.length) throw invalid(never.map(issueOf));
     // Its monid grants pinned against what monid lists now, on this server's monid key (monid.ts pinMonid): the pin is
     // stamped on the revision's body, and its runs read it, never monid's listing. A grant monid does not list is refused
-    // here. An endpoint a wildcard left out (priced by usage: monid.ts unboundedWords) is a warning at the wildcard's grant.
-    const leftOut: InputIssue[] = [];
+    // here. An endpoint priced by usage is a warning (monid.ts usageWords) at the grant that named it or its wildcard.
+    const usage: InputIssue[] = [];
     if (revision.kind === "agentic") {
       const send = await checkFetch("monid");
       // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
@@ -1994,11 +1994,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const dropped = problems ? Object.entries(pinned.pin).flatMap(([tool, { input }]) => problems(wireName(tool), input).slice(0, 1).map((first) => ({ tool, first }))) : [];
         if (dropped.length) throw invalid(dropped.map(({ tool, first }) => ({ field: `definition.tools[${grantOf(tool)}]`, reason: "not_an_option", message: monidDroppedWords(tool, harness, first) })));
         (revision.body as AgenticBody).monidPin = pinned.pin;
-        leftOut.push(...pinned.leftOut.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: "not_an_option", message })));
+        usage.push(...pinned.warnings.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: PRICED_BY_USAGE, message })));
       }
     }
     const mcpPin = listing.pin();
-    return { warnings: [...blockers.map(issueOf), ...leftOut], stamp: mcpPin ? { mcpPin } : {} };
+    return { warnings: [...blockers.map(issueOf), ...usage], stamp: mcpPin ? { mcpPin } : {} };
   }
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent

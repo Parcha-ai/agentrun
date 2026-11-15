@@ -23,9 +23,6 @@ import { servedAnswerText } from "./workflow-first.js";
 export const FEEDBACK_ROUNDS = ["revise", "look_back"] as const;
 export type FeedbackRound = (typeof FEEDBACK_ROUNDS)[number];
 
-/** The most characters a grade's words (`label`) may hold. */
-export const LABEL_MAX = 4000;
-
 /** A feedback round, as its steer's body carries it (`feedback`) and its FEEDBACK entry keeps it: the round, whether the
  *  grade said right, the workflow a revision is asked of, and the grade's words (`text`). */
 export interface FeedbackData {
@@ -43,11 +40,10 @@ export function feedbackRoundOf(grade: { readonly correct: boolean; readonly pat
   return undefined;
 }
 
-/** The grade's words as the round says them: its `label`, else, for a wrong grade, that it was wrong and the fields a
- *  right answer holds (`expected`). */
-export function feedbackWords(correct: boolean, label: string | undefined, expected: Readonly<Record<string, unknown>> | undefined): string {
+/** The grade's words as the round says them: its `label`, else that it was wrong and the fields a right answer
+ *  holds (`expected`): a right grade opens a round only with a label (feedbackRoundOf), so none reaches here without one. */
+export function feedbackWords(label: string | undefined, expected: Readonly<Record<string, unknown>> | undefined): string {
   if (label?.trim()) return label.trim();
-  if (correct) return "A reviewer graded this run's answer right.";
   return `A reviewer graded this run's answer wrong.${expected ? ` A right answer holds: ${JSON.stringify(expected)}` : ""}`;
 }
 
@@ -94,7 +90,7 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   if (!learning || learning.use || (round === "revise" && learning.notesOnly)) return null;
   const feedback = { round, correct: grade.correct, ...(round === "revise" && grade.workflow ? { workflow: grade.workflow } : {}) };
   try {
-    await store.runs.reopen(grade.run, { kind: "steer", body: { text: feedbackWords(grade.correct, words, grade.expected), feedback } });
+    await store.runs.reopen(grade.run, { kind: "steer", body: { text: feedbackWords(words, grade.expected), feedback } });
     return round;
   } catch (error) {
     if (error instanceof RunFinal) return null;
