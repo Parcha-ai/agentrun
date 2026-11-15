@@ -63,3 +63,19 @@ test("sealed keys: the bytes in are the bytes out, replaced in place, removed; t
   assert.equal(await store.sealedKeys.get("ANTHROPIC_API_KEY"), undefined, "removed");
   assert.deepEqual((await store.sealedKeys.all()).map((row) => row.name), ["OPENAI_API_KEY"]);
 });
+
+test("sealed keys: replaceIf writes only while the row still holds the bytes read, so of two writers that read one row only one replaces it", async (t) => {
+  const { store } = await storeOn(t);
+  const first = Uint8Array.from([1, 2, 3]);
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", first, SEALED), false, "no row: nothing replaced");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined, "and none made");
+  await store.sealedKeys.put("chatgpt:plan", first);
+  const read = await store.sealedKeys.get("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", Uint8Array.from([1, 2]), SEALED), false, "other bytes: nothing replaced");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, SEALED), true, "the bytes as read: replaced");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, Uint8Array.from([4])), false, "the same read again: the row changed since");
+  assert.deepEqual([...(await store.sealedKeys.get("chatgpt:plan"))], [...SEALED]);
+  await store.sealedKeys.remove("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", SEALED, first), false, "a removed row is not made again");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined);
+});
