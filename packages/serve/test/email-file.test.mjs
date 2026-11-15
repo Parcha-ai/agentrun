@@ -1,8 +1,9 @@
 // email_file (email/tools.ts) in pi runs, against the fake mail account: it files a message under `to` and never deletes
-// one, and `archive: false` (the default) never takes mail out of INBOX. On Gmail (X-GM-EXT-1) it adds the label `to`,
-// creating it first if missing, and the message stays in the inbox; `archive: true` also takes its \Inbox label off.
-// Elsewhere (a folders server) filing is a move: `archive: false` is refused in words with nothing moved, and `archive:
-// true` moves the message to the folder `to` (UID MOVE), creating it if missing; the account holds as many messages.
+// one. On Gmail (X-GM-EXT-1) it adds the label `to`, creating it first if missing, and the message stays in the inbox
+// (no archive, or archive: false); `archive: true` also takes its \Inbox label off. Elsewhere (a folders server) filing is
+// a move: with no archive, one call files the message and moves it out of the inbox to the folder `to` (UID MOVE),
+// creating it if missing, as archive: true does; only an explicit `archive: false` is refused in words, nothing moved;
+// the account holds as many messages. Its description, built for the server it is bound on, says which in one line.
 // The trash and junk folders are refused, by special use or by name, with nothing changed. It is allowed by default,
 // scoped to a run's thread as email_read and email_search are (`scope: "mailbox"` widens it). Its answer is {filed, message_id,
 // to, archived, subject}, and its timeline line, read from that answer, says "Filed <subject> under <to>".
@@ -62,7 +63,7 @@ test("on Gmail: email_file adds the label, creating it if missing, and the messa
   assert.match(second ?? "", /^Filed Newsletter under Receipts, out of the inbox(: |$)/, JSON.stringify(resultSummaries(rows)));
 });
 
-test("elsewhere (folders): archive false, or none, is refused and nothing moves; archive: true moves the message, creating the folder if missing; the account holds as many messages", { timeout: 150_000 }, async (t) => {
+test("elsewhere (folders): with no archive one call files and moves the message out of the inbox, creating the folder if missing, as archive: true does; an explicit archive: false is refused and nothing moves; the account holds as many messages", { timeout: 150_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_EMAIL });
   const faux = await mailbox(t);
   faux.seed({ from: "ana@example.com", to: [ADDRESS], subject: "Invoice 7", messageId: "<f1@example.com>" });
@@ -72,17 +73,16 @@ test("elsewhere (folders): archive false, or none, is refused and nothing moves;
   assert.equal((await api("POST", "/agents", mailAgent("mover"))).status, 201);
   const before = holding(faux);
 
-  // archive false never takes mail out of INBOX: on a folders server, filing is a move, so it is refused.
-  const refused = await ran(api, "mover", [
-    ["email_file", { message_id: "<f1@example.com>", to: "Receipts" }],
-    ["email_file", { message_id: "<f2@example.com>", to: "Archive", archive: false }],
-  ]);
+  // An explicit archive: false never takes mail out of INBOX: on a folders server, filing is a move, so it is refused.
+  const refused = await ran(api, "mover", [["email_file", { message_id: "<f2@example.com>", to: "Archive", archive: false }]]);
+  assert.equal(refused.saw.length, 1, JSON.stringify(refused.saw));
   for (const said of refused.saw) assert.match(String(said), new RegExp(FOLDERS.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), JSON.stringify(said));
   assert.deepEqual(holding(faux), before, "nothing moved, no folder made");
   assert.ok(!faux.commands().some((c) => /^(UID )?(MOVE|STORE|COPY|EXPUNGE)\b|^CREATE\b/i.test(c)), faux.commands().join("\n"));
 
+  // No archive: filed and moved out of the inbox in one call. archive: true, the same.
   const { saw, rows } = await ran(api, "mover", [
-    ["email_file", { message_id: "<f1@example.com>", to: "Receipts", archive: true }],
+    ["email_file", { message_id: "<f1@example.com>", to: "Receipts" }],
     ["email_file", { message_id: "<f2@example.com>", to: "Archive", archive: true }],
   ]);
   assert.deepEqual(saw, [
@@ -98,6 +98,27 @@ test("elsewhere (folders): archive false, or none, is refused and nothing moves;
   assert.ok(!faux.commands().some((c) => /^CREATE "?Archive"?$/i.test(c)), "a folder that is there is not created again");
   assert.ok(faux.commands().some((c) => /^UID MOVE \d+ "?Receipts"?$/i.test(c)), faux.commands().join("\n"));
   assert.match(resultSummaries(rows)[0] ?? "", /^Filed Invoice 7 under Receipts, out of the inbox(: |$)/, JSON.stringify(resultSummaries(rows)));
+});
+
+/** The one line email_file's description says for the server it is bound on. */
+const FOLDERS_LINE = "On this server filing moves the message out of the inbox into the folder.";
+const GMAIL_LINE = "On Gmail filing adds a label and keeps the message in the inbox; archive: true also removes it from the inbox.";
+
+test("email_file's description says in one line what filing does on the connected server: a move out of the inbox on folders, a label that keeps it in the inbox on Gmail", { timeout: 150_000 }, async (t) => {
+  for (const [layout, extra, line, other] of [["standard", {}, FOLDERS_LINE, GMAIL_LINE], ["gmail", { preset: "gmail" }, GMAIL_LINE, FOLDERS_LINE]]) {
+    const { api } = await serve(t, { faux: FAUX_EMAIL });
+    const faux = await mailbox(t, { layout });
+    await saved(api, faux, extra);
+    assert.equal((await api("POST", "/agents", mailAgent("describer"))).status, 201);
+    const started = await api("POST", "/agents/describer/runs", { input: { content: "Describe: email_file" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const said = (await api("GET", `/runs/${started.body.run_id}`)).body.result?.final_answer ?? "";
+    const description = JSON.parse(/^Described: (.*)$/m.exec(said)?.[1] ?? "null");
+    assert.equal(typeof description, "string", `${layout}: the model was handed email_file's description: ${said}`);
+    assert.ok(description.includes(line), `${layout}: ${JSON.stringify(description)}`);
+    assert.ok(!description.includes(other), `${layout}: not the other server's line: ${JSON.stringify(description)}`);
+  }
 });
 
 test("the trash and junk folders are refused, by name or special use, and nothing changes", { timeout: 150_000 }, async (t) => {
