@@ -325,6 +325,9 @@ async function runScript(turnId, exec) {
   try {
     script = JSON.parse(exec.input ?? '[]');
   } catch {}
+  // A `{ throw }` entry: the script throws once its calls are answered, and Codex's output says it failed, as its code mode does.
+  const thrown = script.find((entry) => typeof entry?.throw === 'string')?.throw;
+  script = script.filter((entry) => typeof entry?.throw !== 'string');
   const outcomes = await Promise.allSettled(script.map(async ({ tool, args }) => {
     const callId = `exec-${randomUUID()}`;
     notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
@@ -336,7 +339,8 @@ async function runScript(turnId, exec) {
     return { tool, ok: result.success !== false, text: items.map((c) => c.text ?? '').join('') };
   }));
   const output = JSON.stringify(outcomes.map((o) => (o.status === 'fulfilled' ? o.value : { ok: false, text: String(o.reason?.message ?? o.reason) })));
-  write('response_item', { type: 'custom_tool_call_output', call_id: exec.call_id, output });
+  if (thrown !== undefined) write('response_item', { type: 'custom_tool_call_output', call_id: exec.call_id, output: [{ type: 'input_text', text: `Script failed\nWall time 0.0 seconds\nScript error:\n${thrown}` }] });
+  else write('response_item', { type: 'custom_tool_call_output', call_id: exec.call_id, output });
 }
 
 async function say(turnId, text) {

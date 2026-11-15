@@ -72,7 +72,7 @@ export function codexGrown(k, { miss = false } = {}) {
   const cacheRead = k === 0 || miss ? 0 : prompt(k - 1);
   const tokens = miss ? { input: 0, output: 300, cacheRead: 0, cacheWrite: prompt(k) * 4 } : { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
   const usd = (tokens.input * 2 + tokens.output * 10 + tokens.cacheRead * 0.1 + tokens.cacheWrite * 2.5) / 1e6;
-  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens, usd };
+  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, effort: "low", tokens, usd };
 }
 
 export function script(spec, session = {}) {
@@ -199,6 +199,14 @@ export function script(spec, session = {}) {
   // answer (<how>: an error status, our stop after it streamed, a lost connection); the client sends it again, answered.
   const carrierUnanswered = /Wrap up with the carrier unanswered \((status|stopped|lost)\)\./.exec(text)?.[1];
   if (carrierUnanswered) return [{ unanswered: carrierUnanswered, inputTokensMax: 1_000 }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // Two requests in flight at once, each of 1,000 input tokens asking 1,024 output tokens: the first, due at step 0 under
+  // a small cap so it carries the note, answered with its cost booked only once <a> exists; the second sent meanwhile and
+  // held unanswered until <b> exists.
+  const twoInFlight = /Carry the note with a second request in flight \(the first booked when (\S+), the second answered when (\S+)\)\./.exec(text);
+  if (twoInFlight) {
+    const [, first, second] = twoInFlight;
+    return [{ say: "First.", inputTokensMax: 1_000, outputTokensAsked: 1_024, usd: 0.001, bookWhen: first }, { say: "Second.", inputTokensMax: 1_000, outputTokensAsked: 1_024, usd: 0.001, until: second }];
+  }
   // A request lost once it left (no cost came back), one our side stopped part way, then an answer reported at $0 (a
   // free model's, whose every token is $0).
   if (/Answer at \$0 after a lost and a stopped request\./.test(text)) return [{ unanswered: "lost" }, { unanswered: "stopped" }, { say: "Answered.", usd: 0 }];

@@ -2,7 +2,9 @@
 // of Parallel's API (the tests' fake). It answers every question, and each extract with the URL's full content, or as
 // AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT says: "errors" lists the URL in `errors`, a number answers that HTTP status. A
 // search answers `max_results` results (search()), or the HTTP status AGENTRUN_TEST_FAUX_PARALLEL_SEARCH names, and a list
-// of monitors (GET /v1/monitors, a saved key's check) answers none; "slow:<ms>" answers a search after that long. It counts
+// of monitors (GET /v1/monitors, a saved key's check) answers none; "slow:<ms>" answers a search after that long. That
+// mode may be a `;`-separated list, one entry for each search this process sends in turn (the last stands for every one
+// after it), and a status may carry its Retry-After after `@`: `429@2;ok` is a 429 with Retry-After 2, then results. It counts
 // as authorized only the canary key, and files one line per call (with the process that made it) in the file
 // AGENTRUN_TEST_FAUX_PARALLEL_CALLS names. Like Parallel's API, it reports no cost.
 import { appendFileSync } from "node:fs";
@@ -43,10 +45,26 @@ function extract(urls, mode) {
 /** A long excerpt: past the 3,000 characters a snippet keeps, and past what Parallel is asked for. */
 const LONG_EXCERPT = `${"Widgets are registered in Delaware under file 1234567. ".repeat(60)}The end.`;
 
+let searches = 0;
+let counted = "";
+/** The entry of the search mode the next search is answered by: counted from the first search under this mode. */
+function step(mode) {
+  if (mode !== counted) [counted, searches] = [mode, 0];
+  const steps = mode.split(";");
+  return steps[Math.min(searches++, steps.length - 1)].trim();
+}
+
+/** Counts searches from the first again, as a process that has sent none (a test that sets the same mode twice). */
+export const resetFauxParallel = () => void ([counted, searches] = ["", 0]);
+
 /** Parallel's search answer to `body`, as `mode` says: `max_results` results (10 when it asks none), the first with a
  *  null title, two excerpts (one with a markdown link) and a publish date, the rest one short excerpt and none. */
-async function search(body, mode, signal) {
-  const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+async function search(body, modes, signal) {
+  const mode = step(modes);
+  const json = (value, status = 200, headers = {}) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", ...headers } });
+  // "<status>@<Retry-After>": that status, naming the wait as Parallel's rate limit does (seconds, or an HTTP date).
+  const waited = /^(\d+)@(.+)$/.exec(mode);
+  if (waited) return json({ type: "error", error: { ref_id: "ref-faux-3", message: `faux status ${waited[1]}` } }, Number(waited[1]), { "retry-after": waited[2] });
   // "slow:<ms>": the answer comes after that long, as a slow Parallel's would (a fetch's abort still ends it).
   const slow = /^slow:(\d+)$/.exec(mode);
   if (slow) await new Promise((resolve, reject) => {

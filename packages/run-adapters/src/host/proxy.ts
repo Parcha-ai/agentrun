@@ -121,7 +121,7 @@ export interface ProviderPolicy {
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
   outputAsked?(body: Record<string, unknown>): number | undefined;
-  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens, OpenAI's input_tokens), which the proxy asks before
+  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens), which the proxy asks before
    *  each of the session's answer requests (`countedInputOf`) when its upstream is exactly `origin`, the provider's own: never
    *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
    *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */
@@ -134,6 +134,10 @@ export interface ProviderPolicy {
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
+  /** The reasoning effort the body asks its model at, as its provider names it (Responses' `reasoning.effort`,
+   *  Messages' `output_config.effort`): what `outputLeast` read it at, handed to the host beside it (ProxyRequest.effort).
+   *  Absent, or undefined for a body: it names none. */
+  effortOf?(body: Record<string, unknown>): string | undefined;
   /** The reasoning tokens the body's request may bill that its response does not stream (a provider that streams only a
    *  summary of its reasoning, or none): its effort's or its thinking's budget, else its output limit when it reasons at
    *  an effort the body does not say. A stopped request counts them beside what streamed. Absent or 0: none. */
@@ -514,6 +518,8 @@ export interface ProxyRequest {
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
   outputTokensLeast?: number;
+  /** The reasoning effort its body names (the policy's `effortOf`), when it names one. */
+  effort?: string;
   /** What it may charge beside its tokens at most (the policy's `feeMaxUsd`), in USD: held with them. */
   feeUsd?: number;
   /** A side call, never its turn's own: on another model than the session's (a client's small-model call: a title, a
@@ -522,7 +528,7 @@ export interface ProxyRequest {
   /** On the session's model but no answer of the turn (the policy's `answers` reads it so: a title, a summary, a child's
    *  request). Still the turn's to book, but no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
-  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
+  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is answered. */
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
@@ -571,9 +577,6 @@ export interface ModelProxyOptions {
   redact?: (text: string) => string;
   /** The price of a response, or null when it is unknown. */
   price?: (model: string, usage: ProxyUsage) => number | null;
-  /** The upstream states what each answer cost in its usage's `cost`, in USD (OpenRouter's usage accounting,
-   *  `usageCostOf`): read as the request's reported figure when no header gave one, the price's figure kept beside it. */
-  usageCost?: boolean;
   log?: (message: string, detail?: Record<string, unknown>) => void;
   /** Told each forwarded request's route and the provider's status once it answers: what a route does on this
    *  provider (a free route it may not serve), as a status code only, never a body or a key. */
@@ -727,6 +730,20 @@ export function reportedCostOf(headers: Headers): number | undefined {
 /** A cost a provider states in its answer's usage: a number, finite, above 0 and below MAX_REQUEST_USD. */
 const usageFigure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 && value <= MAX_REQUEST_USD ? value : undefined);
 
+/** The origin a route with its own fetch names (serve's translation to a model that speaks neither API): nothing is ever
+ *  sent there, its fetch answers every request, and it writes an answer's cost in its usage only where the provider
+ *  stated one (OpenRouter's). */
+export const ROUTE_ORIGIN = "https://model-route.invalid";
+
+/** Whether every answer from `origin` states what it cost in its usage's `cost`, in USD (`usageCostOf`): OpenRouter's
+ *  (https://openrouter.ai/docs/use-cases/usage-accounting, on every API it serves), and a translation route's
+ *  (`ROUTE_ORIGIN`), which passes OpenRouter's figure on. No other origin's usage is read for a cost. */
+export function statesUsageCost(origin: string): boolean {
+  if (!URL.canParse(origin)) return false;
+  const url = new URL(origin);
+  return url.hostname === "openrouter.ai" || url.origin === ROUTE_ORIGIN;
+}
+
 /** What an answer says it cost in its own usage, when it says so (OpenRouter's usage accounting, on every answer of every
  *  API it serves: https://openrouter.ai/docs/use-cases/usage-accounting): the answer's last `usage` object (a stream's
  *  terminal event, a whole body's own), its `cost` in USD. With the person's own provider key (`is_byok`), `cost` is
@@ -782,6 +799,27 @@ export function streamErrorOf(text: string): StreamError | undefined {
       return typeof event === "object" && event !== null && !Array.isArray(event) ? streamErrorIn(event as Record<string, unknown>) : undefined;
     } catch {
       return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** The words of a stream's last event that carries data when it is an error event (`event: error`) whose data is words,
+ *  not JSON: how a translation sends a failure it cannot read for the provider's error event (serve's model-route
+ *  messagesFetch: a provider's error status, a transport error), for its client to throw as the request's error. Never
+ *  read for a refusal: what such a failure cost is unknown. Undefined for any other stream. */
+export function wordsErrorOf(text: string): string | undefined {
+  const events = text.replace(/\r\n|\r/g, "\n").split("\n\n");
+  for (let at = events.length - 1; at >= 0; at--) {
+    const lines = events[at]!.split("\n");
+    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n").trim();
+    if (!data || data === "[DONE]") continue;
+    if (!lines.some((line) => /^event:\s*error\s*$/.test(line))) return undefined;
+    try {
+      JSON.parse(data);
+      return undefined;
+    } catch {
+      return data;
     }
   }
   return undefined;
@@ -1012,6 +1050,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const hostHeaders = { ...options.headers };
   const forward = options.fetch ?? fetch;
   const origin = baseOf(options.origin);
+  /** Whether each answer states what it cost in its usage (`statesUsageCost`): read as the request's reported figure when
+   *  no header gave one, the price's figure kept beside it. */
+  const costStated = statesUsageCost(origin);
   const refusedStatus = policy.refusedStatus ?? 400;
   /** Why the turn's answer stopped, once the harness was told (onCut, onFiltered): the session's answer requests are
    *  refused, unsent and unbooked, until it opens its next turn (openTurn). A client that asks again (Codex retries an
@@ -1049,9 +1090,11 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy", ...(code ? { code } : {}) } }));
   };
 
-  /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: its client
-   *  gone while it was counted, a refusal, an error) is given back to the host then, however it left, so the next request
-   *  can take it at once. From its admission on the note is the admission's: told, or given back by its refusal. */
+  /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: a body with
+   *  the note that could not be serialized, an error) is given back to the host then, however it left, so the next
+   *  request can take it at once. A request is counted before it takes one, so a client that goes while its request is
+   *  counted never holds the note. From its admission on the note is the admission's: given back by its refusal, else held by the
+   *  request until its end (afterRequest), which tells it if answered and gives it back if not. */
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     const taken: { note?: string } = {};
     try {
@@ -1119,46 +1162,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
-    // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
-    // session's model whose policy can place it takes it, once, before the body is measured, so the cap admits its bytes.
-    // Only the turn's own request (ProviderPolicy.answers): a side call on the session's model (a title, a summary, when
-    // the client has no small model) takes none. One the policy fails to place is dropped, said once; the request goes as
-    // the client sent it. The body as the client sent it is kept (`plain`): a request the cap admits only without the
-    // note's bytes goes as that (ModelTicket.noteDropped).
-    let noted = false;
-    let plain: Record<string, unknown> | undefined;
-    // Never on the host's own request (`host`): the note is for the harness's model, in its own conversation, so a host
-    // request is neither measured for it nor noted.
-    if (!route.free && asked === model && host === undefined && (policy.answers ? policy.answers(body) : true) && policy.addNote && hooks.note) {
-      // The request as its client sent it, measured first, so the host prices it as its admission will (the wrap-up's least).
-      let request: NoteRequest = {};
-      try {
-        const measured = inputTokensMaxOf(policy, body, JSON.stringify(body), say);
-        const askedOut = policy.outputAsked?.(body);
-        const leastOut = policy.outputLeast?.(body);
-        const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
-        request = { ...(count(measured) === undefined ? {} : { inputTokensMax: measured as number }), ...(count(askedOut) === undefined ? {} : { outputTokensAsked: askedOut as number }), ...(count(leastOut) === undefined ? {} : { outputTokensLeast: leastOut as number }) };
-      } catch {
-        request = {};
-      }
-      const note = hooks.note(asked, request);
-      // Taken: given back (serve) unless this request brings it to its admission, below. One the policy fails to place
-      // goes back too: this request goes without it.
-      if (note) taken.note = note;
-      if (note) {
-        try {
-          const without = body;
-          body = policy.addNote(body, note);
-          plain = without;
-          noted = true;
-        } catch (error) {
-          say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
-          taken.note = undefined;
-          try { hooks.noteReturned?.(note); } catch { /* the host's to say */ }
-        }
-      }
-    }
-    // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
+    // The body as its client sent it, and the most input tokens it can be billed for, measured before the runner is asked:
+    // its bytes here, then the provider's count or the policy's local count below, and only then a note (the wrap-up's),
+    // which is decided on that same figure.
     let sent: string;
     try {
       sent = JSON.stringify(body);
@@ -1167,22 +1173,21 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       return refuse(res, 500, "the body could not be serialized", req);
     }
     let inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
-    // The same, of the body as the client sent it, when a note was placed: the cap checks the request without the note.
-    let plainSent: string | undefined;
-    let inputTokensMaxWithoutNote: number | undefined;
-    if (plain) {
-      try {
-        plainSent = JSON.stringify(plain);
-        inputTokensMaxWithoutNote = inputTokensMaxOf(policy, plain, plainSent, say);
-      } catch {
-        plainSent = undefined;
-      }
-    }
+    /** Its byte bound, kept: a note adds to the bound what it adds to this. */
+    const byteBound = inputTokensMax;
     // What the body asks for at most, and the least it may be limited to, as the policy reads them. One the policy cannot
     // read leaves the request's worst case unknown: its input is unmeasured.
     const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
     let outputTokensAsked: number | undefined;
     let outputTokensLeast: number | undefined;
+    /** The effort the body names (the policy's `effortOf`): words only, never a figure, so one it cannot read is none. */
+    let effort: string | undefined;
+    try {
+      const named = policy.effortOf?.(body);
+      effort = typeof named === "string" && named.length > 0 && named.length <= 32 ? named : undefined;
+    } catch {
+      effort = undefined;
+    }
     /** The reasoning a stop of this request leaves unseen (the policy's `reasoningHidden`), in tokens. */
     let hiddenTokens = 0;
     /** The content and the reasoning the client was sent, by the policy's reading of each event (content: text,
@@ -1247,8 +1252,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // An answer request on an upstream that is its provider's own (policy.countInput): its input bound is the provider's
     // exact count when that is below its bytes, so a small cap admits a turn its bytes would not: the cap holds each
     // request at its whole input uncached, and the count is that input to the token. A count that fails or times out
-    // leaves the byte bound, and never holds the request up for long. A noted request is counted with its note, which
-    // bounds it without the note too (the note only adds).
+    // leaves the byte bound, and never holds the request up for long. The body is counted as its client sent it, before
+    // any note (below).
     // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
     /** The provider's count, when it gave one: then no local count is taken, even when the provider's is the higher. */
     let counted: number | undefined;
@@ -1264,24 +1269,59 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         res.off("close", onGone);
       }
       if (gone.signal.aborted || res.destroyed) return;
-      if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
-        inputTokensMax = counted;
-        if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
-      }
+      if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) inputTokensMax = counted;
     }
     // A request its provider did not count (no counter, a gateway, a side or host request, a count that failed): its input
-    // bound is the policy's local count (countInputLocally, its margin included) when that is below its bytes. The body
-    // without the note is counted on its own.
+    // bound is the policy's local count (countInputLocally, its margin included) when that is below its bytes.
     if (counted === undefined && !route.free && inputTokensMax !== undefined && policy.countInputLocally) {
       const local = await localInputOf(policy, body, say);
-      const localPlain = plain && inputTokensMaxWithoutNote !== undefined ? await localInputOf(policy, plain, say) : undefined;
       if (res.destroyed) return;
       if (local !== undefined && inputTokensMax !== undefined && local < inputTokensMax) inputTokensMax = local;
-      if (localPlain !== undefined && inputTokensMaxWithoutNote !== undefined && localPlain < inputTokensMaxWithoutNote) inputTokensMaxWithoutNote = localPlain;
+    }
+    // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
+    // session's model whose policy can place it takes it, once, now that it is measured as its admission reads it
+    // (NoteRequest: the input bound above, a count where there is one, and the output it asks for and needs), so the note
+    // comes due on the figures the cap admits it by, never on its bytes where it was counted. Only the turn's own request
+    // (ProviderPolicy.answers): a side call on the session's model (a title, a summary, when the client has no small model)
+    // takes none, nor does the host's own (`host`): the note is for the harness's model, in its own conversation. One the
+    // policy fails to place, or whose body it cannot measure, is given back, said once; the request goes as the client sent
+    // it. The noted request's bound is that figure and the note's own bytes (what the body grows by, with what its policy
+    // says the provider adds for it): a token covers at least a byte, so it is never under what the noted request bills.
+    // The body as the client sent it is kept (`plain`): a request the cap admits only without the note's bytes goes as
+    // that (ModelTicket.noteDropped).
+    let noted = false;
+    let plain: Record<string, unknown> | undefined;
+    let plainSent: string | undefined;
+    let inputTokensMaxWithoutNote: number | undefined;
+    if (!route.free && asked === model && host === undefined && answering && policy.addNote && hooks.note) {
+      const note = hooks.note(asked, { ...(inputTokensMax === undefined ? {} : { inputTokensMax }), ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }) });
+      if (note) {
+        // Taken: given back (serve) unless this request brings it to its admission, below.
+        taken.note = note;
+        try {
+          const withNote = policy.addNote(body, note);
+          const withNoteSent = JSON.stringify(withNote);
+          const grown = inputTokensMaxOf(policy, withNote, withNoteSent, say);
+          if (grown === undefined || byteBound === undefined || grown < byteBound) throw new Error("the body with the note could not be measured");
+          if (inputTokensMax !== undefined) {
+            inputTokensMaxWithoutNote = inputTokensMax;
+            inputTokensMax += grown - byteBound;
+          }
+          plain = body;
+          plainSent = sent;
+          body = withNote;
+          sent = withNoteSent;
+          noted = true;
+        } catch (error) {
+          say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+          taken.note = undefined;
+          try { hooks.noteReturned?.(note); } catch { /* the host's to say */ }
+        }
+      }
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
-    // The note, if this request carries it, is its admission's from here: told once admitted, given back by a refusal.
+    // The note, if this request carries it, is its admission's from here: given back by a refusal, else told if it is answered.
     if (noted) taken.note = undefined;
     // A client that goes while its request waits for room under the run's cap (runBooking) takes it out of the line: it
     // is never admitted, nothing is held or booked for it.
@@ -1299,6 +1339,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
+        ...(effort === undefined ? {} : { effort }),
         ...(feeUsd > 0 ? { feeUsd } : {}),
         ...(host === undefined ? {} : { host }),
         ...(options.route === undefined ? {} : { route: options.route }),
@@ -1682,7 +1723,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const failed = streamErrorOf(kept);
       if (failed !== undefined && usage && usage.input + usage.output + usage.cacheRead + (usage.cacheWrite ?? 0) === 0) usage = undefined;
       // What the answer's own usage says it cost (OpenRouter's), when no header said: what was paid, as a gateway's header.
-      if (reported === undefined && options.usageCost) reported = usageCostOf(kept);
+      if (reported === undefined && costStated) reported = usageCostOf(kept);
       // In the provider's words, the credential and the host's header values cut, then the host's redactor, as its client
       // was sent them.
       const wordsOf = (said: string) => {
@@ -1706,6 +1747,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         erredIn = wordsOf(failed.words);
         say(`model proxy (${policy.id}): the provider ended its answer in an error; booked at what it reported${unread && reported === undefined ? " (none: an unknown cost)" : ""}`);
       }
+      // A translation's failure in words (wordsErrorOf): an answer that ended in an error all the same, its client asking
+      // again. Booked as before, as any answer cut short; only its end says the error.
+      const translated = failed === undefined ? wordsErrorOf(kept) : undefined;
+      if (translated !== undefined) erredIn = wordsOf(translated);
       try {
         usd = refusedIn !== undefined ? 0 : unread ? null : options.price?.(asked, usage) ?? null;
         if (refusedIn !== undefined) own = true;

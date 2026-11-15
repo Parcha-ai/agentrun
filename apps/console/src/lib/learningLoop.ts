@@ -233,10 +233,12 @@ export function storyOf(input: {
   } else if (!notesOnly) {
     stages.push({ key: "took_over", title: "Take over", value: "Not yet", detail: "a compiled workflow replays on graded runs, then serves first when it does as well as the agent", state: "later" });
   }
-  if (s?.after && s.before) {
+  if (s?.takeover && s.withheld) {
+    stages.push({ key: "cheaper", title: "Cheaper", value: "No ratio yet", detail: `${withheldWords(s.withheld)}: ${WITHHELD_NEXT}`, state: "now" });
+  } else if (s?.after && s.before) {
     const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in since`;
     const ratio = s.times_cheaper;
-    if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", value: `${timesWord(ratio)} cheaper`, detail: words, state: "done" });
+    if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio), state: "done" });
     // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
     else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesWord(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
     else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
@@ -249,6 +251,28 @@ export function storyOf(input: {
     stages.push({ key: "unsure", title: "Unsure", value: rate, detail: shaky ? `most at "${shaky.node}": ${shaky.escalated} of ${shaky.runs} under ${shaky.threshold.toFixed(2)}` : `of ${back!.ran} runs it ran first`, state: back && back.back / back.ran > 0.25 ? "warn" : "watch" });
   }
   return stages;
+}
+
+/** Why the cost summary has no times-cheaper figure (its `withheld`): "3 runs' cost unknown, 1 known only as at most". */
+export function withheldWords(w: { unknown: number; at_most: number }): string {
+  const runs = (n: number) => `${n} ${n === 1 ? "run's" : "runs'"} cost`;
+  if (!w.unknown) return `${runs(w.at_most)} known only as at most`;
+  return `${runs(w.unknown)} unknown${w.at_most ? `, ${w.at_most} known only as at most` : ""}`;
+}
+export const WITHHELD_NEXT = "how many times cheaper shows once every run's cost is known";
+
+/** The tab's cheaper headline over a ratio above 1 (the lead's rule, 11-15): "About Nx cheaper at the same accuracy" only
+ *  when the serving promotion's replay cleared the bar, with that replay and what was served under it; else the ratio
+ *  alone, and why accuracy is not claimed. */
+function cheaperClaim(s: LearningCost["summary"], ratio: number): { value: string; detail: string } {
+  const n = ratio >= 1.5 ? `${Math.round(ratio)}x` : `${ratio.toFixed(1)}x`;
+  const r = s.replay;
+  const scored = r ? `workflow ${Math.round(r.workflow_pct)}% vs agent ${Math.round(r.agent_pct)}% on ${r.n} inputs` : "";
+  if (r?.cleared) {
+    const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}` : "";
+    return { value: `About ${n} cheaper at the same accuracy`, detail: `Replay: ${scored}${served}` };
+  }
+  return { value: `${n} cheaper`, detail: `accuracy not claimed: ${r ? `its replay was below the bar (${scored})` : "no replay yet"}` };
 }
 
 /** A dollar level as the chart says it (costPerRun.ts level): three figures under a dollar. */

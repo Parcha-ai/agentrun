@@ -162,7 +162,13 @@ export interface RunRow {
   readonly wakeAt: number | null;
   /** A parked run's backoff after a failed resume: its untaken commands wait for it, a stop and its wake_at do not. */
   readonly backoffUntil: number | null;
+  /** What the run cost, exactly: null when that is unknown, and null when its stored cost is only the most it can have
+   *  cost (`costAtMostUsd`). Every reader that sums, compares or shows spend reads this, so a bound never reads as spend. */
   readonly costUsd: number | null;
+  /** The most the run can have cost, set only when that is all its stored cost says (runs.cost_upper_bound): it counts a
+   *  request cut with no answer at what its cap held for it (runner.ts CUT_AT_HOLD). Read only where a figure can be said
+   *  "at most" (the run's view, the runs list); null otherwise, `costUsd` then the stored figure or null. */
+  readonly costAtMostUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
   /** How the run ended beside its state (RunOutcome), null for a plain completion, a failure, or a run not ended. */
@@ -182,6 +188,9 @@ export interface RunRow {
 export interface RunPatch {
   readonly state?: RunState;
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost (stored as runs.cost_upper_bound, read back as
+   *  RunRow.costAtMostUsd): read only with `costUsd`, which always writes it (absent: false). */
+  readonly costUpperBound?: boolean;
   readonly metrics?: unknown;
   readonly summary?: string | null;
   /** How the run ended (RunOutcome), set in its end commit; null clears it. */
@@ -923,9 +932,11 @@ export interface Settings {
   get(key: string): Promise<unknown | undefined>;
   /** Saves `value` (JSON) under `key`, inserted or replaced in place. */
   put(key: string, value: unknown): Promise<void>;
-  /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
-   *  wins; the value saved under it after (this one, or the one there before). */
-  putIfAbsent(key: string, value: unknown): Promise<unknown>;
+  /** Saves `value` under `key` only when the key has no row yet; the value saved after (this one, or the one there before).
+   *  With `capacity`, count and insert share a namespace lock and transaction across store handles. Every raw key under
+   *  the exact prefix counts, without decoding values. An existing key wins even at capacity; undefined means a new key
+   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. */
+  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }): Promise<unknown>;
   /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
    *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
    *  when the row changed since or is gone. With `claim`, holds the run's shared row lock and checks its epoch/lease in

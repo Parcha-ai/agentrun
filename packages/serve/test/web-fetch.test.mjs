@@ -41,7 +41,7 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   const { sent, send } = parallel();
   const net = network();
   const page = await webFetch(PUBLIC, { ...net, parallel: parallelExtract(CANARY, send) });
-  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, without fragments");
+  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["http://public.example/", "https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, the URL its text writes out among them, without fragments");
   assert.match(page.text, /^# Read by Parallel\n\nThe page at http:\/\/public\.example\//);
   assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 } } } }], "the most of a page web_fetch reads and one character, so a page Parallel cut there shows as cut");
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
@@ -52,6 +52,13 @@ test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, 
   const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   const page = await parallelExtract(CANARY, send).read(PUBLIC);
   assert.deepEqual(page.links, ["https://en.wikipedia.org/wiki/Function_(mathematics)", "https://other.example/y"]);
+}));
+
+test("a page Parallel reads lists the URLs written in its markdown as well as its link targets, in the page's order", inCall(async () => {
+  const full_content = "```json\n{\"shortlink\":\"https://stspg.io/abc\"}\n```\nSee [https://a.example/x](https://a.example/x), <https://b.example/y> and **https://c.example/z**.";
+  const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  const page = await parallelExtract(CANARY, send).read(PUBLIC);
+  assert.deepEqual(page.links, ["https://stspg.io/abc", "https://a.example/x", "https://b.example/y", "https://c.example/z"], "a link written as its own text is one link");
 }));
 
 test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", inCall(async (t) => {
@@ -151,6 +158,22 @@ for (const [key, picked, mode] of [[true, true, ""], [true, true, "errors"], [tr
     assert.deepEqual(dialled, picked && !mode ? [] : [PUBLIC]);
   });
 }
+
+test("a fetched URL with an apostrophe in its path shows no query value on its timeline row: the preview the API serves scrubs the query after the apostrophe too", { timeout: 60_000 }, async (t) => {
+  await calls(t, false);
+  const { api } = await serve(t, { fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
+  assert.equal((await api("POST", "/agents", { definition: { id: "quoted", name: "quoted", instructions: "Read.", tools: ["web_fetch"] } })).status, 201);
+  const asked = "http://public.example/O'Reilly?token=held-query-value";
+  const started = await api("POST", "/agents/quoted/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify([asked])}` } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
+  assert.equal(results.length, 1, JSON.stringify(results));
+  assert.ok(results[0].includes(`"url":"http://public.example/O'Reilly?token=…"`), results[0]);
+  // The person's own message keeps its URL whole; every row of the call scrubs it.
+  const tools = JSON.stringify(rows.filter((row) => row.kind.startsWith("tool")));
+  assert.equal(tools.includes("held-query-value"), false, tools);
+});
 
 /** The line after a page's JSON that tells the model where it is in the page, if any. */
 const where = (page, name = "web_fetch") => web.webFetchText(page, name).slice(JSON.stringify(page).length + 1) || undefined;

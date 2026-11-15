@@ -5,9 +5,10 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter: the bound is the bytes, 9,121 tokens at first, most of them the computer's tools' and
-//    codemode's definitions, the computer's types among them), the first request needs $0.050 and the whole run $0.108:
-//    $0.11, documented, takes it to its answer, $0.10 parks it before its last step;
+//  - through a gateway (OpenRouter: the bound is the bytes, 9,772 tokens at first, most of them the computer's tools' and
+//    codemode's definitions, the computer's types among them, and the desktop skill's line in the system prompt), the
+//    first request needs $0.052 and the whole run $0.110: $0.12, documented, takes it to its answer, $0.11 parks it
+//    before its last step;
 //  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt), so the first
 //    request needs $0.030 and the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it. The count
 //    here is the one recorded from a real desktop run before codemode was offered beside the computer's tools; the fake
@@ -24,7 +25,7 @@ const { fauxComputers } = await import("../dist/faux-computers.js");
 after(closeOpenSessions);
 
 /** The minimums serve's README states for pi on Sonnet: through a gateway, and straight to Anthropic. */
-const GATEWAY_MINIMUM = 0.11;
+const GATEWAY_MINIMUM = 0.12;
 const DIRECT_MINIMUM = 0.09;
 /** A step's least, as the cap prices it here: its input bound at the cache-write price and a 1,024-token answer. */
 const leastOf = (bound) => (bound * 3.75 + 1_024 * 15) / 1e6;
@@ -84,33 +85,38 @@ async function neededFor(t, origin) {
   return { sent, first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked };
 }
 
-test("the documented minimums are what the run needs, to the cent above: $0.11 through a gateway, $0.09 straight to Anthropic", async (t) => {
+test("the documented minimums are what the run needs, to the cent above: $0.12 through a gateway, $0.09 straight to Anthropic", async (t) => {
   const gateway = await neededFor(t, "https://openrouter.ai/api");
   const direct = await neededFor(t, "https://api.anthropic.com");
   t.diagnostic(`measured: ${JSON.stringify({ offered: offeredOf(gateway.sent[0]), gateway: { first: gateway.first, whole: gateway.whole, bound: gateway.asked[0].request.inputTokensMax }, direct: { first: direct.first, whole: direct.whole } })}`);
   assert.deepEqual(offeredOf(gateway.sent[0]), DESKTOP_OFFERED, "the run is offered a desktop run's tools, the host's codemode among them");
   assert.ok(gateway.asked[0].request.inputTokensMax > 9_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
   assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675, "straight to Anthropic, by its count and the tool-use prompt");
-  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.05, 0.03], "the first request's least");
+  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.052, 0.03], "the first request's least");
   assert.deepEqual([Math.ceil(gateway.whole * 100) / 100, Math.ceil(direct.whole * 100) / 100], [GATEWAY_MINIMUM, DIRECT_MINIMUM], JSON.stringify({ gateway: gateway.whole, direct: direct.whole }));
 });
 
 test("through a gateway, a pi desktop run on Sonnet under $0.04 is refused its first request unsent, in the words that name what it needs", async (t) => {
   const { asked, sent, row } = await desktopRun(t, 0.04, "https://openrouter.ai/api");
   assert.equal(sent.length, 0, "nothing sent");
-  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.05/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
+  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.06/,JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
 });
 
-// A cent under the minimum the cap parks the run before its last step, by either route: through a gateway the input bound
-// (the offered tools read by their bytes) leaves no room for the wrap-up to refuse the last screenshot first.
-for (const [route, origin, minimum] of [["through a gateway", "https://openrouter.ai/api", GATEWAY_MINIMUM], ["straight to Anthropic", "https://api.anthropic.com", DIRECT_MINIMUM]]) {
-  test(`${route}, the documented minimum ($${minimum}) takes a pi desktop run on Sonnet through four screenshots to its answer; a cent under parks it before its last step`, async (t) => {
+// A cent under the minimum the run does not get every step. Straight to Anthropic the cap parks it before its last step.
+// Through a gateway the whole run needs $0.110, a fraction of a cent over $0.11, so at $0.11 the wrap-up refuses its last
+// screenshot first and the run answers.
+for (const [route, origin, minimum, underEnds] of [["through a gateway", "https://openrouter.ai/api", GATEWAY_MINIMUM, "wrapped up"], ["straight to Anthropic", "https://api.anthropic.com", DIRECT_MINIMUM, "parked"]]) {
+  test(`${route}, the documented minimum ($${minimum}) takes a pi desktop run on Sonnet through four screenshots to its answer; a cent under, it is ${underEnds} before its last screenshot`, async (t) => {
     const at = await desktopRun(t, minimum, origin);
     assert.deepEqual([at.row.state, at.sent.length], ["ended", 5], JSON.stringify({ state: at.row.state, summary: at.row.summary }));
     assert.equal(toldToWrapUp(at.sent), false, "at the minimum every screenshot ran: no tool call was refused");
     const under = await desktopRun(t, Math.round((minimum - 0.01) * 100) / 100, origin);
-    assert.deepEqual([under.row.state, under.sent.length], ["parked", 4], JSON.stringify({ state: under.row.state, summary: under.row.summary }));
-    assert.match(under.row.summary ?? "", new RegExp(`Raise the cap to at least \\$${minimum.toFixed(2)}`), "the parked run names the documented minimum");
+    if (underEnds === "parked") {
+      assert.deepEqual([under.row.state, under.sent.length], ["parked", 4], JSON.stringify({ state: under.row.state, summary: under.row.summary }));
+      assert.match(under.row.summary ?? "", new RegExp(`Raise the cap to at least \\$${minimum.toFixed(2)}`), "the parked run names the documented minimum");
+    } else {
+      assert.deepEqual([under.row.state, under.sent.length, toldToWrapUp(under.sent)], ["ended", 5, true], JSON.stringify({ state: under.row.state, sent: under.sent.length, summary: under.row.summary }));
+    }
     // Further under, the cap parks it before its last step.
     const parked = await desktopRun(t, Math.round((minimum - 0.05) * 100) / 100, origin);
     assert.deepEqual([parked.row.state, parked.sent.length < 5], ["parked", true], JSON.stringify({ state: parked.row.state, sent: parked.sent.length, summary: parked.row.summary }));

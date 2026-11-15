@@ -69,7 +69,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
     // The cost per run chart's read (CostPerRun.test.tsx draws it): no run yet.
     learnedWorkflowRevisions: async (_id: string, name: string) => ({ name, revisions: [], total: 0, truncated: false }),
-    learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] })))(),
+    learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] })))(),
     // The loop's reads: none yet unless a test gives them; a failed one leaves its part out.
     learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [], serving: [] })))(),
     learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, compiles: [], guards: [] })))(),
@@ -1570,10 +1570,23 @@ describe("the loop on the Learning tab", () => {
   });
   it("counts only completed runs toward a compile, as the server does: failed and cancelled runs are in the cost series, not the count", async () => {
     const runs = [runOf("run-ok", "kith.com", null), ...["run-f1", "run-f2", "run-f3"].map((id) => ({ ...runOf(id, id, null), status: "failed" as const })), { ...runOf("run-s", "run-s", null), status: "cancelled" as const }];
-    const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 5, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null }, workflows: [] });
+    const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 5, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] });
     const t = await open(agent(true), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }), runs, cost });
     const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
     expect(stage.textContent).toContain("1 of 5 runs");
+  });
+  it("the cheaper stage: 'about N times cheaper at the same accuracy' over the replay's line when the serving replay cleared the bar; the reason in its place when a run's cost isn't all known", async () => {
+    const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
+    const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true }, ...over }, workflows: [] });
+    const t = await open(agent(true), { cost: costOf({}) });
+    const stage = t.host.querySelector('[data-testid="stage-cheaper"]')!;
+    expect(stage.querySelector('[data-testid="stage-cheaper-value"]')!.textContent).toBe("About 7x cheaper at the same accuracy");
+    expect(stage.textContent).toContain("Replay: workflow 86% vs agent 82% on 40 inputs · served 59 runs, handed back 3");
+    act(() => root!.unmount());
+    const held = await open(agent(true), { cost: costOf({ times_cheaper: null, withheld: { unknown: 3, at_most: 1 } }) });
+    const withheld = held.host.querySelector('[data-testid="stage-cheaper"]')!;
+    expect(withheld.textContent).toContain("3 runs' cost unknown, 1 known only as at most");
+    expect(withheld.textContent).not.toMatch(/\dx cheaper/);
   });
   it("a draft the checks refused shows in the feed in their words; a failed loop read leaves the feed out, not the tab", async () => {
     const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: null, from_notes: ["keep-it-to-three-lines"], attempts: [{ ok: false, errors: ["root: no node"] }], digest: null, promoted: null, draft_errors: ["the draft did not parse"], withheld: false }] } as LearningLoop;

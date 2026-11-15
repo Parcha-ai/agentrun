@@ -11,7 +11,7 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -31,7 +31,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
 };
 import { type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -295,6 +295,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if(!nativeOwners){
       if(role==='runner')throw new Error('Native command ownership metadata is not prepared. Start this build’s server before its runners.');
       await connection.write([{sql:'ALTER TABLE settings ADD COLUMN connector_id TEXT'}],{full:true});
+    }
+    // An earlier build of this version kept no bound beside a run's cost (schema.ts RUNS_COST_UPPER_BOUND): the server adds
+    // it, every run it ended reading 0, and a runner, which writes it at each end, waits for that server.
+    const costBound = (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).some((column) => column.name === "cost_upper_bound");
+    if (!costBound) {
+      if (role === "runner") throw new Error("Start the AgentRun server to add the bound beside each run's cost before opening a runner. The runner does not upgrade this store.");
+      await connection.write([{ sql: RUNS_COST_UPPER_BOUND }], { full: true });
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
@@ -1231,7 +1238,7 @@ class SqliteStore implements Store {
       spend: async ({ from, to }) => {
         type SpendRecord = { agent_id: string; proposal: string; created_at: number; learning_run_id: string | null; run_state: RunState | null; run_ended_at: number | null; run_cost_usd: number | null };
         const rows = await db.all<SpendRecord>(
-          `SELECT lp.agent_id, lp.proposal, lp.created_at, lp.learning_run_id, lr.state AS run_state, lr.ended_at AS run_ended_at, lr.cost_usd AS run_cost_usd
+          `SELECT lp.agent_id, lp.proposal, lp.created_at, lp.learning_run_id, lr.state AS run_state, lr.ended_at AS run_ended_at, ${EXACT_COST_USD("lr")} AS run_cost_usd
              FROM learning_proposals lp
              JOIN runs src ON src.id = lp.run_id
              LEFT JOIN runs lr ON lr.id = lp.learning_run_id
@@ -1251,7 +1258,7 @@ class SqliteStore implements Store {
       spentBeside: async (runId, { beforeRound } = {}) => {
         type BesideRecord = { state: RunState | null; cost_usd: number | null; body: string | null };
         const rows = await db.all<BesideRecord>(
-          `SELECT lr.state, lr.cost_usd, rl.body
+          `SELECT lr.state, ${EXACT_COST_USD("lr")} AS cost_usd, rl.body
              FROM learning_proposals lp
              LEFT JOIN runs lr ON lr.id = lp.learning_run_id
              LEFT JOIN run_launch rl ON rl.run_id = lp.learning_run_id
@@ -1284,8 +1291,34 @@ class SqliteStore implements Store {
         const encoded=json(value);
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
       },
-      putIfAbsent: async (key, value) => {
+      putIfAbsent: async (key, value, capacity) => {
         const encoded=json(value);
+        if (capacity !== undefined) {
+          if (typeof capacity.prefix !== "string" || !capacity.prefix || capacity.prefix.includes("\0") || !key.startsWith(capacity.prefix) || !Number.isSafeInteger(capacity.limit) || capacity.limit < 1)
+            throw new TypeError("settings capacity requires a matching nonempty prefix and a positive safe integer limit");
+          return db.transaction(async (tx) => {
+            // SQLite holds its writer lock already; Postgres holds this schema's prefix lock until commit. The count
+            // and insertion cannot interleave with another bounded insertion, even through an independent store handle.
+            await d.lockKey(tx, `settings.capacity:${capacity.prefix}`);
+            const existing = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+            if (existing !== undefined) return JSON.parse(existing.value);
+            // Match Settings.all's literal prefix range: use the key index and never parse values or treat _/% as LIKE.
+            const points = Array.from(capacity.prefix);
+            let upper: string | undefined;
+            for (let i = points.length - 1; i >= 0; i--) {
+              const cp = points[i]!.codePointAt(0)!;
+              if (cp < 0x10ffff) { upper = points.slice(0, i).join("") + String.fromCodePoint(cp + 1); break; }
+            }
+            const count = await tx.get<{ n: number }>(
+              `SELECT count(*) AS n FROM settings WHERE key >= ?${upper === undefined ? "" : " AND key < ?"} AND substr(key, 1, length(?)) = ?`,
+              capacity.prefix, ...(upper === undefined ? [] : [upper]), capacity.prefix, capacity.prefix,
+            );
+            if (Number(count?.n ?? 0) >= capacity.limit) return undefined;
+            await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", key, encoded, nativeCommandOwner(key, encoded), now());
+            const saved = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+            return saved === undefined ? undefined : JSON.parse(saved.value);
+          });
+        }
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);

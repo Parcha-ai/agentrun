@@ -1,8 +1,12 @@
 // Under --faux only: the fetch the Anthropic and OpenAI providers send through (model.ts FAUX_UPSTREAM_ENV), in place of
 // their APIs: it answers web_search's one request to the provider's hosted search (hosted-search.ts) as each provider
 // streams it, the search, its result, and a short answer citing the public page, with the searches it ran in its usage.
-// AGENTRUN_TEST_FAUX_UPSTREAM set to "pause" ends Anthropic's answer on pause_turn. Each request's path, key header and
-// body are filed in AGENTRUN_TEST_FAUX_UPSTREAM_CALLS.
+// AGENTRUN_TEST_FAUX_UPSTREAM set to "pause" ends Anthropic's answer on pause_turn; "rate_limited" answers each provider's
+// 429 for a rate limit (Anthropic's rate_limit_error, OpenAI's rate_limit_exceeded), "quota" its answer for a key out of
+// quota or credit (Anthropic's 402 billing_error, OpenAI's 429 insufficient_quota). "partial:<code>" has Anthropic run a
+// second search in the same request after the first found its results, that second search's result the error `<code>`
+// (too_many_requests, max_uses_exceeded), as Anthropic answers one search of its up to 5 failing. Each request's path,
+// key header and body are filed in AGENTRUN_TEST_FAUX_UPSTREAM_CALLS.
 import { appendFileSync } from "node:fs";
 
 const PAGE = "http://public.example/";
@@ -12,6 +16,17 @@ const sse = (events) => new Response(events.map((event) => `event: ${event.type}
 function anthropic(body) {
   const query = body.messages?.[0]?.content?.[0]?.text ?? "";
   const pause = process.env.AGENTRUN_TEST_FAUX_UPSTREAM === "pause";
+  const partial = /^partial:(\w+)$/.exec(process.env.AGENTRUN_TEST_FAUX_UPSTREAM ?? "")?.[1];
+  // Anthropic's later search failing, after the first one's results: its own block, an error in place of results.
+  const failing = partial ? [
+    { type: "content_block_start", index: 2, content_block: { type: "server_tool_use", id: "srvtoolu_2", name: "web_search", input: {} } },
+    { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: JSON.stringify({ query: `${query} more` }) } },
+    { type: "content_block_stop", index: 2 },
+    { type: "content_block_start", index: 3, content_block: { type: "web_search_tool_result", tool_use_id: "srvtoolu_2", content: { type: "web_search_tool_result_error", error_code: partial } } },
+    { type: "content_block_stop", index: 3 },
+  ] : [];
+  // The answer's text block comes after every search block.
+  const at = failing.length ? 4 : 2;
   return sse([
     { type: "message_start", message: { id: "msg_faux_1", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: 20_000, output_tokens: 1 } } },
     { type: "content_block_start", index: 0, content_block: { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: {} } },
@@ -19,13 +34,14 @@ function anthropic(body) {
     { type: "content_block_stop", index: 0 },
     { type: "content_block_start", index: 1, content_block: { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", url: PAGE, title: "Public page", encrypted_content: "enc-1", page_age: "October 1, 2026" }, { type: "web_search_result", url: "https://result.example/2", title: "Result 2", encrypted_content: "enc-2" }] } },
     { type: "content_block_stop", index: 1 },
+    ...failing,
     ...(pause ? [] : [
-      { type: "content_block_start", index: 2, content_block: { type: "text", text: "", citations: [] } },
-      { type: "content_block_delta", index: 2, delta: { type: "citations_delta", citation: { type: "web_search_result_location", url: PAGE, title: "Public page", encrypted_index: "ix-1", cited_text: "The answer is forty-two." } } },
-      { type: "content_block_delta", index: 2, delta: { type: "text_delta", text: ANSWER } },
-      { type: "content_block_stop", index: 2 },
+      { type: "content_block_start", index: at, content_block: { type: "text", text: "", citations: [] } },
+      { type: "content_block_delta", index: at, delta: { type: "citations_delta", citation: { type: "web_search_result_location", url: PAGE, title: "Public page", encrypted_index: "ix-1", cited_text: "The answer is forty-two." } } },
+      { type: "content_block_delta", index: at, delta: { type: "text_delta", text: ANSWER } },
+      { type: "content_block_stop", index: at },
     ]),
-    { type: "message_delta", delta: { stop_reason: pause ? "pause_turn" : "end_turn", stop_sequence: null }, usage: { output_tokens: 40, server_tool_use: { web_search_requests: 1 } } },
+    { type: "message_delta", delta: { stop_reason: pause ? "pause_turn" : "end_turn", stop_sequence: null }, usage: { output_tokens: 40, server_tool_use: { web_search_requests: partial ? 2 : 1 } } },
     { type: "message_stop" },
   ]);
 }
@@ -46,6 +62,18 @@ function openai(body) {
   ]);
 }
 
+/** Each provider's answer to a key that is rate-limited or out of quota, as its API sends it, by mode and path. */
+const LIMITS = {
+  rate_limited: {
+    "/v1/messages": { status: 429, body: { type: "error", error: { type: "rate_limit_error", message: "This request would exceed the rate limit for your organization of 50 requests per minute." } } },
+    "/v1/responses": { status: 429, body: { error: { message: "Rate limit reached for requests. Please try again in 20s.", type: "requests", code: "rate_limit_exceeded", param: null } } },
+  },
+  quota: {
+    "/v1/messages": { status: 402, body: { type: "error", error: { type: "billing_error", message: "Your organization has no credit left." } } },
+    "/v1/responses": { status: 429, body: { error: { message: "You exceeded your current quota, please check your plan and billing details.", type: "insufficient_quota", code: "insufficient_quota", param: null } } },
+  },
+};
+
 export default async function fakeUpstream(url, init = {}) {
   const path = new URL(String(url)).pathname;
   const headers = new Headers(init.headers);
@@ -58,6 +86,8 @@ export default async function fakeUpstream(url, init = {}) {
     return new Response("not a model request: its body is not JSON", { status: 400 });
   }
   if (process.env.AGENTRUN_TEST_FAUX_UPSTREAM_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_UPSTREAM_CALLS, `${JSON.stringify({ path, key: headers.get("x-api-key") ?? headers.get("authorization"), body })}\n`);
+  const limited = LIMITS[process.env.AGENTRUN_TEST_FAUX_UPSTREAM ?? ""]?.[path];
+  if (limited) return new Response(JSON.stringify(limited.body), { status: limited.status, headers: { "content-type": "application/json", "retry-after": "30" } });
   if (path === "/v1/messages") return anthropic(body);
   if (path === "/v1/responses") return openai(body);
   return new Response("not here", { status: 404 });

@@ -17,22 +17,29 @@ export const RUN_SKILLS_DIR = ".agents/skills";
  *
  *  `computer`: the run's computer kind. A desktop or a phone brings its kind's skill (desktop-computer, phone-computer),
  *  laid as `<name>/SKILL.md` beside the agent's own, unless one of the agent's skills has that name (the agent's stays,
- *  and the kind's is not laid), and only when that folder is not there yet. */
-export async function layOwnSkills(work: Workspace, skills: Readonly<Record<string, string>>, options: { readonly computer?: string } = {}): Promise<void> {
+ *  and the kind's is not laid), and only when that folder is not there yet.
+ *
+ *  Returns the skill files the run has beyond the revision's own: the kind's `<name>/SKILL.md` where the kind brings
+ *  one (laid now or at an earlier claim), so the run's skill list (the prompt's, or a harness's own) names it as it
+ *  names the revision's. */
+export async function layOwnSkills(work: Workspace, skills: Readonly<Record<string, string>>, options: { readonly computer?: string } = {}): Promise<readonly string[]> {
   const files = Object.entries(skills);
   for (const [path] of files) {
     if (relativeSegments(path).length === 0) throw new WorkspaceError("ESCAPE", `the skill path ${JSON.stringify(path)} names no file under ${RUN_SKILLS_DIR}/`, { path });
   }
   const kind = kindSkillOf(options.computer);
   const own = new Set(files.map(([path]) => relativeSegments(path)[0]));
-  if (kind && !own.has(kind.name)) files.push([`${kind.name}/SKILL.md`, kind.text]);
-  if (!files.length) return;
+  const laysKind = kind !== undefined && !own.has(kind.name);
+  const brought = laysKind ? [`${kind.name}/SKILL.md`] : [];
+  if (laysKind) files.push([brought[0]!, kind.text]);
+  if (!files.length) return brought;
   const there = await work.list(RUN_SKILLS_DIR).then((entries) => new Set(entries.map((entry) => entry.name)), (error: unknown) => {
     if (error instanceof WorkspaceError && error.code === "NOT_FOUND") return new Set<string>();
     throw error;
   });
   const missing = files.filter(([path]) => !there.has(relativeSegments(path)[0]!));
-  if (!missing.length) return;
+  if (!missing.length) return brought;
   await work.mkdir(RUN_SKILLS_DIR);
   for (const [path, text] of missing) await work.write(`${RUN_SKILLS_DIR}/${path}`, text);
+  return brought;
 }

@@ -208,7 +208,8 @@ export interface ModelRequest {
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
    *  no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
-  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+  /** It carries the host's note (ModelPort.note) in its body: admitted, it holds the note until it ends, and the note is
+   *  told once it is answered (its afterRequest's `ended`), else the host gives it to a later request.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
   inputTokensMaxWithoutNote?: number;
@@ -220,6 +221,10 @@ export interface ModelRequest {
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
   route?: string;
+  /** The reasoning effort its body asks its model at, as its provider names it (the proxy's policy reads it:
+   *  ProviderPolicy.effortOf), when the body names one. What its least output was read at, so words that name its
+   *  figures can name it too. */
+  effort?: string;
   /** Aborted when the request's client goes (a stop, a cancel, a lost claim): a request still waiting for room under the
    *  run's cap (runBooking) leaves its line then, admitted for nothing and holding nothing. */
   signal?: AbortSignal;
@@ -241,6 +246,8 @@ export interface ModelUsage {
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
+  /** A cut request its host held a figure for: booked at that hold (runner.ts CUT_AT_HOLD), the most it can have cost. */
+  atMostUsd?: number;
   /** A paid step's hold given back unused (a workflow call node's, its effect never sent the paid request it held for):
    *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
    *  unpriced one. */
@@ -277,15 +284,16 @@ export interface ModelPort {
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
   /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
    *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
-   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+   *  sent it, measured before the note is placed (NoteRequest), so the host prices it as its admission will. */
   note?(model: string, request?: NoteRequest): string | undefined;
   /** The note `note` gave back: the request that took it left before its admission (its client gone, a refusal or an
    *  error before `beforeRequest`), so it was never sent, and the host may give it to the next request at once. */
   noteReturned?(note: string): void;
 }
 
-/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
- *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+/** A request about to take its host's note, as its client sent it: its input bound (the provider's count or the local
+ *  count where the proxy took one, else its bytes) and the output it asks for and needs at least, as the model proxy reads
+ *  them: ModelRequest's figures without the note (its `inputTokensMaxWithoutNote`), the same ones the cap admits it by. */
 export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
@@ -329,6 +337,25 @@ export interface SessionIO {
    *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
    *  keeps no record of calls, and the tool runs as it is. */
   hostTool?(tool: HostTool): HostTool;
+  /** The host's record of a call of the harness's own that runs host tools inside it (Codex's code-mode `exec`): its row,
+   *  and each host tool call it makes nested under it, as a host tool that `nests` (codemode) has its calls on every other
+   *  harness. Absent: the host keeps no record of calls. */
+  ownCalls?: OwnCalls;
+}
+
+/** The record of a call of the harness's own that host tool calls nest in (SessionIO.ownCalls). Each is said from what the
+ *  harness's own stream holds (the call's id, its input, its output), never a made-up id. */
+export interface OwnCalls {
+  /** The call started, `input` what it was given (once per call id: a second says nothing). */
+  opened(callId: string, name: string, input: unknown): Promise<void>;
+  /** The host tool call `callId` runs inside the harness's call `parent`: said before the call reaches the gate, so its
+   *  row (a refused or parked one's too) names its parent. */
+  nestedIn(callId: string, parent: string): void;
+  /** The call ended with `output`, `failed` when the harness's stream says it did not do its work (Codex's "Script failed"),
+   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). A crash leaves an opened call
+   *  open on the host's record: the harness ends it after the resume, from its CLI's answer to it (Codex's recovered exec
+   *  output), so its end comes after the rows of the calls it made. */
+  ended(callId: string, output: string, failed: boolean): Promise<void>;
 }
 
 /** `tool`, a tool the adapter adds of its own, made the host's (SessionIO.hostTool). */
@@ -473,6 +500,12 @@ export interface AdapterFacts {
   /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
    *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
   readonly nativeTools?: Readonly<Record<string, string>>;
+  /** The input tokens its first model request carries before the agent's own prompt and the person's message: its own
+   *  system prompt and tool definitions, as measured on its pinned build (the constant beside its pin says how). A host
+   *  prices a cap's least step on it before any run (a save's warning that a cap is below one step and an answer). A
+   *  count of what was measured, with o200k_base or from billing (the constant says which). Absent: not measured, read
+   *  as 0 (a floor). */
+  readonly baseInputTokens?: number;
   /** The policy its model proxy applies, for a host that serves the same route itself (a test's faux harness). */
   policy(options: { model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
 }

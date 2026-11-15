@@ -255,6 +255,7 @@ export interface components {
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
+    upper_bound?: true;
     plan?: {
       requests: number;
       tokens: number;
@@ -1259,6 +1260,7 @@ export interface components {
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
+    upper_bound?: true;
     not_metered?: number;
   };
   Timestamp: string;
@@ -2429,6 +2431,7 @@ export interface operations {
         workflow: string | null;
         learned_revision: string | null;
         cost_usd: number | null;
+        cost_upper_bound: boolean;
         learning_usd: number | null;
         total_usd: number | null;
       }[];
@@ -2466,6 +2469,16 @@ export interface operations {
         hand_backs: {
           ran: number;
           back: number;
+        } | null;
+        withheld: {
+          unknown: number;
+          at_most: number;
+        } | null;
+        replay: {
+          n: number;
+          workflow_pct: number;
+          agent_pct: number;
+          cleared: boolean;
         } | null;
       };
     };
@@ -2598,6 +2611,82 @@ export interface operations {
           target_id: string;
         };
       } | null;
+    };
+  };
+  getObservations: {
+    body: never;
+    answer: {
+      connectors: {
+        id: string;
+        display_name: string;
+        connection_state: "online" | "offline" | "disconnected";
+        ingestion_mode: "polling" | "otlp";
+        last_heartbeat_at: string | null;
+        receipt_count: number;
+        receipt_capacity: number;
+        storage_full: boolean;
+      }[];
+      sessions: {
+        id: string;
+        connector_id: string;
+        source_id: string;
+        external_session_id: string;
+        harness: "claude" | "codex";
+        activity: "unknown" | "working" | "idle" | "waiting_input" | "finished" | "failed" | "stopped";
+        reported_activity: "unknown" | "working" | "idle" | "waiting_input" | "finished" | "failed" | "stopped";
+        connection_state: "online" | "offline" | "disconnected";
+        selection_active: boolean;
+        occurred_at: string;
+        received_at: string;
+        created_at: string;
+        updated_at: string;
+        sequence: number;
+        display_name: string;
+        models: string[];
+        usage: {
+          input_tokens: number;
+          output_tokens: number;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          total_tokens: number;
+          cache_hit_rate: number | null;
+          overflow: boolean;
+          status: "reported" | "unavailable";
+        };
+        observation_only: true;
+      }[];
+      usage: {
+        input_tokens: number | null;
+        output_tokens: number | null;
+        cache_read_tokens: number | null;
+        cache_write_tokens: number | null;
+        total_tokens: number | null;
+        cache_hit_rate: number | null;
+        overflow: boolean;
+        status: "partial" | "unavailable";
+        models: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          total_tokens: number | null;
+          cache_hit_rate: number | null;
+          overflow: boolean;
+          model: string;
+        }[];
+        daily: {
+          date: string;
+          total_tokens: number | null;
+        }[];
+      };
+      limits: {
+        max_receipts_per_connector: number;
+        max_sessions_per_connector: number;
+        receipt_retention: string;
+        receipt_window_seconds: number;
+        session_retention_days: number;
+        usage_retention_days: number;
+      };
     };
   };
   getOpenapi: {

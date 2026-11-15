@@ -5,7 +5,7 @@
 // The booked cost itself is unchanged: such a request is still booked at an unknown price.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
+import { HarnessRunError, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from '@parcha/agentrun-kernel';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const key = 'chat:c1';
@@ -116,8 +116,80 @@ test('a request a crash cut off counts at the figure held for it in the next pro
   await third.bookCut();
   assert.equal(Math.round(third.spentUsd() * 1e6) / 1e6, 0.28, "the first at its cost, the cut one at its figure, the second process's at its cost");
   const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
-  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2 }], 'booked once, at an unknown price');
+  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2, bookedUsd: 0.25, rule: 'cut', atMost: true }], 'booked once, at its hold, marked the most it can have cost');
+  // Its cost as a person is shown it: known, the cut at its hold, said to be an upper bound; never blanked.
+  assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: 0.28, soFarUsd: 0.28, unpriced: 0, atMost: 1 });
 });
+
+test('a cut request with no hold to bound it ($0, a run with no cap) stays a cost no one knows', async () => {
+  const store = memorySessionStore();
+  const first = await port(store, 0);
+  await first.models.beforeRequest({ model: 'm' }); // left, and the process died before its answer
+  const second = await port(store, 0);
+  await second.bookCut();
+  const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
+  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 1 }], 'booked at an unknown price');
+  assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: null, soFarUsd: 0, unpriced: 1 });
+});
+
+test('a paid tool call a crash cut off, held at its fee, stays a cost no one knows: its fee bounds nothing its provider charged, so it is never booked at its hold as the most it can have cost', async () => {
+  const store = memorySessionStore();
+  const paid = { model: 'paid:search', inputTokensMax: 0, feeUsd: 0.05, paid: { name: 'search', basis: 'per call', call: 'call-1', tool: 'search' } };
+  const first = await port(store, 0.05);
+  await first.models.beforeRequest(paid); // left, and the process died before its charge was settled
+  const told = [];
+  const second = await modelPortFor(await store.open(key), { key, beforeRequest: () => ({ holdUsd: 0.05 }), onEvent: (event) => void told.push(event) });
+  await second.bookCut();
+  const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
+  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 1 }], 'booked at an unknown price, never at its hold');
+  assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: null, soFarUsd: 0, unpriced: 1 });
+  assert.equal(told.find((event) => event.type === 'request_end')?.usage.atMostUsd, undefined, 'its end names no bound');
+});
+
+test('a cut request booked at its hold beside a request of no known cost: the cost is unknown, and the hold, a ceiling, joins no known sum; it counts with the unpriced', async () => {
+  const store = memorySessionStore();
+  const first = await port(store, 0.25);
+  await first.models.beforeRequest({ model: 'm' });
+  await first.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.01 });
+  await first.models.beforeRequest({ model: 'm' });
+  await first.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: null }); // answered, no price of its own
+  await first.models.beforeRequest({ model: 'm' }); // left, and the process died before its answer
+  const second = await port(store, 0.25);
+  await second.bookCut();
+  assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: null, soFarUsd: 0.01, unpriced: 2 }, 'the exact $0.01 known; the unpriced answer and the cut one have no known cost');
+});
+
+/** The booking of session `key` in a new process whose host admits each request as billed to a person's plan (a ChatGPT
+ *  plan's model: held at $0 under a cap, `plan`), or, with `hold` undefined, under no cap. */
+const planPort = async (store, hold) => modelPortFor(await store.open(key), { key, beforeRequest: () => ({ ...(hold === undefined ? {} : { holdUsd: hold }), plan: true }) });
+
+for (const [how, hold] of [['under a cap (held at $0)', 0], ['under no cap', undefined]]) {
+  test(`a plan request a crash cut off, ${how}, is booked cut at $0 and marked the plan's: the session's cost stays a known $0, never unknown`, async () => {
+    const store = memorySessionStore();
+    const first = await planPort(store, hold);
+    await first.models.beforeRequest({ model: 'm' }); // left, and the process died before its answer
+    const second = await planPort(store, hold);
+    await second.bookCut();
+    assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: 0, soFarUsd: 0, unpriced: 0 }, 'a known $0');
+    assert.equal(second.spentUsd(), 0, 'the cap counts it at $0');
+    assert.deepEqual((await runnerRecords(store))[0], [RUNNER_RECORDS.request, { turn: 1, model: 'm', ...(hold === undefined ? {} : { heldUsd: hold }), plan: true }], 'its record says it is billed to the plan');
+    const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
+    assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 1, bookedUsd: 0, rule: 'cut', billing: 'plan' }], 'booked once, cut, at $0, the plan\'s');
+  });
+
+  test(`a plan request cut or stopped in this process with no usage that says so, ${how}, is booked the plan's at $0: a known $0`, async () => {
+    for (const ended of [{ end: 'lost', label: 'cut' }, { end: 'lost', label: 'error_after', began: true }, { end: 'stopped', streamedTokens: 10 }]) {
+      const store = memorySessionStore();
+      const booking = await planPort(store, hold);
+      const ticket = await booking.models.beforeRequest({ model: 'm' });
+      await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null }, ticket || undefined, ended);
+      const turn = (await store.read(key)).find((r) => r.kind === RUNNER_RECORDS.turn)?.data;
+      assert.deepEqual(sessionSpendOf(await store.read(key)).cost, { usd: 0, soFarUsd: 0, unpriced: 0 }, `${JSON.stringify(ended)}: a known $0: ${JSON.stringify(turn)}`);
+      assert.equal(booking.spentUsd(), 0, JSON.stringify(ended));
+      assert.deepEqual([turn?.billing, turn?.bookedUsd, turn?.free], ['plan', 0, undefined], `${JSON.stringify(ended)}: ${JSON.stringify(turn)}`);
+    }
+  });
+}
 
 test('a session written before held figures (no figure on the request) reads unknown, cut by a crash or cut short; a host that holds none keeps it so', async () => {
   for (const hold of [undefined]) {

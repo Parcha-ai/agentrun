@@ -344,7 +344,7 @@ The agent's cost per run, run after run: its own cost, what learning added and t
 Route: `GET /agents/{agent_id}/learning/cost`.
 
 - `--limit INTEGER` (integer): The latest runs to answer, each keeping its number. At most 10000.
-- `--format json|csv` (string, one of these): `csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, learning_usd, total_usd.
+- `--format json|csv` (string, one of these): `csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, cost_upper_bound, learning_usd, total_usd.
 
 ### `agentrun learning evals AGENT_ID`
 
@@ -586,6 +586,17 @@ Route: `GET /settings/mcp-servers/oauth/private-hosts`.
 List a saved MCP server's tools again, keep them, and say what changed.
 
 Route: `POST /settings/mcp-servers/{name}/refresh`.
+
+## Observations
+
+### `agentrun Observations get-observations`
+
+Read activity and token usage reported by externally running agents.
+
+Route: `GET /observations`.
+
+- `--days INTEGER` (integer): UTC calendar days including today; session details remain visible for their full retention period.
+- `--session-id STRING` (string)
 
 ## revisions
 

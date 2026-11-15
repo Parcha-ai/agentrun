@@ -17,8 +17,10 @@ export const AGENT37 = defineProvider({
 	],
 	metered: true,
 	mounts: ["archil"],
-	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
-	network: ["none"],
+	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the instance is made
+	// deny-all. Open and a list: the instance is made allow-all, and its programs' one way out is init's egress proxy,
+	// which reaches the public internet alone, and with a list its hosts alone (hosted/network.ts).
+	network: ["none", "open", "allow"],
 	// Each configuration built by its own create() options: kind linux is the provider's default.
 	capabilities: [SANDBOX, { ...LINUX_DESKTOP, options: { kind: "desktop" } }],
 	// No default image: every computer starts from the box template its prepareImage() registers (agentrun-box-<hash>).

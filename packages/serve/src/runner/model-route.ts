@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
-import { streamErrorOf } from "@parcha/agentrun-kernel/host";
+import { ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
@@ -42,9 +42,9 @@ export type RouteUsage = { input: number; output: number; cacheRead: number; cac
  *  and `cost` beside them. */
 export interface ModelRoute {
   /** `plan`: a ChatGPT plan's route (provider.ts billing "plan"), billed to the plan: no price, its rules on the wire.
-   *  `usageCost`: its answers state what they cost in their usage (OpenRouter's, or this route's own translation of
-   *  one): the proxy books that figure, its price's beside it (ModelProxyOptions.usageCost). */
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void>; readonly usageCost?: boolean };
+   *  Whether its answers state what they cost is the proxy's to read from `origin` (statesUsageCost): OpenRouter's, or
+   *  this route's own translation of one (ROUTE_ORIGIN). */
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
   readonly model: string;
   /** The model as the run names it (`provider/model-id`, chooseModel's): what the `llm` tool's answer says it ran on,
    *  never the session provider the runner reaches it through. */
@@ -68,8 +68,6 @@ export interface ModelRoute {
   readonly outputCeiling?: number | null;
 }
 
-/** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
-export const ROUTE_ORIGIN = "https://model-route.invalid";
 
 type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown; thinkingLevelMap?: ThinkingLevelMap; toolsAs?: ToolsAs };
 /** The wires a caller of routeOf speaks when it names none: Anthropic's Messages alone. */
@@ -111,7 +109,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // Messages, so the prompt cache marks pi-ai puts on the request reach it (provider.ts).
   if (target.api === "anthropic-messages" && chosen.model.provider === MODEL_PROVIDER && wires.includes("anthropic-messages")) {
     const to = providerFor("anthropic-messages", env, chosen.model, "pi");
-    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth, ...usageCostOn(to.origin) }, like: settings };
+    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth }, like: settings };
   }
   // A model pi-ai speaks Responses to, for a caller that speaks it: that wire itself, where main sends it (provider.ts).
   if (target.api === "openai-responses" && wires.includes("openai-responses")) {
@@ -122,19 +120,18 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
     const plan = onPlan ? { price: () => null, unpriced: true as const } : {};
     return {
       ...route, model: to.modelId, ...plan,
-      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}), ...usageCostOn(to.origin) },
+      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}) },
       like: onPlan ? { ...settings, developerRole: true } : settings,
     };
   }
-  // The translation writes an answer's cost in its usage only where pi-ai read the provider's own (OpenRouter's).
-  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route", usageCost: true }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
+  // The translation writes an answer's cost in its usage only where pi-ai read the provider's own (OpenRouter's): the
+  // proxy reads it on ROUTE_ORIGIN (statesUsageCost).
+  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
 }
 
 /** OpenRouter's origin: every answer it gives states its cost in its usage (https://openrouter.ai/docs/use-cases/usage-accounting). */
 const OPENROUTER_HOST = "openrouter.ai";
 const onOpenRouter = (origin: string): boolean => URL.canParse(origin) && new URL(origin).hostname === OPENROUTER_HOST;
-/** A route's `usageCost` on `origin`: OpenRouter's alone. */
-export const usageCostOn = (origin: string): { usageCost?: true } => (onOpenRouter(origin) ? { usageCost: true } : {});
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
 const piOnOpenRouter = (target: PiModel): boolean => target.provider === "openrouter" || onOpenRouter(target.baseUrl ?? "");
 

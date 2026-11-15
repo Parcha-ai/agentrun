@@ -61,9 +61,13 @@ export type TimelineEvent = {
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage
    *  row. `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
-   *  charged an unknown amount or cut). Absent when `usd` is known. `free`, on the usage row: its $0 is because every
-   *  model request went to a free model (one whose known price is $0 for every token), each booked so; absent otherwise. */
-  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true };
+   *  charged an unknown amount or cut). Beside `upper_bound`, the sum of the charges' own figures (never a hold) and how
+   *  many requests `usd` counts at their hold. Absent when `usd` is known and exact. `free`, on the usage row: its $0 is
+   *  because every model request went to a free model (one whose known price is $0 for every token), each booked so;
+   *  absent otherwise. `upper_bound`, on the usage row: `usd` counts a request cut with no answer at what was held for it,
+   *  the most it can have cost, so the run cost at most `usd`; absent otherwise. A reader that joins this row with more
+   *  charges takes it apart by those figures (serve's usageParts), never `usd` as spend. */
+  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true; upper_bound?: true };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
@@ -84,7 +88,7 @@ export type TimelineEvent = {
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
-export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
+export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true; /** The call of the harness's own a recorded call ran inside (CallStartData.parent: Codex's code-mode `exec`). */ parentCall?: string };
 /** The call a nested call (the kernel's NestedCalls: a script's, tools_call's) was made in, read off its id
  *  (`<callId>/<key>`); undefined for a call the model made itself. */
 export const nestingCallOf = (callId: string): string | undefined => {
@@ -226,7 +230,18 @@ export const RUN_RESUMED = "agentrun.run_resumed";
  *  when the turn's last entry was a tool's result (a stop that came after it, before the next model request). */
 export const TURN_END = "adapter.turn_end";
 
+/** Requests a run's booking holds beside its entries (a pi run's side requests, which no answer of pi's carries: a learned
+ *  workflow's nodes, a request on another model): how many, and their cost's parts as the kernel's CostParts counts them
+ *  (`known` their own figures, `bounded`/`atMost` cut ones at their hold, `unpriced` those with none). */
+export type SideSpend = { readonly requests: number; readonly known: number; readonly bounded: number; readonly atMost: number; readonly unpriced: number };
+
 export type TimelineOptions = {
+  /** Requests booked beside the entries (SideSpend), joined to the usage row's count and cost by its one rule. */
+  side?: SideSpend;
+  /** For a reader that says no "at most" (GET /usage's meters, cap.ts meterFiguresFrom): a request cut and booked at its
+   *  hold counts on the usage row as a cost no one knows, so its `usd` is null, `so_far_usd` the exact charges alone and
+   *  the hold among the `unpriced`, never an `upper_bound` figure that would read as spend. */
+  holdsUnpriced?: boolean;
   /** For entries and events that carry no conversation id. */
   conversationId?: number;
   agentLabel?: (conversationId: number) => string | null | undefined;
@@ -374,6 +389,12 @@ function createMeter() {
   // end was one (its answer, an error's entry, may still come).
   let freeUnanswered = 0;
   let freeEnded = false;
+  // Marked requests cut with no answer and booked at their hold (their end mark's `atMostUsd`, runner.ts CUT_AT_HOLD):
+  // counted at that figure, the most each can have cost, never a cost unknown; and the latest end's figure while its
+  // request is still the newest (the next request's mark counts it).
+  let atMostUnanswered = 0;
+  let atMostKnown = 0;
+  let atMostEnded: number | undefined;
   // Whether the latest answer's cost was counted unknown (a cut answer's): a free end mark written after it makes it $0.
   let lastUnknown = false;
   // Side requests (compactions, a tool's own requests), apart: one may run beside a generation. Each closes with its
@@ -459,6 +480,8 @@ function createMeter() {
       capRefusals = 0;
       if (freeEnded) freeUnanswered += 1;
       freeEnded = false;
+      if (atMostEnded !== undefined) (atMostUnanswered += 1), (atMostKnown += atMostEnded);
+      atMostEnded = undefined;
       lastUnknown = false;
       marked += 1;
       inFlight = true;
@@ -467,14 +490,18 @@ function createMeter() {
       if (unsent(entry)) marked -= 1;
       inFlight = false;
       // For a request still unanswered; one written after pi's entry for it (a cut answer's) makes that answer's cost $0.
-      freeEnded = data?.free === true && marked - answered - freeUnanswered > 0;
+      freeEnded = data?.free === true && marked - answered - freeUnanswered - atMostUnanswered > 0;
       if (data?.free === true && !freeEnded && lastUnknown) (unknown -= 1), (lastUnknown = false);
+      const atMost = data?.atMostUsd;
+      atMostEnded = typeof atMost === "number" && Number.isFinite(atMost) && atMost >= 0 && marked - answered - freeUnanswered - atMostUnanswered > 0 ? atMost : undefined;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
       if (marked > 0) answered += 1;
       // Its request's free end mark came first: whatever it answered costs nothing.
       const free = freeEnded;
       freeEnded = false;
+      // An answer is no cut: its own cost counts, never the hold a cut mark before it named.
+      atMostEnded = undefined;
       const name = str(message.model);
       if (name) {
         const key = metricName(str(message.provider) ? `${str(message.provider)}/${name}` : name);
@@ -497,24 +524,40 @@ function createMeter() {
   /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. While the
    *  cost is unknown, `so_far_usd` is the sum of the charges whose cost is known and `unpriced` how many have none: each
    *  cost no one knows (an answer or summary with none, a stopped request's, a paid tool charge), each still pending, each
-   *  request cut before any answer, and each paid tool call a settled run never settled. No ceiling is claimed. */
-  function usage(settled: boolean): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number; not_metered?: number } | undefined {
+   *  request cut before any answer, and each paid tool call a settled run never settled. A request cut and booked at its
+   *  hold (its end mark's `atMostUsd`) counts at that figure, the most it can have cost, kept apart from the exact
+   *  charges by the kernel's rule (costOfParts): with every charge counted the cost is their sum, `upper_bound`, with the
+   *  exact charges as `so_far_usd` and the holds as `unpriced` beside it; with one
+   *  of no known cost, the hold is a ceiling that bounds nothing, so it joins no `so_far_usd` and counts as `unpriced`.
+   *  `beside`: requests booked beside the entries (a pi run's side requests, TimelineOptions.side), joined by that rule. */
+  function usage(settled: boolean, beside?: SideSpend, holdsUnpriced = false): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number; not_metered?: number; upper_bound?: true } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
-    // Those on a free model ended at a known $0: counted, never cut.
+    // Those on a free model ended at a known $0, and those cut and booked at their hold at that figure: counted, never cut.
     const free = freeUnanswered + (freeEnded ? 1 : 0);
-    const cut = marked - open(inFlight) - free > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
+    const atMost = atMostUnanswered + (atMostEnded !== undefined ? 1 : 0);
+    const cut = marked - open(inFlight) - free - atMost > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     const unmetered = notMetered ? { not_metered: notMetered } : {};
-    if (!requests && !free && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
-    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
-    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - free - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
-    return { usd, requests: count, charges: paidCalls.size + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
+    const sides = beside?.requests ?? 0;
+    if (!requests && !free && !atMost && !compactions && !cut && !paidCalls.size && !cutCalls && !sides) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
+    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting) + sides;
+    // The parts: the exact charges, the holds of cut requests (and how many), and the charges of no known cost.
+    const exact = known + (beside?.known ?? 0);
+    const bounded = atMostKnown + (atMostEnded ?? 0) + (beside?.bounded ?? 0);
+    const holds = atMost + (beside?.atMost ?? 0);
+    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - free - atMost - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls + (beside?.unpriced ?? 0);
+    const round = (usd: number) => Math.round(usd * 1e6) / 1e6;
+    const charges = paidCalls.size + cutCalls;
+    // A reader that says no "at most" (TimelineOptions.holdsUnpriced) reads a hold as a cost no one knows.
+    if (unpriced > 0 || (holdsUnpriced && holds > 0)) return { usd: null, requests: count, charges, so_far_usd: round(exact), unpriced: unpriced + holds, ...unmetered };
+    // A bound says its exact part and how many holds it counts beside it, so a reader that joins this row with more
+    // charges (serve's costWordsOf over usageParts) never takes the hold for spend.
+    return { usd: round(exact + bounded), requests: count, charges, ...(holds > 0 ? { so_far_usd: round(exact), unpriced: holds, upper_bound: true as const } : {}), ...unmetered };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
@@ -911,8 +954,10 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          // Recorded managed calls derive their nesting from the id; SDK calls keep their validated explicit parent.
-          const nesting = (entry.recordedCall ? nestingCallOf(id) : undefined) ?? str(obj(entry.data)?.parentCallId);
+          // A call the loop's record kept for a tool that nests (a script's, tools_call's) sits under that tool's call; one
+          // made inside a call of the harness's own (Codex's `exec`) under that call, which its record names. SDK calls keep
+          // their validated explicit parent.
+          const nesting = (entry.recordedCall ? (entry.parentCall ?? nestingCallOf(id)) : undefined) ?? str(obj(entry.data)?.parentCallId);
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
@@ -1090,16 +1135,17 @@ function createProjector(options: TimelineOptions) {
   /** The usage row. `nothingInFlight`: read as a settled run is, a request marked with no answer being cut, for a host that
    *  knows its turn is over while its process lives on (a stopped turn). */
   function usage(nothingInFlight = false): TimelineEvent | undefined {
-    const counted = meter.usage(options.settled === true || nothingInFlight);
+    const counted = meter.usage(options.settled === true || nothingInFlight, options.side, options.holdsUnpriced === true);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
+    const { usd, requests, charges, so_far_usd, unpriced, not_metered, upper_bound } = counted;
     const paid = toolCallWords(charges, not_metered);
-    const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
+    // A cost that counts a cut request at its hold is the most the run can have cost: said so.
+    const spent = usd !== null ? `${upper_bound ? "at most " : ""}${dollars(usd)}` : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
       summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
-      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}) },
+      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}), ...(upper_bound ? { upper_bound } : {}) },
     });
   }
 
