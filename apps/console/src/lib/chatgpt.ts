@@ -15,6 +15,8 @@ export const PASTE_STEP = "Signing in on this computer finishes by itself. On a 
 /** Ours, under OpenAI's disclosure: one person's plan, one server. */
 export const PLAN_IS_YOURS = "This sign-in is yours: don't let other people run agents on this server with it.";
 export const SIGNED_OUT = "Signed out. If ChatGPT still lists AgentRun under connected apps, disconnect it there.";
+/** A sign-out OpenAI didn't confirm, when the server's answer has no words of its own (it always does: these are its). */
+export const NOT_REVOKED = "Signed out here. OpenAI didn't confirm the revocation: remove AgentRun in your ChatGPT settings.";
 export const EXPIRED = "Your ChatGPT sign-in expired. Sign in again.";
 /** A plan's requests in dollars: none; the plan's limits are ChatGPT's. A plan run's cost says it on hover. */
 export const PLAN_NO_DOLLARS = "Requests on your ChatGPT plan cost no dollars here; your plan's own limits apply.";

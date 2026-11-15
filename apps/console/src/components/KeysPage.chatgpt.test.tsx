@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { ChatGPTRow, WhatRunsHere } from "./ChatGPTSignIn";
+import { MANAGE_USAGE_URL } from "@/lib/chatgpt";
 import { createClient } from "@/lib/client";
 import type { ChatGPTView, ToolKeys } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
@@ -69,7 +70,7 @@ describe("Settings → Model keys, the ChatGPT plan row", () => {
   it("Sign out asks first, then signs out and says what is left to do in ChatGPT", async () => {
     let plan: ChatGPTView = SIGNED_IN;
     let changed = 0;
-    const { v2, calls } = server(() => plan, (call) => { if (call.method === "DELETE") plan = { state: "signed_out" }; return new Response(null, { status: 204 }); });
+    const { v2, calls } = server(() => plan, (call) => { if (call.method === "DELETE") plan = { state: "signed_out" }; return json(200, { revoked: true }); });
     const page = await open(v2, () => { changed++; });
     await page.click(/^Sign out$/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
@@ -83,6 +84,37 @@ describe("Settings → Model keys, the ChatGPT plan row", () => {
     expect(page.row()!.textContent).not.toContain("Signed in as");
     expect(page.button(/^Continue with ChatGPT$/)).toBeTruthy();
     expect(changed).toBe(1);
+  });
+
+  it("a sign-out OpenAI didn't confirm: signed out here all the same, the server's words said plainly, ChatGPT's settings beside them", async () => {
+    let plan: ChatGPTView = SIGNED_IN;
+    let changed = 0;
+    const UNCONFIRMED = "Signed out here. OpenAI didn't confirm the revocation: remove AgentRun in your ChatGPT settings.";
+    const { v2 } = server(() => plan, (call) => { if (call.method === "DELETE") plan = { state: "signed_out" }; return json(200, { revoked: false, message: UNCONFIRMED }); });
+    const page = await open(v2, () => { changed++; });
+    await page.click(/^Sign out$/);
+    await page.click(/^Sign out$/);
+    const status = page.row()!.querySelector<HTMLElement>('[role="status"]')!;
+    expect(status.textContent).toContain(UNCONFIRMED);
+    expect(status.textContent).not.toContain("If ChatGPT still lists AgentRun");
+    const link = status.querySelector<HTMLAnchorElement>("a")!;
+    expect(link.getAttribute("href")).toBe(MANAGE_USAGE_URL);
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.textContent).toBe("ChatGPT settings");
+    expect(page.row()!.querySelector('[role="alert"]')).toBeNull();
+    expect(page.row()!.textContent).toContain("not signed in");
+    expect(page.row()!.textContent).not.toContain("Signed in as");
+    expect(page.button(/^Continue with ChatGPT$/)).toBeTruthy();
+    expect(changed).toBe(1);
+  });
+
+  it("a server that answers the sign-out with no body (204) reads as signed out, as before", async () => {
+    let plan: ChatGPTView = SIGNED_IN;
+    const { v2 } = server(() => plan, (call) => { if (call.method === "DELETE") plan = { state: "signed_out" }; return new Response(null, { status: 204 }); });
+    const page = await open(v2);
+    await page.click(/^Sign out$/);
+    await page.click(/^Sign out$/);
+    expect(page.row()!.querySelector('[role="status"]')?.textContent).toBe("Signed out. If ChatGPT still lists AgentRun under connected apps, disconnect it there.");
   });
 
   it("expired: says so, and offers the sign-in again", async () => {

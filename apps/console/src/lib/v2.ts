@@ -165,6 +165,8 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 export type ChatGPTView = Answer<"getChatGPTSignIn">;
 /** POST /v2/settings/chatgpt/sign-in's answer: OpenAI's page to open, and until when the sign-in waits. */
 export type ChatGPTStart = Answer<"startChatGPTSignIn">;
+/** DELETE /v2/settings/chatgpt's answer: whether OpenAI confirmed the revocation, and with `revoked` false, what to do. */
+export type ChatGPTSignOut = Answer<"signOutChatGPT">;
 
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;
