@@ -46,6 +46,10 @@ test("an apostrophe inside a query value never lets the values after it through"
   assert.equal(scrubUrls("https://search.example/?q='rust'&token=v"), "https://search.example/?q=…&token=…");
 });
 
+test("a query value holding a | is elided whole: the scrub runs on through it, where a link read for the check ends at it", () => {
+  assert.equal(scrubUrls("https://maps.example/?markers=held-a|held-b&token=v"), "https://maps.example/?markers=…&token=…");
+});
+
 test("a sentence's punctuation after a URL stays outside it, as before", () => {
   assert.equal(scrubUrls("(see https://docs.example/a?b=1)."), "(see https://docs.example/a?b=…).");
   assert.equal(scrubUrls('{"url":"https://docs.example/a?b=1#top"}'), '{"url":"https://docs.example/a?b=…"}');
