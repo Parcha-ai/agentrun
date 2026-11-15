@@ -1,0 +1,235 @@
+// The email tools (email/tools.ts) in pi runs, against the fake mail account: email_search answers newest first,
+// email_read a thread oldest first with its references, email_draft appends to the account's Drafts with \Draft, and
+// email_send asks first (its approval says to whom and what), sends nothing on a deny, and on an allow sends a reply
+// threaded with In-Reply-To and References, marked X-AgentRun-Sent, its copy appended to Sent unless the provider keeps
+// one (Gmail). Mailbox names: INBOX; "Drafts" and "Sent" (or "\\Drafts", "\\Sent") the account's special-use folders, its
+// folder of that name else; any other a folder's own name, as a Gmail layout shows. Reads are PEEKs: the inbox reads
+// unread after. A run an email started sees only its thread (the message that started it and every message linked to
+// it by References or In-Reply-To, in any mailbox) unless the agent's tool setting says `scope: "mailbox"`; any other
+// run sees the whole account. The password is in no answer, row or run input.
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { test } from "node:test";
+import { agent, call, clientOwnerSession, follow, runDir, serve } from "./support.mjs";
+import { fakeClock, firings, made } from "./trigger-support.mjs";
+import { ADDRESS, emailTrigger, FAUX_EMAIL, mailbox, saved, sawOf } from "./email-support.mjs";
+
+const TOOLS = ["email_search", "email_read", "email_draft", "email_send"];
+const calls = (list) => `Email calls: ${JSON.stringify(list)}`;
+
+/** A thread of three in the account, and a message apart from it in INBOX and one in Archive: ana's first message, our
+ *  reply in Sent, ana's answer; then the others. Each Message-ID fixed, so a run's calls can name them. */
+function thread(faux) {
+  const first = faux.seed({ from: "Ana Díaz <ana@example.com>", to: [ADDRESS], subject: "Plan", text: "Shall we plan the launch?", date: "2026-05-01T10:00:00Z", messageId: "<m1@example.com>" });
+  const reply = faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["ana@example.com"], subject: "Re: Plan", text: "Yes, Tuesday.", date: "2026-05-01T11:00:00Z", messageId: "<m2@faux.example>", inReplyTo: "<m1@example.com>", references: ["<m1@example.com>"], flags: ["\\Seen"] });
+  const apart = faux.seed({ from: "Cy <cy@example.com>", to: [ADDRESS], subject: "Lunch", text: "Lunch on Friday?", date: "2026-05-01T12:00:00Z", messageId: "<u1@example.com>" });
+  const archived = faux.seed({ mailbox: "Archive", from: "Dee <dee@example.com>", subject: "Old news", text: "Archived.", date: "2026-04-01T12:00:00Z", messageId: "<a1@example.com>", flags: ["\\Seen"] });
+  return { first, reply, apart, archived };
+}
+const answer = (faux) => faux.seed({ from: "Ana Díaz <ana@example.com>", to: [ADDRESS], cc: ["Bo <bo@example.com>"], subject: "Re: Plan", text: "Tuesday works. Bring the slides.", date: "2026-05-01T13:00:00Z", messageId: "<m3@example.com>", inReplyTo: "<m2@faux.example>", references: ["<m1@example.com>", "<m2@faux.example>"], attachments: [{ name: "slides.txt", type: "text/plain", content: "one two" }] });
+
+/** Agent `id` on pi with the four email tools (or `tools`), told nothing of its own. */
+const mailAgent = (id, extra = {}) => agent(id, { harness: "pi", tools: TOOLS, ...extra });
+
+/** A run of agent `id` with `list` as its calls, to its end: the answers it was handed, parsed. */
+async function ran(api, id, list) {
+  const started = await api("POST", `/agents/${id}/runs`, { input: { content: calls(list) } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  return { runId: started.body.run_id, saw: sawOf(view.result?.final_answer) };
+}
+
+test("search newest first, a thread read oldest first, a draft in Drafts with \\Draft; every read a PEEK", { timeout: 150_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t);
+  const { first, apart } = thread(faux);
+  answer(faux);
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("reader"))).status, 201);
+
+  const { runId, saw } = await ran(api, "reader", [
+    ["email_search", { from: "ana@example.com" }],
+    ["email_read", { message_id: "<m3@example.com>", thread: true }],
+    ["email_draft", { to: ["ana@example.com"], cc: ["bo@example.com"], subject: "Re: Plan", text: "Slides attached soon.", in_reply_to: "<m3@example.com>" }],
+    ["email_search", { mailbox: "Archive" }],
+    ["email_search", { text: "Lunch", unread: true, limit: 5 }],
+  ]);
+  const [search, read, draft, archive, lunch] = saw;
+  assert.deepEqual(search.messages.map((m) => m.message_id), ["<m3@example.com>", "<m1@example.com>"], "newest first, INBOX by default");
+  assert.deepEqual(search.messages[0], { message_id: "<m3@example.com>", from: "ana@example.com", to: [ADDRESS], subject: "Re: Plan", date: "2026-05-01T13:00:00.000Z", snippet: "Tuesday works. Bring the slides.", unread: true, attachments: [{ name: "slides.txt", size: 7, type: "text/plain" }] });
+
+  assert.deepEqual(read.messages.map((m) => m.message_id), ["<m1@example.com>", "<m2@faux.example>", "<m3@example.com>"], "the thread oldest first, our reply in Sent with it");
+  assert.deepEqual(read.messages[2], {
+    from: "ana@example.com", from_name: "Ana Díaz", to: [ADDRESS], cc: ["bo@example.com"], subject: "Re: Plan", date: "2026-05-01T13:00:00.000Z", message_id: "<m3@example.com>", in_reply_to: "<m2@faux.example>",
+    text: "Tuesday works. Bring the slides.", attachments: [{ name: "slides.txt", size: 7, type: "text/plain" }], references: ["<m1@example.com>", "<m2@faux.example>"],
+  });
+
+  assert.deepEqual([draft.saved, draft.mailbox], [true, "Drafts"]);
+  const [kept] = faux.messages("Drafts");
+  assert.ok(kept.flags.includes("\\Draft"), `flags: ${kept.flags}`);
+  assert.equal(kept.messageId, draft.message_id);
+  assert.match(kept.raw, /^In-Reply-To: <m3@example\.com>\r$/m);
+  assert.match(kept.raw, /^References: <m1@example\.com> <m2@faux\.example> <m3@example\.com>\r$/m);
+  assert.match(kept.raw, /^From: agent@faux\.example\r$/m);
+  assert.deepEqual(faux.sent(), [], "a draft sends nothing");
+
+  assert.deepEqual(archive.messages.map((m) => m.message_id), ["<a1@example.com>"], "a folder by its own name");
+  assert.deepEqual(lunch.messages.map((m) => m.message_id), [apart.messageId]);
+
+  assert.deepEqual(faux.messages().map((m) => [m.messageId, m.flags.includes("\\Seen")]), [[first.messageId, false], [apart.messageId, false], ["<m3@example.com>", false]], "every read left the inbox unread");
+  assert.ok(!faux.commands().some((c) => /\bSTORE\b/i.test(c) || (/BODY\[/i.test(c) && !/BODY\.PEEK\[/i.test(c))), "no read set a flag");
+
+  // The password: in no answer the run was handed, no row, no input.
+  const rows = JSON.stringify((await api("GET", `/runs/${runId}/timeline?wait_ms=0`)).body);
+  const meta = await readFile(join(runDir(data, runId), "serve.json"), "utf8");
+  for (const where of [JSON.stringify(saw), rows, meta]) assert.ok(!where.includes(faux.password));
+});
+
+test("Gmail's layout: Drafts and Sent are [Gmail]/Drafts and [Gmail]/Sent Mail, by name or by \\Drafts and \\Sent; a folder by its own name; a thread read across INBOX and Sent Mail; a sent reply is left for Gmail to file", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t, { faux: FAUX_EMAIL, accounts: true, openSetup: true });
+  const { api } = server;
+  const faux = await mailbox(t, { layout: "gmail" });
+  faux.seed({ from: "ana@example.com", subject: "Plan", text: "Plan?", date: "2026-05-01T10:00:00Z", messageId: "<g1@example.com>" });
+  faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["ana@example.com"], subject: "Re: Plan", text: "Yes.", date: "2026-05-01T11:00:00Z", messageId: "<g2@faux.example>", inReplyTo: "<g1@example.com>", references: ["<g1@example.com>"] });
+  faux.seed({ mailbox: "[Gmail]/All Mail", from: "old@example.com", subject: "All mail only", date: "2026-04-01T00:00:00Z", messageId: "<g0@example.com>" });
+  await saved(api, faux, { preset: "gmail" });
+  assert.equal((await api("POST", "/agents", mailAgent("gmail", { tool_settings: { email_send: { permission: "allow" } } }))).status, 201);
+
+  const { saw } = await ran(api, "gmail", [
+    ["email_draft", { to: ["ana@example.com"], subject: "Draft one", text: "One." }],
+    ["email_search", { mailbox: "\\Drafts" }],
+    ["email_search", { mailbox: "Sent" }],
+    ["email_search", { mailbox: "\\Sent" }],
+    ["email_search", { mailbox: "[Gmail]/All Mail" }],
+    ["email_read", { message_id: "<g1@example.com>", thread: true }],
+    ["email_send", { to: ["ana@example.com"], subject: "Re: Plan", text: "See you Tuesday.", in_reply_to: "<g2@faux.example>" }],
+  ]);
+  const [draft, drafts, sent, sentFlag, all, read, send] = saw;
+  assert.deepEqual([draft.saved, draft.mailbox], [true, "[Gmail]/Drafts"]);
+  assert.equal(faux.messages("[Gmail]/Drafts").length, 1);
+  assert.deepEqual(drafts.messages.map((m) => m.subject), ["Draft one"]);
+  assert.deepEqual([sent.messages.map((m) => m.message_id), sentFlag.messages.map((m) => m.message_id)], [["<g2@faux.example>"], ["<g2@faux.example>"]]);
+  assert.deepEqual(all.messages.map((m) => m.message_id), ["<g0@example.com>"]);
+  assert.deepEqual(read.messages.map((m) => m.message_id), ["<g1@example.com>", "<g2@faux.example>"]);
+  assert.equal(send.sent, true, JSON.stringify(send));
+  assert.equal(faux.sent().length, 1);
+  assert.deepEqual(faux.messages("[Gmail]/Sent Mail").map((m) => m.messageId), ["<g2@faux.example>"], "Gmail files what its SMTP sent: no second copy appended");
+});
+
+test("email_send asks, saying to whom and what; a deny sends nothing; an allow sends the reply threaded, marked as this server's, and files a copy in Sent", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t, { faux: FAUX_EMAIL, accounts: true, openSetup: true });
+  const { api } = server;
+  const faux = await mailbox(t);
+  thread(faux);
+  answer(faux);
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("sender"))).status, 201);
+  const session = await clientOwnerSession(server);
+  const decide = async (runId, approvalId, decision) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { "content-type": "application/json", cookie: session.cookie, origin: session.origin }, body: { decision } })).status;
+  const long = `Tuesday it is. ${"More words. ".repeat(40)}`;
+  const send = ["email_send", { to: ["ana@example.com"], cc: ["bo@example.com"], subject: "Re: Plan", text: long, in_reply_to: "<m3@example.com>" }];
+
+  for (const decision of ["deny", "allow"]) {
+    const started = await api("POST", "/agents/sender/runs", { input: { content: calls([send]) } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const runId = started.body.run_id;
+    await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+    const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+    assert.deepEqual([pending?.kind, pending?.tool], ["approval", "email_send"], "send asks by default");
+    assert.equal(pending.summary, `Send email to ana@example.com, cc bo@example.com: Re: Plan\n\n${long.slice(0, 300)}`);
+    assert.deepEqual(faux.sent(), [], "nothing sent while it waits");
+    assert.equal(await decide(runId, pending.id, decision), 204);
+    await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+    const [said] = sawOf((await api("GET", `/runs/${runId}`)).body.result?.final_answer);
+    if (decision === "deny") {
+      assert.deepEqual(faux.sent(), [], "a deny sends nothing");
+      assert.deepEqual(faux.messages("Sent").map((m) => m.messageId), ["<m2@faux.example>"], "nor files anything");
+      continue;
+    }
+    assert.equal(said.sent, true, JSON.stringify(said));
+    const [mail] = faux.sent();
+    assert.equal(faux.sent().length, 1);
+    assert.deepEqual([mail.from, [...mail.to].sort()], [ADDRESS, ["ana@example.com", "bo@example.com"]]);
+    assert.match(mail.raw, /^In-Reply-To: <m3@example\.com>\r$/m);
+    assert.match(mail.raw, /^References: <m1@example\.com> <m2@faux\.example> <m3@example\.com>\r$/m);
+    assert.match(mail.raw, new RegExp(`^X-AgentRun-Sent: ${runId}\\r$`, "m"));
+    assert.match(mail.raw, new RegExp(`^Message-ID: ${said.message_id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r$`, "mi"));
+    const filed = faux.messages("Sent");
+    assert.deepEqual(filed.map((m) => m.messageId), ["<m2@faux.example>", said.message_id], "a copy filed in Sent");
+    assert.ok(filed[1].flags.includes("\\Seen"));
+  }
+});
+
+test("a run an email started sees its thread alone, in any mailbox; `scope: \"mailbox\"` on the agent's tools widens it; a scheduled run sees the whole account", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:30Z");
+  const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });
+  const faux = await mailbox(t);
+  thread(faux);
+  await saved(api, faux);
+  const list = [
+    ["email_read", { message_id: "<m1@example.com>" }],
+    ["email_read", { message_id: "<m2@faux.example>" }],
+    ["email_read", { message_id: "<u1@example.com>" }],
+    ["email_search", {}],
+    ["email_read", { message_id: "<m3@example.com>", thread: true }],
+  ];
+  assert.equal((await api("POST", "/agents", mailAgent("narrow"))).status, 201);
+  assert.equal((await api("POST", "/agents", mailAgent("wide", { tool_settings: { email_read: { scope: "mailbox" }, email_search: { scope: "mailbox" } } }))).status, 201);
+  const narrow = await api("POST", "/triggers", emailTrigger("narrow", { every_s: 60 }, calls(list)));
+  const wide = await api("POST", "/triggers", emailTrigger("wide", { every_s: 60 }, calls(list)));
+  for (const made of [narrow, wide]) assert.equal(made.status, 201, JSON.stringify(made.body));
+  clock.to("2026-06-01T00:01:00Z");
+  await firings(api, narrow.body.id, 1);
+  await firings(api, wide.body.id, 1);
+  answer(faux);
+  clock.to("2026-06-01T00:02:00Z");
+
+  const sawOfTrigger = async (id) => {
+    const [fired] = await firings(api, id, 2);
+    assert.equal(fired.status, "started", JSON.stringify(fired));
+    await follow(api, fired.run_id, ["completed"], { deadlineMs: 55_000 });
+    return sawOf((await api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer);
+  };
+  const [m1, m2, u1, search, whole] = await sawOfTrigger(narrow.body.id);
+  assert.equal(m1.messages[0].message_id, "<m1@example.com>", "in the thread: what it answers");
+  assert.equal(m2.messages[0].message_id, "<m2@faux.example>", "in the thread, in Sent");
+  assert.match(String(u1), /outside this run's thread/, "a message apart from it is never fetched");
+  assert.deepEqual(search.messages.map((m) => m.message_id), ["<m3@example.com>", "<m1@example.com>"], "a search finds the thread's messages alone");
+  assert.deepEqual(whole.messages.map((m) => m.message_id), ["<m1@example.com>", "<m2@faux.example>", "<m3@example.com>"]);
+
+  const [, , wideU1, wideSearch] = await sawOfTrigger(wide.body.id);
+  assert.equal(wideU1.messages?.[0]?.message_id, "<u1@example.com>", `scope "mailbox" reads the whole account: ${JSON.stringify(wideU1)}`);
+  assert.deepEqual(wideSearch.messages.map((m) => m.message_id), ["<m3@example.com>", "<u1@example.com>", "<m1@example.com>"]);
+
+  // A schedule's run: no thread, the whole account.
+  const nightly = await api("POST", "/triggers", { name: "nightly", source: { kind: "schedule", every_s: 60, start_at: "2026-06-01T00:00:00Z" }, target: { kind: "start_run", agent_id: "narrow", input: { content: calls([["email_read", { message_id: "<u1@example.com>" }]]) }, max_cost_usd: 0.5 } });
+  assert.equal(nightly.status, 201, JSON.stringify(nightly.body));
+  clock.to("2026-06-01T00:03:00Z");
+  const [scheduled] = await firings(api, nightly.body.id, 1);
+  await follow(api, scheduled.run_id, ["completed"], { deadlineMs: 55_000 });
+  const [read] = sawOf((await api("GET", `/runs/${scheduled.run_id}`)).body.result?.final_answer);
+  assert.equal(read.messages?.[0]?.message_id, "<u1@example.com>", JSON.stringify(read));
+});
+
+test("scope is an agent's own setting on email_read and email_search, \"thread\" or \"mailbox\": anywhere else it is refused", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { runner: false });
+  const refused = async (body, field) => {
+    const res = await api("POST", "/agents", body);
+    assert.equal(res.status, 422, JSON.stringify(res.body));
+    assert.ok(res.body.error.fields.some((f) => f.field === field), JSON.stringify(res.body));
+  };
+  await refused(mailAgent("a", { tool_settings: { email_send: { scope: "mailbox" } } }), "definition.tool_settings.email_send.scope");
+  await refused(mailAgent("b", { tool_settings: { email_read: { scope: "everything" } } }), "definition.tool_settings.email_read.scope");
+  assert.equal((await api("POST", "/agents", mailAgent("c", { tool_settings: { email_read: { scope: "mailbox" }, email_search: { scope: "thread" } } }))).status, 201);
+  const server = await api("PUT", "/settings/tools", { email_read: { scope: "mailbox" } });
+  assert.equal(server.status, 422, JSON.stringify(server.body));
+});
+
+test("the email tools' defaults: search, read and draft allow; send asks; none is a workflow node's tool", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { runner: false, accounts: true, openSetup: true });
+  const { tools } = (await api("GET", "/capabilities")).body;
+  const listed = TOOLS.map((name) => tools.find((tool) => tool.name === name));
+  assert.deepEqual(listed.map((tool) => [tool?.name, tool?.default_permission, tool?.permission, tool?.nodes]), [["email_search", "allow", "allow", false], ["email_read", "allow", "allow", false], ["email_draft", "allow", "allow", false], ["email_send", "ask", "ask", false]]);
+});
