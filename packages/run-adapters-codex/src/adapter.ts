@@ -13,7 +13,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
-import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
+import { abortedOutcome, openDrive, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
 import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
@@ -94,22 +94,6 @@ export interface CodexAdapterOptions {
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
 }
-
-/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure.
- *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
- *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
- *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-export const kernelTool = (tool: HostTool): KernelTool => bridgeTool(tool, {
-  name: codexToolName(tool.name),
-  // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
-  // (the schema itself is the host's, and every call is checked against it).
-  description: describedDescription(tool.description, tool.inputSchema),
-  // A tool that nests calls (tools_call) names them by the host's names: the bridge holds them by Codex's.
-  nestedName: codexToolName,
-  // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
-  parked: markParked,
-  imageProblems: (images) => toolImageProblems(tool.name, images),
-});
 
 /** The adapter's event for a harness live event, if it has one: a tool's by the host's name for it (`hostName`). */
 function adapterEvent(event: unknown, hostName: (name: string) => string): AdapterEvent | undefined {
@@ -207,7 +191,21 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       // web_search setting allows it, read before each request (a deny or ask set mid-run drops it from the next one).
       const searchAllowed = options.webSearch && io.permission ? async () => (await io.permission!("web_search")) === "allow" : undefined;
       const harnessOptions: CodexHarnessOptions = {
-        tools: tools.map(kernelTool),
+        // The kernel's tool for each host tool (bridgeTool): the same schema and replay policy, a host's error result the
+        // call's failure. The call runs as a kernel effect, whose intent is durable before it is entered, so a crash inside
+        // a `never` tool is always reported, never repeated (the copied harness's wait for Codex's own `function_call` line
+        // before it runs such a tool is a second guard, not the one that protects it).
+        tools: tools.map((tool) => bridgeTool(tool, {
+          name: codexToolName(tool.name),
+          // Codex strips some keywords from the schema its model is given: they are said in plain words in the
+          // description (the schema itself is the host's, and every call is checked against it).
+          description: describedDescription(tool.description, tool.inputSchema),
+          // A tool that nests calls (tools_call) names them by the host's names: the bridge holds them by Codex's.
+          nestedName: codexToolName,
+          // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
+          parked: markParked,
+          imageProblems: (images) => toolImageProblems(tool.name, images),
+        })),
         // The host's gate, asked about each host-tool call before its intent is written.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!({ ...call, tool: hostName(call.tool) }) } : {}),
         builtins: false,

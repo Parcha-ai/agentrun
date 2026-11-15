@@ -15,6 +15,11 @@ describe("model labels", () => {
     expect(modelLabel("openai/gpt-6.1-sol", "agent-model")).toEqual({ text: "openai/gpt-6.1-sol" });
     expect(modelLabel("faux/faux-1", null)).toEqual({ text: "faux/faux-1" });
   });
+  it("a ChatGPT plan's model (chatgpt/<id>) reads its id and \"on your ChatGPT plan\", the full id its title, whatever the route prefix", () => {
+    expect(modelLabel("chatgpt/gpt-6.1-sol", null)).toEqual({ text: "gpt-6.1-sol · on your ChatGPT plan", title: "chatgpt/gpt-6.1-sol" });
+    expect(modelLabel("chatgpt/gpt-6.1-sol", "agent-model")).toEqual({ text: "gpt-6.1-sol · on your ChatGPT plan", title: "chatgpt/gpt-6.1-sol" });
+    expect(modelLabel("chatgpt/", null)).toEqual({ text: "chatgpt/" });
+  });
   it("takes each harness's default from the server (harnesses[].default_model), none where it says null", () => {
     const harnesses = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
     expect(harnessDefault("codex", harnesses)).toBe("agent-model/gpt-6-luna");

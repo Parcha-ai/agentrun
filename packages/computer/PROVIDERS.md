@@ -226,7 +226,7 @@ function codeOf(error: unknown): ComputerErrorCode {
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
 without it, AgentRun streams its daemon through `exec`'s stdin. `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
-move it past its `agentrun.computer.max-deadline` label. When no end your API takes lands there, throw
+move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
 your API keeps no label change, `get` reads your moved timer as that label. Without `extend`, a computer can't be
 extended. `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields

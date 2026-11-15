@@ -347,10 +347,10 @@ test("a run's catalog tools are deferred only past DEFER_CATALOG_OVER of them: t
   assert.equal(DEFER_CATALOG_OVER, 20);
   assert.equal(defersCatalog(["read", "write", "edit", "bash", "web_fetch"]), false, "built-ins only");
   assert.equal(defersCatalog(["read", ...mcp(1)]), false, "one MCP tool");
-  assert.equal(defersCatalog(["monid_discover", "monid_inspect", "monid_run"]), false, "monid's three");
   assert.equal(defersCatalog(mcp(DEFER_CATALOG_OVER)), false, "exactly the threshold: not yet");
   assert.equal(defersCatalog(mcp(DEFER_CATALOG_OVER + 1)), true, "past it");
-  assert.equal(defersCatalog([...mcp(DEFER_CATALOG_OVER - 3), "monid_discover", "monid_inspect", "monid_run", "monid_run2"].slice(0, 22)), true, "monid's tools count toward it");
+  assert.equal(defersCatalog([...mcp(DEFER_CATALOG_OVER - 3), "monid__apollo__people__match", "monid__apollo__organizations__enrich", "monid__faux__person__enrich", "monid__faux__tweets"]), true, "monid's endpoints count toward it");
+  assert.equal(defersCatalog([...mcp(DEFER_CATALOG_OVER - 3), "monid_run", "monid_discover", "monid_inspect", "monid_x"]), false, "a name with monid's old single _ is no endpoint's");
   const many = Array.from({ length: 40 }, (_, index) => `tool_${index}`);
   assert.equal(defersCatalog(many), false, "built-in tools never defer, however many");
 });

@@ -19,6 +19,7 @@ import { contextSize, type FreeModel, harnessDefault, harnessFree, harnessModels
 import { Switch } from "@/components/ui/switch";
 import { type PickerOption, Picker } from "@/components/ui/picker";
 import { SpendCapMinimum } from "@/lib/spendCap";
+import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
 import { isMonidName, monidFieldsOf, splitMonidWarnings } from "@/lib/monid";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
@@ -271,6 +272,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const free = harnessFree(f.harness ?? "pi", caps.harnesses);
   const listed = freeOnly && free.size ? offered.filter((id) => free.has(id) || id === f.model) : offered;
   const modelOptions: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default" }, ...listed.map((id) => ({ value: id, label: modelLabel(id, caps.routePrefix).text, ...(free.has(id) ? { tag: `Free · ${contextSize(free.get(id)!.context_window)} context` } : {}) })), { value: CUSTOM_MODEL, label: "Custom..." }];
+  // A server signed in to a ChatGPT plan (a harness offers its models): the cap says it counts dollars, which the plan's
+  // requests are not.
+  const onPlan = caps.harnesses.some((h) => isPlanModel(h.default_model) || h.models?.some(isPlanModel));
   // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
@@ -530,7 +534,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!starting && (
-                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note={<>A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <Input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />
                 </Field>
               )}

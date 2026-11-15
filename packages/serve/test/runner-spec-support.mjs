@@ -27,6 +27,7 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  * Build a run's AdapterRunSpec through the dispatch's spec builder.
  *   body     the pinned revision's body (tools, approvals, instructions, toolSettings, harness)
  *   kind     the revision's kind ("agentic" by default)
+ *   monidPin the revision's monid pin (revisions.monid_pin, as a save stamps it), or none
  *   launch   the launch body (merged over sane defaults: a runner place, a person's first message)
  *   settings the server's tool settings saved in the one store (store.settings), or none
  *   routeOf  the model route (a stub by default)
@@ -42,8 +43,8 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *            computerDeps } (computerDepsFrom's); none by default (a runner place makes no computer)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "kind", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer"]);
-  const { body = {}, kind = "agentic", skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer } = options;
+  strictOptions("specFor", options, ["body", "kind", "monidPin", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer"]);
+  const { body = {}, kind = "agentic", monidPin, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -55,7 +56,7 @@ export async function specFor(t, options = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   // `skills`: the revision's skill files (path to text), kept on its row as the store keeps them; the body names each path.
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind, body: { instructions: "Answer.", ...(skills ? { skills: Object.fromEntries(Object.keys(skills).map((path) => [path, "0".repeat(64)])) } : {}), ...body }, ...(skills ? { skills } : {}) });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind, body: { instructions: "Answer.", ...(skills ? { skills: Object.fromEntries(Object.keys(skills).map((path) => [path, "0".repeat(64)])) } : {}), ...body }, ...(skills ? { skills } : {}), ...(monidPin ? { monidPin } : {}) });
   const launchOf = (fileIds) => ({ input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...(fileIds.length ? { files: fileIds } : {}), ...launch });
   // A claim-time computer reads the run's launch row (its box_allow), as the runner's store has it: such a run is made
   // with its launch.

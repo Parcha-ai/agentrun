@@ -160,6 +160,14 @@ export type ToolKeysReenter = NonNullable<ToolKeys["reenter"]>;
 /** `capabilities.features.tool_keys`. */
 export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 
+/** This server's ChatGPT sign-in (GET /v2/settings/chatgpt, a serve extension): its state, who and which plan, never a
+ *  token. */
+export type ChatGPTView = Answer<"getChatGPTSignIn">;
+/** POST /v2/settings/chatgpt/sign-in's answer: OpenAI's page to open, and until when the sign-in waits. */
+export type ChatGPTStart = Answer<"startChatGPTSignIn">;
+/** DELETE /v2/settings/chatgpt's answer: whether OpenAI confirmed the revocation, and with `revoked` false, what to do. */
+export type ChatGPTSignOut = Answer<"signOutChatGPT">;
+
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;
 /** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */

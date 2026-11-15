@@ -91,6 +91,10 @@ export const KINDS = {
    *  later claim that asks the same turn again reads the first ask's (the commit of main a compile turn was asked at among
    *  them), never its own. Neither a call nor a message: the reader passes over it. */
   endOfRunKept: "agentrun.end-of-run.kept",
+  /** How the run's job's own turn ended (JobEndData: the end it gives the run, a CLI's error answer), as the claim that
+   *  read it decided, written on the root before the end-of-run step asks its first turn. A claim that finds that turn
+   *  open ends the run on the newest one, never working the job's end out again. Neither a call nor a message. */
+  jobEnd: "agentrun.end-of-run.job",
   /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
@@ -346,6 +350,13 @@ export interface EndData {
   readonly output?: unknown;
   /** An escalated workflow run's review (outcome escalated): why it waits for a person, as its escalate node said it. */
   readonly review?: EndReview;
+}
+
+/** How a run's job's own turn ended (KINDS.jobEnd): the end it gives the run (its summary cut of every secret the runner
+ *  holds), and a CLI's error answer the end writes as its error row (`failedWith`). */
+export interface JobEndData {
+  readonly end: EndData;
+  readonly failedWith?: string;
 }
 
 /** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node

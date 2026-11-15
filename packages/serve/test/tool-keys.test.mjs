@@ -277,7 +277,7 @@ test("a value the server is started with wins over one pasted before, for a tool
   // The tool's check at this start goes out on the server's value, never the pasted one (faux monid refuses it, so the
   // check reads refused, in words that say to set the right one where AgentRun starts).
   let checked;
-  for (let turn = 0; turn < 400 && !(checked = calls().slice(before).find((call) => call.path === "/v1/discover")); turn++) await new Promise((go) => setTimeout(go, 25));
+  for (let turn = 0; turn < 400 && !(checked = calls().slice(before).find((call) => call.path === "/v1/endpoints")); turn++) await new Promise((go) => setTimeout(go, 25));
   assert.ok(checked, "the start checked monid's key");
   assert.equal(checked.key, digest(started.MONID_API_KEY).slice(0, 16), "sent the server's value");
   assert.ok(!calls().slice(before).some((call) => call.key === digest(pasted.MONID_API_KEY).slice(0, 16)), "the pasted value is never sent");
