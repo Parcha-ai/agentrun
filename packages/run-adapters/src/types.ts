@@ -228,6 +228,9 @@ export interface ModelUsage {
    *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
    *  unpriced one. */
   givenBack?: true;
+  /** On a free model (its known price $0 for every token): booked a known $0 however it ended, `usd` 0, set by the
+   *  runner's booking (Admitted.free) on what it tells of the request's end, for a reader to say why it cost nothing. */
+  free?: true;
   /** The ids the provider's response gave the request, by header name (the provider's `request-id`, a gateway's call
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */

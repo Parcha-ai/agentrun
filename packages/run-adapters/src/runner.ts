@@ -85,7 +85,7 @@ export type BeforeRequest = (request: {
    *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
    *  admitted one at a time, so each check sees every request admitted before it. */
   inFlight: readonly InFlight[];
-}) => void | Refusal | Admission | Promise<void | Refusal | Admission>;
+}) => void | Refusal | Admitted | Promise<void | Refusal | Admitted>;
 
 /** A host's refusal of a request: its words, and, from a spend cap, whether no raise could send it (`forGood`) and, for
  *  one a raise could, its figures (what the cap counted as taken, what the request needs at the least, the least cap that
@@ -108,6 +108,10 @@ export type InFlight = { turn: number; model: string; inputTokensMax?: number; o
  *  cache miss adds to `holdUsd`, written beside it, so a request that never answers counts for the cap at both. */
 export type Admission = { holdUsd?: number; boundUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue } };
 
+/** An admission as a host gives it: with `free` when the request is on a free model (its known price is $0 for every
+ *  token, with no fee beside), so it costs nothing however it ends: booked a known $0 (booking.ts), its own cost 0, its
+ *  runner.turn marked `free` for a reader to say why. */
+export type Admitted = Admission & { free?: true };
 export interface HarnessRunnerOptions {
   /** The run's store, through whoever owns it. */
   store: SessionStore;
@@ -343,6 +347,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   const stoppedAt = new Map<number, (streamedTokens: number) => number>();
   /** The host's record of a note each request of this process carries (Admission.note), for its runner.turn. */
   const notes = new Map<number, { [key: string]: JsonValue }>();
+  /** The requests of this process on a free model (Admitted.free): each booked a known $0 however it ends. */
+  const freeTurns = new Set<number>();
   const answered = read.answered;
   let spentUsd: number | null = read.spentUsd;
   // The ids each request's response gave it, kept as its headers arrived: a request cut off after them reached the provider.
@@ -429,6 +435,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (stoppedUsd) stoppedAt.set(turn, stoppedUsd);
     const note = verdict && "note" in verdict && verdict.note && typeof verdict.note === "object" && !withoutNote ? verdict.note : undefined;
     if (note) notes.set(turn, note);
+    if (verdict && "free" in verdict && verdict.free === true) freeTurns.add(turn);
     // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
     // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
     // Its record is written, so it costs a turn of the cap, never money.
@@ -491,6 +498,10 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       stoppedAt.delete(turn);
       const note = notes.get(turn);
       notes.delete(turn);
+      // On a free model nothing it was billed for costs anything: its own cost is a known $0, never unknown. A cost its
+      // provider reported above $0 is a cost all the same: booked as it is, never free.
+      const free = freeTurns.delete(turn) && (usage.usd === null || usage.usd === 0);
+      if (free) usage = { ...usage, usd: 0, free };
       // Its hidden reasoning counts beside all it sent, less the reasoning it sent: max(0, budget - reasoning bytes), so
       // reasoning that streamed is not counted twice and answer text never stands in for it.
       const figure0 = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
@@ -500,7 +511,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const stopped = usage.usd === null && hold !== undefined && stoppedUsd && sent !== undefined ? heldFigure(stoppedUsd(sent + Math.max(0, hidden - reasoned))) : undefined;
       // How its path saw it end, booked by the one rule (booking.ts); a host from before that says nothing of it: as
       // before, its own cost, else what streamed of a stop, else the hold.
-      const booking = ended ? bookRequest(ended, { ...(hold === undefined ? {} : { hold }), ...(stoppedUsd ? { stoppedPrice: stoppedUsd } : {}) }) : undefined;
+      const booking = ended ? bookRequest(ended, { ...(hold === undefined ? {} : { hold }), ...(stoppedUsd ? { stoppedPrice: stoppedUsd } : {}), ...(free ? { free } : {}) }) : undefined;
       const figure = booking ? booking.usd : usage.usd !== null ? usage.usd : stopped === undefined ? hold : Math.min(hold!, stopped);
       // Booked lost (at its hold), it may have been billed at a cache miss: for the cap, its hold plus its bound, as
       // sessionSpendOf reads it on the next claim.
@@ -508,6 +519,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       spentUsd = spent(spentUsd, capped ?? undefined);
       const settle = settles.get(turn);
       const data: SessionRecord["data"] = { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.givenBack ? { givenBack: true } : {}), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.billing ? { billing: usage.billing } : {}), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}), ...(note ? { note } : {}) };
+      // Marked so, for a reader to say why it cost nothing (a run on free models: "$0 · free model").
+      if (free) data.free = true;
       try {
         // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped. A
         // stopped one keeps the figure it counts at (`heldUsd`), so a later process counts it the same.

@@ -122,11 +122,18 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
     ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
-  const before = runBooking(options.sessions, options.judged ? async (request) => {
+  // A request on a free model is admitted marked so, under a cap or none: the runner books it a known $0 however it ends
+  // (runner.ts Admitted), never unknown. One the rule refused stays refused.
+  const judge: BeforeRequest = async (request) => {
     const answer = await rule(request);
+    if (answer && "refuse" in answer) return answer;
+    return freeRequest(request, pricing.modelOf) ? { ...answer, free: true } : answer;
+  };
+  const before = runBooking(options.sessions, options.judged ? async (request) => {
+    const answer = await judge(request);
     options.judged!(request, answer);
     return answer;
-  } : rule);
+  } : judge);
 
   const forget = (key: string) => void deciding.delete(key);
   return {
@@ -151,6 +158,17 @@ export function runCap(options: RunCapOptions): RunCap {
     },
     tools: (writer, toolOptions = {}) => paidCalls(writer, before, toolOptions),
   };
+}
+
+/** Whether `request` is on a free model: one whose known price (CapModel.price) is $0 for every token, each tier's
+ *  included, with no fee beside it (a native web search's) and no paid step's charge. A model with no known price is
+ *  never free: its cost is unknown, never $0. */
+function freeRequest(request: Parameters<BeforeRequest>[0], modelOf: (id: string, route?: string) => CapModel | undefined): boolean {
+  if (request.paid || (request.feeUsd ?? 0) !== 0) return false;
+  const price = modelOf(request.model, request.route)?.price;
+  if (!price) return false;
+  const zero = (rates: Omit<NonNullable<CapModel["price"]>, "tiers">) => rates.input === 0 && rates.output === 0 && (rates.cacheRead ?? 0) === 0 && (rates.cacheWrite ?? 0) === 0;
+  return zero(price) && (price.tiers ?? []).every(zero);
 }
 
 /** A run's paid tool calls booked on `writer` (its TOOL_SESSION) under `before`, the run's one rule (runCap's, or the

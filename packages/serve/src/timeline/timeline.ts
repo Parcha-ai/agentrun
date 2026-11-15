@@ -60,8 +60,9 @@ export type TimelineEvent = {
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage
    *  row. `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
-   *  charged an unknown amount or cut). Absent when `usd` is known. */
-  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
+   *  charged an unknown amount or cut). Absent when `usd` is known. `free`, on the usage row: its $0 is because every
+   *  model request went to a free model (one whose known price is $0 for every token), each booked so; absent otherwise. */
+  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
@@ -339,6 +340,11 @@ function createMeter() {
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
   // answer). Earlier answers are a run's from before requests were marked.
   let answered = 0;
+  // Marked requests that ended with no answer on a free model (their end mark's `free`: booked a known $0), never a cost
+  // unknown: one counted once the next request leaves with no answer between (pi tried it again), and whether the latest
+  // end was one (its answer, an error's entry, may still come).
+  let freeUnanswered = 0;
+  let freeEnded = false;
   // Side requests (compactions, a tool's own requests), apart: one may run beside a generation. Each closes with its
   // cost, or with an end when aborted.
   let compactions = 0;
@@ -419,15 +425,20 @@ function createMeter() {
       refusedAny = true;
     } else if (entry.kind === REQUEST_STARTED) {
       capRefusals = 0;
+      if (freeEnded) freeUnanswered += 1;
+      freeEnded = false;
       marked += 1;
       inFlight = true;
       lastClamp = clampOf(data?.clamp);
     } else if (entry.kind === REQUEST_ENDED) {
       if (unsent(entry)) marked -= 1;
       inFlight = false;
+      // Only for a request still unanswered (an end written after pi's entry for it answers nothing more).
+      freeEnded = data?.free === true && marked - answered - freeUnanswered > 0;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
       if (marked > 0) answered += 1;
+      freeEnded = false;
       const name = str(message.model);
       if (name) {
         const key = metricName(str(message.provider) ? `${str(message.provider)}/${name}` : name);
@@ -455,14 +466,16 @@ function createMeter() {
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
-    const cut = marked - open(inFlight) > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
+    // Those on a free model ended at a known $0: counted, never cut.
+    const free = freeUnanswered + (freeEnded ? 1 : 0);
+    const cut = marked - open(inFlight) - free > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     const unmetered = notMetered ? { not_metered: notMetered } : {};
     if (!requests && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
-    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
+    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - free - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
     return { usd, requests: count, charges: paidCalls.size + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
   }
 

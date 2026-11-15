@@ -1907,9 +1907,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const on = harness;
               const conversation = root ?? (await on.root(context));
               const unsent = event.ended.end === "nothing" && event.ended.label === "never_left";
+              // One on a free model (`free`: booked a known $0) is no cost unknown: its mark says so, and the usage row counts
+              // it at $0, never cut.
+              const data = unsent ? { unsent: true } : event.usage.free ? { free: true } : {};
               // Not written when the journal sealed under it (the run's end landed first): a settled run reads its unanswered
               // mark cut all the same.
-              await on.commit((tx) => tx.appendEntry(conversation.id, { kind: REQUEST_ENDED, data: (unsent ? { unsent: true } : {}) as unknown as JsonValue }), context).catch(() => undefined);
+              await on.commit((tx) => tx.appendEntry(conversation.id, { kind: REQUEST_ENDED, data: data as unknown as JsonValue }), context).catch(() => undefined);
             }
           },
         });

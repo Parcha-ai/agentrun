@@ -80,6 +80,12 @@ export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: num
   return unpriced > 0 ? { so_far_usd: Math.round((models.known + (decisions?.known ?? 0)) * 1e6) / 1e6, unpriced } : undefined;
 }
 
+/** Whether a run's cost (`usd`) is $0 because every model request went to a free model (one whose known price is $0 for
+ *  every token): its usage row says so (`free`, from the run's booking). Never for a cost above $0 or unknown. */
+export function freeOf(rows: readonly TimelineEvent[], usd: number | null): { free: true } | undefined {
+  return usd === 0 && usageOf(rows)?.usage?.free === true ? { free: true } : undefined;
+}
+
 /** An amount in an over-cap row's or failure's words, to the cent ($0.38020940000000003 is $0.38; $1 is $1), as money
  *  says it; `centsUp` to the cent above, for what a run went over by and a bound, so neither reads $0 or under. */
 export const cents = (usd: number): string => money(Math.round(usd * 100) / 100);

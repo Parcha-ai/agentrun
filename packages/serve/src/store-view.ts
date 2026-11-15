@@ -40,6 +40,7 @@ import {
   WITHHELD_SIGN_IN,
   WITHHELD_TITLE,
   costView,
+  freeOf,
   soFarOf,
   usersOf,
   withAsks,
@@ -417,7 +418,9 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
   const usd = imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
-  const soFar = usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
+  // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
+  // decision of its own), that it is free.
+  const soFar = imported ? undefined : usd === null ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : decisions?.requests ? undefined : freeOf(run.rows, usd);
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
   const bound = cap === undefined ? {} : { overshoot_bound_usd: 0 };

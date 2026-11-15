@@ -17,8 +17,9 @@ import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
 /** What a run's booking says one of its sessions spent: its requests (a hold given back unused is none), their known
  *  sum, how many have no known cost, their tokens, and how many of the requests have no known tokens (`unmetered`: booked
  *  with no usage, or sent and never answered), in no token sum; and its requests by the model each was sent on (`models`:
- *  its runner.request's model, "" for one that names none). */
-export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly unpriced: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+ *  its runner.request's model, "" for one that names none). `free`: it booked requests, every one on a free model (its
+ *  runner.turn's `free`: its known price $0 for every token), so its $0 says why. */
+export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly unpriced: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; readonly free?: true };
 
 /** The conversation each of the run's sessions books in, by its key: the first `agentrun.session.key` entry naming it. */
 function sessionConversations(entries: readonly EntryLike[]): Map<string, number> {
@@ -64,6 +65,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   let unpriced = 0;
   let requests = 0;
   let unmetered = 0;
+  let free = 0;
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const e of entries) {
     if (!chosen(e)) continue;
@@ -75,10 +77,11 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
       continue;
     }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
-    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
+    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; givenBack?: unknown; unsent?: unknown; free?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
     if (d.givenBack === true || d.unsent === true) continue;
     requests += 1;
     count(e);
+    if (d.free === true) free += 1;
     // An answer with no price of its own was booked at its hold for the cap (answeredUnpriced): as a cost it is unknown.
     const usd = answeredUnpriced(d) ? null : typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
     if (usd === null) unpriced += 1;
@@ -87,7 +90,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     if (d.usage === undefined) unmetered += 1;
     for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
   }
-  return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, models, tokens };
+  return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, models, tokens, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
 }
 
 /** An agent run's cost as its end commit stores it: its model requests' (`model`), its paid tool calls' (`paid`, the

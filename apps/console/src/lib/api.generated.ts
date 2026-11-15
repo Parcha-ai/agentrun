@@ -213,6 +213,7 @@ export interface components {
     basis: "charge" | "estimate";
     charge_state?: "held" | "settled" | "released" | null;
     cap_usd?: number | null;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
     overshoot_bound_usd?: number;
@@ -1070,6 +1071,7 @@ export interface components {
   TimelineUsage: {
     usd: number | null;
     requests: number;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
     not_metered?: number;

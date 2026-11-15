@@ -21,7 +21,8 @@ const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop, MODEL_RETRY } = await import("../dist/runner/adapter-loop.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { CONFORMANCE_TIMING, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
-const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { runEntries, runTimeline } = await import("../dist/store-reads/journal.js");
+const { bookedSpend } = await import("../dist/runner/metrics.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 
 const RUN = "run-1";
@@ -70,7 +71,8 @@ async function rested(server) {
   }, "the run's end");
   const rows = await runTimeline(server, RUN, ctx, { settled: true, ended: true });
   const view = await viewOverStore(server, RUN, { origin: "", serverSecrets: () => [] });
-  return { row, usage: rows.findLast((one) => one.kind === "usage"), errors: rows.filter((one) => one.kind === "error"), view };
+  const booked = bookedSpend(await runEntries(server, RUN, ctx), "model");
+  return { row, usage: rows.findLast((one) => one.kind === "usage"), errors: rows.filter((one) => one.kind === "error"), view, booked };
 }
 
 /** A pi run on `model` (MODELS) through the adapter loop, its first `fails` requests cut mid-answer (every one: Infinity),
@@ -100,14 +102,15 @@ async function piRun(t, model, fails) {
 }
 
 test("pi on a free model whose every request was cut mid-answer: each booked $0, the run's cost a known $0 that says it is a free model, never \"not priced\"", { timeout: 60_000 }, async (t) => {
-  const { row, usage, errors, view } = await piRun(t, "free", Infinity);
+  const { row, usage, errors, view, booked } = await piRun(t, "free", Infinity);
   assert.equal(row.state, "failed", `the run failed: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
   assert.ok(usage?.usage?.requests > 0, `it made requests: ${JSON.stringify(usage)}`);
   assert.deepEqual({ usd: usage.usage.usd, free: usage.usage.free, unpriced: usage.usage.unpriced }, { usd: 0, free: true, unpriced: undefined }, `its usage row: a known $0, free: ${JSON.stringify(usage)}`);
   assert.ok(usage.summary.includes(FREE_WORDS), `in words: ${usage.summary}`);
   assert.ok(errors.length > 0 && errors.every((one) => !/cost is unknown/.test(one.summary)), `no failed request reads its cost unknown: ${JSON.stringify(errors.map((one) => one.summary))}`);
   assert.deepEqual({ usd: view?.cost?.usd, free: view?.cost?.free, unpriced: view?.cost?.unpriced }, { usd: 0, free: true, unpriced: undefined }, `its view's cost: ${JSON.stringify(view?.cost)}`);
-  assert.equal(row.costUsd, 0, `its row's cost is $0: ${row.costUsd}`);
+  // What a pi run's end stores as its cost (adapter-run-spec endPatch: its booking's, bookedSpend "model").
+  assert.deepEqual({ usd: booked.usd, free: booked.free }, { usd: 0, free: true }, `its booked cost is $0: ${JSON.stringify(booked)}`);
 });
 
 test("pi on a free model: a request cut mid-answer, then its retry answered: the run's cost a known $0, a free model", { timeout: 60_000 }, async (t) => {
