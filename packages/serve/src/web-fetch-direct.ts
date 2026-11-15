@@ -191,7 +191,8 @@ function* hrefsIn(text: string): Generator<string> {
 /** A JSON body's links as written, in the body's order: each string value's (hrefsIn), one that is a URL whole taken as
  *  it is; undefined for a text that is not JSON. Read from the parsed body, so an escape (`\/`) never hides or cuts one. */
 function jsonHrefs(text: string): Iterable<string> | undefined {
-  if (!/^\s*[[{]/.test(text)) return undefined;
+  // An object, an array or one string: the bodies that can hold a URL (a string body is one, or holds some).
+  if (!/^\s*[[{"]/.test(text)) return undefined;
   let body: unknown;
   try {
     body = JSON.parse(text);

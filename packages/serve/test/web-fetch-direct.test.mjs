@@ -87,6 +87,10 @@ test("a page that is not HTML lists the absolute URLs its text holds: a JSON bod
   assert.equal(json.ok, true, JSON.stringify(json));
   assert.deepEqual(json.links, ["https://www.githubstatus.com/", "https://stspg.io/abc", "https://www.githubstatus.com/incidents/x1"], "each once, in the body's order, without its fragment; no mailto or relative path");
   assert.equal(json.text, incidents, "the text is the body as it came");
+  // A body that is one JSON string is read as JSON too: its escapes undone, and a URL whole kept whole.
+  const { linksOf } = await import("../dist/web-fetch-direct.js");
+  assert.deepEqual([...linksOf(String.raw`"https:\/\/stspg.io\/abc"`)], ["https://stspg.io/abc"]);
+  assert.deepEqual([...linksOf('"https://en.example/wiki/Yahoo!"')], ["https://en.example/wiki/Yahoo!"]);
   const notes = "Status: https://status.example/a, then (https://en.wikipedia.org/wiki/Foo_(bar)) and 'https://b.example/O'Reilly'.";
   const text = await fetchPage("http://public.example/status.txt", serving("http://public.example/status.txt", "text/plain", notes));
   assert.deepEqual(text.links, ["https://status.example/a", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/O'Reilly"], "a sentence's punctuation, an unopened bracket and a closing quote stay outside a URL");
