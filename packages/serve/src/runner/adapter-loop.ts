@@ -51,7 +51,7 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
-import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
+import { answerText, REFLECT_NOTE_ONLY, REFLECT_PREFIX, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
@@ -897,9 +897,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: (() => Promise<void>) | undefined;
-  /** While the end-of-run turn runs: a steer is left for the end, and its writes and edits under work/.learning/ are
-   *  refused (REFLECT_NOTE_ONLY). */
+  /** While the end-of-run turn runs (or a claim found it open: lookingBackOpen): a steer is left for the end, its writes
+   *  and edits under work/.learning/ are refused (REFLECT_NOTE_ONLY), and its requests are learning's, never the job's:
+   *  the cap's wrap-up note is never told to it, and a refusal of one never parks the run (learningRefused). */
   let reflecting = false;
+  /** A cap refusal of a request of the end-of-run turn, until that turn's ask reads it: the run has answered, so it parks
+   *  nothing; the ask fails in the refusal's words, and the learning is dropped as the cap's short room drops it
+   *  (reflect-hook.ts CAP_REFUSAL: no_budget). An answered run never parks on learning spend. */
+  let learningRefused: Refusal | undefined;
   /** While the run's end waits for a person to hand its desktop or phone back (#2134): a steer is left for the end, as
    *  in the end-of-run turn, so no turn starts that the end, written after the hand-back, would cut. */
   let handingBack = false;
@@ -1693,7 +1698,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (pendingPause === undefined) await keepPending(null);
           }
           const answer = over ? { refuse: over, forGood: true } : (pendingPause ?? (await theCap().before(request)));
-          if (answer && "refuse" in answer) {
+          if (answer && "refuse" in answer && reflecting) learningRefused ??= answer;
+          else if (answer && "refuse" in answer) {
             refused = answer;
             await pauseAt(answer);
           }
@@ -1823,6 +1829,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         let bookingNow: ModelBooking | undefined;
         const wrapUpNote = (model: string, asked?: NoteRequest): string | undefined => {
+          // The end-of-run turn comes after the run's answer: "finish now with your answer" is the job's note, never its.
+          if (reflecting) return undefined;
           const config = specNow?.runCap;
           const capModel = config?.modelOf(model);
           const sessionSpent = bookingNow?.spentUsd();
@@ -2215,6 +2223,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           theRecord.onEvent(event);
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
+        // The end-of-run turn an earlier claim asked and never saw end (its runner lost mid look-back or mid compile): the
+        // root's newest input still in flight is that turn's (end-of-run.ts REFLECT_PREFIX), which pi picks up again as its
+        // session opens. The job's turn ended before it, answered: this pass runs no job turn (no recovery as the job's, no
+        // wrap-up note, no park on its spend), and the end-of-run step's ask, under the same request id, waits on it (a
+        // CLI's look-back has no submission until it ends: its record's lookingBack, below). Read before the session
+        // opens, so its first request is already learning's.
+        const lookingBackOpen = (await harness.inspect(context)).submissions.filter((one) => one.type === "input" && Number(one.conversationId) === Number(ROOT_CONVERSATION_ID)).at(-1)?.requestId?.startsWith(REFLECT_PREFIX) === true;
+        reflecting = lookingBackOpen;
         // The MCP tools are host tools like any other (mcp.tools, wrapped above): every harness gets them on its own channel
         // for host tools, each call through the gate before its intent.
         session = await spec.adapter.open({ ...spec.session, tools, deferCatalog: deferred }, io);
@@ -2534,7 +2550,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
         }
         const placed = served !== undefined || followedUp || (session!.state !== "idle" && !firstUnplaced);
-        if (served || followedUp || firstUnplaced) {
+        // The end-of-run turn found open (lookingBackOpen), with no turn of this claim's sent before it: never recovered as
+        // the job's; the run goes to its end-of-run step, on how the job's own turn ended (jobEndBefore).
+        const lookingBack = lookingBackOpen && !followedUp && served === undefined;
+        if (served || followedUp || firstUnplaced || lookingBack) {
           // The workflow answered, or handed back and its handback is the turn; the follow-up is the turn this claim runs,
           // or there is none.
         } else if (session!.state === "new") {
@@ -2549,8 +2568,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
         // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold. None
         // when the workflow answered: the run ends on its answer.
-        // A feedback round (feedbackNow) asks no turn either: the run goes to its end-of-run turn.
-        const alone = served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst?.replay === true) || feedbackNow !== undefined;
+        // A feedback round (feedbackNow) asks no turn either: the run goes to its end-of-run turn. Nor does a claim that found
+        // that turn open (lookingBack).
+        const alone = served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst?.replay === true) || feedbackNow !== undefined || lookingBack;
         let turn: Promise<TurnEnd | "lapsed"> = alone ? new Promise<never>(() => {}) : placed ? session!.turnEnd() : idleTurnOf(harness, root);
         // Set on every way out of the loop below but parkOn's, which returns before it is read.
         let data!: EndData;
@@ -2559,7 +2579,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let parkOn: string | undefined;
         /** The ask_person call the run waits on in its claim, while it does. */
         let waitingOn: string | undefined;
-        if (alone) data = { state: "ended" };
+        if (alone) data = lookingBack ? await jobEndBefore(root) : { state: "ended" };
         else for (;;) {
           const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const), askCut.asked.then(() => "cut" as const)]);
           // Parked on a call held at the gate (a CLI's at its tool bridge): the answer that made the call may still be
@@ -3100,6 +3120,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return turnOfRequest(on, conversation, last.requestId);
   }
 
+  /** How the job's turn ended, for a claim that found the end-of-run turn open (lookingBackOpen), as the claim that asked
+   *  that turn read it: the root's newest input before it unanswered, failed with no answer; else its last answer before
+   *  the turn's first entry cut at the model's output limit (cutLast), failed so; else ended. */
+  async function jobEndBefore(conversation: Conversation): Promise<EndData> {
+    const page = await gate!.journal.scanSubmissions({ conversationId: conversation.id, order: "descending" }, 50, undefined, context);
+    const inputs = page.items.filter((one) => one.type === "input");
+    const job = inputs.findIndex((one) => !one.requestId?.startsWith(REFLECT_PREFIX));
+    if (job >= 0 && inputs[job]!.status !== "done") return { state: "failed", summary: "the run gave no answer (failed)" };
+    const from = Math.min(...inputs.slice(0, job < 0 ? undefined : job).flatMap((one) => (one.entry === undefined ? [] : [Number(one.entry)])));
+    const cut = cutLast((await entriesOf(gate!.journal, conversation.id, context)).filter((entry) => Number(entry.id) < from));
+    return cut ? { state: "failed", summary: cut } : { state: "ended" };
+  }
+
   /** How the turn of the root's submission `requestId` ended (a steer of the idle session, which no session tracks). */
   async function turnOfRequest(on: Harness, conversation: Conversation, requestId: string): Promise<TurnEnd> {
     const found = await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
@@ -3305,8 +3338,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     reflecting = true;
     let timer: NodeJS.Timeout | undefined;
     try {
-      // A CLI's record answers a turn it already wrote from its submission, as pi does: its CLI is never asked twice.
-      const known = theRecord ? await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context) : undefined;
+      // A turn already answered (an earlier claim's) is read from its submission; a CLI's record answers one it already
+      // wrote from it too, as pi does: its CLI is never asked twice.
+      const prior = await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
+      const known = theRecord ? prior : undefined;
       // How this claim's turn ended; a turn answered before reads as its submission says.
       let turnStatus = "completed";
       // What the turn's first ask kept (`keep`), an earlier claim's when it asked first: every answer carries it.
@@ -3328,6 +3363,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The CLI's turn, as the submission pi's adapter writes: what the step reads next, one reader for both.
         turnStatus = end.status;
         await theRecord?.answered(requestId, prompt, end.status);
+      }
+      // A turn the cap refused a request of (this claim's, or the one a takeover found open: lookingBackOpen) fails in the
+      // refusal's words: the learning is dropped for the cap's room (reflect-hook.ts CAP_REFUSAL), the run never parked.
+      const capped = prior?.status === "done" ? undefined : learningRefused;
+      if (capped) {
+        learningRefused = undefined;
+        return withKept({ failed: { code: "refused", message: capped.refuse } });
       }
       const record = await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
       if (turnStatus !== "completed" || record?.status !== "done") return withKept({ failed: { code: "unanswered", message: "the end-of-run turn gave no answer" } });
