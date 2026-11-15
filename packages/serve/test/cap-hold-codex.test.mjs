@@ -110,6 +110,13 @@ for (const harness of HARNESSES) {
     const journal = await journalOf(store, runId);
     const results = journal.filter((entry) => entry.kind === "faux.result");
     assert.ok(results.length >= 1 && results[0].data.refused === true, `the first call refused: ${JSON.stringify(results.map((entry) => entry.data))}`);
+    // The refusal says why so soon: the cap is below what the model needs for one more step and an answer (its least, a
+    // step-0 step and a least answer: some $0.40), named with both figures.
+    const timeline = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
+    const refusal = timeline.find((row) => row.kind === "tool_result" && `${row.text ?? ""} ${row.summary ?? ""}`.includes("Budget nearly spent"));
+    const said = `${refusal?.text ?? ""} ${refusal?.summary ?? ""}`;
+    const need = /This run's cap of \$0\.30 is below what \S+ needs for one more step and an answer, about \$(\d+\.\d\d)\./.exec(said)?.[1];
+    assert.ok(need !== undefined && Number(need) > 0.3, `the cap and the step and answer it is below, named: ${said}`);
     const run = (await api("GET", `/runs/${runId}`)).body;
     assert.ok(run.cost.usd <= 0.3, `$${run.cost.usd}`);
     neverPast(await heldOf(store, runId), 0.3, harness);

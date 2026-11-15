@@ -81,7 +81,7 @@ import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
-import { type RequestFigures, reserveFor, WRAP_UP_TEXT, wrappingUp } from "../wrap-up.js";
+import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpText } from "../wrap-up.js";
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
@@ -1808,7 +1808,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let madeBefore = 0;
         for (const key of await sessions.keys()) madeBefore += freeRequestsIn(await sessions.read(key));
         freeMade = madeBefore;
-        const capNote: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; freeLimit?: number; at: number }; live?: true; lastFigures?: RequestFigures } = {
+        const capNote: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; freeLimit?: number; at: number }; live?: true; lastFigures?: RequestFigures; lastModel?: string } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
@@ -1968,11 +1968,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // spend and each request or paid step still out at its hold and bound, read from the run's records at each call. A
         // hold-only step still open (a browser session's reserve) is no spend in its records, but the cap holds it in
         // flight: it counts at its hold too. One a lost claim left open was given back at this claim's open (bookCut).
-        const wrapUp = async (): Promise<boolean> => {
+        // Its answer is the words a call reads once the run wraps up (wrap-up.ts wrapUpText), undefined while it does not.
+        const wrapUp = async (): Promise<string | undefined> => {
           // A run whose spec gives no cap (no runCap) has none to wrap up at, as overCap reads it.
-          if (!spec.runCap) return false;
+          if (!spec.runCap) return undefined;
           const capUsd = capNow();
-          if (capUsd === undefined) return false;
+          if (capUsd === undefined) return undefined;
           // What was spent beside the run on its behalf counts as taken, as its sessions' spend does.
           let taken: number | null = await besideNow();
           for (const key of await sessions.keys()) {
@@ -1982,7 +1983,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           // What the run keeps back to answer, priced on the main model's last request admitted on this claim (its next one
           // is priced at least as high): none yet, no wrap-up, as no tool call comes before a request.
-          return wrappingUp(capUsd, taken, reserveOf(capNote.lastFigures));
+          if (!wrappingUp(capUsd, taken, reserveOf(capNote.lastFigures))) return undefined;
+          // A cap below what the model needs for one more step and an answer is named in the words, by the same rule.
+          return wrapUpText(capUsd, capNote.lastModel, stepAndAnswerFor(capNote.lastFigures, (step0Usd) => typicalCost(capNote.costs, step0Usd)));
         };
         const gateOf = preIntentGate(spec, hooks, wrapUp);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
@@ -2163,7 +2166,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
             if (ticket && (request as { side?: boolean }).side) notOwn.add(ticket.turn);
             // The main model's request as the cap prices it: what the run keeps back to answer is priced on it (wrapUp).
-            if (!(request as { side?: boolean }).side && (request as { host?: string }).host === undefined) capNote.lastFigures = figuresOf(request.model, request) ?? capNote.lastFigures;
+            if (!(request as { side?: boolean }).side && (request as { host?: string }).host === undefined) {
+              const figures = figuresOf(request.model, request);
+              if (figures) Object.assign(capNote, { lastFigures: figures, lastModel: request.model });
+            }
             // What follows is the wrap-up's own bookkeeping, after the request was admitted and its hold booked: it never fails
             // the request (a throw here would leave it admitted and never sent, read as cut at its worst case).
             try {
@@ -2926,10 +2932,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park).
-   *  `wrapUp`: whether the run has taken its share of the cap, so every call the model makes is refused in its fixed words.
+   *  `wrapUp`: once the run has taken its share of the cap, the words every call the model makes is refused in (wrapUpText).
    *  `beforeAsk`: what goes on the record of a call the gate asks about, before its ask is written or read (a CLI's call
    *  through its tool bridge: its start, marked parked, so its row shows while it waits and reads before its approval). */
-  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, wrapUp: () => Promise<boolean>, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
+  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, wrapUp: () => Promise<string | undefined>, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
     return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
@@ -2939,7 +2945,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await hooks.beforeIntent(kernelCall);
       // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
       // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
-      if (call.nested !== true && (await wrapUp())) return { deny: WRAP_UP_TEXT };
+      const wrapUpDeny = call.nested !== true ? await wrapUp() : undefined;
+      if (wrapUpDeny !== undefined) return { deny: wrapUpDeny };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const given = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";

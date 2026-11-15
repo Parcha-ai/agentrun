@@ -1,5 +1,6 @@
-// A local count of a Responses request's input tokens, for a route that has no count of the provider's own: a gateway, a
-// base other than OpenAI's, or a count that failed. Written for AgentRun.
+// A local count of a Responses or Messages request's input tokens, for a route that has no count of the provider's own: a
+// gateway, a base other than OpenAI's, serve's Messages translation to a model that speaks neither API, or a count that
+// failed. Written for AgentRun.
 //
 // The byte bound (`inputTokensMaxOf`) is a proof: a byte-level BPE token covers at least one byte, so a body is never
 // more tokens than bytes. It is also four times what an English prompt bills, and on a capped run that is the difference
@@ -8,7 +9,7 @@
 // cannot, this counts the body with o200k_base, the vocabulary OpenAI publishes for its models from gpt-4o on, plus a
 // stated margin (`LOCAL_COUNT_MARGIN`). A body this cannot count with a margin it can state (a model on another
 // tokenizer, a file input) has no local count, and keeps its byte bound.
-import { imageInputOf, imageTokens } from "./overhead.js";
+import { imageInputOf, imageTokens, messagesImagesIn } from "./overhead.js";
 
 /**
  * The margin a local count adds, and why each part:
@@ -104,6 +105,57 @@ export async function responsesLocalInputTokens(body: Record<string, unknown>): 
     return value;
   });
   const items = list(body.input).length + list(body.tools).length + (typeof body.instructions === "string" && body.instructions !== "" ? 1 : 0);
+  const tokens = await o200kTokens(text);
+  return Math.ceil(tokens * (1 + LOCAL_COUNT_MARGIN.share)) + LOCAL_COUNT_MARGIN.perItem * items + LOCAL_COUNT_MARGIN.perRequest + opaque;
+}
+
+/** A Messages body's content blocks where the API reads them: each message's, and each tool_result's inside them. */
+function messagesBlocks(messages: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const message of list(messages)) {
+    if (!plain(message)) continue;
+    for (const block of list(message.content)) {
+      if (!plain(block)) continue;
+      out.push(block);
+      if (block.type === "tool_result") for (const inner of list(block.content)) if (plain(inner)) out.push(inner);
+    }
+  }
+  return out;
+}
+
+/**
+ * The local count of a Messages `body`'s input tokens, margin included (`LOCAL_COUNT_MARGIN`), by the same rule as a
+ * Responses body's (`responsesLocalInputTokens`), for a Messages request to a model whose tokenizer is o200k_base: one
+ * serve's translation sends on to a provider of another API (pi's session on `openai/gpt-6.1-sol` through OpenRouter,
+ * whose chat completions carry the same text). Its JSON as sent, counted with o200k_base, with a thinking block's
+ * `signature` and a redacted one's `data` at their bytes and each image at what it is billed as on the routed model, in
+ * place of their text. An item is each message's block (one for a message with none), each tool and each system block:
+ * the provider frames each turn, call and result it renders. Undefined (the body keeps its byte bound) for a model whose
+ * tokenizer is not o200k_base (every Claude model: Anthropic counts those itself, or the byte bound holds), for a body
+ * with a document (billed by its pages, with no stated bound), and for a body that is not an object.
+ */
+export async function messagesLocalInputTokens(body: Record<string, unknown>): Promise<number | undefined> {
+  if (!plain(body) || !o200kModel(body.model)) return undefined;
+  const model = body.model as string;
+  const blocks = messagesBlocks(body.messages);
+  if (blocks.some((block) => block.type === "document")) return undefined;
+  // Every image the API reads counts once, at the most it is billed as (`imageTokens`): a base64 source by the size its
+  // header says, a URL's at the most an image of unknown size is billed, as the byte bound counts it (`messagesImagesIn`).
+  let opaque = messagesImagesIn(body.messages).reduce((sum, image) => sum + imageTokens(model, image), 0);
+  const sources = new Set(blocks.filter((block) => block.type === "image" && plain(block.source)).map((block) => block.source as object));
+  // The body as sent, with what the tokenizer cannot count left out of the text and counted on its own.
+  const text = JSON.stringify(body, function (this: unknown, key: string, value: unknown) {
+    const holder = this as { type?: unknown } | null;
+    if (typeof value === "string" && ((key === "signature" && holder?.type === "thinking") || (key === "data" && holder?.type === "redacted_thinking"))) {
+      opaque += Buffer.byteLength(value, "utf8");
+      return "";
+    }
+    if (key === "data" && typeof value === "string" && typeof this === "object" && this !== null && sources.has(this)) return "";
+    return value;
+  });
+  const messages = list(body.messages).filter(plain);
+  const system = typeof body.system === "string" ? (body.system === "" ? 0 : 1) : list(body.system).length;
+  const items = messages.reduce((sum, message) => sum + Math.max(1, list(message.content).length), 0) + list(body.tools).length + system;
   const tokens = await o200kTokens(text);
   return Math.ceil(tokens * (1 + LOCAL_COUNT_MARGIN.share)) + LOCAL_COUNT_MARGIN.perItem * items + LOCAL_COUNT_MARGIN.perRequest + opaque;
 }
