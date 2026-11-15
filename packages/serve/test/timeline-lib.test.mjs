@@ -256,6 +256,21 @@ for (const [label, id, parent, expected] of [
   assert.deepEqual(rows.map(row => [row.kind, row.parent_tool_use_id]), [["tool_use", expected], ["tool_result", expected]]);
 });
 
+test("a recorded call the run's end closed (withRun) reads interrupted with no status, never failed; one a crash cut keeps reading failed", () => {
+  const shaped = piShaped([
+    { kind: JOURNAL.callStart, data: { callId: "exec", tool: "exec", input: {}, nests: true } },
+    { kind: JOURNAL.callEnd, data: { callId: "exec", status: "interrupted", withRun: true } },
+    { kind: JOURNAL.callStart, data: { callId: "cut", tool: "read", input: { path: "x" } } },
+    { kind: JOURNAL.callEnd, data: { callId: "cut", status: "interrupted" } },
+  ]);
+  const rows = timelineOf(shaped);
+  const end = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "exec");
+  assert.deepEqual([end.tool_status, end.summary, end.refused], [null, "Using tool: exec interrupted", undefined]);
+  assert.match(end.tool_result_preview, /^interrupted: /);
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "cut").tool_status, "failed");
+  assert.match(text(rows), /Using tool: exec +interrupted\n.*Read x +failed/);
+});
+
 test("a subagent's rows sit under the call that spawned it", () => {
   const rows = timelineOf([
     user("Find the invoice", 0),

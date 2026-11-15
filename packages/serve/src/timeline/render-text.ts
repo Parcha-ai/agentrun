@@ -6,7 +6,7 @@ type Line = { at?: string; depth: number; text: string };
 
 const clock = (row: TimelineEvent) => row.timestamp.slice(11, 19);
 const statusOf = (call: Call): string =>
-  !call.result ? "running" : call.result.tool_status === "success" ? "ok" : call.result.tool_result_size_bytes === null ? "interrupted" : "failed";
+  !call.result ? "running" : call.result.tool_status === "success" ? "ok" : (call.result.tool_status === null && call.result.refused !== true) || call.result.tool_result_size_bytes === null ? "interrupted" : "failed";
 
 function rowText(row: TimelineEvent): string {
   const summary = row.summary ?? row.kind;
