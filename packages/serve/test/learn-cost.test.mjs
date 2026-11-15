@@ -54,7 +54,7 @@ test("a run's cost: its job's own, what learning added (its look-back and its gr
 });
 
 /** `paths` as a series, each run's job $ and learning $ given, and whether its cost is known only as at most (`bound`). */
-const series = (runs) => runs.map(([path, cost, learning = 0, bound = false], i) => ({ n: i + 1, run_id: `r${i + 1}`, started_at: new Date(Date.UTC(2026, 10, 12, 0, i)).toISOString(), path, workflow: path === "agent" ? null : "classify", learned_revision: null, cost_usd: cost, cost_upper_bound: bound, learning_usd: learning, total_usd: cost === null || learning === null ? null : cost + learning }));
+const series = (runs) => runs.map(([path, cost, learning = 0, bound = false], i) => ({ n: i + 1, run_id: `r${i + 1}`, started_at: new Date(Date.UTC(2026, 10, 12, 0, i)).toISOString(), path, workflow: path === "agent" ? null : "classify", learned_revision: null, cost_usd: bound ? null : cost, cost_upper_bound: bound, learning_usd: learning, total_usd: bound || cost === null || learning === null ? null : cost + learning }));
 const EMPTY = { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null };
 
 test("what the series shows: the takeover, the mean before it (agent runs, learning left out), the mean after it (every run, learning kept in), and times cheaper only once 20 runs follow the takeover", () => {
@@ -74,7 +74,7 @@ test("times cheaper is withheld when a run it reads has an unknown cost or one k
   assert.deepEqual(read([["agent", 0.9], ["agent", null], ["agent", 0.9], ...after()]), [null, { unknown: 1, at_most: 0 }], "an agent run before the takeover whose cost is unknown");
   assert.deepEqual(read([["agent", 0.9], ["agent", 0.9], ...after([["workflow", 0.1, 0, true]])]), [null, { unknown: 0, at_most: 1 }], "a run after it counted a request cut at its cap hold: at most, never a number");
   assert.deepEqual(read([["agent", 0.9], ["agent", 0.5, 0, true], ...after([["workflow", 0.1, null]])]), [null, { unknown: 1, at_most: 1 }], "a bound before, a grade of unknown cost after");
-  assert.deepEqual(read([["agent", 0.9], ["agent", null], ["agent", null, 0, true], ...after([["handed_back", null], ["workflow", 0.1, 0, true]])]), [null, { unknown: 3, at_most: 1 }], "an unknown cost with a bound marker is unknown");
+  assert.deepEqual(read([["agent", 0.9], ["agent", null], ["agent", null, 0, true], ...after([["handed_back", null], ["workflow", 0.1, 0, true]])]), [null, { unknown: 2, at_most: 2 }], "a bound is at most whatever its value (the row stores it null); unknown is a null cost with no bound");
   assert.deepEqual(read([["agent", 0.9], ["handed_back", null], ["agent", 0.9], ...after()]), [6, null], "a run on neither side withholds nothing");
   assert.deepEqual(read([["agent", 0.9], ["agent", null]]), [null, null], "no takeover: no figure to withhold");
   const bounded = costSummary(series([["agent", 0.9], ["agent", 0.3, 0, true], ...after()]));
@@ -84,14 +84,16 @@ test("times cheaper is withheld when a run it reads has an unknown cost or one k
 test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bound is true, and the summary withholds the ratio with at_most 1", async () => {
   // A store with no launch and no learning rounds: only the run row's cost fields are read.
   const store = { runs: { launch: async () => undefined }, learning: { proposal: async () => undefined } };
-  const row = (id, extra = {}) => ({ id, startedAt: Date.UTC(2026, 10, 12), metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, ...extra });
+  // The store's row for a bounded run: costUsd null, costAtMostUsd the bound (RunRow).
+  const row = (id, extra = {}) => ({ id, startedAt: Date.UTC(2026, 10, 12), metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, costAtMostUsd: null, ...extra });
   const exact = await costRunOf(store, row("r1"), 1);
-  const bound = await costRunOf(store, row("r2", { costUpperBound: true }), 2);
-  assert.deepEqual([exact.cost_upper_bound, bound.cost_upper_bound, bound.cost_usd], [false, true, 0.1], "the stored marker is read, the cost stays the figure");
-  const after = Array.from({ length: CHEAPER_AFTER_RUNS }, (_, i) => ["workflow", 0.1, 0, i === 0]);
-  const withheld = costSummary(series([["agent", 0.9], ["agent", 0.9], ...after])).withheld;
-  assert.deepEqual(withheld, { unknown: 0, at_most: 1 }, "a series whose run carries the marker withholds the ratio");
-  assert.deepEqual(costSummary(series([["agent", 0.9], ["agent", 0.9], ...after.map(([p, c, l]) => [p, c, l])])).withheld, null, "no marker, nothing withheld");
+  const bound = await costRunOf(store, row("r2", { costUsd: null, costAtMostUsd: 0.5 }), 2);
+  assert.deepEqual([exact.cost_upper_bound, bound.cost_upper_bound, bound.cost_usd], [false, true, null], "the stored bound is read, and never shown as a cost");
+  const after = Array.from({ length: CHEAPER_AFTER_RUNS }, (_, i) => i === 0 ? { ...bound, n: 3, run_id: "r3" } : { ...exact, n: i + 3, run_id: `r${i + 3}` });
+  const head = series([["agent", 0.9], ["agent", 0.9]]);
+  const withheld = costSummary([...head, ...after]).withheld;
+  assert.deepEqual(withheld, { unknown: 0, at_most: 1 }, "a row with costUsd null and costAtMostUsd 0.5 withholds the ratio as at most, not unknown");
+  assert.deepEqual(costSummary([...head, ...after.map((run, i) => ({ ...exact, n: i + 3, run_id: `r${i + 3}` }))]).withheld, null, "no bound, nothing withheld");
 });
 
 test("the summary carries the serving promotion's replay as it is given", () => {
