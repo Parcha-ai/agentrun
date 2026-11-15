@@ -37,7 +37,7 @@ after(async () => {
 /** A loopback desktop with the screen and raw input (and with `ui`, ui.observe and ui.act on one TextEdit window): its
  *  screen.shot answers a 1280-wide PNG; every call is recorded. Its client is the run's as the claim wraps it
  *  (recordedClient), and its tools are the run's as runTools binds them. */
-async function desktop({ ui = false } = {}) {
+async function desktop({ ui = false, apps = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-"));
   dirs.push(dir);
   const computer = fakeComputer(dir);
@@ -52,7 +52,10 @@ async function desktop({ ui = false } = {}) {
     ],
   });
   computer.overrides["ui.act"] = ({ steps }) => ({ steps: steps.map(() => ({ route: "semantic", verified: true })), state: "s2", changed: true });
-  const groups = ui ? [...GROUPS, "ui"] : GROUPS;
+  // With `apps`, a terminal in front: apps.launch brings an app there.
+  computer.overrides["apps.list"] = () => ({ apps: [{ id: "xfce4-terminal", name: "Terminal" }], foreground: "xfce4-terminal" });
+  computer.overrides["apps.launch"] = () => ({});
+  const groups = [...GROUPS, ...(ui ? ["ui"] : []), ...(apps ? ["apps"] : [])];
   const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: recordedClient(computer.client) }, hello: { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups } }, { mode: 1, context: ctx });
   return { computer, tools: run.hostTools(COMPUTER) };
 }
@@ -123,6 +126,37 @@ test("a script calls the computer's tools as tools.<name>, each a nested call: t
   assert.deepEqual(computer.calls.map(([method]) => method).filter((method) => method !== "hello"), ["screen.shot", "input.actions", "input.actions"], "each call reached the computer once");
   const nested = nestedRows(await runTimeline(server, "run-1", ctx));
   assert.deepEqual(nested.filter((row) => row.kind === "tool_use").map((row) => row.tool_name), ["computer_screenshot", "computer_act", "computer_act"], "each is a call of its own on the timeline");
+});
+
+test("on a desktop with no ui group, an act that names an app makes one apps.launch (the app brought in front) then its input; an act that names none is its input alone", async (t) => {
+  const { computer, tools } = await desktop({ apps: true });
+  const script = "await tools.computer_act({ app: 'xfce4-terminal', steps: [{ type: 'x' }] });\nawait tools.computer_act({ app: 'xfce4-terminal', steps: [{ type: 'y' }] });\nawait tools.computer_act({ steps: [{ type: 'z' }] });\nreturn 'typed';";
+  const { requests, server } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools);
+  assert.equal(lastResult(requests).isError, false, lastResult(requests).text);
+  assert.deepEqual(computer.calls.map(([method]) => method).filter((method) => method !== "hello"), ["apps.launch", "input.actions", "apps.launch", "input.actions", "input.actions"], "two host calls for an act that names an app, one for one that names none");
+  const acts = nestedRows(await runTimeline(server, "run-1", ctx)).filter((row) => row.kind === "tool_result");
+  assert.deepEqual(acts.map((row) => row.computer_calls.map((call) => call.method)), [["apps.launch", "input.actions"], ["apps.launch", "input.actions"], ["input.actions"]], "each act's row says which calls it made");
+});
+
+test("a script's calls sit under the script's own call on the timeline: each nested row names that call as its parent, and its input shows in the default view as a top-level call's does", async (t) => {
+  const { tools } = await desktop({ ui: true });
+  const script = "await tools.computer_observe({ app: 'com.apple.TextEdit' });\nawait tools.computer_act({ app: 'com.apple.TextEdit', steps: [{ press: '@e2' }] });\nreturn 'saved';";
+  const { requests, server } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools);
+  assert.equal(lastResult(requests).isError, false, lastResult(requests).text);
+  const rows = await runTimeline(server, "run-1", ctx);
+  const outer = rows.find((row) => row.kind === "tool_use" && row.tool_name === CODEMODE);
+  assert.equal(outer.parent_tool_use_id, undefined, "the script's own call is the model's: no parent");
+  assert.equal(outer.tool_input_preview, script, "the script's row shows its script");
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_name === CODEMODE)?.parent_tool_use_id, undefined);
+  const nested = nestedRows(rows);
+  assert.equal(nested.length, 4, JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.tool_use_id])));
+  assert.deepEqual(nested.map((row) => [row.kind, row.tool_name, row.parent_tool_use_id]), [
+    ["tool_use", "computer_observe", outer.tool_use_id],
+    ["tool_result", "computer_observe", outer.tool_use_id],
+    ["tool_use", "computer_act", outer.tool_use_id],
+    ["tool_result", "computer_act", outer.tool_use_id],
+  ], "every nested row names the script's call");
+  assert.deepEqual(nested.filter((row) => row.kind === "tool_use").map((row) => [row.tool_input_preview, row.tool_input]), [["com.apple.TextEdit", undefined], ["com.apple.TextEdit", undefined]], "each nested call's app in its preview, its whole input only with calls");
 });
 
 test("a screenshot a script takes reaches the model with its pixels when the script shows it with image(...) or returns it, as a direct call's does", async (t) => {

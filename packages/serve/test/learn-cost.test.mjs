@@ -30,6 +30,11 @@ test("a run's path: a learned workflow alone, one the agent went on from (failed
   assert.equal(runPathOf([asked, ...call("learned_workflow", "c1"), ...call("bash", "b1"), answer]), "handed_back", "the agent worked on after it");
   assert.equal(runPathOf([asked, ...call("learned_workflow", "c1"), answer, row("user_message"), answer]), "handed_back", "a follow-up");
   assert.equal(runPathOf([asked, answer, row("user_message", { agent_label: "learning" }), ...call("learned_workflow", "x", "success", { agent_label: "learning" })]), "agent", "the end-of-run turn's call is the learning's");
+  // A call a script or tools_call made for the model names that call as its parent, and is still the model's own.
+  for (const meta of ["codemode", "tools_call"]) {
+    assert.equal(runPathOf([asked, ...call(meta, "m1"), ...call("learned_workflow", "m1/s1", "success", { parent_tool_use_id: "m1" }), answer]), "handed_back", `${meta}: a learned workflow its call made`);
+  }
+  assert.equal(runPathOf([asked, ...call("task", "t1"), ...call("learned_workflow", "sub-1", "success", { parent_tool_use_id: "t1" }), answer]), "agent", "a subagent's call is the subagent's");
 });
 
 test("a run's cost: its job's own, what learning added (its look-back and its grade), and all-in; unknown stays unknown", () => {
