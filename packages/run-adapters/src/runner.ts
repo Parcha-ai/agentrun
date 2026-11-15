@@ -548,6 +548,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       clearTimeout(timer);
     }
     const now = await writer.read().catch(() => options.records);
+    // Every record this pass appends after that read (a handed-on answer, a given-back hold, an owed step, a free cut), in
+    // order: a spend rebuilt from the session's records reads `now` and these, so a request booked earlier in the pass
+    // counts at what it was booked at, never at the hold `now` still has it open at.
+    const booked: SessionRecord[] = [];
+    const book = async (records: SessionRecord[]) => {
+      await append(records);
+      booked.push(...records);
+    };
     const bookedSince = sessionSpendOf(now).answered;
     for (const t of inherited) if (bookedSince.has(t)) answered.add(t);
     // A request an earlier booking in this process saw answer, whose runner.turn its store refused: written now as that
@@ -561,15 +569,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         return one ? [{ turn, ...one }] : [];
       });
       if (taken.length) {
-        const records = taken.map((one) => ({ kind: RUNNER_RECORDS.turn, data: one.data }));
-        await append(records);
+        await book(taken.map((one) => ({ kind: RUNNER_RECORDS.turn, data: one.data })));
         for (const one of taken) {
           handed.refused.delete(one.turn);
           answered.add(one.turn);
         }
         // Its spend read the request at its hold (or unknown); booked, it reads at what it was booked at. Only
         // before this booking's own requests: the spend is the session's records then.
-        if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...records]).spentUsd;
+        if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...booked]).spentUsd;
         for (const one of taken) {
           const hosted = hosts.get(one.turn);
           await emit({ type: "request_end", turn: one.turn, usage: one.usage, ...(hosted === undefined ? {} : { host: hosted }), ...(one.ended ? { ended: one.ended } : {}) });
@@ -600,11 +607,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     const free = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && freeTurns.has(t));
     const numbers = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && !free.includes(t));
     if (givenBack.length) {
-      await append(givenBack.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, givenBack: true } })));
+      await book(givenBack.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, givenBack: true } })));
       for (const turn of givenBack) answered.add(turn);
     }
     if (owed.length) {
-      await append(owed.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: held.get(turn)!, bookedUsd: held.get(turn)!, rule: "owed" } })));
+      await book(owed.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: held.get(turn)!, bookedUsd: held.get(turn)!, rule: "owed" } })));
       for (const turn of owed) {
         answered.add(turn);
         const hosted = hosts.get(turn);
@@ -618,11 +625,10 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       return providerIds ? { usd: null, cut: true, turn, providerIds } : { usd: null, cut: true, turn };
     };
     if (free.length) {
-      const records = free.map((turn) => {
+      await book(free.map((turn) => {
         const providerIds = responses.get(turn);
         return { kind: RUNNER_RECORDS.turn, data: { usd: 0, cut: true, turn, ...(providerIds ? { providerIds } : {}), bookedUsd: 0, rule: "lost:cut", free: true } };
-      });
-      await append(records);
+      }));
       for (const turn of free) {
         answered.add(turn);
         const providerIds = responses.get(turn);
@@ -630,8 +636,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0, cut: true, free: true, ...(providerIds ? { providerIds } : {}) }, ...(hosted === undefined ? {} : { host: hosted }), ended: { end: "lost", label: "cut" } });
       }
       // Its spend read the request at its hold (or unknown); booked, it reads at $0. Only before this booking's own
-      // requests: the spend is the session's records then (an owed step booked above reads at its hold, its booked figure).
-      if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...records]).spentUsd;
+      // requests: the spend is the session's records then, every one this pass booked above included (a handed-on answer
+      // at what it reported, an owed step at its booked figure).
+      if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...booked]).spentUsd;
     }
     if (numbers.length === 0) return;
     await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: cutOf(turn) })));
