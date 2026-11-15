@@ -12,6 +12,12 @@ test("an end whose cost is unknown says cost_usd=unknown, never 0", () => {
   assert.equal(fields(runLine({ type: "ended", runId: "r1", agent: "a", status: "ended", costUsd: 0 })).cost_usd, "0");
 });
 
+test("an end whose stored cost is only the most it can have cost says cost_usd=unknown and the bound apart, cost_usd_at_most", () => {
+  const said = fields(runLine({ type: "ended", runId: "r1", agent: "a", status: "ended", costUsd: null, costAtMostUsd: 0.26 }));
+  assert.deepEqual([said.cost_usd, said.cost_usd_at_most], ["unknown", "0.26"]);
+  assert.equal(fields(runLine({ type: "ended", runId: "r1", agent: "a", status: "ended", costUsd: 0.01 })).cost_usd_at_most, undefined);
+});
+
 test("endedStatus: a stop with outcome cancelled is a cancel; a person's stop and the other finals keep their state", () => {
   assert.equal(endedStatus({ state: "stopped", outcome: "cancelled" }), "cancelled");
   assert.equal(endedStatus({ state: "stopped", outcome: "stopped" }), "stopped");

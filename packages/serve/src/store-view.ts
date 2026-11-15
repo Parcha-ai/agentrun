@@ -39,20 +39,19 @@ import {
   statusOf,
   WITHHELD_SIGN_IN,
   WITHHELD_TITLE,
-  costView,
+  costWordsOfView,
   freeOf,
-  soFarOf,
   usersOf,
   withAsks,
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
-import { type BookedSpend, bookedSpend, planSpend } from "./runner/metrics.js";
+import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
-import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
+import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
@@ -221,6 +220,12 @@ interface StoreRun {
   readonly decisions: BookedSpend | undefined;
   /** Its model requests billed to a ChatGPT plan (metrics.ts planSpend), undefined when it made none. */
   readonly plan: { readonly requests: number; readonly tokens: number } | undefined;
+  /** An ended run's cost from its booking (metrics.ts runCostOf, the rule its end stored it by), read in the same snapshot
+   *  as its state; undefined for a run still going, imported, native, or that booked no request. */
+  readonly endCost?: RunCost;
+  /** Whether the run's last end wrote its cost (EndData.costUsd present: a figure or null), so the stored column holds the
+   *  end's answer. False for an end whose spec reads no cost, which leaves the column as it was. */
+  readonly endSaidCost?: boolean;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -413,7 +418,14 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const decisions = booked.requests ? booked : undefined;
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan };
+  // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
+  // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
+  // workflow's end stores it by the same rule (workflow-spec.ts); a native run's end reads its own, so it keeps the
+  // reading below.
+  const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
+  const endCost = bookedCost?.requests ? bookedCost : undefined;
+  const endSaidCost = endCost ? ((records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd !== undefined) : false;
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, ...(endCost ? { endCost, endSaidCost } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -437,21 +449,38 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // no stored cost (its column is written only at the end), so it reads undefined, which costView turns into 0 before any
   // request — never null.
   const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
+  // The most it can have cost, when that is what its end stored (RunRow.costAtMostUsd): the view is a reader that says
+  // "at most", so it shows that figure, marked upper_bound.
+  const storedAtMost = run.row.state === "running" ? null : run.runRow.costAtMostUsd;
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
-  const priced = imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
-  const counted = priced === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
-  // A request billed to a ChatGPT plan has no price here (its meter strips one) and costs no dollars: the usage row counts
-  // it unpriced, so it leaves that count, and a run whose only unpriced requests were on the plan costs what it knows.
+  // An ended run that booked its requests reads the cost its end stored by its booking (runCostOf), the answer the list,
+  // usage and stats read too: one figure on every reader. Its end reads that cost again when a read fails
+  // (loop.ts readAgain), so a null is kept only when the booking could not be read within the end's bound. The booking,
+  // read in the snapshot that read its state, adds only what the stored figure agrees with: what is known so far when both
+  // are unknown. An end that wrote no cost (a spec that reads none) left the column alone: the booking is the answer then.
+  const booked = run.endCost;
+  const said = booked !== undefined && run.endSaidCost === true;
+  // Its cost in the Cost's words (CostWords), each figure by the one rule (costWordsOf): a hold is never spend, so while
+  // the total is unknown each held request counts as not priced, and a bound says its exact part and held count beside it.
+  // A run still going or ended unbooked: its usage row joined with its decisions' booking (costWordsOfView). An imported
+  // run: what the import stored, exact. An ended run that booked its requests: its booking's words, or, where its end
+  // stored a figure, that figure, with what the booking says beside it only where the two agree (the same unknown, the
+  // same bound); a bound its end stored is said so (cost_upper_bound), the bound the list and the column read too.
+  const bookedWords = booked ? costWordsOf([booked]) : undefined;
+  const words = !booked ? (imported ? { usd: stored ?? null } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!.usd === null ? bookedWords! : { usd: null };
+  const usd = words.usd;
+  const counted = words.so_far_usd !== undefined && words.unpriced !== undefined ? { so_far_usd: words.so_far_usd, unpriced: words.unpriced } : undefined;
+  const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
+  // A request billed to a ChatGPT plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
+  // $0, so it is in no unpriced count; what it used on the plan is said beside the figure.
   const plan = run.plan;
-  const left = counted && plan ? counted.unpriced - plan.requests : counted?.unpriced;
-  const usd = counted && left !== undefined && left <= 0 ? counted.so_far_usd : priced;
   // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
   // decision of its own), that it is free.
-  const soFar = counted && left !== undefined && left > 0 ? { so_far_usd: counted.so_far_usd, unpriced: left } : imported || decisions?.requests ? undefined : freeOf(run.rows, usd);
+  const soFar = counted ?? (imported || decisions?.requests ? undefined : freeOf(run.rows, usd));
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
-  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
+  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */

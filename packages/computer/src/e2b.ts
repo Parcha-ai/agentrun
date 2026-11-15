@@ -236,7 +236,8 @@ class E2BHost implements MachineHost {
 
 	/**
 	 * Sandbox.create with the lifetime as its timeout in the whole seconds E2B takes (index.mjs:502-504), recorded in a
-	 * label for its end's arithmetic; no internet access unless the adapter asks egress (an Archil computer's root), no
+	 * label for its end's arithmetic; no internet access unless the adapter asks egress (an Archil computer's root, or the
+	 * egress proxy of a network open or a list), no
 	 * public traffic (a project's default may let it in: E2B docs, network/restrict-public-access), and kill at the
 	 * timeout, never a pause that keeps the computer (index.mjs:5674-5699).
 	 */

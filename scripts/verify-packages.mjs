@@ -67,8 +67,9 @@ function templateFiles() {
 // copied; no other package may carry them.
 const allowedExtraFiles = {
   'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json', 'package/src/vendor/browser-use-pi/UPSTREAM.json'],
-  // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
-  'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
+  // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs),
+  // and OpenAI's o200k_base vocabulary, unchanged, with its licenses (src/host/o200k.ts reads it to count input tokens).
+  'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json', 'package/vendor/o200k/o200k_base.tiktoken', 'package/vendor/o200k/LICENSE'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
@@ -112,6 +113,12 @@ const allowedEndpoints = {
     // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.
     ['dist/chrome.js',
       'http://127.0.0.1:${port}/json/version'], // key-gate: loopback-rule the local Chrome's own DevTools socket
+    // The network-open conformance case asks a hosted computer's egress proxy for metadata, a private address and the
+    // vendor agent's loopback port, each of which it must refuse: addresses the case sends to be refused, never reached.
+    ['dist/conformance/cases/provider.js', 'http://169.254.169.254/latest/meta-data/'],
+    ['dist/conformance/cases/provider.js', 'https://169.254.169.254/'],
+    ['dist/conformance/cases/provider.js', 'https://10.0.0.1/'],
+    ['dist/conformance/cases/provider.js', 'http://127.0.0.1:${port}/'], // key-gate: loopback-rule the vendor agent's port, which the case's proxy must refuse
   ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.

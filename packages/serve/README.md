@@ -297,8 +297,8 @@ A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
 runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
 set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; a Daytona or Modal box is made with no network when a host list is set, and
-capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
+init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
@@ -864,9 +864,12 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal, E2B or Agent37 sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
-vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
-only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
+Daytona, Modal, E2B or Agent37 sandbox reaches the same list through an egress proxy on the vendor's machine, outside its
+programs' network. An Orgo desktop has no network of its own (loopback only). A desktop (Docker's, Agent37's, E2B's) and
+Local Chrome are open to the public internet, through their egress proxy, unless this server sets `AGENTRUN_BOX_ALLOW`;
+then only those hosts (the default list, a sandbox's package registries, is no browsing policy). Either way the proxy
+refuses private, link-local and metadata addresses. A phone and a hosted browser are on their vendor's own network,
+whatever the list says. Under
 `AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
@@ -1065,8 +1068,11 @@ length, and no `original_chars`, its text is the start of the page, and the last
 1,000,000 characters of HTML before reading; the rest wasn't read.` `converted: "text"` says the text is the page's
 plain text, its conversion to markdown having run out of time. A page is read to its first 1,000,000 characters: an
 `offset` at or past them is refused, and the last part a read reaches of a longer page has `beyond_read`. The links,
-absolute http(s) only, come with the part at offset 0: at most 200, in 20,000 characters, with `links_omitted`
-counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
+absolute http(s) only, each once without its fragment, are the page's link targets and the URLs written out in its
+text (a JSON body's: those of its string values, so an API's `url` or `shortlink` field is one; an XML body's, an Atom
+or RSS feed's, read with its entities undone, so an entry's `<link href>` is one); an HTML page fetched
+directly gives its link targets alone. They come with the part at offset 0: at most 200, in 20,000 characters, with
+`links_omitted` counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
 run keeps what it read of its last 8 pages by the URL asked for: every later part of that URL comes from it, with no
 request, so a page's parts are always one read's. Through Parallel that is one billed extract a page a run, asked for
 its first 1,000,001 characters (the extract has no offset: its text always starts at the page's start). A refusal or a
@@ -3139,10 +3145,10 @@ base64's bytes, plus what the provider adds server-side (a tool-use prompt), fro
 claude-agent, codex and opencode uses; there the proxy measures each request's body. On codex and opencode (the
 Responses API) the text the model reads as it is (a message, a call's arguments, a tool's output, a reasoning summary)
 counts at its own bytes, not the JSON escapes around it (`\"`, `\n`), which no token is billed for; tool definitions and
-encrypted reasoning keep every byte. On a route straight to OpenAI (`https://api.openai.com`, codex and opencode), each
-answer request is also counted by OpenAI's own token count (`POST /v1/responses/input_tokens`, with only the credential
-and account headers, and never through a gateway or any other base), and its bound is that count when it is below the
-byte bound. On a route straight to Anthropic
+encrypted reasoning keep every byte. For a model whose tokenizer is o200k_base (gpt-4o and later, the o-series, on
+codex and opencode, and on pi and claude-agent through serve's translation), each request is also counted on the host
+with that vocabulary, plus a stated margin (10% of the count, 16 tokens an item, 256 a request), on every route and with
+nothing asked of the provider, and its bound is that count when it is below the byte bound. On a route straight to Anthropic
 (`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
 token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
 gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
@@ -3152,19 +3158,23 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 step is sent only when the run's spend plus that step's least (its whole input bound at the cache-write price, and a
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
-write, edit, the desktop's and `codemode`), five requests (four screenshots, then the answer), spending about $0.04 in
-all. Through a gateway the first request's byte bound is 9,121 tokens, so it needs $0.050 and the whole run $0.108;
+write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
+tokens, so it needs $0.052 and the whole run $0.110;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
 $0.030 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
-| Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
 | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the five-step figure parks before its last step by either route, its words naming that figure.
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the
+five-step figure does not get every step: straight to Anthropic it parks before its last step, its words naming that
+figure; through a gateway ($0.11, a fraction of a cent under the $0.110 it needs) the wrap-up refuses its last screenshot
+and it answers.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself

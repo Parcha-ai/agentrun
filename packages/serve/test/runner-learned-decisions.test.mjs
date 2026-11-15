@@ -95,9 +95,10 @@ async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd, patch
   const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(async (claim, run) => {
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
-    // `patches`: what the spec's end patch answered, to read what the end was told to write (a key left out keeps a stored value).
+    // `patches`: the cost the spec's end cost answered (the end writes it as `costUsd`, read apart from the metrics), to read
+    // what the end was told to write.
     if (!patches) return spec;
-    return { ...spec, endPatch: async (end) => { const patch = await spec.endPatch(end); patches.push(patch); return patch; } };
+    return { ...spec, endCost: async () => { const cost = await spec.endCost(); patches.push(cost); return cost; } };
   }) });
   const row = await until(async () => {
     const now = await server.runs.get(RUN);
@@ -157,6 +158,7 @@ test("a pi run whose learned decision reports no cost hands its end an unknown c
   const patches = [];
   const { row } = await learnedJudgeRun(t, { noUsage: true, capUsd: 1, patches });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.ok(patches.length > 0, "the end patch ran");
+  assert.ok(patches.length > 0, "the end's cost was read");
+  assert.equal(row.costUsd, null, "and the end wrote it as null");
   for (const patch of patches) assert.ok("costUsd" in patch && patch.costUsd === null, `an unknown cost is written as null, never left out: ${JSON.stringify(patch)}`);
 });

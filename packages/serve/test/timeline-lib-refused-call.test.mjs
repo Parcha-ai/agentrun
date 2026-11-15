@@ -48,6 +48,23 @@ test("every labelled tool refused before it ran reads refused in plain words: an
   ]);
 });
 
+test("a computer_op refused before it ran is named by its op alone, never by what it would have written or run; an op the computer has no such call for keeps the tool's name", () => {
+  const rows = rowsOf([
+    user("go"),
+    assistant([
+      call("w", "computer_op", { op: "files.write", args: { path: "/workspace/secret.md", data: "the secret" } }),
+      call("s", "computer_op", { op: "shell.run", args: { command: "cat /etc/passwd" } }),
+      call("n", "computer_op", { op: "files.nope", args: {} }),
+    ], 0),
+    refusedResult("w", "computer_op", "Permission denied: write is set to deny on this server."),
+    refusedResult("s", "computer_op", "The user denied this bash call."),
+    refusedResult("n", "computer_op", "Permission denied: desktop is set to deny on this server."),
+  ]);
+  assert.deepEqual(["w", "s", "n"].map((id) => rowFor(rows, id, "tool_use")), ["Refused: files.write", "Refused: shell.run", "Refused: computer_op"]);
+  assert.equal(rowFor(rows, "w", "tool_result"), "Refused: files.write: Permission denied: write is set to deny on this server.");
+  assert.equal(rows.some((row) => /secret|passwd/.test(String(row.summary ?? ""))), false, JSON.stringify(rows.map((row) => [row.kind, row.summary])));
+});
+
 test("a refused call names its path as the host names it (options.path), as every other call's rows do", () => {
   const path = (value) => value.replace(/^\/data\/runs\/123\/work\//, "");
   const rows = timelineOf([user("go"), assistant([call("w", "write", { path: "/data/runs/123/work/deny.md", content: "x" })], 0), refusedResult("w", "write", DENIED)], { settled: true, path });

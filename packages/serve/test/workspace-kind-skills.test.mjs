@@ -49,6 +49,17 @@ test("the kind skills teach the registry's computer tools by name and scripting 
   }
 });
 
+// What a live phone run proved (the phone after-run, 11-15): a scroll is a swipe, the phone's own input, refused unless
+// its call passes foreground: true; and About phone's "Android version" is below the fold, so an expect on it stays
+// unmet. The skill teaches the forms that worked.
+test("the phone skill's scrolls pass foreground: true, and its script expects nothing below the fold", () => {
+  const phone = KIND_SKILLS.phone.text;
+  const scrolls = phone.split("\n").filter((line) => /\bscroll\b/.test(line) && /\{scroll:|\.scroll\(/.test(line));
+  assert.ok(scrolls.length >= 2, `the step table and the script both scroll: ${JSON.stringify(scrolls)}`);
+  for (const line of scrolls) assert.match(line, /foreground: true/, `a scroll passes foreground: true: ${line}`);
+  assert.doesNotMatch(phone, /expect: \{ ?text: "Android version" ?\}/, "no expect on a row below the fold");
+});
+
 test("a desktop or phone run's claim lays its kind's skill beside the agent's own", async () => {
   for (const kind of ["desktop", "phone"]) {
     const work = scratch();

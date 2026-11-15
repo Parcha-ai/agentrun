@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 // The console's sources use the design system's names and no value of their own (docs/console-design-system.md). Each
 // rule below is one sentence of the guide; a line that breaks one is named with what to write instead. An exception is
-// listed in ALLOWED with its reason, and an entry that no longer matches anything fails too, so the list only shrinks.
+// listed in ALLOWED with its reason, and an entry that no longer matches anything fails too.
 const sources = import.meta.glob("./**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const files = Object.entries(sources)
   .filter(([path]) => !/\.test\.tsx?$/.test(path) && !path.startsWith("./fixtures/") && !path.startsWith("./design/") && path !== "./lib/api.generated.ts")
@@ -25,7 +25,7 @@ const RULES: Rule[] = [
     find: /\bfont-(?:thin|extralight|light|medium|bold|extrabold|black)\b/ },
   { id: "numbered-layer", says: "A layer has a name.", fix: "z-raised, z-sticky, z-overlay, z-dialog, z-popover, z-toast",
     find: /(?<![\w-])-?z-(?:\d+|\[)/ },
-  { id: "rounded", says: "Every corner is square.", fix: "delete the class", find: /(?<![\w-])rounded(?![\w(])(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
+  { id: "rounded", says: "Rounded corners belong to action buttons, the active sidebar item and the build composer.", fix: "use Button, buttonVariants or NavItem; keep fields and surfaces square", find: /(?<![\w-])rounded(?![\w(]|-none\b)(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
   { id: "shadow", says: "There is one shadow, under what floats over the page.", fix: "shadow-float; for a halo round a mark, ring-*",
     find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?<![\w-])shadow(?=[\s"'`])(?=[^<>]*")/ },
   { id: "off-scale-motion", says: "A duration and an easing are tokens.", fix: "duration-fast, duration-base, duration-slow; ease-standard",
@@ -43,6 +43,9 @@ const RULES: Rule[] = [
 
 /** An exception: the rule, the file, a string the line holds, and why the guide's sentence does not apply to it. */
 const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
+  { rule: "rounded", file: "components/BuildAgent.tsx", has: "!rounded-composer", why: "The build composer has a scoped softer edge to group the prompt and its coding-agent action." },
+  { rule: "rounded", file: "components/ui/button.tsx", has: "!rounded-action", why: "Every action button uses the shared action radius, including links and menu triggers." },
+  { rule: "rounded", file: "components/ui/nav-item.tsx", has: "!rounded-action", why: "The active sidebar item uses the shared action radius around its tint; other surfaces stay square." },
   { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },
   { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },

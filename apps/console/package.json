@@ -30,6 +30,7 @@
     "@storybook/addon-mcp": "10.6.4",
     "@storybook/addon-vitest": "10.6.4",
     "@storybook/react-vite": "10.6.4",
+    "@types/node": "22.20.4",
     "@types/react": "18.3.18",
     "@types/react-dom": "18.3.5",
     "@vitejs/plugin-react": "4.3.4",
