@@ -49,6 +49,8 @@ function sandboxes() {
   const made = [];
   /** How many lists of a run's computers fail next, as a Docker that does not answer. */
   const down = { lists: 0 };
+  /** Whether a release never answers, as a Docker delete that hangs (it takes no signal and has no timeout of its own). */
+  const hung = { releases: false };
   let waiting = () => {};
   const waits = new Promise((resolve) => (waiting = resolve));
   const provider = (prepare = "ok") => ({
@@ -87,13 +89,14 @@ function sandboxes() {
       return { ok: true, value: { ...ref, spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
     },
     async release(ref) {
+      if (hung.releases) return await new Promise(() => {});
       held.delete(ref.id);
       return { ok: true, value: undefined };
     },
   });
   /** The run's sandboxes still held, as "<id>@<epoch>". */
   const left = () => [...held.values()].filter((one) => one.labels["agentrun.run"] === RUN).map((one) => `${one.ref.id}@${one.labels["agentrun.epoch"]}`);
-  return { provider, made, held, left, waits, down };
+  return { provider, made, held, left, waits, down, hung };
 }
 
 async function opened(t) {
@@ -118,8 +121,9 @@ async function opened(t) {
   const logged = [];
   /** A runner named `name` on its own store connection: its model `fetch`, its provider's image step `prepare`, its
    *  computers' `hostWhy`, and `harness: false` for a runner that runs no pi. Its run's end lets go of the run's
-   *  computers (runEndComputers) with the same computers its claims make them with, as the runner process composes it. */
-  const start = async (name, { fetch = scriptedOrigin([{ say: "done" }]), prepare = "ok", hostWhy, harness = true } = {}) => {
+   *  computers (runEndComputers) with the same computers its claims make them with, as the runner process composes it,
+   *  bounded at `endMs` when given. */
+  const start = async (name, { fetch = scriptedOrigin([{ say: "done" }]), prepare = "ok", hostWhy, harness = true, endMs } = {}) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     const route = { model: "claude-sonnet-5.5", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch };
@@ -128,7 +132,7 @@ async function opened(t) {
     const createLoop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (given, body) => (harness && given === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(body, run, deps, claim)) : undefined) });
     const runner = startRunner({
       store, name, ...TIMING, createLoop,
-      runEnded: runEndComputers({ store, computers: computerDeps, log: (line) => logged.push(line), retryMs: 50 }),
+      runEnded: runEndComputers({ store, computers: computerDeps, log: (line) => logged.push(line), retryMs: 50, ...(endMs ? { timeoutMs: endMs } : {}) }),
       onEvent: (event) => {
         // What the run's computers are when the runner says the run ended.
         if (event.type === "ended") ended.push({ status: event.status, left: docker.left() });
@@ -228,6 +232,18 @@ test("the Docker that failed the resumed claim still does not answer at the run'
   assert.deepEqual(end.left, []);
   assert.ok(run.logged.some((line) => line.includes("an earlier claim left on docker, c1")), `said: ${JSON.stringify(run.logged)}`);
   assert.ok(!run.logged.some((line) => line.includes("could not be let go")), `said: ${JSON.stringify(run.logged)}`);
+});
+
+test("a release that never answers at the run's end (a hung Docker delete takes no signal): the run's end is answered at its bound, said in the log, and the runner says the run ended", { timeout: 120_000 }, async (t) => {
+  const run = await opened(t);
+  await run.lose();
+  run.docker.hung.releases = true;
+  await run.start("runner-b", { prepare: "fail", endMs: 300 });
+  const end = await run.theEnd();
+  assert.equal(end.status, "failed");
+  assert.deepEqual(end.left, ["c1@1"], "the hung delete never finished");
+  assert.ok(run.logged.some((line) => line.includes("could not be let go") && line.includes("asked until its bound")), `said: ${JSON.stringify(run.logged)}`);
+  assert.equal(run.logged.length, 1, `said once: ${JSON.stringify(run.logged)}`);
 });
 
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {

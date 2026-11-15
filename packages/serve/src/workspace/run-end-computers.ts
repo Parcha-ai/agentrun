@@ -24,8 +24,8 @@ import type { ComputerDeps } from "./computer-deps.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 
-/** The longest a run's end may spend on its computers, every try with its pauses: past it the provider's calls are cut,
- *  said in the log. */
+/** The longest a run's end may spend on its computers, every try with its pauses: past it the provider's calls are cut
+ *  (one that takes no signal, a release, left to finish on its own) and the run's end goes on, said in the log. */
 export const RUN_END_COMPUTERS_MS = 120_000;
 /** The pause before a run's end asks a provider that did not answer again. */
 export const RUN_END_RETRY_MS = 5_000;
@@ -93,27 +93,51 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
   };
   return async ({ runId, epoch }) => {
     if (epoch <= 1) return;
-    const signal = AbortSignal.timeout(deps.timeoutMs ?? RUN_END_COMPUTERS_MS);
-    const failed = (why: string) => log(`run ${runId} is over, but its computers could not be let go: ${why}`);
-    for (;;) {
-      let why: string;
-      try {
-        const provider = await providerOf(runId, epoch);
-        if (!provider) return;
-        // Every claim's at or below this one's: a computer of a later epoch fences the call (a later claim holds the run).
-        const released = await releaseOlder(provider, runId, epoch + 1, { signal });
-        if (released.ok) {
-          const names = released.value.released.map((ref) => ref.name);
-          if (names.length > 0) log(`run ${runId} is over: let go of ${names.length === 1 ? "the computer" : "the computers"} an earlier claim left on ${provider.id}, ${names.join(", ")}`);
-          return;
+    const bound = deps.timeoutMs ?? RUN_END_COMPUTERS_MS;
+    const signal = AbortSignal.timeout(bound);
+    let said = false;
+    const failed = (why: string) => {
+      if (said) return;
+      said = true;
+      log(`run ${runId} is over, but its computers could not be let go: ${why}`);
+    };
+    /** The last try's failure, for the line said at the bound. */
+    let why = `its provider did not answer within ${bound / 1000} s`;
+    const tries = async () => {
+      for (;;) {
+        try {
+          const provider = await providerOf(runId, epoch);
+          if (!provider) return;
+          // Every claim's at or below this one's: a computer of a later epoch fences the call (a later claim holds the run).
+          const released = await releaseOlder(provider, runId, epoch + 1, { signal });
+          if (released.ok) {
+            const names = released.value.released.map((ref) => ref.name);
+            if (names.length > 0) log(`run ${runId} is over: let go of ${names.length === 1 ? "the computer" : "the computers"} an earlier claim left on ${provider.id}, ${names.join(", ")}`);
+            return;
+          }
+          why = `on ${provider.id}, ${released.error.message}`;
+          if (FINAL_CODES.has(released.error.code)) return failed(why);
+        } catch (error) {
+          why = error instanceof Error ? error.message : String(error);
+          if (error instanceof NoProviderHere) return failed(why);
         }
-        why = `on ${provider.id}, ${released.error.message}`;
-        if (FINAL_CODES.has(released.error.code)) return failed(why);
-      } catch (error) {
-        why = error instanceof Error ? error.message : String(error);
-        if (error instanceof NoProviderHere) return failed(why);
+        if (!(await pause(deps.retryMs ?? RUN_END_RETRY_MS, signal))) return failed(`${why} (asked until its bound)`);
       }
-      if (!(await pause(deps.retryMs ?? RUN_END_RETRY_MS, signal))) return failed(`${why} (asked until its bound)`);
+    };
+    // A release takes no signal, and a Docker delete has no timeout of its own: at the bound the run's end is answered
+    // whatever the provider is doing (its call is left to finish on its own), so a hung delete never holds the runner.
+    let stop = () => {};
+    const cut = new Promise<void>((resolve) => {
+      stop = () => {
+        failed(`${why} (asked until its bound)`);
+        resolve();
+      };
+      signal.addEventListener("abort", stop, { once: true });
+    });
+    try {
+      await Promise.race([tries(), cut]);
+    } finally {
+      signal.removeEventListener("abort", stop);
     }
   };
 }
