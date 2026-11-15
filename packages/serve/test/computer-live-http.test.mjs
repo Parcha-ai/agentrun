@@ -201,8 +201,8 @@ test("a desktop or phone run whose screen is not open reads none with its kind; 
   assert.deepEqual(await read("plain", {}), { state: "off", hold: "agent", why: "this run's agent has no computer" });
 });
 
-// A sandbox run has a computer with no screen: GET /computer reads off saying so, never that its agent has none; with
-// the browser tool, its browser is its view as before.
+// A sandbox run has a computer with no screen: GET /computer reads off saying so, never that its agent has none. (A
+// sandbox agent takes no browser tool here, 422: a browser's own off words never meet a sandbox's.)
 test("a sandbox run's GET /computer says a sandbox has no screen, never that its agent has no computer", { timeout: 120_000 }, async (t) => {
   // A Docker sandbox (Mode 1 runs a sandbox only on Docker), on a fake `docker` first on PATH that answers the server's
   // start-time probe: no Docker command runs.

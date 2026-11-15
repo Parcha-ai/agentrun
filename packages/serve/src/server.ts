@@ -622,18 +622,18 @@ export const ROUTES: readonly Route[] = [
  *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
  *  launch would be; off, saying why, where it has none or its browser resolves unavailable here. Where the agent's
  *  computer is a browser, that browser, whose keys are the computer's (checked at the run's start), never the plane's.
+ *  A run whose agent's computer is a sandbox (`own`, its revision's kind) and has no browser has a computer with no
+ *  screen: off says so, never that its agent has none; its browser, where it has the tool, is its view, and why that
+ *  browser is unavailable is said as for any run.
  *  TODO: the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
-function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer", own?: string): ComputerOf {
   if (kept === ON_COMPUTER) return { kind: "browser" };
   const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
-  if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : "this run's agent has no computer" };
+  if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : own === "sandbox" ? SANDBOX_NO_SCREEN : "this run's agent has no computer" };
   return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
 }
 
-/** A run whose agent's computer is a sandbox (`own`, its revision's kind) has a computer with no screen: off says so,
- *  never that its agent has none. Its browser, where it has the tool, is still its view. */
 const SANDBOX_NO_SCREEN = "A sandbox has no screen: what the agent runs in it is on the timeline.";
-const sandboxOff = (of: ComputerOf, own: string | undefined): ComputerOf => ("off" in of && own === "sandbox" ? { off: SANDBOX_NO_SCREEN } : of);
 
 /** The run's kept browser vendor, over the store, as computerOf reads it: the vendor its launch plane resolved at start
  *  (the same source the runner's claim reads), normalized to the vendor name (keptVendor) so recheckPlane re-resolves it as
@@ -3424,7 +3424,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             }
             return computerViewerLink(store, sealKey, run.id, answers);
           },
-          computer: () => (viewed ? { kind: viewed } : sandboxOff(computerOf(kept, env, family), own)),
+          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
           lapsed: async (kind) => (parked ? lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), Date.now()) : undefined),
           hold: () => hold,
