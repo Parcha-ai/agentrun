@@ -102,7 +102,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply grants, always a
   list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
   the agent starts with: `MEMORY.md` and its notes), `web` (fakes `web_search` and `web_fetch` for the case's runs),
-  `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock).
+  `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock), `email` (a fake mailbox
+  for the case's runs).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
   `web_fetch` fails as a page that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
@@ -132,6 +133,36 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   a harness CLI's own date (Codex adds its own to each turn) still read the real one. A fixture case whose prompt or
   pages carry dates sets `now:`, else it drifts a day each day it is run. Only the eval's own server honours it: a case with `now` refuses
   `--server`. Without it, the real clock.
+- `email: fixtures/mailbox.json`, a fixture file in the case: each run gets a fake mail account of its own, seeded from
+  it and saved as the server's email account (plaintext, on this machine's loopback), closed after the run, so no run
+  reads real mail or shares another's mailbox. The fixture:
+  ```json
+  { "description": "Two threads in the inbox, and a new reply on the first.",
+    "account": { "address": "agent@acme.example" },
+    "layouts": ["gmail", "folders"],
+    "mailboxes": { "INBOX": [ { "from": "ana@example.com", "to": ["agent@acme.example"], "subject": "Invoice 1042",
+                                "date": "2026-11-13T10:00:00Z", "message_id": "<a1@example.com>", "text": "..." } ],
+                   "Drafts": [], "Sent": [], "Ignored": [] },
+    "message": { "from": "ana@example.com", "to": ["agent@acme.example"], "subject": "Re: Invoice 1042",
+                 "date": "2026-11-14T08:00:00Z", "message_id": "<a2@example.com>", "in_reply_to": "<a1@example.com>",
+                 "references": ["<a1@example.com>"], "text": "Any news?" },
+    "trigger": "New mail" }
+  ```
+  A message is the email trigger's payload (`from`, `from_name`, `to`, `cc`, `subject`, `date`, `message_id`,
+  `in_reply_to`, `text`, `attachments`) plus `flags` and `references`; it is checked when the case is read. `layouts`
+  (default `[folders]`) are the kinds of server each run repeats on, reported per layout: `gmail` (a folder is a label;
+  filing labels a message, `archive: true` takes it out of the inbox) and `folders` (every other server; filing moves a
+  message, so `email_file` with `archive: false` is refused and nothing moves). A run starts as its trigger would, never
+  as an ordinary run with the payload pasted in: the mailboxes are seeded, the package is applied (its email trigger
+  takes its start there), `message` is delivered, and the trigger's next poll fires on it, so the run reads only that
+  message's thread. A fixture with no `message` starts the package's schedule's run instead, which reads the whole
+  account. `trigger` names the trigger when the package has more than one of that kind. The case's `prompt.md` holds
+  `description` and `runs` alone: the run's input and cap are the trigger's. The run's clock, and the date of what it
+  drafts, is the case's `now`. Its graders see each email call with its arguments (a refused one too, which still
+  counts as a call for `tool_used`) and `<mailbox-after>`: the messages it added (each draft's to, cc, subject,
+  in_reply_to and text), the ones it moved or labelled (`message_id`, before and after, labels), and those it sent
+  (SMTP). The package's `tools` must name an email tool; only the eval's own server honours `email`, so a case with
+  it refuses `--server`.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",
@@ -154,6 +185,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
     arguments a call must carry) and one of `count` (exactly that many matching calls) or `at_least` (that many or more,
     so a run that searches once more than the case needs still passes).
   - `file_exists`: `path` in the run's work folder.
+  - `mailbox`, on an `email` case: `message_id` is `in` a mailbox (or, on gmail, under a label) after the run, and in
+    none of `not_in` (a list); `INBOX`, `Drafts` and `Sent` name the account's own on either layout.
 
   The answer's shape needs no grader: every completed run of a package with `output` is held to its schema.
 

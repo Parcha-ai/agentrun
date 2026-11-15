@@ -586,7 +586,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
     if (webNames.length) {
       life = hostLifecycle();
-      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(web ? { web } : {}) });
+      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) });
       webTools = await webHostTools(host, granted, ctx);
     }
     if (learns) {

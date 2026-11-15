@@ -36,6 +36,8 @@ export type FauxMessage = {
   attachments?: readonly { name: string; type?: string; content: string }[];
   /** Its flags, such as \Seen. Default none: unread. */
   flags?: readonly string[];
+  /** On the Gmail layout, its labels beside \Inbox (in INBOX), each label's mailbox made if missing. */
+  labels?: readonly string[];
 };
 
 /** A message as the fake keeps it. */
@@ -48,12 +50,14 @@ export type EmailFaux = {
   smtp: { host: string; port: number };
   user: string;
   password: string;
-  /** A message put in a mailbox, as if it had arrived: its uid there and its Message-ID. */
+  /** A message put in a mailbox (made if missing), as if it had arrived: its uid there and its Message-ID. */
   seed(message: FauxMessage): { uid: number; messageId: string | undefined; mailbox: string };
   /** A mailbox's messages, oldest first: "Drafts" and "Sent" are the layout's special-use folders. */
   messages(mailbox?: string): FauxStored[];
   /** Every mailbox's name, a CREATEd one among them, in order. */
   mailboxes(): string[];
+  /** The mailbox `name` means ("Drafts" and "Sent" the layout's special-use folders), or undefined when there is none. */
+  path(name: string): string | undefined;
   /** Every message SMTP received, in order. */
   sent(): FauxSent[];
   /** Every IMAP command the fake was sent, tag left out (a LOGIN's password too). */
@@ -230,7 +234,9 @@ const quoted = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '
 const literal = (text: string) => `{${Buffer.byteLength(text, "utf8")}}${CRLF}${text}`;
 
 /** Starts the fake account's two servers on loopback. `layout`: the folders it has (default a plain account's). */
-export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail" } = {}): Promise<EmailFaux> {
+export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date } = {}): Promise<EmailFaux> {
+  // Its clock: a seeded message's default date and an appended one's arrival (a template eval case's `now`, else the real one).
+  const now = options.now ?? (() => new Date());
   const user = "agent@faux.example";
   const password = `faux-${randomBytes(9).toString("hex")}`;
   let refusing = false;
@@ -246,6 +252,12 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     return (special && boxes.find((box) => box.flags.includes(special))) || boxNamed(name);
   };
 
+  /** A mailbox made, as CREATE makes one. */
+  const made = (name: string): Box => {
+    const box: Box = { name, flags: ["\\HasNoChildren"], selectable: true, uidValidity: 1000 + boxes.length, uidNext: 1, messages: [] };
+    boxes.push(box);
+    return box;
+  };
   const store = (box: Box, raw: string, flags: readonly string[], internalDate: Date): FauxStored => {
     const fields = headersOf(raw);
     const stored: FauxStored = { uid: box.uidNext++, flags: [...flags], raw, messageId: fields.get("message-id"), subject: fields.get("subject"), internalDate, ...(gmail ? { labels: box.name === "INBOX" ? [INBOX_LABEL] : [] } : {}) };
@@ -414,7 +426,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       if (verb === "CREATE") {
         const name = word(args[0]).replace(/\/$/, "");
         if (!name || boxNamed(name)) return send(`${tag} NO [ALREADYEXISTS] the mailbox is there`);
-        boxes.push({ name, flags: ["\\HasNoChildren"], selectable: true, uidValidity: 1000 + boxes.length, uidNext: 1, messages: [] });
+        made(name);
         return ok("created");
       }
       if (verb === "APPEND") {
@@ -424,7 +436,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         const flags = args[i] && "list" in args[i]! ? (args[i++] as { list: Token[] }).list.map(word) : [];
         // An optional date-time before the message.
         if (args.length - i > 1) i++;
-        const stored = store(box, word(args[i]), flags, new Date());
+        const stored = store(box, word(args[i]), flags, now());
         return ok(`[APPENDUID ${box.uidValidity} ${stored.uid}] appended`);
       }
       const uid = verb === "UID";
@@ -645,12 +657,16 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     user,
     password,
     seed(message) {
-      const box = resolve(message.mailbox ?? "INBOX");
-      if (!box || !box.selectable) throw new Error(`the fake account has no mailbox ${message.mailbox}`);
-      const date = message.date === undefined ? new Date() : new Date(message.date);
+      const box = resolve(message.mailbox ?? "INBOX") ?? made(message.mailbox!);
+      if (!box.selectable) throw new Error(`the fake account has no mailbox ${message.mailbox}`);
+      const date = message.date === undefined ? now() : new Date(message.date);
       const messageId = message.messageId === null ? undefined : angle(message.messageId ?? `${randomBytes(8).toString("hex")}@faux.example`);
       const raw = message.raw ?? compose(message, messageId, date);
       const stored = store(box, raw.replace(/\r?\n/g, CRLF), message.flags ?? [], date);
+      if (gmail && message.labels?.length) {
+        for (const label of message.labels) if (!boxNamed(label)) made(label);
+        stored.labels = [...new Set([...stored.labels!, ...message.labels])];
+      }
       return { uid: stored.uid, messageId: stored.messageId, mailbox: box.name };
     },
     messages(mailbox = "INBOX") {
@@ -659,6 +675,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       return box.messages.map((m) => ({ ...m, flags: [...m.flags], ...(m.labels ? { labels: [...m.labels] } : {}) }));
     },
     mailboxes: () => boxes.map((box) => box.name),
+    path: (name) => resolve(name)?.name,
     sent: () => delivered.map((m) => ({ ...m, to: [...m.to] })),
     commands: () => [...commandLog],
     refuseLogin(on) {

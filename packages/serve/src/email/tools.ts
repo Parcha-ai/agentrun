@@ -84,6 +84,8 @@ class Mail {
   constructor(
     readonly account: OpenedAccount,
     readonly scope: Scope,
+    /** The run's clock (a template eval case's `now`): the Date of what it drafts or sends. Absent: the real clock. */
+    readonly now?: Date,
   ) {}
 
   /** The thread's ids (its message's own, its References and In-Reply-To), read once a run: none when the run reads the
@@ -217,7 +219,7 @@ async function draft(mail: Mail, args: Record<string, unknown>) {
   const letter = letterOf(args);
   return withMail(mail, async (session) => {
     const references = letter.inReplyTo ? await referencesOf(session, mail, letter.inReplyTo) : undefined;
-    const built = await composed({ from: mail.account.address, ...letter, ...(references ? { references } : {}) });
+    const built = await composed({ from: mail.account.address, ...letter, ...(references ? { references } : {}), ...(mail.now ? { date: mail.now } : {}) });
     const drafts = await session.resolve("Drafts");
     await session.append(drafts, built.raw, ["\\Draft", "\\Seen"]);
     return { saved: true, mailbox: drafts, message_id: built.messageId };
@@ -228,7 +230,7 @@ async function send(mail: Mail, args: Record<string, unknown>, runId: string) {
   const letter = letterOf(args);
   // The thread it answers, read first; a mail server that can't be read leaves the reply threaded by In-Reply-To alone.
   const references = letter.inReplyTo ? await withMail(mail, (session) => referencesOf(session, mail, letter.inReplyTo!)).catch(() => [letter.inReplyTo!]) : undefined;
-  const built = await composed({ from: mail.account.address, ...letter, ...(references ? { references } : {}), headers: { [SENT_HEADER]: runId } });
+  const built = await composed({ from: mail.account.address, ...letter, ...(references ? { references } : {}), headers: { [SENT_HEADER]: runId }, ...(mail.now ? { date: mail.now } : {}) });
   await smtpSend(mail.account, [...letter.to, ...letter.cc], built.raw);
   if (keepsSentCopy(mail.account)) return { sent: true, message_id: built.messageId };
   // Sent, whatever the copy does: a copy not filed is said, never a send that failed.
@@ -320,6 +322,9 @@ const TOOLS: Record<string, { description: string; properties: Record<string, un
   },
 };
 
+/** Whether two servers are the same host and port. */
+const same = (a: { host: string; port: number }, b: { host: string; port: number }) => a.host === b.host && a.port === b.port;
+
 /** The five tools, for a run `host` serves (host-bounds.test.mjs lists them as the Claude Agent CLI is given them). */
 export const emailRegistrations = (host: ToolHost): ToolRegistration[] => Object.keys(TOOLS).map((name) => emailTool(name, host));
 
@@ -338,7 +343,10 @@ function emailTool(name: string, host: ToolHost): ToolRegistration {
         if (!host.store || !host.sealKey) return forModel(`${name}: the email tools run on the runner, which this run is not on.`, { isError: true });
         const account = await openAccount(host.store, host.sealKey);
         if (!account) return forModel(`${name}: ${NO_ACCOUNT}`, { isError: true });
-        const mail = new Mail(account, await (scope ??= scopeOf(host, name)));
+        // A template eval's run opens only its case's fake account: a real one saved meanwhile is never reached.
+        const fake = host.emailFake;
+        if (fake && !(same(account.imap, fake.imap) && same(account.smtp, fake.smtp))) return forModel(`${name}: this eval run reads only its case's fake mailbox, and the server's email account is another.`, { isError: true });
+        const mail = new Mail(account, await (scope ??= scopeOf(host, name)), host.now);
         const answer = await tool.run(mail, (isObject(args) ? args : {}) as Record<string, unknown>, host);
         return forModel(emailText(answer as Record<string, unknown>));
       } catch (error) {

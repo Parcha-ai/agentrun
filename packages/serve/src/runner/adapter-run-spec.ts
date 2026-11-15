@@ -29,7 +29,7 @@ import { isWebHostTool } from "../tool-list.js";
 import { type ArgumentsOf, deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
-import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
+import { ASK_TOOL, askPerson, type EmailFake, type ToolHost, toolOf } from "../tools.js";
 import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -203,8 +203,9 @@ export interface AdapterSpecDeps {
 /** One run's template eval fakes (template-eval.ts, from its case). `web`: its web_search and web_fetch answer from the
  *  case, and its harness's own search is never offered (web-fake.ts, fakedPlane). `now`: its clock, the date and time it
  *  is told wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date); absent, the real clock.
- *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). */
-export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake };
+ *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). `email`: the
+ *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). */
+export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake };
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
@@ -659,8 +660,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
-  const web = fakes?.web;
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(web ? { web } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
@@ -1022,13 +1022,16 @@ export function buildToolHost(opts: {
   /** The run's launch (its trigger and origin) and its agent's own tool settings, as the email tools read them. */
   readonly launch?: Pick<RunLaunch, "trigger" | "inputOrigin">;
   readonly toolSettings?: unknown;
-  /** The run's web fake, where a template eval's own runner gives one (AdapterSpecDeps.evalFakes). */
-  readonly web?: WebFake;
+  /** The run's template eval fakes, where the eval's own runner gives them (AdapterSpecDeps.evalFakes). */
+  readonly fakes?: EvalFakes;
 }): ToolHost {
   const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
+  const { web, now, email } = opts.fakes ?? {};
   return {
-    ...(opts.web ? { web: opts.web } : {}),
+    ...(web ? { web } : {}),
+    ...(now ? { now } : {}),
+    ...(email ? { emailFake: email } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },
