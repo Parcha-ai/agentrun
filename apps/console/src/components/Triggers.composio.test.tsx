@@ -297,6 +297,26 @@ describe("A trigger from an app: its page", () => {
     expect(t.went).toEqual(["#/triggers/trg_c"]);
   });
 
+  it("a filter made through the API, saved unchanged, sends nothing; one condition edited sends the rest back as it came", async () => {
+    // A pointer ending in a space, a whole-body pointer, a prefix with leading spaces, an action with a comma in a later rule.
+    const accept = [
+      { event: "GITHUB_ISSUE_ADDED_EVENT", where: [{ pointer: "/data/label ", in: ["bug"] }, { pointer: "", exists: true }, { pointer: "/data/title", prefix: "  [agent]" }] },
+      { event: "GITHUB_ISSUE_ADDED_EVENT", actions: ["foo,bar"] },
+    ];
+    const made = { ...ISSUES, source: { ...ISSUES.source, accept } } as Trigger;
+    const s = server({ triggers: [NIGHTLY, made] });
+    const t = await open(s.v2, { trigger: "trg_c", edit: true });
+    await t.click(/^Save filter$/);
+    expect(t.host.querySelector('[data-issue="source.accept[0].where[1].pointer"]')).toBeNull();
+    expect(s.calls.filter((c) => c.method === "PATCH")).toEqual([]);
+    expect(t.went).toEqual(["#/triggers/trg_c"]);
+    const s2 = server({ triggers: [NIGHTLY, made] });
+    const t2 = await open(s2.v2, { trigger: "trg_c", edit: true });
+    await t2.set("composio-where-0-value", "bug\nfeature");
+    await t2.click(/^Save filter$/);
+    expect(s2.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ source: { ...made.source, accept: [{ ...accept[0], where: [{ pointer: "/data/label ", in: ["bug", "feature"] }, accept[0].where[1], accept[0].where[2]] }, accept[1]] } }]);
+  });
+
   it("a filter emptied takes every event of its instance again: the source is sent without accept", async () => {
     const s = server();
     const t = await open(s.v2, { trigger: "trg_c", edit: true });
