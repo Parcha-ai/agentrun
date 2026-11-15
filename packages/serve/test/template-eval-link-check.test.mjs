@@ -71,7 +71,10 @@ test("a fetch's asked url, its final url and its page's links all match; a page 
 test("cited links come from the answer's text and every string of its JSON, each once, shown with no query value, fragment or userinfo", () => {
   const key = ["not-a-secret", "cited", "0123456789"].join("-");
   const json = JSON.stringify({ sources: [{ url: "https://vendor.example/report" }, { url: `https://api.example/data?token=${key}&q=x` }], note: "see https://vendor.example/report#p2" }).replaceAll("/", "\\/");
-  const answer = `Read [the report](https://vendor.example/report). Also https://me:${key}@vendor.example/private.\n\n\`\`\`json\n${json}\n\`\`\``;
+  // A link with userinfo, made at runtime: no credential-shaped literal for the source export.
+  const signedIn = new URL("https://vendor.example/private");
+  [signedIn.username, signedIn.password] = ["me", key];
+  const answer = `Read [the report](https://vendor.example/report). Also ${signedIn.href}.\n\n\`\`\`json\n${json}\n\`\`\``;
   const prompt = graderInput(grader, "task", run(answer, search("https://vendor.example/report")));
   assert.deepEqual(checked(prompt), [
     "https://vendor.example/report — matches call 1",
