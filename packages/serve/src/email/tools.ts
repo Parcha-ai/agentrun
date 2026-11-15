@@ -19,7 +19,7 @@ import { isObject } from "../validate.js";
 import { isGmailAccount, keepsSentCopy, keptAccount, NO_ACCOUNT, openAccount, type OpenedAccount } from "./account.js";
 import { EMAIL_ANSWER_MAX_CHARS, emailError, emailText } from "./answer.js";
 import { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD } from "./names.js";
-import { composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, threadClause, withImap } from "./mail.js";
+import { composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
 
 export { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SCOPES, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD, SCOPED_TOOLS, sendSummary } from "./names.js";
 
@@ -120,7 +120,7 @@ class Mail {
     const found = await session.uids(query);
     if (!thread) return found;
     if (!thread.size) return [];
-    const inside = new Set(await session.uids(threadClause([...thread])));
+    const inside = new Set(await session.uids(session.threadQuery([...thread])));
     return found.filter((uid) => inside.has(uid));
   }
 
@@ -137,12 +137,17 @@ class Mail {
   }
 }
 
-/** `work` in one IMAP session of the run's account, the thread's ids read first (they open mailboxes of their own). */
+/** `work` in one IMAP session of the run's account, the thread's ids read first (they open mailboxes of their own). It waits
+ *  on the server TOOL_SOCKET_TIMEOUT_MS: a thread's search by In-Reply-To, unindexed, takes minutes on a large mailbox. */
 async function withMail<T>(mail: Mail, work: (session: ImapSession) => Promise<T>): Promise<T> {
-  return withImap(mail.account, async (session) => {
-    await mail.thread(session);
-    return work(session);
-  });
+  return withImap(
+    mail.account,
+    async (session) => {
+      await mail.thread(session);
+      return work(session);
+    },
+    { socketTimeoutMs: TOOL_SOCKET_TIMEOUT_MS },
+  );
 }
 
 /** The ids a thread is read by: its message's own, then those it names, nearest first, at most THREAD_IDS. */
@@ -213,7 +218,7 @@ async function read(mail: Mail, args: Record<string, unknown>) {
     const heads = new Map<string, MailHead>();
     for (const path of await session.searchable()) {
       await session.open(path);
-      const uids = await mail.uids(session, threadClause([...ids]));
+      const uids = await mail.uids(session, session.threadQuery([...ids]));
       for (const head of await session.heads(path, uids)) {
         if (!inThread(head, ids) || !(await mail.allows(session, head))) continue;
         const key = head.message_id ?? `${path}\n${head.uid}`;
