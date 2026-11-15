@@ -165,7 +165,8 @@ test("a run whose booked spend passes its cap shows by how much on its timeline,
 });
 
 test("a request admitted and cut by a crash is booked once, unknown: on resume the cost is unknown and every admitted request counts once", { timeout: 90_000 }, async (t) => {
-  const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
+  // A paid model's: a free model's cut request is a known $0 (the capped run's case below).
+  const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE, faux: FAUX_PRICED });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "cut", `Cut until ${go}.`, "claude-agent", ["read"]);
   // The first request is answered at its tool's end; the second is then admitted and held, never answered.
@@ -598,7 +599,7 @@ test("a codex or pi run whose write names a relative path reads the same as befo
   assert.deepEqual(piRows.filter((r) => r.tool_name === "write" || /^Saved/.test(r.summary ?? "")).map((r) => r.summary), ["Wrote report.md", "Wrote report.md: ok", "Saved report.md"]);
 });
 
-test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
+test("a capped run with a request cut by a crash goes on: on a model listed at $0 the cut request is booked a known $0, so the run's cost is known", { timeout: 90_000 }, async (t) => {
   const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("capped-cut", { harness: "claude-agent", instructions: `Cut until ${go}.`, tools: ["read"] }))).status, 201);
@@ -616,14 +617,16 @@ test("a capped run with a request cut by a crash goes on: the cut request counts
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
-  assert.equal(ended.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
+  assert.equal(ended.cost.usd, 0.006, "the cut request on a free model costs nothing, a known $0: the shown cost is the other two's");
   // What the cap held for each request, on the run's one ledger (its journal in the store): the model's $0 worst case,
-  // so the cut one counts at $0, and it is booked as cut.
+  // each counted as a free model's request, and the cut one booked as cut at a known $0, marked free.
   const entries = journalOf(data, runId);
   const requests = entries.filter((entry) => entry.kind === "runner.request" && !String(entry.data?.model ?? "").startsWith("paid:"));
-  assert.deepEqual(requests.map((entry) => entry.data.heldUsd), [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
+  assert.deepEqual(requests.map((entry) => [entry.data.heldUsd, entry.data.freeRequest]), [[0, true], [0, true], [0, true]], "the first, the cut one, and the one after it, each held at $0");
   const turns = entries.filter((entry) => entry.kind === "runner.turn" && requests.some((request) => request.conversationId === entry.conversationId && request.data.turn === entry.data.turn));
   assert.deepEqual(turns.map((entry) => entry.data.cut === true), [false, true, false], `the cut one booked as cut, once: ${JSON.stringify(turns.map((entry) => entry.data))}`);
+  const cut = turns.find((entry) => entry.data.cut === true).data;
+  assert.deepEqual([cut.usd, cut.bookedUsd, cut.free], [0, 0, true], `booked a known $0: ${JSON.stringify(cut)}`);
 });
 
 // Three runs in turn, each followed for up to 55 s.

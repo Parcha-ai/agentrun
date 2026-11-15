@@ -17,3 +17,15 @@ test('native binding stays in ordinary revisions through learning edits; no impo
  assert.deepEqual(definitionOf(edited.agent,edited.revision,edited.version).native,native);
  assert.equal(edited.agent.externalRef,null);
 });
+
+test('native revisions reject a coerced remote target id while retaining the same opaque string', async t => {
+ const data=await mkdtemp(join(tmpdir(),'agentrun-native-binding-')); const store=await openSqliteStore({dataDir:data,role:'server'});
+ t.after(async()=>{await store.close();await rm(data,{recursive:true,force:true});});
+ const remote={connector_id:`rc_${'a'.repeat(32)}`,target_id:123};
+ const definition={id:'remote-target',name:'Remote target',instructions:'',harness:'codex',native:{...native,remote},learning:false};
+ await assert.rejects(createAgent(store,{definition,skills:{}}),/Invalid remote native reference/);
+ assert.equal(await store.agents.get(definition.id),undefined,'invalid metadata must not create an agent');
+ const entry=await createAgent(store,{definition:{...definition,native:{...native,remote:{...remote,target_id:'123'}}},skills:{}});
+ assert.deepEqual(entry.revision.body.native,{...native,remote:{...remote,target_id:'123'}});
+ assert.deepEqual(definitionOf(entry.agent,entry.revision,entry.version).native.remote,{...remote,target_id:'123'});
+});

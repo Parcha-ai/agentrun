@@ -2,6 +2,7 @@
 // (connection.ts) in the store's own schema (default "agentrun"). The server sets the schema up (migrate.ts) and holds the
 // owner lock, one server per schema; runners are many, set nothing up, and refuse a schema version they do not know.
 import { SchemaVersionUnknown, type Store, type StoreOwned, type StoreRole } from "../store.js";
+import { backfillNativeCommandOwners } from '../native-command-owner.js';
 import { storeOver } from "../sqlite/store.js";
 import { PgConnection, SCHEMA_NAME } from "./connection.js";
 import { migrate, migrationsIn, placeOf, versionOf } from "./migrate.js";
@@ -77,6 +78,7 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
   try {
     const found = await connection.withClient((client) => (role === "server" ? migrate(client, schema, now(), migrations) : versionOf(client, schema)));
     if (found !== known) throw new SchemaVersionUnknown(placeOf(schema), found, known);
+    if(role==="server")await backfillNativeCommandOwners(connection);
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());
       if (Math.abs(gap) > CLOCK_WARN_MS) {

@@ -17,7 +17,7 @@ import { mkdir, readdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { type HostTool, PLAN_LIMIT_WORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
@@ -125,9 +125,9 @@ async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string
 /** The model a CLI run is capped at: the catalog entry that bills it (its entry's priceModel), its cost WITH TIERS (the
  *  money rule: a request past a tier is held and booked at it, as main's calculateCost does), on the harness's wire. A
  *  model the catalog does not price is held at no price: its requests are unknown, never $0. A ChatGPT plan's model
- *  (`plan`) is billed to the plan: its requests cost the run no dollars (CapModel.plan). */
-function capModelOf(id: string, wire: string, listed: { cost?: Partial<CapPrice>; maxTokens?: number } | undefined, unpriced: boolean, plan = false): CapModel {
-  if (plan) return { id, api: wire, price: null, outputCeiling: typeof listed?.maxTokens === "number" ? listed.maxTokens : null, plan: true };
+ *  (`plan`) is billed to the plan: the one plan rule (planCapModel), pi's plan route's too (adapter-run-spec.ts capModelOf). */
+export function capModelOf(id: string, wire: string, listed: { cost?: Partial<CapPrice>; maxTokens?: number } | undefined, unpriced: boolean, plan = false): CapModel {
+  if (plan) return planCapModel(id, wire, typeof listed?.maxTokens === "number" ? listed.maxTokens : null);
   const cost = listed?.cost;
   const price = !unpriced && cost && typeof cost.input === "number" && typeof cost.output === "number"
     ? {
@@ -503,6 +503,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     },
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
+    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
+    freeRequests: freeModelRequestsOf(deps.env),
   };
   const cap = capUsd === undefined
     ? undefined
