@@ -302,8 +302,13 @@ export function responsesOutputAsked(body: Record<string, unknown>): number | un
 /** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
  *  allowance when it reasons. */
 export function responsesOutputLeast(body: Record<string, unknown>): number {
-  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  const effort = responsesEffort(body);
   return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : (REASONING_TOKENS_ALLOWED[effort] ?? 0));
+}
+
+/** The reasoning effort a Responses body asks its model at (`reasoning.effort`), when it names one. */
+export function responsesEffort(body: Record<string, unknown>): string | undefined {
+  return isPlain(body.reasoning) && typeof body.reasoning.effort === "string" && body.reasoning.effort.length > 0 ? body.reasoning.effort : undefined;
 }
 
 // What a stopped request counts, read as codex's policy reads it (run-adapters-codex host/policy.ts, the same Responses
@@ -403,6 +408,7 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
     // Under a spend cap the host admits each request with what is left can buy, which goes into max_output_tokens.
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
+    effortOf: responsesEffort,
     limitOutput: limitResponsesOutput,
     // Its bytes less the escapes in the text it carries (codex's figure: the same Responses API), and on a route straight
     // to OpenAI, OpenAI's own count when that is lower; on a route OpenAI does not count, the kernel's local count when

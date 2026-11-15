@@ -1817,7 +1817,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let madeBefore = 0;
         for (const key of await sessions.keys()) madeBefore += freeRequestsIn(await sessions.read(key));
         freeMade = madeBefore;
-        const capNote: { costs: number[]; restUsd: number | null; live?: true; lastFigures?: RequestFigures; lastModel?: string } = {
+        const capNote: { costs: number[]; restUsd: number | null; live?: true; lastFigures?: RequestFigures; lastModel?: string; lastEffort?: string } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
@@ -2023,7 +2023,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // is priced at least as high): none yet, no wrap-up, as no tool call comes before a request.
           if (!wrappingUp(capUsd, taken, reserveOf(capNote.lastFigures))) return undefined;
           // A cap below what the model needs for one more step and an answer is named in the words, by the same rule.
-          return wrapUpText(capUsd, capNote.lastModel, stepAndAnswerFor(capNote.lastFigures, (step0Usd) => typicalCost(capNote.costs, step0Usd)));
+          return wrapUpText(capUsd, capNote.lastModel, stepAndAnswerFor(capNote.lastFigures, (step0Usd) => typicalCost(capNote.costs, step0Usd)), capNote.lastEffort);
         };
         const gateOf = preIntentGate(spec, hooks, wrapUp);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
@@ -2204,7 +2204,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // The main model's request as the cap prices it: what the run keeps back to answer is priced on it (wrapUp).
             if (!(request as { side?: boolean }).side && (request as { host?: string }).host === undefined) {
               const figures = figuresOf(request.model, request);
-              if (figures) Object.assign(capNote, { lastFigures: figures, lastModel: request.model });
+              if (figures) Object.assign(capNote, { lastFigures: figures, lastModel: request.model, lastEffort: request.effort });
             }
             // What follows is the wrap-up's own bookkeeping, after the request was admitted and its hold booked: it never fails
             // the request (a throw here would leave it admitted and never sent, read as cut at its worst case).

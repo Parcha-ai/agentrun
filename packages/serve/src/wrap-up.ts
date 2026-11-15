@@ -36,10 +36,27 @@ export const wrappingUp = (capUsd: number | undefined, takenUsd: number | null, 
 export const stepAndAnswerFor = (figures: RequestFigures | undefined, typical: (step0Usd: number) => number): number | undefined =>
   figures === undefined ? undefined : figures.leastUsd + reserveFor(figures, typical)!;
 
-/** The words a call reads once its run wraps up: WRAP_UP_TEXT, and on a cap (`capUsd`) below what `model` needs for one
- *  more step and an answer (`needUsd`, stepAndAnswerFor) a sentence naming both, so whoever reads the run sees that the
- *  cap, not the run, ended its tools. The model is told the same and answers as WRAP_UP_TEXT asks. */
-export function wrapUpText(capUsd: number, model: string | undefined, needUsd: number | undefined): string {
-  if (needUsd === undefined || !Number.isFinite(needUsd) || !(needUsd > capUsd)) return WRAP_UP_TEXT;
-  return `${WRAP_UP_TEXT} This run's cap of ${money(capUsd)} is below what ${model ?? "its model"} needs for one more step and an answer, about ${leastMoney(needUsd)}.`;
+/** The sentence that says a cap (`capUsd`) is below what `model`, at `effort` when its request named one, needs for one
+ *  more step and an answer (`needUsd`, stepAndAnswerFor), of a run's cap or of an agent's (`whose`); undefined when it is
+ *  not below, or the need is unknown. The one wording of the run's wrap-up (wrapUpText) and the agent's save warning. */
+export function capBelowText(whose: "run" | "agent", capUsd: number, model: string | undefined, effort: string | undefined, needUsd: number | undefined): string | undefined {
+  if (needUsd === undefined || !Number.isFinite(needUsd) || !(needUsd > capUsd)) return undefined;
+  const named = `${model ?? "its model"}${effort ? ` at ${effort} effort` : ""}`;
+  return `This ${whose}'s cap of ${money(capUsd)} is below what ${named} needs for one more step and an answer, about ${leastMoney(needUsd)}`;
+}
+
+/** The words a call reads once its run wraps up: WRAP_UP_TEXT, and on a cap (`capUsd`) below what `model` (at `effort`,
+ *  the effort its last request named) needs for one more step and an answer (`needUsd`, stepAndAnswerFor) a sentence
+ *  naming them, so whoever reads the run sees that the cap, not the run, ended its tools. The model is told the same and
+ *  answers as WRAP_UP_TEXT asks. */
+export function wrapUpText(capUsd: number, model: string | undefined, needUsd: number | undefined, effort?: string): string {
+  const below = capBelowText("run", capUsd, model, effort, needUsd);
+  return below === undefined ? WRAP_UP_TEXT : `${WRAP_UP_TEXT} ${below}.`;
+}
+
+/** The warning an agent saved with a cap below what its model needs for one more step and an answer reads (capBelowText):
+ *  its runs wrap up at their first tool call. Undefined when the cap holds one. */
+export function capBelowWarning(capUsd: number, model: string | undefined, effort: string | undefined, needUsd: number | undefined): string | undefined {
+  const below = capBelowText("agent", capUsd, model, effort, needUsd);
+  return below === undefined ? undefined : `${below}: a run will wrap up at its first tool call.`;
 }

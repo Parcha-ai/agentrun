@@ -111,11 +111,12 @@ for (const harness of HARNESSES) {
     const results = journal.filter((entry) => entry.kind === "faux.result");
     assert.ok(results.length >= 1 && results[0].data.refused === true, `the first call refused: ${JSON.stringify(results.map((entry) => entry.data))}`);
     // The refusal says why so soon: the cap is below what the model needs for one more step and an answer (its least, a
-    // step-0 step and a least answer: some $0.40), named with both figures.
+    // step-0 step and a least answer: some $0.40), named with both figures, and the model at the effort its request named
+    // (low: the effort its least was read at).
     const timeline = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
     const refusal = timeline.find((row) => row.kind === "tool_result" && `${row.text ?? ""} ${row.summary ?? ""}`.includes("Budget nearly spent"));
     const said = `${refusal?.text ?? ""} ${refusal?.summary ?? ""}`;
-    const need = /This run's cap of \$0\.30 is below what \S+ needs for one more step and an answer, about \$(\d+\.\d\d)\./.exec(said)?.[1];
+    const need = /This run's cap of \$0\.30 is below what \S+ at low effort needs for one more step and an answer, about \$(\d+\.\d\d)\./.exec(said)?.[1];
     assert.ok(need !== undefined && Number(need) > 0.3, `the cap and the step and answer it is below, named: ${said}`);
     const run = (await api("GET", `/runs/${runId}`)).body;
     assert.ok(run.cost.usd <= 0.3, `$${run.cost.usd}`);

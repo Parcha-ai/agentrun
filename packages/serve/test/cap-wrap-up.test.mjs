@@ -193,6 +193,9 @@ test("a cap below what the model needs for one more step and an answer is named 
   // Under $0.25 a run wraps up at its first call with nothing spent but that step in flight at its least.
   assert.equal(wrappingUp(0.25, figures.leastUsd, reserveFor(figures, step0)), true);
   assert.equal(wrapUpText(0.25, SOL.id, need), `${WRAP_UP_TEXT} This run's cap of $0.25 is below what gpt-6.1-sol needs for one more step and an answer, about $0.32.`);
+  // The effort its request named, the one its least was read at, is named beside the model.
+  assert.equal(wrapUpText(0.25, SOL.id, need, "medium"), `${WRAP_UP_TEXT} This run's cap of $0.25 is below what gpt-6.1-sol at medium effort needs for one more step and an answer, about $0.32.`);
+  assert.equal(wrapUpText(1, SOL.id, need, "medium"), WRAP_UP_TEXT);
   // A cap that holds a step and an answer wraps up only once its spend says so, in WRAP_UP_TEXT alone; with no figure, the same.
   assert.equal(wrapUpText(1, SOL.id, need), WRAP_UP_TEXT);
   assert.equal(wrapUpText(need, SOL.id, need), WRAP_UP_TEXT, "a cap at the need is not below it");

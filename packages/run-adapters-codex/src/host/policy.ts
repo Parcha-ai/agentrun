@@ -512,8 +512,13 @@ export function responsesOutputAsked(body: Record<string, unknown>): number | un
 /** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
  *  allowance when it reasons. */
 export function responsesOutputLeast(body: Record<string, unknown>): number {
-  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  const effort = responsesEffort(body);
   return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
+}
+
+/** The reasoning effort a Responses body asks its model at (`reasoning.effort`), when it names one. */
+export function responsesEffort(body: Record<string, unknown>): string | undefined {
+  return isPlain(body.reasoning) && typeof body.reasoning.effort === "string" && body.reasoning.effort.length > 0 ? body.reasoning.effort : undefined;
 }
 
 /** The reasoning tokens a Responses request may bill that its stream never shows (only a summary of its reasoning
@@ -629,6 +634,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
+    effortOf: responsesEffort,
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
     contentBytesOf: responsesContentBytes,

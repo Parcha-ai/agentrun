@@ -221,6 +221,12 @@ export function anthropicOutputLeast(body: Record<string, unknown>): number {
   return isPlain(body.thinking) && body.thinking.type === "enabled" ? ANSWER_TOKENS_LEAST + THINKING_BUDGET_LEAST : ANSWER_TOKENS_LEAST;
 }
 
+/** The effort a Messages body asks its model at (`output_config.effort`), when it names one. */
+export function anthropicEffort(body: Record<string, unknown>): string | undefined {
+  const config = body.output_config;
+  return isPlain(config) && typeof config.effort === "string" && config.effort.length > 0 ? config.effort : undefined;
+}
+
 /** The thinking tokens a Messages request may bill that its stream never shows: Claude 4-class models stream only a
  *  summary of their thinking (and a redacted block shows none of it), so a request that thinks counts its thinking
  *  budget, or its `max_tokens` when its thinking is adaptive (no budget); one with thinking off, none. A stopped request
@@ -499,6 +505,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     // with a document, or one offering the hosted search (its allowance is part of the byte bound) keeps the byte bound.
     countInputLocally: (body: Record<string, unknown>) => (offersWebSearch(body) ? undefined : messagesLocalInputTokens(body)),
     outputLeast: anthropicOutputLeast,
+    effortOf: anthropicEffort,
     reasoningHidden: anthropicReasoningHidden,
     reasoningBytesOf: anthropicReasoningBytes,
     contentBytesOf: anthropicContentBytes,

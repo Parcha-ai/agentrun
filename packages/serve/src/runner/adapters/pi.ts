@@ -120,6 +120,15 @@ export interface PiAdapterOptions {
 }
 
 const PROVIDER = "agentrun-session";
+
+/** The input tokens pi (the @earendil-works/pi-* 1.5.2 packages serve pins) sends in a run's first model request before
+ *  the agent's own prompt: pi writes no system prompt of its own, so it is serve's (the environment line and the wrapper
+ *  around the agent's instructions) and the host's code mode tool, which every run is offered, with no tool granted.
+ *  Counted with o200k_base on the first request a run sent through its spec to a scripted provider on gpt-6.1-sol, 286
+ *  tokens, stated at 280 so its date line never puts it over (test/cap-save-warning.test.mjs keeps it at or under that
+ *  count). A save under a cap prices a least step on it (cap-short.ts). */
+export const PI_BASE_INPUT_TOKENS = 280;
+
 /** A host tool's value (HostTool's `structured`) in its pi result's details, which the model never reads: what a call
  *  nested in tools_call or a script reads (piNested). */
 const HOST_VALUE = "agentrun.value";

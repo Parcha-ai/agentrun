@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
-import { type HostTool, PLAN_LIMIT_WORDS, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterFacts, type HostTool, PLAN_LIMIT_WORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, installDirOf, installForClaim, installingWords } from "../harness-install.js";
@@ -141,6 +141,21 @@ export function capModelOf(id: string, wire: string, listed: { cost?: Partial<Ca
   return { id, api: wire, price, outputCeiling: typeof listed?.maxTokens === "number" ? listed.maxTokens : null };
 }
 type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: number; tiers: readonly { inputTokensAbove: number; input: number; output: number; cacheRead: number; cacheWrite: number }[] };
+
+/** The model a CLI run of `entry` on `chosen` (modelsOf) is capped at, on its `wire`: the catalog entry that bills it
+ *  (its entry's priceModel), priced by capModelOf. */
+function chosenCapModel(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awaited<ReturnType<typeof modelsOf>>, wire: string): CapModel {
+  const priced = entry.priceModel(env, chosen.model);
+  const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
+  return capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER);
+}
+
+/** The model a run of the CLI harness `entry` on `ref` (a revision's model; none, this host's default for it) is capped
+ *  at here, as its run's spec prices it (modelsOf, chosenCapModel), before any run: a save's cap warning (cap-short.ts)
+ *  prices its least step on it. */
+export async function cliCapModel(entry: HarnessEntry & { facts: AdapterFacts }, env: NodeJS.ProcessEnv, ref: string | undefined): Promise<CapModel> {
+  return chosenCapModel(entry, env, await modelsOf(entry, env, ref), entry.facts.wire);
+}
 
 /** A CLI run's environment: the runner's run environment (`env`, runner/main.ts runEnv), built from it itself and never
  *  a spread of it, with the model keys the claim opened (`claimed`, withModelKeys) and the server's data directory named
@@ -483,9 +498,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
 
   // The run's cap (its launch's maxCostUsd): the kernel's check before each paid request, at the catalog price of the
   // model that bills the run, and what a refusal does to the run, with the kernel's raise rule.
-  const priced = entry.priceModel(env, chosen.model);
-  const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
-  const capModel = capModelOf(priced.modelId, facts.wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER);
+  const capModel = chosenCapModel(entry, env, chosen, facts.wire);
   const capUsd = launch.maxCostUsd;
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped), the model that bills this CLI run priced WITH tiers, strict where the launch says. The loop builds the

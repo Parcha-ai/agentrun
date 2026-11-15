@@ -8,6 +8,7 @@ import { isHostTool } from "./tool-list.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, type HarnessCapability, harnessOffers } from "./harness.js";
 import { harnessOf, onAdapter } from "./harness-table.js";
+import { capShortOf } from "./cap-short.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelNeeds, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./place-offers.js";
@@ -33,15 +34,16 @@ export type RevisionComputer = { kind: string; provider?: string; image?: string
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; thinking?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
   | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
  *  not bind), `missing` (a bound tool's unset variables), `adapter`, `decision` (a decision provider's unset key), `codeNodes`
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness`, `box` (the place's,
  *  which this server does not have) and `denied` (a tool a workflow's call node calls that is set to deny) name it for a
- *  run's 409 details; `notGrantable` a tool no setup makes grantable (a known MCP meta tool, mcp-meta.ts), with why. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?: { tool: string; reason: string }; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string; unpriced?: true };
+ *  run's 409 details; `notGrantable` a tool no setup makes grantable (a known MCP meta tool, mcp-meta.ts), with why.
+ *  `short`: a save's cap below what its model needs for one more step and an answer, a warning alone (cap-short.ts). */
+export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?: { tool: string; reason: string }; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string; unpriced?: true; short?: true };
 
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
@@ -82,8 +84,9 @@ export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
  *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check.
  *  `shellOf`: where a run of an agent with that computer setting has its shell here now (resolve-computer.ts
  *  runShellOf, in the server's mode): a sandbox-only tool on the runner is let by it (Mode 2's Archil exec runs bash);
- *  none given, the runner has no shell. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, monid, decisionPrice, computerReady, shellOf }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; monid?: MonidPinBody; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shellOf?: (setting: RevisionComputer) => Promise<ShellPlace> } = {}): Promise<Blocker[]> {
+ *  none given, the runner has no shell. `capUsd`: a save's cap (with `capped`), whose shortfall for one more step and an
+ *  answer is a warning of its own (`short`, cap-short.ts); a run's check never names one. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, capUsd, boxes = [], offers, mcp, monid, decisionPrice, computerReady, shellOf }: { capped?: boolean; capUsd?: number; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; monid?: MonidPinBody; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shellOf?: (setting: RevisionComputer) => Promise<ShellPlace> } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -204,7 +207,16 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
     // Under a cap, a model serve has no price for (unpricedModels: a gateway id no price names and the catalog does not
     // list) cannot be kept to it: the run is refused now, never started and refused at its first request.
-    else if (capped) for (const id of await unpricedModels(env, revision.model, ["default"], harness)) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: PRICE_FIX, host: true, unpriced: true });
+    else if (capped) {
+      const unpriced = await unpricedModels(env, revision.model, ["default"], harness);
+      for (const id of unpriced) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: PRICE_FIX, host: true, unpriced: true });
+      // A save's cap (`capUsd`) below what the model needs for one more step and an answer: a warning, never a refusal
+      // (cap-short.ts). Asked of a save alone: a run under such a cap starts, and its wrap-up says the same.
+      if (capUsd !== undefined && unpriced.length === 0) {
+        const words = await capShortOf(env, harness, revision, capUsd);
+        if (words) out.push({ field: "definition.max_cost_usd", reason: "invalid", message: words, host: true, short: true });
+      }
+    }
     return out;
   }
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");

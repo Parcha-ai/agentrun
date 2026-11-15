@@ -21,6 +21,16 @@ export const CLAUDE_AGENT_SDK_VERSION = '0.3.286';
 /** The Claude Code CLI the pinned SDK release bundles (its package.json's `claudeCodeVersion`), installed in the VM image. */
 export const CLAUDE_CODE_VERSION = '2.1.286';
 
+/**
+ * The input tokens the pinned Claude Code (2.1.286, from Agent SDK 0.3.286) sends in its first model request before the
+ * agent's own prompt: its system prompt, with no tool of its own (the harness turns its built-ins off). Counted with
+ * o200k_base on the first request the pinned CLI sent to a scripted provider, 786 tokens (less the line it adds when a
+ * session has no tool at all), stated at 780 so a line it words differently on another machine never puts it over
+ * (test/tool-off.test.mjs keeps it at or under that count). Claude bills by its own tokenizer; this is o200k_base's count
+ * of the same text. The facts' `baseInputTokens`: a save under a cap prices a least step on it.
+ */
+export const CLAUDE_CODE_BASE_INPUT_TOKENS = 780;
+
 /** Where the pinned CLI is in a session VM booted from the base (harness-world-sandbox's `CLAUDE_CLI`). */
 export const CLAUDE_VM_EXECUTABLE = `/opt/dh/claude/${CLAUDE_CODE_VERSION}/claude`;
 
