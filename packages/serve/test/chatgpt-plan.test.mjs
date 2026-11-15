@@ -54,6 +54,17 @@ function fakeOpenAI(t) {
         o.refreshes += 1;
         const sent = form.get("refresh_token");
         if (o.refreshDelayMs) await new Promise((resolve) => setTimeout(resolve, o.refreshDelayMs));
+        // `failNext`: the next refresh answered with that status (a fault at OpenAI), its token unspent. `dropNext`: the
+        // next one's connection lost after it was sent, no answer read.
+        if (o.failNext) {
+          const status = o.failNext;
+          o.failNext = 0;
+          return Response.json({ error: "server_error" }, { status });
+        }
+        if (o.dropNext) {
+          o.dropNext = false;
+          throw new TypeError("fetch failed", { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) });
+        }
         if (o.spent.has(sent)) return refused("refresh_token_reused");
         if (o.refuse || !o.live.has(sent)) return refused("invalid_grant");
         o.live.delete(sent);
@@ -339,4 +350,85 @@ test("a server and a runner in their own processes, on one SQLite store, renew a
   assert.equal(await runner.token(), again, "kept: no third refresh");
   assert.equal(openai.refreshes, 2);
   assert.equal(server.view().state, "signed_in");
+});
+
+test("the renewal lease across two processes on one SQLite store: a live lease sends the current token at once, a lapsed one is taken over, a lost answer holds it to its end, a fault at OpenAI gives it back, and a sign-out mid-renewal stays", { timeout: 60_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { openSqliteStore } = await import("../dist/store/index.js");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const [one, two] = await Promise.all([import("../dist/chatgpt-plan.js?process=server-2"), import("../dist/chatgpt-plan.js?process=runner-2")]);
+  const dir = mkdtempSync(join(tmpdir(), "chatgpt-plan-lease-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const serverStore = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(() => serverStore.close());
+  const runnerStore = await openSqliteStore({ dataDir: dir, role: "runner" });
+  t.after(() => runnerStore.close());
+  const sealKey = randomBytes(32);
+  const signIn = async () => (await (await globalThis.fetch("https://auth.openai.com/api/accounts/oauth/token", { method: "POST", body: new URLSearchParams({ grant_type: "authorization_code", client_id: CLIENT, code: "fake-code", code_verifier: "v", redirect_uri: CALLBACK, resource: "https://api.openai.com/v1" }) })).json());
+  /** A fresh sign-in sealed as the row, its access token ending in `endsIn` ms, with `lease` if given. */
+  const seat = async (endsIn, lease) => {
+    const issued = await signIn();
+    const credential = { type: "oauth", access: issued.access_token, refresh: issued.refresh_token, expires: Date.now() + endsIn, clientId: CLIENT, scopes: SCOPE.split(" ") };
+    await putSealedKey(serverStore, sealKey, PLAN_ROW, JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6.1-sol"], ...(lease ? { lease } : {}) }));
+    return credential;
+  };
+  const allowed = new Set(["state", "email", "plan", "models", "authorize_url"]);
+  const viewHidesLease = (plan) => {
+    const view = plan.view();
+    assert.deepEqual(Object.keys(view).filter((key) => !allowed.has(key)), [], "a view shows no lease");
+    assert.doesNotMatch(JSON.stringify(view), /lease|holder|until/);
+  };
+
+  // Another holder is renewing, and the token has a minute left: sent at once, no refresh, no wait.
+  let seated = await seat(60_000, { holder: "another", until: Date.now() + 20_000 });
+  const runner = new two.ChatGPTPlan({ store: runnerStore, sealKey });
+  let started = Date.now();
+  assert.equal(await runner.token(), seated.access, "a live lease and a token not yet ended: the current one is sent");
+  assert.ok(Date.now() - started < 150, "without waiting for the lease");
+  assert.equal(openai.refreshes, 0);
+  viewHidesLease(await new one.ChatGPTPlan({ store: serverStore, sealKey }).load());
+
+  // A holder that died mid-renewal left its lease, lapsed, on an ended token: the next reader takes it over, refreshes once.
+  seated = await seat(-1_000, { holder: "crashed", until: Date.now() - 1_000 });
+  assert.equal(await runner.token(), openai.issued.at(-1).access, "a lapsed lease is taken over");
+  assert.notEqual(openai.issued.at(-1).access, seated.access);
+  assert.equal(openai.refreshes, 1, "one refresh");
+  assert.equal(await new one.ChatGPTPlan({ store: serverStore, sealKey }).token(), openai.issued.at(-1).access, "the other process reads the new pair");
+  assert.equal(openai.refreshes, 1);
+
+  // The refresh left and its answer was lost: the token may be spent, so the lease is held to its end. Another reader
+  // sends the current token (a minute left) and does not send the refresh token again.
+  seated = await seat(60_000);
+  openai.dropNext = true;
+  const server = new one.ChatGPTPlan({ store: serverStore, sealKey });
+  const refreshesBefore = openai.refreshes;
+  await assert.rejects(server.token(), (error) => error instanceof one.PlanUnavailable && /try again/.test(error.message));
+  assert.equal(openai.refreshes, refreshesBefore + 1);
+  assert.equal(await new two.ChatGPTPlan({ store: runnerStore, sealKey }).token(), seated.access, "a lease held after a lost answer: the current token is sent");
+  assert.equal(openai.refreshes, refreshesBefore + 1, "and the refresh token is not sent again before the lease ends");
+  viewHidesLease(await new one.ChatGPTPlan({ store: serverStore, sealKey }).load());
+  // Once it has lapsed (a reader whose clock is past its end), the lease is taken over: one more refresh.
+  const later = new two.ChatGPTPlan({ store: runnerStore, sealKey, now: () => Date.now() + 31_000 });
+  assert.equal(await later.token(), openai.issued.at(-1).access, "a held lease that lapsed is taken over");
+  assert.equal(openai.refreshes, refreshesBefore + 2);
+
+  // OpenAI answered 503: the token is unspent, so the lease is given back and the next reader refreshes at once.
+  seated = await seat(60_000);
+  openai.failNext = 503;
+  await assert.rejects(new one.ChatGPTPlan({ store: serverStore, sealKey }).token(), (error) => error instanceof one.PlanUnavailable && /try again/.test(error.message));
+  assert.equal(await new two.ChatGPTPlan({ store: runnerStore, sealKey }).token(), openai.issued.at(-1).access, "a fault at OpenAI gives the lease back");
+  assert.notEqual(openai.issued.at(-1).access, seated.access);
+  assert.equal(openai.refreshes, refreshesBefore + 4);
+
+  // The owner signs out while a renewal is out: the row stays gone, whatever the renewal got.
+  await seat(-1_000);
+  openai.refreshDelayMs = 300;
+  const renewing = new two.ChatGPTPlan({ store: runnerStore, sealKey }).token();
+  renewing.catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await new one.ChatGPTPlan({ store: serverStore, sealKey }).signOut();
+  await assert.rejects(renewing, (error) => error instanceof two.PlanUnavailable && /not signed in/.test(error.message));
+  assert.equal(await runnerStore.sealedKeys.get(PLAN_ROW), undefined, "the row stays gone");
+  assert.equal(await serverStore.sealedKeys.get(PLAN_ROW), undefined);
+  assert.equal((await new one.ChatGPTPlan({ store: serverStore, sealKey }).load()).view().state, "signed_out");
 });
