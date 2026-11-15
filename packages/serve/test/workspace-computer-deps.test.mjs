@@ -376,6 +376,30 @@ test("a cloud phone is refused in words at the claim where the run's box_allow i
   assert.deepEqual(record.created, [], "nothing is made");
 });
 
+// A desktop's browser is a browser: under the default list (a sandbox's package-install list, no browsing policy) a
+// desktop whose provider makes "open" is open, public internet only through its egress proxy; the operator's or the
+// launch's list is its allowlist; none is none; a sandbox keeps the list. Orgo, which makes none alone, stays none.
+test("a desktop under the default list is open, under the operator's list that list, under none none; a sandbox keeps the default list", () => {
+  const image = "example.org/desktop@sha256:" + "a".repeat(64);
+  const desktops = PROVIDERS.filter((one) => one.kinds.includes("desktop") && one.network?.includes("open"));
+  assert.deepEqual(desktops.map((one) => one.id).filter((id) => ["docker", "agent37", "e2b"].includes(id)).sort(), ["agent37", "docker", "e2b"], "Docker's, Agent37's and E2B's desktops make open");
+  for (const entry of desktops) {
+    const spec = (env, run) => computerSpecOf({ AGENTRUN_DOCKER_IMAGE: image, ...env })(entry, "desktop", { networks: entry.network, maxLifetimeMs: 3_600_000, ...run });
+    assert.equal(spec({}, { boxAllow: [...DEFAULT_BOX_ALLOW] }).network, "open", `${entry.id}: the launch's default list`);
+    assert.equal(spec({}, {}).network, "open", `${entry.id}: no box_allow, this server's default list`);
+    assert.deepEqual(spec({}, { boxAllow: ["example.com"], boxAllowSet: true }).network, { allow: ["example.com"] }, `${entry.id}: the launch's operator list`);
+    assert.deepEqual(spec({ AGENTRUN_BOX_ALLOW: "example.com" }, {}).network, { allow: ["example.com"] }, `${entry.id}: this server's operator list`);
+    assert.equal(spec({}, { boxAllow: "none", boxAllowSet: true }).network, "none", `${entry.id}: the launch's none`);
+    assert.equal(spec({ AGENTRUN_BOX_ALLOW: "none" }, {}).network, "none", `${entry.id}: this server's none`);
+  }
+  const docker = entryOf("docker");
+  const sandbox = (run) => computerSpecOf({})(docker, "sandbox", { networks: docker.network, ...run }).network;
+  assert.deepEqual(sandbox({ boxAllow: [...DEFAULT_BOX_ALLOW] }), { allow: [...DEFAULT_BOX_ALLOW] }, "a sandbox under the default list: the list");
+  assert.equal(sandbox({}), "none", "a sandbox with no box_allow: none, as before");
+  const orgo = entryOf("orgo");
+  assert.equal(computerSpecOf({})(orgo, "desktop", { boxAllow: [...DEFAULT_BOX_ALLOW], networks: orgo.network, maxLifetimeMs: 3_600_000 }).network, "none", "Orgo makes none alone: none");
+});
+
 // Local Chrome makes "open" and "allow" behind its own egress proxy: an operator's list holds it to those hosts, the
 // default list (a sandbox's package-install list, no browsing policy) leaves it open, and none refuses it.
 test("Local Chrome at the claim: an operator's list is its allowlist, the default list leaves it open, none refuses it", async () => {

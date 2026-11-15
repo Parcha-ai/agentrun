@@ -71,13 +71,15 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
   assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers", network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none });
   assert.equal(kindOf(view, "sandbox").offered, true);
-  // What this server's allow-list means for each provider, from its descriptor's network: none for Docker and the hosted
-  // computers that run init's egress proxy (Daytona, Modal, E2B, Agent37), which take the list; words for a computer with
+  // What this server's allow-list means for each provider, from its descriptor's network and the kind: none for a sandbox
+  // of Docker's or of a hosted computer that runs init's egress proxy (Daytona, Modal, E2B), which takes the list; for
+  // their desktops (E2B's, Agent37's), open unless the operator sets the list, as Local Chrome; words for a computer with
   // no network (Orgo's offered Linux desktop: its Windows one is parked), and for one on the vendor's own.
   const networkOf = (kind, id) => providerOf(view, kind, id).network;
+  const operatorList = "open unless this server sets AGENTRUN_BOX_ALLOW; then only those hosts";
   assert.deepEqual(
     [networkOf("sandbox", "docker"), networkOf("sandbox", "daytona"), networkOf("sandbox", "modal"), networkOf("sandbox", "e2b"), networkOf("desktop", "e2b"), networkOf("desktop", "agent37"), networkOf("desktop", "orgo"), networkOf("browser", "kernel")],
-    [undefined, undefined, undefined, undefined, undefined, undefined, "no network, so this server's allow-list isn't offered", "the vendor's own network; this server's allow-list doesn't apply"],
+    [undefined, undefined, undefined, undefined, operatorList, operatorList, "no network, so this server's allow-list isn't offered", "the vendor's own network; this server's allow-list doesn't apply"],
   );
   // Local Chrome, behind its own egress proxy ("open" and "allow", its descriptor's): open, unless the operator sets the
   // list.

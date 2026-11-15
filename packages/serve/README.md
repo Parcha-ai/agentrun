@@ -864,9 +864,12 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal, E2B or Agent37 sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
-vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
-only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
+Daytona, Modal, E2B or Agent37 sandbox reaches the same list through an egress proxy on the vendor's machine, outside its
+programs' network. An Orgo desktop has no network of its own (loopback only). A desktop (Docker's, Agent37's, E2B's) and
+Local Chrome are open to the public internet, through their egress proxy, unless this server sets `AGENTRUN_BOX_ALLOW`;
+then only those hosts (the default list, a sandbox's package registries, is no browsing policy). Either way the proxy
+refuses private, link-local and metadata addresses. A phone and a hosted browser are on their vendor's own network,
+whatever the list says. Under
 `AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain

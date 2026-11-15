@@ -10,3 +10,4 @@ Hosted computers (Agent37, E2B, Modal, Daytona) take network `open` and an allow
 - Create and `network()` read the network back from inside: nothing answers directly, init's relay answers, and the policy file beside the proxy's socket holds the form the label records.
 - An Archil computer takes `open` or a list too. Its root still mounts the folder outside the tools' network.
 - `places.boxes` lists a Daytona or Modal box as `allowlist` under a host list, not `none`.
+- Breaking: desktops now reach the public web by default; set none or a list to narrow it. Under the default `AGENTRUN_BOX_ALLOW` (a sandbox's package-install list, no browsing policy), a desktop is `open`, public internet only through its egress proxy. The operator's list is its allowlist, and `none` is none. A sandbox keeps the default list, and Settings says what a desktop gets.
