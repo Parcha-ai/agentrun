@@ -200,6 +200,16 @@ describe("on the workflow card", () => {
     expect(onReplayed).toHaveBeenCalledTimes(2);
     expect(client.learnedWorkflowRevisions).toHaveBeenCalledTimes(2);
   });
+  it("a replay of an older revision keeps its decision on screen when the revisions are read again (the card stays on that revision)", async () => {
+    const client = Object.assign(fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ digest: "1".repeat(16), status: "done", decided: "hold", reason: "worse" })]), { learnedWorkflowRevisions: vi.fn(async () => ({ ...data, revisions: [...data.revisions] })) });
+    const host = mount(createElement(WorkflowReplay, { v2: client, agentId: "a", workflows: [{ name: "sorter", status: "active" }], promotions: [promo(1, "hold"), promo(2, "promote")], serving: [{ workflow: "sorter", digest: "2".repeat(16), replaying: null }] }));
+    await flush();
+    act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
+    act(() => button(host)!.click());
+    await flush();
+    expect(client.learnedWorkflowRevisions).toHaveBeenCalledTimes(2);
+    expect(text(host, "replay-decision")).toContain("Still held");
+  });
   it("offers none on a card with no replay wired (a read-only view)", () => {
     expect(button(mount(createElement(Steps, { data, promotions: [promo(2, "hold")] })))).toBeUndefined();
   });
