@@ -194,6 +194,30 @@ test("the provider's create whose wait for the machine throws RateLimitError fai
 	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [["delete", "m-1"]]);
 });
 
+test("a step that fails as vendor leaves its machine to the adapter's sweep by name, which deletes it and never a second create's", async () => {
+	// Another provider instance's create of the same request finds no machine by the name once this one's is deleted,
+	// and makes its own (m-2). A delete here before the adapter's sweep would leave the sweep to find m-2 instead.
+	const deleted = new Set();
+	let mine;
+	const replacement = () => ({ ...mine, id: "m-2", status: "starting", createdAt: new Date(CREATED.getTime() + 60_000) });
+	const listing = () => (mine === undefined ? [] : deleted.has("m-1") ? [replacement()] : [mine]);
+	const { rec, provider } = setup(
+		{ timeouts: { ...TIMEOUTS, pollMs: 5 } },
+		{
+			list: listing,
+			create: (params) => (mine = machine({ name: params.name, labels: params.labels })),
+			waitUntilReady: () => Promise.reject(named("BoxdError", { message: "machine computer-x entered terminal state 'failed' while waiting" })),
+			get: (id) => (deleted.has(id) ? Promise.reject(named("NotFoundError")) : id === "m-1" ? mine : replacement()),
+			delete: (id) => void deleted.add(id),
+		},
+	);
+	const made = await provider.create(SPEC, { requestId: "r-vendor" });
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "vendor");
+	assert.match(made.error.message, /entered terminal state 'failed'/);
+	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [["delete", "m-1"]], "the machine this create made, and no other");
+});
+
 test("get reads the machine back: its labels, its state and when boxd made it", async () => {
 	const base = machine();
 	const read = async (patch) => setup({}, { get: { ...base, ...patch } }).host.get("m-1", ctx);
