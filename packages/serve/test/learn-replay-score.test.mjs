@@ -10,7 +10,7 @@ import * as dsl from "@parcha/agentrun-dsl";
 import { draftProblems } from "../dist/learn/skills.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
-const row = (of, { answer, recorded = answer, correct = true, outcome = "answered", guards = [], expected } = {}) => ({ of, recorded: { answer: recorded, correct, ...(expected ? { expected } : {}) }, outcome, answer: outcome === "answered" ? answer : null, guards });
+const row = (of, { answer, recorded = answer, correct = true, outcome = "answered", guards = [], expected, path = "agent" } = {}) => ({ of, recorded: { answer: recorded, correct, path, ...(expected ? { expected } : {}) }, outcome, answer: outcome === "answered" ? answer : null, guards });
 /** A replay's score at `thresholds` (the one scorer over its rows), and whether one row hands back there. */
 const scoreOf = (rows, thresholds) => scoreRows(refitRowsOf(rows), thresholds);
 const handsBack = (one, thresholds) => scoreOf([one], thresholds).handed_back === 1;
@@ -24,7 +24,8 @@ test("answers are the same as JSON values; a replay's answer takes the agent's g
   assert.equal(sameAnswer('Here you go.\n\n```json\n{"mcc":"5812"}\n```\n\nAnything else?', '{"mcc":"5812"}'), true, "the last json block in prose stays the same answer");
   assert.equal(answerCorrect("5",{ answer: "5", correct: true }), true);
   assert.equal(answerCorrect("5", { answer: "5", correct: false }), false);
-  assert.equal(answerCorrect("6", { answer: "5", correct: false }), false, "differs from a wrong answer: unknown, counted wrong");
+  assert.equal(answerCorrect("6", { answer: "5", correct: false }), true, "on a wrong grade with nothing expected, an answer other than the one graded wrong is right by the grade");
+  assert.equal(answerCorrect("6", { answer: null, correct: false }), false, "the answer graded wrong unread: nothing says it differs");
   assert.equal(answerCorrect('{"mcc":"5812","why":"x"}', { answer: "zzz", correct: false, expected: { mcc: "5812" } }), true, "expected fields decide");
   assert.equal(answerCorrect('{"mcc":"5813"}', { answer: '{"mcc":"5812"}', correct: true, expected: { mcc: "5812" } }), false);
   assert.equal(answerCorrect(null, { answer: "5", correct: true }), false);
@@ -37,6 +38,34 @@ test("a workflow whose output is one text field answers that text (learnedOutput
   assert.equal(answerCorrect("5999", { answer: "x", correct: true, expected: { mcc: "5812" } }), false);
   assert.equal(answerCorrect("5812", { answer: "x", correct: true, expected: { mcc: "5812", tier: "low" } }), false, "two fields: a bare text holds neither");
   assert.equal(answerCorrect("[\"5812\"]", { answer: "x", correct: true, expected: { mcc: "5812" } }), false);
+  // One number field (an output path to {answer: number}) is served as its JSON text: the expected number reads it too.
+  assert.equal(answerCorrect("42", { answer: "41", correct: false, expected: { answer: 42 } }), true);
+  assert.equal(answerCorrect("41", { answer: "41", correct: false, expected: { answer: 42 } }), false);
+});
+
+test("on a wrong grade the bar is the grade, never a tie: a revision held on runs it served wrong clears only by answering them right", () => {
+  // The autoqa shape (#2823): 20 runs the workflow served alone, graded wrong; the replay says what each was graded wrong for.
+  const served = (answer, extra = {}) => Array.from({ length: 20 }, (_, i) => row(`served-${i}`, { answer, recorded: "41", correct: false, path: "workflow", ...extra }));
+  const expected = { expected: { answer: 42 } };
+  for (const [what, extra] of [["expected 42", expected], ["nothing expected", {}]]) {
+    const tie = scoreOf(served("41", extra), new Map());
+    assert.deepEqual(tie, { n: 20, agree: 20, agent_acc: 1, wf_acc: 0, delta: -1, handed_back: 0 }, `${what}: the agent never answered them, so its side is right`);
+    assert.equal(clears(tie), false, what);
+  }
+  // Right by the grade: the expected answer, or (nothing expected) at least not the answer graded wrong.
+  assert.deepEqual(scoreOf(served("42", expected), new Map()), { n: 20, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0 });
+  assert.deepEqual(scoreOf(served("43", expected), new Map()).wf_acc, 0, "another wrong answer than the expected one");
+  assert.deepEqual(scoreOf(served("43"), new Map()), { n: 20, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0 });
+  // A hand-back is the agent's answer: right on a run the agent never answered.
+  assert.deepEqual(scoreOf(served("41").map((one) => ({ ...one, outcome: "handed_back", answer: null })), new Map()), { n: 20, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 20 });
+  // A wrong grade of the agent's own answer (path agent or handed_back) is the agent's real answer: wrong on its side.
+  for (const path of ["agent", "handed_back"]) {
+    const own = (answer) => [row("a1", { answer, recorded: "41", correct: false, path })];
+    assert.deepEqual(scoreOf(own("41"), new Map()), { n: 1, agree: 1, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 }, path);
+    assert.deepEqual(scoreOf(own("43"), new Map()), { n: 1, agree: 0, agent_acc: 0, wf_acc: 1, delta: 1, handed_back: 0 }, path);
+  }
+  // A right grade is unchanged: the agent's side is its grade, the workflow's its answer's.
+  assert.deepEqual(scoreOf([row("w1", { answer: "41", recorded: "41", path: "workflow" })], new Map()), { n: 1, agree: 1, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0 });
 });
 
 test("a hand-back in replay is the agent's recorded answer, never a failure: escalations do not lower the workflow's accuracy", () => {
