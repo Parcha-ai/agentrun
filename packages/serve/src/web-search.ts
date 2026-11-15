@@ -80,8 +80,9 @@ export function waitOf(retryAfter: string | number | undefined, nowMs: number): 
 /** A run's breaker on its web_search, read at `now`. `held` is what a call answers unsent while it holds: SEARCH_UNAVAILABLE
  *  for the rest of the run once a quota answer came, or searchBusy with the seconds left of a rate limit's wait (rounded
  *  up, so at least 1); else undefined, and the call asks the provider. `read` takes a search's own answer and its limit:
- *  a quota answer turns search off for good, a rate limit opens a wait from now (a fresh one past the last), anything
- *  else leaves it as it is. */
+ *  a quota answer turns search off for good, a rate limit holds search for its wait from now, or for the wait already
+ *  open when that ends later (two calls in flight: a short wait never shrinks a long one), anything else leaves it as it
+ *  is. */
 export function searchBreaker(now: () => number = Date.now): { held(): Search | undefined; read(searched: Searched): Search } {
   let off = false;
   let until = 0;
@@ -95,7 +96,7 @@ export function searchBreaker(now: () => number = Date.now): { held(): Search | 
       if (limit?.kind === "quota") off = true;
       else if (limit) {
         const at = now();
-        until = at + waitOf(limit.retryAfter, at);
+        until = Math.max(until, at + waitOf(limit.retryAfter, at));
       }
       return answer;
     },
