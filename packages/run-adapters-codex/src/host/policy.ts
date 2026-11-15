@@ -28,10 +28,12 @@
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 //
 // A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`);
-// on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`).
+// on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`); on a route
+// OpenAI does not count (a gateway), the kernel's local o200k_base count with its margin when that is lower
+// (`responsesLocalInputTokens`).
 import type { IncomingHttpHeaders } from "node:http";
 import { PLAN_LIMIT_CODE, PLAN_LIMIT_WORDS } from "@parcha/agentrun-kernel";
-import { lastObjectOf, NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { lastObjectOf, NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -630,7 +632,13 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
     contentBytesOf: responsesContentBytes,
-    ...(plan ? {} : { limitOutput: limitResponsesOutput, countInput: OPENAI_INPUT_COUNTER }),
+    // A plan request is held at $0, so it is never counted. A body that offers the live search has no input bound
+    // (below), and is never counted into one.
+    ...(plan ? {} : {
+      limitOutput: limitResponsesOutput,
+      countInput: OPENAI_INPUT_COUNTER,
+      countInputLocally: (body: Record<string, unknown>) => (search && Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search") ? undefined : responsesLocalInputTokens(body)),
+    }),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured (and never
     // counted into a number).

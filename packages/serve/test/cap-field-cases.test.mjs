@@ -2,19 +2,21 @@
 // the same: $2 in, $10 out, $0.10 a cache read, $2.50 a cache write, a million tokens; 128,000 output tokens):
 //   - a lead list under a $0.50 cap (faux-field-harness.mjs leadListStep): two $0.026 searches, reads, and a people search
 //     Codex makes while its request still streams, at $0.17 of the cap. The field run had that search refused with
-//     "Budget nearly spent" and answered without it. Now the search is never refused for the reserve: with the provider's
-//     own count of the input (a route straight to OpenAI) the run goes on and runs it, each request's output clamped to
-//     what its worst case leaves; with only the body's bytes to bound the input (a route with no count), the request
-//     that would make the search has a worst case ($0.35 at its least output: 128,400 bytes uncached) past what is left
-//     ($0.33), so it is not sent and the run parks with the plain message naming the cap that sends it.
+//     "Budget nearly spent" and answered without it. Now the search is never refused for the reserve, and the run goes on
+//     and runs it, each request's output clamped to what its worst case leaves: with the provider's own count of the
+//     input (a route straight to OpenAI), and through a gateway, where OpenAI never counts, with the kernel's local count
+//     (o200k_base and its margin). On its bytes alone the request that makes the search had a worst case of $0.35 at its
+//     least output (128,400 bytes uncached), past the $0.33 left, and the run parked asking for $0.52.
 //   - a kyb step under a $1.50 cap whose whole ask holds $1.62 (kybStep): a cap that fits the step's input uncached and
-//     its 1,024-token least goes on with its output clamped; a cap that does not parks with the plain message.
+//     its 1,024-token least goes on with its output clamped; a cap that does not parks with the plain message. Through a
+//     gateway, counted locally, the $0.30 cap its bytes parked under goes on, and a cap below its count and least parks.
 // In each, no request is held past what the cap leaves.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { KEY } from "./fixtures/faux-monid.mjs";
+import { GATEWAY_BOUNDS, leadListStep } from "./fixtures/faux-field-harness.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -71,19 +73,27 @@ test("lead list on codex at $0.50, its input counted by the provider: the people
   neverPast(held, 0.5, "counted");
 });
 
-test("lead list on codex at $0.50, its input bound only by its bytes: the people search is never refused for the reserve; its request's worst case does not fit what is left, so the run parks with the plain message naming the cap that sends it", { timeout: 120_000 }, async (t) => {
-  const { run, journal } = await runOf(t, "lead-bytes", "Build a lead list on Codex: 9 requests, the people search at request 7 while it streams.", 0.5, ["read", PEOPLE_TOOL]);
+test("lead list on codex at $0.50 through a gateway, its input counted locally: the people search made while its request streams runs at $0.17 of the cap, and the run goes on to its answer, each request held at its local count, never past the cap", { timeout: 120_000 }, async (t) => {
+  const { run, journal } = await runOf(t, "lead-gateway", "Build a lead list on Codex: 9 requests, the people search at request 7 while it streams.", 0.5, ["read", PEOPLE_TOOL]);
   const held = heldOf(journal);
-  t.diagnostic(`holds: ${JSON.stringify(held.map((one) => [one.outputTokensMax, Number(one.heldUsd.toFixed(4))]))}; results: ${JSON.stringify(journal.filter((entry) => entry.kind === "faux.result").map((entry) => [entry.data.callId, entry.data.refused === true]))}`);
-  assert.deepEqual(resultsAt(journal, 7).filter((one) => one.refused === true), [], "the people search is not refused for the reserve");
-  // Request 7: 32,100 tokens of prompt, 128,400 bytes, at $2.50 a million uncached ($0.321) and 3,072 tokens at $10 a
-  // million ($0.031): $0.352 at its least, on $0.167 spent of $0.50. Not sent; the run asks for $0.52.
-  assert.equal(run.status, "input_required", JSON.stringify(run.result ?? run.error));
-  assert.equal(run.pending?.kind, "budget", JSON.stringify(run.pending));
-  assert.match(run.pending.said, /^Not sent: this run has spent \$0\.17 of its \$0\.50 cap, and the next step needs at least \$0\.36\. Raise the cap to at least \$0\.52 to continue\.$/);
-  assert.equal(run.pending.least_cap_usd, 0.52);
-  assert.equal(held.length, 7, "requests 0 to 6 sent, request 7 not");
-  neverPast(held, 0.5, "bytes");
+  t.diagnostic(`bounds: ${JSON.stringify(GATEWAY_BOUNDS.lead)} of bytes ${JSON.stringify(GATEWAY_BOUNDS.leadBytes)}; holds: ${JSON.stringify(held.map((one) => [one.outputTokensMax, Number(one.heldUsd.toFixed(4))]))}`);
+  // Each request's bound through the gateway is its local count: at least its prompt (what the provider bills: the
+  // margin covers it) and under a third of its bytes. Request 7's is 35,6xx tokens where its bytes were 128,891.
+  assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Lead list built."], JSON.stringify(run.pending ?? run.error));
+  GATEWAY_BOUNDS.lead.forEach((bound, k) => {
+    const promptTokens = 16_000 + 2_300 * k;
+    assert.ok(bound >= promptTokens && bound * 3 < GATEWAY_BOUNDS.leadBytes[k], `request ${k}: bound ${bound}, prompt ${promptTokens}, bytes ${GATEWAY_BOUNDS.leadBytes[k]}`);
+  });
+  assert.deepEqual(resultsAt(journal, 7).map((one) => one.refused === true), [false], "the people search ran, not refused for the reserve");
+  assert.equal(held.length, 10, "every request sent: 0 to 8 and the answer");
+  assert.ok(Math.abs(held[7].spentBefore - 0.1148) < 0.001, `the search's request admitted at $0.17 of the cap: $${held[7].spentBefore} of the model's`);
+  // Request 7 held at its local count uncached and its output clamped to what that leaves, never under its least.
+  assert.ok(held[7].outputTokensMax >= 3_072 && held[7].outputTokensMax < 128_000, `its output clamped, never under its least: ${held[7].outputTokensMax}`);
+  assert.ok(Math.abs(held[7].heldUsd - (GATEWAY_BOUNDS.lead[7] * 2.5 + held[7].outputTokensMax * 10) / 1e6) < 1e-6, `held at its local count's worst case: $${held[7].heldUsd}`);
+  // The run's cost is its own: ten requests and three searches at $0.026, $0.23 of the $0.50.
+  const own = Array.from({ length: 10 }, (_, k) => leadListStep(k).usd).reduce((a, b) => a + b, 0) + 3 * 0.026;
+  assert.ok(Math.abs(run.cost.usd - own) < 1e-6 && run.cost.usd < 0.5, `$${run.cost.usd}, its own $${own}`);
+  neverPast(held, 0.5, "gateway");
 });
 
 test("kyb step on codex whose whole ask holds $1.62: a $1.50 cap that fits its input uncached and its least goes on with its output clamped; a $0.30 cap that does not parks with the plain message", { timeout: 120_000 }, async (t) => {
@@ -100,5 +110,27 @@ test("kyb step on codex whose whole ask holds $1.62: a $1.50 cap that fits its i
   assert.equal(parks.run.status, "input_required", JSON.stringify(parks.run.result ?? parks.run.error));
   assert.equal(parks.run.pending?.kind, "budget");
   assert.equal(parks.run.pending.said, "Not sent: the next step needs at least $0.36, and this run's cap is $0.30. Raise the cap to at least $0.36 to continue.");
+  assert.equal(parks.run.cost.usd, 0);
+});
+
+test("kyb step on codex through a gateway, its input counted locally: the $0.30 cap its bytes parked under goes on with its output clamped; a $0.10 cap, below its local count and its 1,024-token least, parks with the plain message", { timeout: 120_000 }, async (t) => {
+  // 34,000 tokens of prompt, 136,491 bytes: its local count is under a third of that, and at least the prompt.
+  t.diagnostic(`kyb bound ${GATEWAY_BOUNDS.kyb} of ${GATEWAY_BOUNDS.kybBytes} bytes`);
+  const fits = await runOf(t, "kyb-gateway-fits", "Run a kyb step through a gateway.", 0.3, ["read"]);
+  const held = heldOf(fits.journal);
+  t.diagnostic(`holds: ${JSON.stringify(held.map((one) => [one.outputTokensMax, Number(one.heldUsd.toFixed(4))]))}`);
+  assert.deepEqual([fits.run.status, fits.run.result?.final_answer], ["completed", "Kyb step done."], JSON.stringify(fits.run.pending ?? fits.run.error));
+  assert.ok(GATEWAY_BOUNDS.kyb >= 34_000 && GATEWAY_BOUNDS.kyb * 3 < GATEWAY_BOUNDS.kybBytes, `bound ${GATEWAY_BOUNDS.kyb}`);
+  assert.equal(held.length, 1);
+  assert.ok(held[0].outputTokensMax >= 1_024 && held[0].outputTokensMax < 128_000, `its output clamped, never under its least: ${held[0].outputTokensMax}`);
+  // Near its cap the request carries the wrap-up note, held at its bytes beside the count.
+  const noteBytes = fits.journal.filter((entry) => entry.kind === "faux.note").reduce((n, entry) => n + Buffer.byteLength(entry.data.text, "utf8"), 0);
+  assert.ok(Math.abs(held[0].heldUsd - ((GATEWAY_BOUNDS.kyb + noteBytes) * 2.5 + held[0].outputTokensMax * 10) / 1e6) < 1e-6, `held at its local count's worst case: $${held[0].heldUsd}, note ${noteBytes} bytes`);
+  neverPast(held, 0.3, "kyb gateway $0.30");
+  // Its least: the local count uncached ($2.50 a million) and 1,024 tokens ($10 a million), $0.104: past a $0.10 cap.
+  const parks = await runOf(t, "kyb-gateway-parks", "Run a kyb step through a gateway.", 0.1, ["read"]);
+  assert.equal(parks.run.status, "input_required", JSON.stringify(parks.run.result ?? parks.run.error));
+  assert.equal(parks.run.pending?.kind, "budget");
+  assert.equal(parks.run.pending.said, "Not sent: the next step needs at least $0.11, and this run's cap is $0.10. Raise the cap to at least $0.11 to continue.");
   assert.equal(parks.run.cost.usd, 0);
 });

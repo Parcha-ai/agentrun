@@ -126,6 +126,11 @@ export interface ProviderPolicy {
    *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
    *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */
   countInput?: InputCounter;
+  /** A local count of the body `apply` returned, its margin included (`responsesLocalInputTokens`), for a request the
+   *  provider did not count: no `countInput`, an upstream that is not its origin (a gateway), a side or host request, or a
+   *  count that failed or said none. That request's input bound when it is below the byte bound. Undefined: the body has
+   *  no local count (a model whose tokenizer the policy does not have), and keeps its byte bound. Absent: never counted. */
+  countInputLocally?(body: Record<string, unknown>): Promise<number | undefined> | number | undefined;
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
@@ -845,18 +850,36 @@ export async function countedInputOf(policy: ProviderPolicy, origin: string, bod
     const response = await fetch(`${origin}${counter.path}`, { method: "POST", headers: { ...counter.headers(headers), "content-type": "application/json" }, body: JSON.stringify(counter.body(body)), signal: cut });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound`);
+      say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound or its local count`);
       return undefined;
     }
     const tokens = counter.tokensOf(await response.json());
     const margin = counter.margin ? counter.margin(body) : 0;
     if (!Number.isSafeInteger(tokens) || tokens! < 0 || !Number.isSafeInteger(margin) || margin < 0) {
-      say(`model proxy (${policy.id}): the provider's token count said no count; the request keeps its byte bound`);
+      say(`model proxy (${policy.id}): the provider's token count said no count; the request keeps its byte bound or its local count`);
       return undefined;
     }
     return tokens! + margin;
   } catch (error) {
-    say(`model proxy (${policy.id}): the provider's token count failed; the request keeps its byte bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    say(`model proxy (${policy.id}): the provider's token count failed; the request keeps its byte bound or its local count`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    return undefined;
+  }
+}
+
+/**
+ * The local count of a request with body `body`, its margin included (`policy.countInputLocally`); undefined (the request
+ * keeps its byte bound) when the policy has none, says none for this body, or its count throws or is not a whole number
+ * of tokens. Never throws.
+ */
+export async function localInputOf(policy: ProviderPolicy, body: Record<string, unknown>, say: (message: string, detail?: Record<string, unknown>) => void = () => {}): Promise<number | undefined> {
+  if (!policy.countInputLocally) return undefined;
+  try {
+    const tokens = await policy.countInputLocally(body);
+    if (tokens === undefined) return undefined;
+    if (!Number.isSafeInteger(tokens) || tokens < 0) throw new Error(`not a token count: ${String(tokens).slice(0, 40)}`);
+    return tokens;
+  } catch (error) {
+    say(`model proxy (${policy.id}): the local token count failed; the request keeps its byte bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     return undefined;
   }
 }
@@ -1133,13 +1156,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // leaves the byte bound, and never holds the request up for long. A noted request is counted with its note, which
     // bounds it without the note too (the note only adds).
     // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
+    /** The provider's count, when it gave one: then no local count is taken, even when the provider's is the higher. */
+    let counted: number | undefined;
     if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
       // A client that goes while its request is counted is gone before anything is admitted: the count is cut, and the
       // request is neither admitted nor sent (nothing is booked, and no paid answer starts for no one).
       const gone = new AbortController();
       const onGone = () => gone.abort(new Error("the client went while its request was counted"));
       res.once("close", onGone);
-      let counted: number | undefined;
       try {
         counted = await countedInputOf(policy, origin, body, headers, forward, say, COUNT_TIMEOUT_MS, gone.signal);
       } finally {
@@ -1150,6 +1174,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         inputTokensMax = counted;
         if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
       }
+    }
+    // A request its provider did not count (no counter, a gateway, a side or host request, a count that failed): its input
+    // bound is the policy's local count (countInputLocally, its margin included) when that is below its bytes. The body
+    // without the note is counted on its own.
+    if (counted === undefined && !route.free && inputTokensMax !== undefined && policy.countInputLocally) {
+      const local = await localInputOf(policy, body, say);
+      const localPlain = plain && inputTokensMaxWithoutNote !== undefined ? await localInputOf(policy, plain, say) : undefined;
+      if (res.destroyed) return;
+      if (local !== undefined && inputTokensMax !== undefined && local < inputTokensMax) inputTokensMax = local;
+      if (localPlain !== undefined && inputTokensMaxWithoutNote !== undefined && localPlain < inputTokensMaxWithoutNote) inputTokensMaxWithoutNote = localPlain;
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;

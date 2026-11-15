@@ -1,12 +1,13 @@
 // An OpenCode request's input bound, on the recorded body of the pinned build: its bytes less the escapes JSON adds to the
 // text the model reads as it is (its system prompt, a call's arguments, a tool's output), every other byte as sent; and on
-// a route straight to OpenAI, OpenAI's own count (POST /v1/responses/input_tokens) when that is lower. Through a gateway the
-// byte bound stands, and a count that fails leaves it. No network: OpenAI is a scripted fetch.
+// a route straight to OpenAI, OpenAI's own count (POST /v1/responses/input_tokens) when that is lower. Through a gateway,
+// or when the count fails, the kernel's local count (o200k_base and its margin) when that is lower. No network: OpenAI is a
+// scripted fetch.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { test } from "node:test";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
+import { responsesLocalInputTokens, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { inputTokensMaxOf } from "@parcha/agentrun-kernel/testing";
 import { openCodePolicy } from "../dist/harness-opencode/host/policy.js";
 
@@ -62,9 +63,11 @@ async function proxyOn(t, origin, count) {
   return { p, counts, asked };
 }
 
-test("straight to OpenAI, an OpenCode request is counted by OpenAI with the credential alone; a failed count, or a gateway, leaves the byte bound", async (t) => {
+test("straight to OpenAI, an OpenCode request is counted by OpenAI with the credential alone; a failed count, or a gateway, falls to the local count", async (t) => {
   const body = policy.apply(structuredClone(RECORDED), route);
   const byteBound = inputTokensMaxOf(policy, body, JSON.stringify(body));
+  const local = await responsesLocalInputTokens(body);
+  assert.ok(local < byteBound, `the local count ${local} is below the bytes' ${byteBound}`);
   const direct = await proxyOn(t, "https://api.openai.com", async () => Response.json({ object: "response.input_tokens", input_tokens: 900 }));
   assert.equal((await send(direct.p.url, RECORDED)).status, 200);
   assert.equal(direct.asked[0].inputTokensMax, 900);
@@ -74,9 +77,9 @@ test("straight to OpenAI, an OpenCode request is counted by OpenAI with the cred
 
   const failed = await proxyOn(t, "https://api.openai.com", async () => new Response("no", { status: 503 }));
   assert.equal((await send(failed.p.url, RECORDED)).status, 200);
-  assert.equal(failed.asked[0].inputTokensMax, byteBound);
+  assert.equal(failed.asked[0].inputTokensMax, local);
 
   const gateway = await proxyOn(t, "https://openrouter.ai/api", async () => Response.json({ object: "response.input_tokens", input_tokens: 1 }));
   assert.equal((await send(gateway.p.url, RECORDED)).status, 200);
-  assert.deepEqual([gateway.counts.length, gateway.asked[0].inputTokensMax], [0, byteBound]);
+  assert.deepEqual([gateway.counts.length, gateway.asked[0].inputTokensMax], [0, local]);
 });
