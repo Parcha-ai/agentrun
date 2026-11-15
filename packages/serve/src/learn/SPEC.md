@@ -208,9 +208,13 @@ Over a cap is refused, never cut.
   step writing the answer's key, the one path every run takes: a check in one route branch, or before the answer is
   written, misses the answer of another run. Each of its `pages` must be a key holding a page as fetched: a call's
   `as`, a map's whose item result (its `resultPath`, else its body's `as`) is a call's, a composed workflow's whose
-  answer is a call's result. A model's summary of a page is no page. A composed workflow node writing the answer whose
-  own workflow passes this rule has checked it in its own state. Otherwise the draft is refused, the detail naming the
-  predicate to write. The predicate reads each page string alone, so no quote runs from one page into the next. A judge or an `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
+  answer is a call's result, and no step writing that key writes anything else. A model's summary of a page is no
+  page, nor is the key a model step writes it back to. A composed workflow node writing the whole answer whose own
+  workflow passes this rule in its own state has checked the places its own schema declares; any other place the
+  parent's schema declares is the parent's to check. An answer schema holding quotes in more than 8 places, or nesting
+  past 16 keys, is refused rather than read in part. Otherwise the draft is refused, the detail naming the predicate
+  to write. The predicate reads each page string alone, so no quote runs from one page into the next. A judge or an
+  `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
   question flagged 149 of 170 answers while 416 of 429 quotes were in the fetched pages, and it could not tell the 8
   answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
   straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters

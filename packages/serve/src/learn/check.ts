@@ -261,9 +261,14 @@ function quoteSite(keys: string[]): QuoteSite {
   return { keys, read: field ? { path: keys.slice(0, at), field } : { path: keys.slice(0, at) } };
 }
 
+/** How deep in an answer's schema quotes are looked for: a schema nesting deeper is refused, never read in part. */
+const QUOTE_SITE_DEPTH = 16;
+
 /** Every place in `schema` (a draft's output schema, its `#/definitions/<id>` refs read from `schemas`) holding quotes: a
- *  `quote` or `quotes` property that is a string, a list of strings, or holds them deeper (`quotes: [{quote}]`). */
-function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): QuoteSite[] {
+ *  `quote` or `quotes` property that is a string, a list of strings, or holds them deeper (`quotes: [{quote}]`). `over`
+ *  when there are more than QUOTE_SITES_MAX of them or the schema nests past QUOTE_SITE_DEPTH keys: the places found
+ *  are then not all of them, and the rule refuses rather than read a part as the whole. */
+function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { sites: QuoteSite[]; over: boolean } {
   const resolve = (node: unknown): unknown => {
     for (let hops = 0; hops < 8 && isObject(node) && typeof node.$ref === "string"; hops++) {
       const ref = /^#\/definitions\/(.+)$/.exec(node.$ref)?.[1];
@@ -281,11 +286,17 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): QuoteS
     return schema.properties === undefined && schema.items === undefined;
   };
   const sites: QuoteSite[] = [];
-  const add = (keys: string[]) => { if (sites.length < QUOTE_SITES_MAX && !sites.some((site) => site.keys.join("\u0000") === keys.join("\u0000"))) sites.push(quoteSite(keys)); };
+  let over = false;
+  const add = (keys: string[]) => {
+    if (sites.some((site) => site.keys.join("\u0000") === keys.join("\u0000"))) return;
+    if (sites.length < QUOTE_SITES_MAX) sites.push(quoteSite(keys));
+    else over = true;
+  };
   const around = new Set<unknown>();
   const walk = (node: unknown, at: string[]): void => {
     const schema = resolve(node);
-    if (!isObject(schema) || around.has(schema) || at.length > 16 || sites.length >= QUOTE_SITES_MAX) return;
+    if (!isObject(schema) || around.has(schema) || over) return;
+    if (at.length > QUOTE_SITE_DEPTH) return void (over = true);
     around.add(schema);
     if (isObject(schema.properties)) for (const [key, inner] of Object.entries(schema.properties)) {
       if (!QUOTE_KEYS.has(key)) { walk(inner, [...at, key]); continue; }
@@ -300,7 +311,7 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): QuoteS
     around.delete(schema);
   };
   walk(schema, []);
-  return sites;
+  return { sites, over };
 }
 
 /** Whether a node fetches: a call node, or one with a call under it (a composed workflow's included). */
@@ -324,9 +335,16 @@ function stateWriters(root: unknown): Record<string, unknown>[] {
   return writers;
 }
 
+/** Whether `key` in the state around `root` holds a page as fetched, whatever step wrote it last: some step writes it, and
+ *  every step writing it writes a page (a model step writing a summary back to the key a call wrote spoils it). */
+const holdsPage = (root: unknown, key: string, depth = 0): boolean => {
+  const writers = stateWriters(root).filter((writer) => writeKeyOf(writer) === key);
+  return writers.length > 0 && writers.every((writer) => writesPage(writer, depth + 1));
+};
+
 /** Whether what a node writes is a page as fetched: a call's result; a map's when each item's result (its resultPath's
- *  key, else its body's `as`, else the item's whole state, as answerTierProblems reads it) is a page its body fetched;
- *  a composed workflow's when its child's answer is a page the child fetched. A model step's summary is no page. */
+ *  key, else its body's `as`, else the item's whole state, as answerTierProblems reads it) holds a page its body fetched;
+ *  a composed workflow's when its child's answer does in the child's state. A model step's summary is no page. */
 function writesPage(node: Record<string, unknown>, depth = 0): boolean {
   if (depth > 16) return false;
   if (node.node === "call") return true;
@@ -334,20 +352,20 @@ function writesPage(node: Record<string, unknown>, depth = 0): boolean {
     const result = typeof node.resultPath === "string" && node.resultPath ? node.resultPath.split(".")[0] : undefined;
     const bodyAs = isNode(node.body) && typeof node.body.as === "string" && node.body.as ? node.body.as : undefined;
     const key = result ?? bodyAs;
+    if (key !== undefined) return holdsPage(node.body, key, depth);
     const writers = stateWriters(node.body);
-    if (key !== undefined) return writers.some((writer) => writeKeyOf(writer) === key && writesPage(writer, depth + 1));
     return writers.length > 0 && writers.every((writer) => writesPage(writer, depth + 1));
   }
   if (node.node === "workflow") {
     const child = isObject(node.workflow) ? node.workflow : {};
     const path = isObject(child.output) && typeof child.output.path === "string" ? child.output.path : "";
-    return !!path && stateWriters(child.root).some((writer) => writeKeyOf(writer) === path.split(".")[0] && writesPage(writer, depth + 1));
+    return !!path && holdsPage(child.root, path.split(".")[0], depth);
   }
   return false;
 }
 
-/** The state keys around `root` holding a page as fetched, in the order their steps come. */
-const pageKeysOf = (root: unknown): string[] => [...new Set(stateWriters(root).filter((node) => writesPage(node)).map((node) => writeKeyOf(node) as string))];
+/** The state keys around `root` holding a page as fetched (holdsPage), in the order their steps come. */
+const pageKeysOf = (root: unknown): string[] => [...new Set(stateWriters(root).map((node) => writeKeyOf(node) as string))].filter((key) => holdsPage(root, key));
 
 /** Whether `node` writes `key` in the state around it (itself, or a step of its chains, branches or loop bodies). */
 const writesKey = (node: unknown, key: string): boolean => isNode(node) && (writeKeyOf(node) === key || (node.node !== "map" && node.node !== "workflow" && childNodes(node).some((child) => writesKey(child, key))));
@@ -359,13 +377,10 @@ const writesKey = (node: unknown, key: string): boolean => isNode(node) && (writ
  *  H5's judge flagged 149 of 170 answers while 416 of 429 quotes were in the pages, and could not tell the 8 answers
  *  quoting text no page held from the rest; code can. One line each, in words the compile retry acts on. */
 export function quoteCheckProblems(doc: unknown): string[] {
-  if (!isObject(doc)) return [];
-  const output = isObject(doc.output) ? doc.output : {};
-  const answerPath = typeof output.path === "string" ? output.path : "";
-  const schemas = isObject(doc.schemas) ? doc.schemas : {};
-  const schemaId = typeof output.schemaId === "string" ? output.schemaId : "";
-  return quoteRule(doc, {}).problems;
+  return isObject(doc) ? quoteRule(doc, {}).problems : [];
 }
+
+const siteKey = (site: QuoteSite): string => site.keys.join("\u0000");
 
 /** quoteCheckProblems for one workflow (the draft's, or a composed workflow node's child, its schemas its own else
  *  `schemasAround`): whether the rule applies (its answer carries quotes and it fetches pages), and why it fails. Only a
@@ -373,24 +388,29 @@ export function quoteCheckProblems(doc: unknown): string[] {
  *  of that chain after the last step writing the answer's key (a check in one route branch, or before the answer is
  *  written, reads no answer on another path), and each place in the answer holding quotes needs a check reading it
  *  (its path and field, when one pair can; else any check under the answer). Its pages are state keys holding a page as
- *  fetched (writesPage). A composed workflow node writing the answer whose child passes this rule in its own state has
- *  checked it. */
-function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<string, unknown>, depth = 0): { applies: boolean; problems: string[] } {
-  const none = { applies: false, problems: [] };
+ *  fetched (holdsPage). A composed workflow node writing the whole answer (its `as` the answer's path) whose child
+ *  passes this rule in its own state has checked the places in the answer its child's schema declares too; the parent
+ *  still checks any other place its own schema declares. `checked`: the places a passing workflow checked. */
+function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<string, unknown>, depth = 0): { applies: boolean; problems: string[]; checked: string[] } {
+  const none = { applies: false, problems: [], checked: [] };
   const output = isObject(workflow.output) ? workflow.output : {};
   const answerPath = typeof output.path === "string" ? output.path : "";
   const schemas = isObject(workflow.schemas) ? workflow.schemas : schemasAround;
   const schemaId = typeof output.schemaId === "string" ? output.schemaId : "";
   if (!answerPath || !Object.hasOwn(schemas, schemaId) || depth > 8) return none;
-  const sites = quoteSitesOf(schemas[schemaId], schemas);
-  if (!sites.length || !fetches(workflow.root)) return none;
+  const { sites: declared, over } = quoteSitesOf(schemas[schemaId], schemas);
+  if ((!declared.length && !over) || !fetches(workflow.root)) return none;
+  if (over) return { applies: true, checked: [], problems: [`the answer's schema (${schemaId.slice(0, 64)}) holds quotes in more than ${QUOTE_SITES_MAX} places or nests past ${QUOTE_SITE_DEPTH} keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one`] };
   const where = (site: QuoteSite) => `${schemaId}.${site.keys.join(".").replace(/\.(\[\]|\*)/g, "$1")}`.slice(0, 120);
   const pages = pageKeysOf(workflow.root);
   const steps = isNode(workflow.root) && workflow.root.node === "chain" && Array.isArray(workflow.root.steps) ? workflow.root.steps as unknown[] : [workflow.root];
   const answered = steps.findLastIndex((step) => writesKey(step, answerPath.split(".")[0]));
   const writer = steps[answered];
   const child = isNode(writer) && writer.node === "workflow" && isObject(writer.workflow) ? quoteRule(writer.workflow, schemas, depth + 1) : none;
-  if (child.applies && !child.problems.length) return { applies: true, problems: [] };
+  const covered = child.applies && !child.problems.length && isNode(writer) && writer.as === answerPath ? child.checked : [];
+  const sites = declared.filter((site) => !covered.includes(siteKey(site)));
+  const passed = { applies: true, problems: [], checked: declared.map(siteKey) };
+  if (!sites.length) return passed;
   const problems: string[] = [];
   if (!pages.length) {
     problems.push(...sites.map((site) => `the answer carries quotes (${where(site)}) and the workflow fetches pages, but no state key holds a page as fetched (a model step's summary of one is no page, a map's or a composed workflow's result included): keep the pages its call steps fetch in the state and check the quotes against them in code with a quote_missing escalate, never a judge`));
@@ -414,8 +434,8 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
     }
   }
   // A composed workflow writing the answer that applies the rule and fails it: its own check is the one to fix.
-  if (problems.length && child.applies) return { applies: true, problems: child.problems.map((problem) => `the composed workflow step ${JSON.stringify(String((writer as Record<string, unknown>).label ?? "(no label)").slice(0, 64))} writes the answer: ${problem}`) };
-  return { applies: true, problems };
+  if (problems.length && child.problems.length) return { applies: true, checked: [], problems: child.problems.map((problem) => `the composed workflow step ${JSON.stringify(String((writer as Record<string, unknown>).label ?? "(no label)").slice(0, 64))} writes the answer: ${problem}`) };
+  return problems.length ? { applies: true, problems, checked: [] } : passed;
 }
 
 /** What a run may write of a skill or a workflow draft (`place`), by itself: a good folder name, never a deletion, a

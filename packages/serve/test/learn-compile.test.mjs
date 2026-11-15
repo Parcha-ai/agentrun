@@ -660,6 +660,27 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   const parent = (child) => ({ ...citedDraft({ check: null }), root: { node: "chain", steps: [{ node: "workflow", label: "cite", as: "answer", workflow: child }] } });
   assert.deepEqual(quoteCheckProblems(parent(citedDraft())), [], "the child checks its quotes against its pages");
   assert.deepEqual(quoteCheckProblems(parent(citedDraft({ check: null }))), [`the composed workflow step "cite" writes the answer: ${NO_QUOTE_CHECK}`]);
+  // The child's check covers the places its own schema declares; a place only the parent's declares is the parent's.
+  const wider = { ...parent(citedDraft()), schemas: citedDraft({ answer: { properties: { refunds: { type: "boolean" }, evidence: { type: "array", items: { $ref: "#/definitions/Evidence" } }, extra: { type: "object", properties: { quote: { type: "string" } } } } } }).schemas };
+  const [uncovered, ...rest] = quoteCheckProblems(wider);
+  assert.deepEqual(rest, []);
+  assert.match(uncovered, /^the answer carries quotes \(Answer\.extra\.quote\) and the workflow fetches pages, but no state key holds a page as fetched/);
+});
+
+test("quoteCheckProblems: a key a model step writes over the page a call fetched is no page, and an answer schema with more quote places, or deeper, than the check reads is refused, never read in part", () => {
+  const spoiled = citedDraft();
+  spoiled.root.steps.splice(1, 0, { node: "extract", label: "trim", instructions: "Keep the policy part of {page}.", out: "Page", as: "page", tier: "fast" });
+  const [problem, ...more] = quoteCheckProblems(spoiled);
+  assert.deepEqual(more, []);
+  assert.match(problem, /^the answer carries quotes \(Answer\.evidence\[\]\.quote\) and the workflow fetches pages, but no state key holds a page as fetched/);
+  const sections = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`s${i}`, { type: "object", properties: { quote: { type: "string" } } }]));
+  const many = citedDraft({ answer: { properties: { refunds: { type: "boolean" }, ...sections } } });
+  assert.deepEqual(quoteCheckProblems(many), ["the answer's schema (Answer) holds quotes in more than 8 places or nests past 16 keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one"]);
+  delete many.schemas.Answer.properties.s8;
+  assert.equal(quoteCheckProblems(many).length, 8, "eight places: each one named");
+  let deep = { type: "object", properties: { quote: { type: "string" } } };
+  for (let i = 0; i < 17; i++) deep = { type: "object", properties: { inner: deep } };
+  assert.match(quoteCheckProblems(citedDraft({ answer: { properties: { refunds: { type: "boolean" }, deep } } })).join("\n"), /nests past 16 keys/);
 });
 
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
