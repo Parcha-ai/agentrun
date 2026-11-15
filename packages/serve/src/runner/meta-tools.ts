@@ -12,12 +12,20 @@
 // once (or is refused), its outcome is the script's output, and the rest of the script does not run. A refusal of any
 // nested call ends the script with the refusal's words. The script sees the tools and the answers its calls get, nothing
 // else of the run: no environment, no key, no file.
+//
+// On a run with a desktop or a phone, a script has `computer` too (the computer package's bindComputer over its card,
+// its declarations in codemode's description): each of its calls is a nested call of the run's computer tools
+// (computer_observe, computer_act, computer_screenshot, computer_op), so the gate holds a command it runs to bash's
+// setting and a file it touches to write's or read's (tool-gate.ts heldAs), and a rerun answers it from its record.
 import { randomBytes } from "node:crypto";
 import { CodemodeSandbox, type CodemodeHostCall, type CodemodeOutcome, type CodemodeOutputItem, toCodemodeIdentifier } from "@earendil-works/pi-codemode";
-import { withoutImageData } from "@parcha/agentrun-computer/surface";
+import { computerOver, withoutImageData } from "@parcha/agentrun-computer/surface";
 import type { HostTool, JsonValue, NestedCalls, NestedResult, ToolImage } from "@parcha/agentrun-kernel";
+import { COMPUTER_OP_TOOL, computerDeclarations, STEP_TOOL_OPS } from "@parcha/agentrun-kernel/kernel";
 
 import { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "../meta-tool-names.js";
+import { NO_PROGRAMS_WORDS } from "../workspace/computer-ports.js";
+import type { ScriptComputer } from "../workspace/run-tools.js";
 
 export { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH };
 
@@ -92,6 +100,30 @@ export interface MetaToolsOptions {
   discovery: { search: boolean; call: boolean };
   /** The harness's map from the model's name for a host tool to the host's (AdapterFacts.hostName); absent: the same. */
   hostName?: (given: string) => string;
+  /** The run's desktop or phone as a script gets it (RunTools.computer): a script's `computer`, bound to its card, each of
+   *  whose calls is a nested call of the run's computer tools (scriptComputer). Absent: no `computer` in a script. */
+  computer?: ScriptComputer;
+}
+
+/** A script's `computer` (the computer package's bindComputer, over its card) as one expression of the script's isolate
+ *  over its `tools`: an observe, an act or a screenshot calls its own step tool, every other op computer_op, so each is a
+ *  nested call of the run's tool, asked about and recorded as that tool's. On an agent whose exec is off, reaching for
+ *  computer.shell or computer.processes throws NO_PROGRAMS_WORDS rather than reading undefined. */
+function scriptComputer(computer: ScriptComputer, tools: string): string {
+  const ident = (name: string) => `${tools}[${JSON.stringify(toCodemodeIdentifier(name))}]`;
+  const steps = Object.entries(STEP_TOOL_OPS).map(([op, tool]) => `op === ${JSON.stringify(op)} ? ${ident(tool)}(args) : `).join("");
+  const bound = computerOver(computer.card, `(op, args) => (${steps}${ident(COMPUTER_OP_TOOL)}({ op, args }))`);
+  if (computer.exec !== false) return bound;
+  return `new Proxy(${bound}, { get(target, key, receiver) { if (key === "shell" || key === "processes") throw new Error(${JSON.stringify(NO_PROGRAMS_WORDS)}); return Reflect.get(target, key, receiver); } })`;
+}
+
+/** What codemode's description adds for a run with a computer: the script's `computer`, and the declarations of what its
+ *  card offers. */
+function computerWords(computer: ScriptComputer): string {
+  return [
+    `The script has this run's computer as \`computer\`, typed by the declarations below. Each of its calls is a call of the run's own computer tools, asked about and recorded as that tool's: a command it runs is held to bash's setting, a file it writes to write's, a file it reads, lists or stats to read's.`,
+    computerDeclarations(computer.card.groups),
+  ].join("\n");
 }
 
 /** The three tools for a session: each `nests` (but the search, which calls nothing). */
@@ -136,7 +168,7 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       `Run a JavaScript script (the body of an async function: top-level await and return work) that calls this run's tools as \`await tools.<name>(args)\`; ${options.discovery.search ? `find them with ${TOOLS_SEARCH}, and ` : ""}\`ALL_TOOLS\` lists them. A call answers its value, and a call that fails throws. A tool is called by its own name, exactly as \`ALL_TOOLS\`${options.discovery.search ? ` and ${TOOLS_SEARCH}` : ""} give it${examples.length ? ` (here: ${examples.join(", ")})` : ""}, never by the name your own tool list may show for it with a harness's prefix (\`hands_\`, \`mcp__hands__\`): leave the prefix off.`,
       "The script's text(...) and console output, and its returned value, are the answer. It has no timers, network or files of its own: only the tools.",
       "Each call is asked about and recorded as that tool's own. A call that needs a person's approval stops the script: once they answer, that call runs (or is refused), its outcome is the answer, and the rest of the script does not run. A refused call ends the script with the refusal.",
-    ].join(" "),
+    ].join(" ") + (options.computer ? `\n${computerWords(options.computer)}` : ""),
     inputSchema: { type: "object", properties: { script: { type: "string", description: "The script: the body of an async function." } }, required: ["script"], additionalProperties: false },
     replay: "safe",
     nests: true,
@@ -144,7 +176,7 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       const { script } = (args ?? {}) as { script?: unknown };
       if (typeof script !== "string" || script.trim() === "") return { text: `${CODEMODE} needs a script: the body of an async function.`, isError: true };
       if (!context.nested) return { text: NO_NESTED(CODEMODE), isError: true };
-      return runScript(script, own(), context.nested, context.signal, options.hostName);
+      return runScript(script, own(), context.nested, context.signal, options.hostName, options.computer);
     },
   };
   return [...(options.discovery.search ? [search] : []), ...(options.discovery.call ? [call] : []), ...(options.codemode ? [codemode] : [])];
@@ -166,7 +198,7 @@ function lineOf(index: number, name: string, result: NestedResult): string {
 }
 
 /** The script's output and value, as the model reads them, and the images: the returned value's own first, then the ones
- *  it showed with image(...), as computer_script answers them. The text names an image without its data. */
+ *  it showed with image(...). The text names an image without its data. */
 function shownOf(output: readonly CodemodeOutputItem[], value: unknown): { text: string; images: ToolImage[] } {
   const words: string[] = [];
   const shown: ToolImage[] = [];
@@ -209,11 +241,13 @@ function withImageData(value: unknown, images: readonly ToolImage[]): unknown {
  * run has no tool by (pi-codemode's own `tools` throws on it), so `typeof tools.<name>` and `"<name>" in tools` work. Each
  * such name the script reads is kept, and when the script then fails with a TypeError, or an error naming one, the error
  * gets one line saying so and listing the run's tools. The script is never read: it stays line 1 on, and its declarations
- * can't reach the names around it.
+ * can't reach the names around it. With the run's `computer`, the function gets it too (scriptComputer), over `tools`.
  */
-function scriptBody(script: string, toolNames: readonly string[]): string {
+function scriptBody(script: string, toolNames: readonly string[], computer?: ScriptComputer): string {
   const known = JSON.stringify(` Its tools are: ${toolNames.join(", ")}.`);
-  return `const read = new Set(), get = Reflect.get, proto = Object.prototype; try { return await (async (tools, console) => {${script}\n})(new Proxy(tools, { get(target, key, receiver) { if (typeof key !== "string" || key in target || key in proto || key === "then" || key === "toJSON") return get(target, key, receiver); read.add(key); } }), console); } catch (error) { const names = [...read]; if (names.length && error !== null && typeof error === "object" && (error.name === "TypeError" || names.some((name) => String(error.message).includes(name)))) error.message += "\\nThe script read " + names.map((name) => "tools." + name).join(", ") + ", which this run doesn't have." + ${known}; throw error; }`;
+  const params = computer ? "tools, console, computer" : "tools, console";
+  const bound = computer ? `, ${scriptComputer(computer, "tools")}` : "";
+  return `const read = new Set(), get = Reflect.get, proto = Object.prototype; try { return await (async (${params}) => {${script}\n})(new Proxy(tools, { get(target, key, receiver) { if (typeof key !== "string" || key in target || key in proto || key === "then" || key === "toJSON") return get(target, key, receiver); read.add(key); } }), console${bound}); } catch (error) { const names = [...read]; if (names.length && error !== null && typeof error === "object" && (error.name === "TypeError" || names.some((name) => String(error.message).includes(name)))) error.message += "\\nThe script read " + names.map((name) => "tools." + name).join(", ") + ", which this run doesn't have." + ${known}; throw error; }`;
 }
 
 /**
@@ -222,7 +256,7 @@ function scriptBody(script: string, toolNames: readonly string[]): string {
  * of the call (after a park or a crash) makes the same calls: the recorded ones are answered from their records, and the
  * first one that runs now ends the script with its outcome (Codex's rule), as does any refusal or interrupted call.
  */
-async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, hostName?: (given: string) => string): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue }> {
+async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, hostName?: (given: string) => string, computer?: ScriptComputer): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue }> {
   const nonce = randomBytes(8).toString("hex");
   const first = await nested.memo("start", { startedAt: Date.now(), seed: randomBytes(4).readUInt32BE(0), nonce, tools: tools.map((tool) => [tool.name, toCodemodeIdentifier(tool.name)]) } as unknown as JsonValue);
   const start = first as unknown as { startedAt: number; seed: number; nonce: string; tools: [string, string][] };
@@ -238,7 +272,7 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
   try {
     // The tools the first run declared, by the names it gave them, that this run still has.
     const kept = start.tools.filter(([name]) => declared.has(name)).map(([name, jsName]) => ({ name, jsName, description: declared.get(name)!.description }));
-    const run = sandbox.start(scriptBody(script, kept.map((tool) => tool.jsName)), {
+    const run = sandbox.start(scriptBody(script, kept.map((tool) => tool.jsName), computer), {
       startedAt: start.startedAt,
       seed: start.seed,
       tools: kept,
