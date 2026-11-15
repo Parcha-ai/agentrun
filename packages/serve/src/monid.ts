@@ -296,7 +296,8 @@ export async function pinMonid(grants: readonly string[], options: { key: string
     return [{ tool, parsed, read: !kept.length }];
   });
   if (!named.length) return undefined;
-  const reads = named.filter((grant) => grant.read);
+  // A named grant of an endpoint a kept wildcard carried is carried with it.
+  const reads = named.filter((grant) => grant.read && !(grant.parsed.kind === "monid" && pin[grant.tool]));
   if (reads.length && !options.key) return { refused: reads.map(({ tool }) => ({ tool, message: `${tool} is pinned to what monid lists when the agent is saved, and there is no monid key here to read it with: save the monid key in Settings → Tool keys first.` })) };
   const refused = reads.length ? await readPins(reads, pin, { ...options, key: options.key! }) : [];
   // Two endpoints the harnesses would call by one name (wireName folds `.` and `/`): neither could be told apart.
@@ -344,8 +345,8 @@ async function readPins(named: readonly { tool: string; parsed: ToolName }[], pi
     }
   }
   for (const { tool, parsed } of named) if (parsed.kind === "monid") wanted.set(tool, { provider: parsed.provider, endpoint: `/${parsed.endpoint}` });
-  // Each endpoint inspected, INSPECTS_AT_ONCE at a time.
-  const queue = [...wanted];
+  // Each endpoint not carried already inspected, INSPECTS_AT_ONCE at a time.
+  const queue = [...wanted].filter(([tool]) => !pin[tool]);
   const inspectOne = async (): Promise<void> => {
     for (let next = queue.shift(); next; next = queue.shift()) {
       const [tool, at] = next;
