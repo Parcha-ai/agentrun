@@ -1,7 +1,9 @@
 // Under --faux only: the fetch the Anthropic and OpenAI providers send through (model.ts FAUX_UPSTREAM_ENV), in place of
 // their APIs: it answers web_search's one request to the provider's hosted search (hosted-search.ts) as each provider
 // streams it, the search, its result, and a short answer citing the public page, with the searches it ran in its usage.
-// AGENTRUN_TEST_FAUX_UPSTREAM set to "pause" ends Anthropic's answer on pause_turn. Each request's path, key header and
+// AGENTRUN_TEST_FAUX_UPSTREAM set to "pause" ends Anthropic's answer on pause_turn; "rate_limited" answers each provider's
+// 429 for a rate limit (Anthropic's rate_limit_error, OpenAI's rate_limit_exceeded), "quota" its answer for a key out of
+// quota or credit (Anthropic's 402 billing_error, OpenAI's 429 insufficient_quota). Each request's path, key header and
 // body are filed in AGENTRUN_TEST_FAUX_UPSTREAM_CALLS.
 import { appendFileSync } from "node:fs";
 
@@ -46,6 +48,18 @@ function openai(body) {
   ]);
 }
 
+/** Each provider's answer to a key that is rate-limited or out of quota, as its API sends it, by mode and path. */
+const LIMITS = {
+  rate_limited: {
+    "/v1/messages": { status: 429, body: { type: "error", error: { type: "rate_limit_error", message: "This request would exceed the rate limit for your organization of 50 requests per minute." } } },
+    "/v1/responses": { status: 429, body: { error: { message: "Rate limit reached for requests. Please try again in 20s.", type: "requests", code: "rate_limit_exceeded", param: null } } },
+  },
+  quota: {
+    "/v1/messages": { status: 402, body: { type: "error", error: { type: "billing_error", message: "Your organization has no credit left." } } },
+    "/v1/responses": { status: 429, body: { error: { message: "You exceeded your current quota, please check your plan and billing details.", type: "insufficient_quota", code: "insufficient_quota", param: null } } },
+  },
+};
+
 export default async function fakeUpstream(url, init = {}) {
   const path = new URL(String(url)).pathname;
   const headers = new Headers(init.headers);
@@ -58,6 +72,8 @@ export default async function fakeUpstream(url, init = {}) {
     return new Response("not a model request: its body is not JSON", { status: 400 });
   }
   if (process.env.AGENTRUN_TEST_FAUX_UPSTREAM_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_UPSTREAM_CALLS, `${JSON.stringify({ path, key: headers.get("x-api-key") ?? headers.get("authorization"), body })}\n`);
+  const limited = LIMITS[process.env.AGENTRUN_TEST_FAUX_UPSTREAM ?? ""]?.[path];
+  if (limited) return new Response(JSON.stringify(limited.body), { status: limited.status, headers: { "content-type": "application/json", "retry-after": "30" } });
   if (path === "/v1/messages") return anthropic(body);
   if (path === "/v1/responses") return openai(body);
   return new Response("not here", { status: 404 });
