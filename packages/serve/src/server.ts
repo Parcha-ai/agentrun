@@ -3567,9 +3567,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Our row goes first, by the checked removal (a 412 sends Composio nothing), and answers what it removed: a Composio
         // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key.
         // Composio refusing or not answering, or a key that does not open, never keeps our row: the answer says what to
-        // remove there by hand. One that Composio triggers still use is kept: refused, naming them.
-        await composioTriggers.inUse(id);
-        const { composio: made } = await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
+        // remove there by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
+        // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting).
+        const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
         await refreshMcpMeta();
         const forgotten = !made ? undefined : "unusable" in made ? composioNote(id) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal);
         if (forgotten && !forgotten.removed) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });

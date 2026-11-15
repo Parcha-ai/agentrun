@@ -12,8 +12,9 @@
 //   resuming and deleting follow on Composio once the change holds here, and so does the server turning a trigger off
 //   itself (triggers.ts); what Composio could not do is said, with what to do by hand.
 // - One project's steps run one at a time (serial): a create's setup, its save here and its undo, a pause, a delete, a
-//   rotate and the subscription's delete. Each reads the triggers holding what it would undo, turn off or delete as they
-//   are then, so it never removes what another holds, and a pause or resume sets the instance as its triggers now stand.
+//   rotate, the subscription's delete and the saved server's delete. Each reads the triggers holding what it would undo,
+//   turn off or delete as they are then, so it never removes what another holds, a pause or resume sets the instance as
+//   its triggers now stand, and a create re-reads its saved server before it saves, so no trigger outlives its server.
 // No public address (AGENTRUN_PUBLIC_URL): Composio can't reach this server, so making one is refused before Composio is
 // asked anything.
 import { createHash, randomBytes } from "node:crypto";
@@ -113,6 +114,10 @@ export class ComposioTriggers implements TriggerUpstream {
         // trigger leaves it as the triggers holding it then would (the upsert turned it on): deleted, off, or as it is.
         undo.push(async () => this.leave(ask, instance, await this.leftWith(instance, id)));
         if (!enabled && (await this.leftWith(instance, id)) !== "keep") await ask("turning the trigger instance off", "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: "disable" });
+        // The saved server is still there, under the key this was made with: one deleted (or saved again with another
+        // key) meanwhile is refused here, and what was made is undone, so no trigger names a server that is gone.
+        const now = await this.deps.credential(server, "field");
+        if (now.key !== credential.key) throw invalid([{ field: "source.server", reason: "invalid", message: `${server} was saved again with another Composio key while this trigger was being made: nothing was saved, make it again.` }]);
         const { [MOVE_FIELD]: _moved, ...kept } = source;
         return await keep({ ...kept, instance_id: instance, hook });
       } catch (error) {
@@ -244,6 +249,18 @@ export class ComposioTriggers implements TriggerUpstream {
       await this.deps.sealed.remove(hook);
       return { deleted: true as const };
     });
+  }
+
+  /** Saved server `name` deleted by `remove`, refused (inUse) while Composio triggers use it. A Composio server's check and
+   *  delete take its project's turn, so a create still making its first trigger is saved, and counted, before the check;
+   *  any other server (no Composio key) is deleted with no turn and nothing asked of Composio. */
+  async deleting<T>(name: string, remove: () => Promise<T>): Promise<T> {
+    const credential = await this.deps.credential(name, "route").catch(() => undefined);
+    const checked = async () => {
+      await this.inUse(name);
+      return remove();
+    };
+    return credential ? this.serial(credential.key, checked) : checked();
   }
 
   /** The triggers that use saved server `name`: a server that has any is not deleted (refused, naming them). */
