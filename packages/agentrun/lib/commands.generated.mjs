@@ -558,6 +558,31 @@ export const COMMANDS = [
   {
     "command": [
       "connectors",
+      "import-remote-history"
+    ],
+    "operationId": "importRemoteHistory",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/history",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Import explicitly selected, redacted past sessions without running or learning from them"
+  },
+  {
+    "command": [
+      "connectors",
       "import-remote-target"
     ],
     "operationId": "importRemoteTarget",
@@ -579,6 +604,12 @@ export const COMMANDS = [
       {
         "name": "name",
         "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "history_only",
+        "type": "boolean",
         "required": false,
         "description": ""
       }

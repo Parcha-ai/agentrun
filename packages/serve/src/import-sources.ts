@@ -100,11 +100,11 @@ export type Session = {
 };
 
 /** The session files of `source` under `home`, never through a link. */
-export async function sessionFiles(home: string, source: Source): Promise<string[]> {
+export async function sessionFiles(home: string, source: Source, configRoot?: string): Promise<string[]> {
   const entries = async (dir: string): Promise<Dirent[]> => readdir(dir, { withFileTypes: true }).catch(() => []);
   const out: string[] = [];
   if (source === "claude-code") {
-    const root = join(home, ".claude", "projects");
+    const root = join(configRoot ?? join(home, ".claude"), "projects");
     for (const project of await entries(root)) {
       if (!project.isDirectory()) continue;
       for (const file of await entries(join(root, project.name))) if (file.isFile() && file.name.endsWith(".jsonl")) out.push(join(root, project.name, file.name));
@@ -116,7 +116,7 @@ export async function sessionFiles(home: string, source: Source): Promise<string
         else if (entry.isFile() && depth === 3 && /^rollout-.*\.jsonl$/.test(entry.name)) out.push(join(dir, entry.name));
       }
     };
-    await walk(join(home, ".codex", "sessions"), 0);
+    await walk(join(configRoot ?? join(home, ".codex"), "sessions"), 0);
   } else {
     const root = join(home, ".pi", "agent", "sessions");
     for (const project of await entries(root)) {

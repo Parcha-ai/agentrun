@@ -241,6 +241,13 @@ export interface ImportRunInput {
   readonly startedAt: number;
   readonly endedAt?: number;
   readonly transcript: readonly (readonly StorageWrite[])[];
+  /** Internal authorization fences for an outbound historical import. These settings rows are locked and their
+   * named fields checked in the same transaction as the terminal run and journal, so a completed revocation or
+   * disconnect cannot be followed by another imported run. Ordinary local imports leave this absent. */
+  readonly settingsGuards?: readonly { readonly key: string; readonly fields: Readonly<Record<string, unknown>> }[];
+  /** Remote history is admitted only while its agent remains active. Lock and check the agent in the import's
+   * transaction, ordering the write against archive; ordinary local imports leave this guard absent. */
+  readonly requireActiveAgent?: true;
 }
 
 /** Rows written in the same commit as a run's update (runs.update, or a journal commit's staged patch): a channel post the
