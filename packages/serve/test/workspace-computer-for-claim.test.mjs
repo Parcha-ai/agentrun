@@ -147,6 +147,16 @@ test("an Agent37 desktop starts from the template its prepareImage() answers, wh
   await answer.release();
 });
 
+test("a Mode 2 Modal sandbox starts from the image its prepareImage() answers (the box image), with the run's folder mounted", async () => {
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  const { record, run } = await claim({ kind: "sandbox", provider: "modal" }, { mode: 2, keys: { MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms" }, spec });
+  const answer = await run();
+  assert.equal(answer.computer.kind, "sandbox");
+  assert.equal(record.created[0].image, "agentrun/computer:prepared");
+  assert.notEqual(record.created[0].mount, undefined, "the run's folder mounted");
+  await answer.release();
+});
+
 test("a desktop opens one proxied live view under the claim with its hold, and on release closes the view 'released' and ends the hold", async () => {
   const view = views();
   const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view });

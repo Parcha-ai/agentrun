@@ -63,6 +63,7 @@ __all__ = [
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
     "Cost",
+    "CostPlan",
     "CreateAgentBody",
     "CreateAgentResponse",
     "CreateFileBody",
@@ -1519,6 +1520,12 @@ class Cost(_CostRequired, total=False):
     cap_usd: float | None
     so_far_usd: float
     unpriced: int
+    plan: CostPlan
+
+
+class CostPlan(TypedDict):
+    requests: int
+    tokens: int
 
 
 Effort: TypeAlias = "Literal[\"low\", \"medium\", \"high\"]"
@@ -2559,6 +2566,7 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     email: str
     plan: str
     authorize_url: str
+    expires_at: str
     models: list[str]
 
 
@@ -2570,6 +2578,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     email: str
     plan: str
     authorize_url: str
+    expires_at: str
     models: list[str]
 
 
@@ -4527,6 +4536,7 @@ class _CapabilitiesHarnessesItemRequired(TypedDict):
 
 class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False):
     reason: str
+    needs: list[Literal["key", "chatgpt"]]
     installs: Literal["on_first_use"]
 
 

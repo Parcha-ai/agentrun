@@ -7,13 +7,14 @@
 // machine-host adapter's (./hosted/provider.ts). Every SDK fact below is cited in the README's Modal section, from
 // modal-client@64880502 (js/src) and Modal's docs.
 import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
-import { MODAL, MODAL_DEFAULT_IMAGE } from "./descriptors/modal.js";
+import { boxImageRef } from "./box-image.js";
+import { MODAL } from "./descriptors/modal.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { isWhole } from "./hosted/values.js";
 import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
-import type { ComputerErrorCode } from "./result.js";
+import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
 /**
  * The SDK's own types, imported as types only: erased at build, so nothing loads the SDK from here. The host passes its
@@ -222,7 +223,7 @@ class ModalHost implements MachineHost {
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const { image, cpus, memoryMb } = spec;
 		if (typeof image === "string" && (image.startsWith("-") || /\s/.test(image))) {
-			refuse("image", `an image is a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}, or an image Modal holds by its id (im-...)`);
+			refuse("image", "an image is a registry tag for linux/amd64 that Modal can pull, such as debian:bookworm-slim, or an image Modal holds by its id (im-...)");
 		}
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= CPU_REQUEST * CPUS_PER_CORE)) {
 			refuse("cpus", `cpus must be a number of CPUs of at least ${CPU_REQUEST * CPUS_PER_CORE}: Modal counts physical cores, 2 CPUs each, and requests ${CPU_REQUEST} of one by default`);
@@ -361,6 +362,16 @@ class ModalHost implements MachineHost {
  * memoryMb) and name the uid its programs run as, never root.
  */
 export class ModalProvider extends HostedProvider {
+	/**
+	 * The provider contract's prepareImage (its descriptor declares it): the box image the release publishes, by its
+	 * public registry tag (box-image.ts), which has the Archil client and its root helper. No call: Modal pulls a
+	 * registry tag at the first create from it in a workspace (images.fromRegistry), so there is nothing to pull ahead of
+	 * it, and onWait is never told (the claim's wait is the create's). A sandbox with GPUs starts from the same image.
+	 */
+	async prepareImage(): Promise<Result<string>> {
+		return ok(boxImageRef());
+	}
+
 	constructor(options: ModalProviderOptions) {
 		const { app, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
 		const sdk = options?.sdk as SdkClient | undefined;

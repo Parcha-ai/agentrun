@@ -26,7 +26,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { bookedIn } = await import("../dist/paid-calls.js");
 const { FAUX_MONID_ENV } = await import("../dist/monid.js");
 const { FAUX_ENV } = await import("../dist/model.js");
-const { monidSessionNames } = await import("../dist/runner/monid-run.js");
+const { catalogSessionNames } = await import("../dist/runner/mcp-run.js");
 const { chosenTools } = await import("../dist/runner/subagent.js");
 const { wireName } = await import("../dist/catalog.js");
 const { DEFER_CATALOG_OVER } = await import("@parcha/agentrun-kernel");
@@ -78,7 +78,7 @@ const until = async (done, what, ms = 60_000) => {
 
 test("each pinned endpoint is one host tool of its own; a call books under its own name at its own price, sent once to its endpoint", async (t) => {
   const sent = callLog(t);
-  const { spec } = await specFor(t, { body: { tools: [ENRICH, "monid:apollo/*"], monidPin: PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [ENRICH, "monid:apollo/*"] }, monidPin: PIN, keys: { MONID_API_KEY: KEY }, env: env() });
   const names = spec.mcp.tools.map((tool) => spec.mcp.catalogOf(tool.name));
   assert.deepEqual(names.sort(), [MATCH, ORGS, ENRICH].sort(), "one tool per pinned endpoint, by its catalog name");
   const match = spec.mcp.tools.find((tool) => spec.mcp.catalogOf(tool.name) === MATCH);
@@ -96,7 +96,7 @@ test("each pinned endpoint is one host tool of its own; a call books under its o
 
 test("a pinned endpoint's call that does not fit the cap is refused unsent, in the cap's words naming it", async (t) => {
   const sent = callLog(t);
-  const { spec } = await specFor(t, { body: { tools: [MATCH], monidPin: { [MATCH]: PIN[MATCH] } }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [MATCH] }, monidPin: { [MATCH]: PIN[MATCH] }, keys: { MONID_API_KEY: KEY }, env: env() });
   const [match] = spec.mcp.tools;
   const paid = await toolLedger(0.01);
   const answer = await bookedIn({ call: "c1", paid }, () => match.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
@@ -109,7 +109,7 @@ test("a call is sent with its hold as monid's maxCost: an endpoint monid now pri
   const sent = callLog(t);
   // Pinned at $0.003 when the agent was saved; monid charges $0.026 now.
   const stale = { ...PIN[MATCH], usd: 0.003 };
-  const { spec } = await specFor(t, { body: { tools: [MATCH], monidPin: { [MATCH]: stale } }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [MATCH] }, monidPin: { [MATCH]: stale }, keys: { MONID_API_KEY: KEY }, env: env() });
   const [match] = spec.mcp.tools;
   const paid = await toolLedger(0.01);
   const answer = await bookedIn({ call: "c1", paid }, () => match.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
@@ -131,7 +131,7 @@ const SEARCH_ARGS = { body: { name: "Ada", limit: 3 } };
 test("a call priced by usage is held at monid's estimate for its own input, sent with that estimate as maxCost, and settled at its charge", async (t) => {
   const sent = callLog(t);
   charging(t, 0.002);
-  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [SEARCH] }, monidPin: USAGE_PIN, keys: { MONID_API_KEY: KEY }, env: env() });
   const [search] = spec.mcp.tools;
   const paid = await toolLedger(1);
   const answer = await bookedIn({ call: "c1", paid }, () => search.call(SEARCH_ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
@@ -144,7 +144,7 @@ test("a call priced by usage is held at monid's estimate for its own input, sent
 
 test("a call priced by usage whose estimate does not fit the cap is refused unsent, in the cap's words naming its estimate", async (t) => {
   const sent = callLog(t);
-  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [SEARCH] }, monidPin: USAGE_PIN, keys: { MONID_API_KEY: KEY }, env: env() });
   const [search] = spec.mcp.tools;
   const paid = await toolLedger(0.002);
   const answer = await bookedIn({ call: "c1", paid }, () => search.call(SEARCH_ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
@@ -158,7 +158,7 @@ test("an endpoint monid has re-priced by usage since the save is sent, held at i
   charging(t, 0.001);
   // Pinned at $0.01 a call when the agent was saved; monid now prices it per result and estimates one result ($0.001).
   const stale = { ...USAGE_PIN[SEARCH], usd: 0.01 };
-  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: { [SEARCH]: stale } }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [SEARCH] }, monidPin: { [SEARCH]: stale }, keys: { MONID_API_KEY: KEY }, env: env() });
   const [search] = spec.mcp.tools;
   const paid = await toolLedger(0.5);
   const answer = await bookedIn({ call: "c1", paid }, () => search.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
@@ -170,7 +170,7 @@ test("an endpoint monid has re-priced by usage since the save is sent, held at i
 
 test("a fixed-price endpoint's call that does not fit the cap is refused before monid is asked anything, its price read again only once the cap lets it go", async (t) => {
   const log = callLog(t);
-  const { spec } = await specFor(t, { body: { tools: [MATCH], monidPin: { [MATCH]: PIN[MATCH] } }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [MATCH] }, monidPin: { [MATCH]: PIN[MATCH] }, keys: { MONID_API_KEY: KEY }, env: env() });
   const [match] = spec.mcp.tools;
   const paid = await toolLedger(0.01);
   const answer = await bookedIn({ call: "c1", paid }, () => match.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
@@ -194,7 +194,7 @@ async function monidRun(t, { script, tools, pin, toolSettings, launch = {}, requ
     rmSync(dir, { recursive: true, force: true });
   });
   await putSealedKey(server, SEAL_KEY, "MONID_API_KEY", KEY);
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Run monid.", tools, monidPin: pin, ...(toolSettings ? { toolSettings } : {}) } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Run monid.", tools, ...(toolSettings ? { toolSettings } : {}) }, monidPin: pin });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Run monid." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, ...launch } });
   // Someone can answer an ask (server-approvers.ts APPROVERS_KEY), so it parks.
   await server.settings.put("approvers", { approvers: true });
@@ -271,7 +271,7 @@ test("a call priced by usage has its estimate read marked on the run's ledger be
   const sent = callLog(t);
   stallMonid(t);
   charging(t, 0.003);
-  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [SEARCH] }, monidPin: USAGE_PIN, keys: { MONID_API_KEY: KEY }, env: env() });
   const [search] = spec.mcp.tools;
   const paid = await toolLedger(1);
   const answer = bookedIn({ call: "c1", paid }, () => search.call(SEARCH_ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
@@ -290,7 +290,7 @@ test("a call priced by usage has its estimate read marked on the run's ledger be
 
 test("a call priced by usage shows \"priced by usage\" on its card, read from its pin: monid is sent nothing for it", async (t) => {
   const sent = callLog(t);
-  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const { spec } = await specFor(t, { body: { tools: [SEARCH] }, monidPin: USAGE_PIN, keys: { MONID_API_KEY: KEY }, env: env() });
   assert.equal(spec.mcp.priceOf(SEARCH), "priced by usage");
   assert.deepEqual(sent.all(), [], "never sent");
 });
@@ -310,7 +310,9 @@ test("past the deferral threshold, tools_search finds a pinned endpoint by what 
 });
 
 test("a subagent given a provider's wildcard gets every endpoint pinned under it, and one endpoint by its tool name; never another provider's", () => {
-  const sessionNames = (grant) => monidSessionNames(grant, PIN) ?? [wireName(grant)];
+  // The run's catalog as the spec joins it (monid-run.ts withMonid): one tool per pinned endpoint, by its wire name.
+  const catalog = { tools: Object.keys(PIN).map((name) => ({ name: wireName(name) })), catalogOf: (wire) => Object.keys(PIN).find((name) => wireName(name) === wire) };
+  const sessionNames = (grant) => catalogSessionNames(catalog, grant);
   const granted = ["read", "monid:apollo/*"];
   assert.deepEqual(chosenTools(["monid:apollo/*"], { granted, sessionNames }), { catalog: ["monid:apollo/*"], names: ["monid__apollo__people__match", "monid__apollo__organizations__enrich"] });
   assert.deepEqual(chosenTools(["monid__apollo__people__match"], { granted, sessionNames }), { catalog: ["monid:apollo/*"], names: ["monid__apollo__people__match"] });

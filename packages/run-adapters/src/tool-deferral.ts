@@ -13,9 +13,9 @@ export const META_TOOLS: ReadonlySet<string> = new Set([TOOLS_SEARCH, TOOLS_CALL
 /** A run with more catalog tools than this is deferred them. */
 export const DEFER_CATALOG_OVER = 20;
 
-/** Whether a tool is a catalog tool, by the name a harness gives it: an MCP tool (`mcp__<server>__<tool>`) or a monid
- *  endpoint (`monid__<provider>__<endpoint>`). */
-export const isCatalogName = (name: string): boolean => name.startsWith("mcp__") || name.startsWith("monid_");
+/** Whether a tool is a catalog tool, by its wire name (the name a harness gives it): an MCP tool (`mcp__<server>__<tool>`)
+ *  or a monid endpoint (`monid__<provider>__<endpoint>`). */
+export const isCatalogWire = (name: string): boolean => name.startsWith("mcp__") || name.startsWith("monid__");
 
 /** Whether a run whose host tools are `names` has its catalog tools deferred: more than DEFER_CATALOG_OVER of them. */
-export const defersCatalog = (names: readonly string[]): boolean => names.filter(isCatalogName).length > DEFER_CATALOG_OVER;
+export const defersCatalog = (names: readonly string[]): boolean => names.filter(isCatalogWire).length > DEFER_CATALOG_OVER;

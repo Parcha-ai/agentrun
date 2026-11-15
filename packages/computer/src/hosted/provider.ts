@@ -576,7 +576,11 @@ export class HostedProvider implements ComputerProvider {
 		}
 	}
 
-	/** The labels create gives a computer: the caller's, the adapter's own, and an Archil mount's (never its token). */
+	/**
+	 * The labels create gives a computer: the caller's, the adapter's own, and an Archil mount's (never its token). The
+	 * most its deadline may reach only where the host can extend it, the label's one reader: a host with no extend (Modal,
+	 * Daytona) spends none of its label bytes on it (Modal's 512 hold the box image's tag beside an Archil mount's label).
+	 */
 	#labelsOf(spec: ComputerSpec, name: string, deadline: string, maxDeadline: string): Record<string, string> {
 		return {
 			...spec.labels,
@@ -584,7 +588,7 @@ export class HostedProvider implements ComputerProvider {
 			[NAME_LABEL]: name,
 			[DEADLINE_LABEL]: deadline,
 			[IMAGE_LABEL]: spec.image,
-			[MAX_LABEL]: maxDeadline,
+			...(this.host.extend ? { [MAX_LABEL]: maxDeadline } : {}),
 			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}),
 			...(typeof spec.gpu?.type === "string" && typeof spec.gpu.count === "number" ? { [GPU_LABEL]: `${spec.gpu.type}:${spec.gpu.count}` } : {}),
 		};

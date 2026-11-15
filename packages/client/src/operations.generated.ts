@@ -344,6 +344,10 @@ export type Cost = {
   cap_usd?: number | null;
   so_far_usd?: number;
   unpriced?: number;
+  plan?: {
+    requests: number;
+    tokens: number;
+  };
 };
 
 export type Effort = "low" | "medium" | "high";
@@ -790,6 +794,7 @@ export type Capabilities = {
     default_model: string | null;
     steer: boolean;
     reason?: string;
+    needs?: Array<"key" | "chatgpt">;
     installs?: "on_first_use";
   }>;
   tools: Array<{
@@ -1886,6 +1891,7 @@ export type FinishChatGPTSignInResponse = {
   email?: string;
   plan?: string;
   authorize_url?: string;
+  expires_at?: string;
   models?: Array<string>;
 };
 
@@ -1895,6 +1901,7 @@ export type GetChatGPTSignInResponse = {
   email?: string;
   plan?: string;
   authorize_url?: string;
+  expires_at?: string;
   models?: Array<string>;
 };
 
