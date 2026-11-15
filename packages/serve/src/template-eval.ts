@@ -21,6 +21,7 @@ import { NOTE_FILE } from "./learn/notes.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
+import type { EvalFakes } from "./runner/adapter-run-spec.js";
 import type { MonidFake } from "./runner/monid-run.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { webShownOf } from "./timeline/index.js";
@@ -72,6 +73,9 @@ const ENDED = ["completed", "failed", "cancelled"];
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server listens on loopback only, for a server on this machine
 /** A host name on this machine: a case with fake MCP servers needs a server here, which reaches them on loopback. */
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
+
+/** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -860,10 +864,8 @@ export type EvalOptions = {
 /** What the eval made on the server: its agents (archived at the end on an owner's server), its runs not known to have
  *  ended (cancelled at each case's end), and the package's triggers its applies made (deleted). */
 type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
-/** `webs`: each run's web fake by its agent's id, read by the eval's own runner (runner/beside.ts webFakes). `clocks`:
- *  each run's clock by its agent's id, read the same way (runner/beside.ts clockOf), and `monids` each run's monid fake
- *  (runner/beside.ts monidFakes). */
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; webs: Map<string, WebFake>; clocks: Map<string, Date>; monids: Map<string, MonidFake> };
+/** `fakes`: each run's fakes by its agent's id, read by the eval's own runner (runner/beside.ts evalFakes). */
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; fakes: Map<string, EvalFakes> };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 /** A run's tokens, model requests and tool calls as its end wrote them (GET /stats over the run's agent: an eval makes a
  *  fresh agent for each run). `input` excludes cached input: the whole prompt is `input + cache_read + cache_write`.
@@ -899,21 +901,12 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const log = options.log ?? (() => undefined);
   const { pkg, cases } = readCases(options.dir, options.cases);
   if (options.graderModel !== undefined && !MODEL_REF.test(options.graderModel)) throw new CaseError(options.dir, [`--grader-model is "provider/model-id", not ${options.graderModel}`]);
-  // A web fake is bound by the eval's own runner, in this process: a named server's runs would search the real web.
-  const faked = cases.filter((one) => one.web !== undefined);
-  if (options.server && faked.length) throw new CaseError(options.dir, faked.map((one) => `evals/${one.name}: web fakes the web tools on the eval's own server alone: run it without --server`));
-  // Each run's web fake, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
-  const webs = new Map<string, WebFake>();
-  // A case's clock is set by the eval's own runner, in this process: a named server's runs would run on its real clock.
-  const clocked = cases.filter((one) => one.now !== undefined);
-  if (options.server && clocked.length) throw new CaseError(options.dir, clocked.map((one) => `evals/${one.name}: now sets its runs' clock on the eval's own server alone: run it without --server`));
-  // Each run's clock, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
-  const clocks = new Map<string, Date>();
-  // A monid fake is bound by the eval's own runner, in this process: a named server's runs would call monid for real.
-  const unreached = cases.filter((one) => one.monid !== undefined);
-  if (options.server && unreached.length) throw new CaseError(options.dir, unreached.map((one) => `evals/${one.name}: monid fakes the package's monid endpoints on the eval's own server alone: run it without --server`));
-  // Each run's monid fake, by the agent the eval made for it (runOnce), read the same way.
-  const monids = new Map<string, MonidFake>();
+  // A case's fakes are bound by the eval's own runner, in this process: a named server's runs would search the real web,
+  // run on its real clock and call monid for real.
+  const refused = options.server ? cases.flatMap((one) => OWN_SERVER_FAKES.filter(([field]) => one[field] !== undefined).map(([, what]) => `evals/${one.name}: ${what} on the eval's own server alone: run it without --server`)) : [];
+  if (refused.length) throw new CaseError(options.dir, refused);
+  // Each run's fakes, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
+  const fakes = new Map<string, EvalFakes>();
   const started = new Date().toISOString();
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
   let close = async () => undefined as unknown;
@@ -938,7 +931,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), clockOf: (agentId) => clocks.get(agentId), monidFakes: (agentId) => monids.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, evalFakes: (agentId) => fakes.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -953,7 +946,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
   const ctx: Ctx = {
-    api, pkg, options, made, log, webs, clocks, monids,
+    api, pkg, options, made, log, fakes,
     graderAgent: async () => {
       if (grader) return grader;
       const agent = expectOk("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: GRADER_NAME, description: "Grades a template eval's runs against a rubric: answers {pass, reason}.", instructions: GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, max_cost_usd: GRADER_CAP_USD, ...(options.graderModel ? { model: options.graderModel } : {}) } }));
@@ -1070,12 +1063,8 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
   }
   stopped();
-  // The case's web fake, for this run's agent alone, before its run can be claimed.
-  if (one.web !== undefined) ctx.webs.set(agentId, one.web);
-  // The case's clock, for this run's agent alone, before its run can be claimed.
-  if (one.now !== undefined) ctx.clocks.set(agentId, new Date(instantOf(one.now)!));
-  // The case's monid fake, for this run's agent alone, before its run can be claimed.
-  if (one.monid !== undefined) ctx.monids.set(agentId, one.monid);
+  // The case's fakes, for this run's agent alone, before its run can be claimed.
+  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}) });
   const runId = await startRun(ctx, agentId, { input: runInput(one.input, one.fields), ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.

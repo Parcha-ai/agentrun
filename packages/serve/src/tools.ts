@@ -155,7 +155,7 @@ export type ToolHost = {
    *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
   search?: SearchOn;
   /** A template eval's web fake for this run (web-fake.ts): its web_search and web_fetch answer from it, never the
-   *  network. Only the eval's own runner sets it (runner/beside.ts webFakes). Absent: the plane's providers. */
+   *  network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
   web?: WebFake;
 };
 
