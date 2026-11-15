@@ -111,12 +111,13 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and the script's
  *  executor for its card; none for any other computer. */
-async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard, mounted: boolean): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card; readonly prelude?: string }> {
+async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard, mounted: boolean, replaced: boolean): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card; readonly prelude?: string }> {
   if (computer?.kind !== "desktop" && computer?.kind !== "phone") return { ports: {}, kinds: [], groups: [] };
   // A desktop that mounts the run's folder starts its shell's programs there, as bash does, not in the computer's home.
   const surface = createSurface(computer.computer.client, computer.hello, mounted ? { cwd: COMPUTER_ROOT } : {});
   const prelude = scriptPreludeOf(surface.card, noPrograms(computer) ? { exec: false } : {});
-  return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(prelude, guard), card: surface.card, prelude };
+  // One that replaced an earlier claim's: its acts held to what it showed (computer-ports.ts replacedGuard).
+  return { ports: { computer: portOf(surface, { replaced }) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(prelude, guard), card: surface.card, prelude };
 }
 
 /** A desktop's or a phone's surface as a harness's own script runtime binds it (pi's code mode): its card, the script
@@ -160,8 +161,9 @@ export type RunHands = {
  *  with its kind's ports. `aliases`: other absolute names of the run's folder a tool call may give (the harness's
  *  scratch folder), taken as the folder. `hold`: a person's hold on the computer (its take-over), given a desktop's or a
  *  phone's ports and answering them wrapped, so a call made while the person holds it waits, and an action then is
- *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). */
-export async function runHands(workspace: Workspace, claimed: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string }): Promise<RunHands> {
+ *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). `replaced`: the computer
+ *  replaced an earlier claim's (ClaimComputer.replaced), so a desktop's or a phone's act is held to what it showed. */
+export async function runHands(workspace: Workspace, claimed: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; readonly replaced?: boolean }): Promise<RunHands> {
   // The folder's own path on this machine, Mode 1's bind. A Mode 2 folder (Archil) has none, and asking its mount would
   // mint the run's mount credential: only a computer that mounts the folder asks it (attach, below).
   const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
@@ -188,7 +190,7 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
   const guard = new ScriptGuard({ env: policyEnv(options.bashPolicy), prelude }, computer?.kind);
-  const own = await portsOf(computer, guard, mounted !== undefined);
+  const own = await portsOf(computer, guard, mounted !== undefined, options.replaced === true);
   const { ports, kinds, groups, script, card, prelude: scriptPrelude } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
   return {
     workspace: attached,
@@ -300,7 +302,7 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The harness has its own code mode that binds `computer` (pi). */ readonly codeMode?: boolean }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The harness has its own code mode that binds `computer` (pi). */ readonly codeMode?: boolean; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);

@@ -128,8 +128,8 @@ async function setup(setting = PERSISTENT) {
   const notes = [];
   const provider = keeperProvider(root, computers, calls);
   const providers = { orgo: () => provider };
-  const claim = (runId, epoch = 1) =>
-    computerForClaim({ runId, epoch, agentId: "agent-1", computer: setting }, store, { mode: 1, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch }, onComputerNote: (words) => notes.push(words) });
+  const claim = (runId, epoch = 1, extra = {}) =>
+    computerForClaim({ runId, epoch, agentId: "agent-1", computer: setting }, store, { mode: 1, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch }, onComputerNote: (words) => notes.push(words), ...extra });
   return { store, computers, calls, notes, provider, claim };
 }
 
@@ -160,6 +160,16 @@ test("the agent's next run attaches the same computer under its claim, and says 
   const record = await agentComputerOf(store, "agent-1");
   assert.deepEqual([record.id, record.state, record.run], ["c-1", "held", "run-2"]);
   await second.release();
+});
+
+test("the agent's own computer at a later claim of the run is never called a new one: it is the same computer, kept", async () => {
+  const { claim } = await setup();
+  await (await claim("run-1", 1)).release();
+  const said = [];
+  const resumed = await claim("run-1", 2, { earlierUp: async () => true, onConnected: (one) => void said.push(one) });
+  assert.equal(resumed.replaced, undefined);
+  assert.deepEqual(said.map((one) => one.replaced), [undefined]);
+  await resumed.release();
 });
 
 test("a computer gone at the vendor is made again, and the timeline names the one that is gone", async () => {

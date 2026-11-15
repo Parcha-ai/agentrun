@@ -102,7 +102,7 @@ function views(refusal) {
   return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3, list, spec = SPEC } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, earlierUp, epoch = 3, list, spec = SPEC } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
@@ -111,7 +111,7 @@ async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", 
   const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(earlierUp ? { earlierUp } : {}) });
   return { root, record, run };
 }
 
@@ -323,6 +323,63 @@ test("the run's computer of an earlier claim is released before this claim's is 
   const answer = await run();
   assert.deepEqual(record.released, [["old", "delete"]], "epoch 2's released first");
   assert.equal(record.created.length, 1);
+  await answer.release();
+});
+
+// A later claim that starts a fresh computer for a run that had one under an earlier claim says so once, in the ready
+// words, and answers `replaced` (what the model is told and what its acts are checked against). The key is a fact the
+// claim knows for certain: it let go of an older claim's computer of the run (a lost runner, a crash), or, for a desktop
+// or phone, the run's journal holds an earlier claim's hold-up entry (that claim deleted its own at a server's stop).
+const NEW_WORDS = (kind) => `It's a new ${kind}: the one before went with the run's earlier runner, and what was on it is gone.`;
+const OLDER = { ref: { id: "old", name: "old" }, labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" } };
+const DESKTOP = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+
+test("a resumed claim on a fresh computer, its earlier claim's let go, says it's a new one once, in the ready words", async () => {
+  const said = [];
+  const { run } = await claim({ kind: "sandbox", provider: "docker" }, { existing: [OLDER], onConnected: (one) => void said.push(one) });
+  const answer = await run();
+  assert.deepEqual(answer.replaced, { folderKept: false });
+  assert.equal(said.length, 1);
+  assert.equal(computerReadyWords(said[0]), `The sandbox is ready: Linux (amd64), from Docker. ${NEW_WORDS("sandbox")}`);
+  await answer.release();
+  assert.equal(said.length, 1, "said once, never at the release");
+});
+
+test("a desktop's later claim with no older computer left, whose run's journal says a desktop was up, says it's a new one", async () => {
+  for (const [up, expected] of [[true, { folderKept: false }], [false, undefined]]) {
+    const said = [];
+    const asked = [];
+    const { run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP, earlierUp: async () => (asked.push(1), up), onConnected: (one) => void said.push(one) });
+    const answer = await run();
+    assert.equal(asked.length, 1, "the journal asked once");
+    assert.deepEqual(answer.replaced, expected);
+    assert.equal(computerReadyWords(said[0]), `The desktop is ready: Linux (amd64), from E2B.${up ? ` ${NEW_WORDS("desktop")}` : ""}`);
+    await answer.release();
+  }
+});
+
+test("a first claim gets no such line, nor a later claim that let nothing go and whose run had no desktop up", async () => {
+  const said = [];
+  const first = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP, epoch: 1, earlierUp: async () => true, onConnected: (one) => void said.push(one) });
+  const made = await first.run();
+  assert.equal(made.replaced, undefined);
+  assert.equal(computerReadyWords(said[0]), "The desktop is ready: Linux (amd64), from E2B.");
+  await made.release();
+  const later = await claim({ kind: "sandbox", provider: "docker" }, { onConnected: (one) => void said.push(one) });
+  const remade = await later.run();
+  assert.equal(remade.replaced, undefined);
+  assert.equal(computerReadyWords(said[1]), "The sandbox is ready: Linux (amd64), from Docker.");
+  await remade.release();
+});
+
+test("a Mode 2 computer that mounts the run's folder says the run folder is kept; Mode 1 never claims it", async () => {
+  const said = [];
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { mode: 2, keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP, spec, existing: [OLDER], onConnected: (one) => void said.push(one) });
+  const answer = await run();
+  assert.notEqual(record.created[0].mount, undefined, "the run's folder mounted");
+  assert.deepEqual(answer.replaced, { folderKept: true });
+  assert.equal(computerReadyWords(said[0]), `The desktop is ready: Linux (amd64), from E2B. ${NEW_WORDS("desktop")} The run folder is kept.`);
   await answer.release();
 });
 

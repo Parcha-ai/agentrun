@@ -46,7 +46,8 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { computerReadyWords, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { earlierUp } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
@@ -357,7 +358,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
     // whose computer is a browser is refused in words at its claim, before anything is made.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp).
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, earlierUp: () => earlierUp(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held);
@@ -381,7 +383,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv), as the pi spec does.
   const bashPolicy = bashPolicyOf(body.toolSettings);
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
+  // A computer that replaced an earlier claim's holds its acts to what it showed, as the pi spec's does.
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   holds.hold({ tools });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
@@ -669,6 +672,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     agentId: runRow.agentId,
     // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
     ...(loopComputer ? { computer: loopComputer } : {}),
+    // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
+    ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     workRoot: root,
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
     // against on the run's rows.
