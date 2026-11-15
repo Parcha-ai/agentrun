@@ -11,8 +11,9 @@ export function modelLabel(id: string, routePrefix: string | null | undefined): 
 }
 
 /** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
- *  the server's `reason`, when it doesn't). */
-export type HarnessInfo = { id: string; default_model?: string | null; models?: readonly string[]; available?: boolean; reason?: string };
+ *  the server's `reason`, when it doesn't). `needs`, on one that runs nothing here for want of a key: what would give it a
+ *  model (`key`, a model key; `chatgpt`, the ChatGPT sign-in). */
+export type HarnessInfo = { id: string; default_model?: string | null; models?: readonly string[]; available?: boolean; reason?: string; needs?: readonly string[] };
 
 /** The models the server offers for a harness (`harnesses[].models`), each in the exact form a definition names it on
  *  that harness here; none for a harness it does not run, or from a server that lists none. The Model picker's list: the

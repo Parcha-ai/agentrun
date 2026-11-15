@@ -1,6 +1,7 @@
 // What a learned_workflow call keeps of its workflow's run beside itself in the run's journal: each node that ran, as
 // the workflow DSL ended it (learned-workflow.ts runLearned writes it; store-reads/journal.ts runTimeline puts it on the
 // call's result row as `learned_nodes`). Its own module, so the timeline's reader needs none of the tool's imports.
+import type { Skipped } from "./learn/replay-calls.js";
 
 /** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes, guards? }`, its call's id, the
  *  workflow's name, each of its nodes that ran (LearnedNode, at most LEARNED_NODES_MAX) and every guard check it made
@@ -25,7 +26,7 @@ export type LearnedNode = { readonly label: string; readonly kind: string; reado
  *  `p` (through the guard's fit when it has one; null when a signal it reads was missing, so it handed back) and whether
  *  it handed the job back. A run's rows are its metrics' `guards` (runner/workflow-first.ts pathMetrics), each naming
  *  the workflow whose call made it (`workflow`: a run can call more than one, the next after the first hands back).
- *  `escalate`: no guard but an escalate node a replay recorded instead of obeying (learn/promote.ts softEscalatesOf), on
+ *  `escalate`: no guard but an escalate node a replay recorded instead of obeying (the DSL's softEscalates), on
  *  its label: p 0 when it fired, else 1, at SOFT_ESCALATE_THRESHOLD, never `escalated` (the run went on past it). */
 export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both" | "escalate"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean; readonly workflow?: string };
 
@@ -53,7 +54,7 @@ export function endedIn(entries: readonly { readonly kind: string; readonly data
 /** The write that stopped a replay run's workflow, from its root entries (a LEARNED_NODES entry's `replay_skipped`: a
  *  write the graded run's recording does not have, learn/replay-calls.ts; `unmarked`, an MCP tool listed with no
  *  readOnlyHint), or undefined when none did. */
-export function replaySkippedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { tool: string; step: string; unmarked?: true } | undefined {
+export function replaySkippedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[]): Skipped | undefined {
   for (const entry of entries) {
     if (entry.kind !== LEARNED_NODES) continue;
     const skipped = (entry.data as { replay_skipped?: { tool?: unknown; step?: unknown; unmarked?: unknown } } | undefined)?.replay_skipped;

@@ -85,6 +85,25 @@ const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => 
  *  taken in is MODEL_KEYS' own. */
 export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${[...MODEL_KEYS].sort((a, b) => Number(b.id === "openrouter") - Number(a.id === "openrouter")).map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
 
+/** Whether a ChatGPT sign-in here would give `harness` its model, where it wants a key now: `signed_out` (none yet) or
+ *  `expired` (sign in again). None where it would not: a harness that needs a key whatever the plan (PLAN_HARNESSES), a
+ *  server that cannot sign in (a runner, a faux model), one behind serve's gateway (its model is the gateway's), or one
+ *  signed in. */
+export function planWouldRun(env: NodeJS.ProcessEnv, harness: string): "signed_out" | "expired" | undefined {
+  const plan = planOf(env);
+  if (!plan || env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || !PLAN_HARNESSES.includes(harness) || plan.state === "signed_in") return undefined;
+  return plan.state;
+}
+
+/** `reason`, `harness`'s want of a key for its default model, with what a ChatGPT sign-in here would do about it
+ *  (planWouldRun), in words; as it was where the sign-in would not. */
+export function withPlanWords(env: NodeJS.ProcessEnv, harness: string, reason: string): string {
+  const state = planWouldRun(env, harness);
+  if (!state) return reason;
+  const words = state === "expired" ? "your ChatGPT sign-in expired: sign in again (Settings → Model keys)" : "or sign in with ChatGPT (Settings → Model keys) to run it on your ChatGPT plan";
+  return `${reason.replace(/\.$/, "")}; ${words}.`;
+}
+
 /** Whether `harness` runs the model `id` (its entry in the harness table: harness-table.ts): pi any; one on an adapter, its
  *  wire's vendor's model (or that vendor's on OpenRouter), or behind serve's gateway, on the wire it serves, any id. */
 export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string): boolean => harnessOf(env, harness)?.runs(env, id) ?? true;
@@ -204,7 +223,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     const sent = id && !configured && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
     return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
-  if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
+  if (!named) return { why: withPlanWords(env, harness, `${none}: ${ADD_A_KEY}`), host: true, needs: "key" };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];

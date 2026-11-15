@@ -15,7 +15,7 @@ import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
-import { answersAlone, championOf, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
+import { answersAlone, championOf, LABEL_MAX, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
 
 /** How many active notes an agent keeps before its look-back compiles its job. */
 export const COMPILE_AFTER_NOTES = 3;
@@ -263,8 +263,6 @@ export const askedForCompile = (text: unknown): "again" | boolean =>
 /** What a compiled workflow gives (#2412): the job's answer as the runs gave it, never a summary of it. */
 export const OUTPUT_FORMAT = "Its output is the job's answer in the output format your runs gave it, and your skill's when one gives a format: its last node writes it, and `output` names that node's state.";
 
-/** The most characters of a wrong graded answer, and of its grade's words, the revise ask shows. */
-const GRADED_MAX = 4_000;
 /** What the compile turn is told of the agent's output schema, shown whole after it. */
 export const SHAPE_LINE = "The workflow's final output must be this object: this agent's output schema. A run it serves answers with its output shaped to it, and an output that can't be (one field where it asks for more) hands every run back. Make the schema its `output` names this one, every field, and have its last node write the whole object: the host's dry run holds its answer to it.";
 
@@ -294,9 +292,9 @@ export function compilePrompt(ask: CompileAsk): string {
                 : `Your learned workflow \`${ask.workflow}\` needs a revision.`,
         ...(ask.graded
           ? [
-              ...fenced("its answer", clean(ask.graded.answer, GRADED_MAX)),
+              ...fenced("its answer", clean(ask.graded.answer, LABEL_MAX)),
               "What the reviewer said:",
-              ...fenced("the grade", clean(ask.graded.words, GRADED_MAX)),
+              ...fenced("the grade", clean(ask.graded.words, LABEL_MAX)),
               `Give \`${ask.workflow}\` again whole under its name, changed so it answers cases like this one right or hands them back to you at an \`escalate\` node, keeping what it already answers right.`,
               "If no change to it would, answer `No change.` and nothing else.",
             ]

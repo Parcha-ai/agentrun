@@ -6,7 +6,8 @@
 // and inspects only what it lists (404 otherwise). Its endpoints, by path: /person/enrich answers at once; /tweets answers 202 and completes on its second read; /slow never
 // ends until stopped; /wallet is 402; /budget is BLOCKED; /broken FAILS; /late is a sync 408; /missing is the provider's
 // 404; /huge answers more than the model reads; /person/search is priced per result and charges $1.42; /person/lookup
-// is $1 a call. A run sent with a maxCost below its estimate is refused as monid refuses it (400 MAX_COST_EXCEEDED). With AGENTRUN_TEST_FAUX_MONID_DOWN set, every call is filed and then
+// is $1 a call. A run sent with a maxCost below its estimate (from its own `limit` when priced by usage) is refused as
+// monid refuses it (400 MAX_COST_EXCEEDED, naming the estimate). With AGENTRUN_TEST_FAUX_MONID_DOWN set, every call is filed and then
 // fails as a fetch to a host that can't be reached does; with AGENTRUN_TEST_FAUX_MONID_STATUS, it answers that status;
 // with AGENTRUN_TEST_FAUX_MONID_STALL, it is held, its signal ignored as a provider answering late, until release(), and
 // stalled() gives the held call's signal once one is held; with AGENTRUN_TEST_FAUX_MONID_CHARGE, a run its maxCost lets
@@ -94,10 +95,13 @@ export default async function fakeMonid(url, init = {}) {
     return json(200, { runId: run[1], provider: "faux", endpoint: held.endpoint, status: held.status, price: PRICE });
   }
   if (path !== "/v1/run") return json(404, { code: 404, message: "Not found" });
-  // monid's maxCost: a run whose estimate is above it is refused as sent (400 MAX_COST_EXCEEDED), never run nor charged.
-  // The estimate is the listed amount: a fixed price exactly; one result of an endpoint priced per result, which the
-  // call's charge may pass.
-  const estimate = LISTING.find((one) => one.provider === body.provider && one.endpoint === body.endpoint)?.price.amount?.value ?? 0;
+  // monid's maxCost: a run whose estimate is above it is refused as sent (400 MAX_COST_EXCEEDED), naming the estimate,
+  // never run nor charged; so a run sent with maxCost 0 reads the estimate, unless it is $0 (a free run, which runs).
+  // monid estimates from the call's own arguments: a fixed price exactly; an endpoint priced per result or per unit, its
+  // amount times the call's `limit` (one when it names none), which the call's charge may pass.
+  const listed = LISTING.find((one) => one.provider === body.provider && one.endpoint === body.endpoint);
+  const each = listed?.price.type === "PER_CALL" ? 1 : Number(body.input?.body?.limit ?? 1);
+  const estimate = Math.round((listed?.price.amount?.value ?? 0) * each * 1e6) / 1e6;
   if (typeof body.maxCost === "number" && estimate > body.maxCost) return json(400, { code: 400, errorCode: "MAX_COST_EXCEEDED", message: `Run not started: estimated cost ~$${estimate} is above maxCost $${body.maxCost}. Raise maxCost to at least ${estimate} or choose a cheaper endpoint.` });
   const runId = `run${String(++next).padStart(4, "0")}`;
   const charge = process.env.AGENTRUN_TEST_FAUX_MONID_CHARGE;

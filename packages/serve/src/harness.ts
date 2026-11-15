@@ -23,7 +23,10 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
 export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
-export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; run_memory_mib: number };
+export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; run_memory_mib: number; needs?: HarnessNeed[] };
+/** What would give a harness that runs nothing here a model, any one of them: a model key (`key`), or the ChatGPT sign-in
+ *  (`chatgpt`: codex and pi, on a server that signs in, not signed in or signed in no longer). */
+export type HarnessNeed = "key" | "chatgpt";
 
 
 const offered = new WeakMap<object, Promise<HarnessCapability[]>>();
@@ -75,6 +78,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       // harness that does not run here, or that no model here would run on.
       const { harnessModel } = await import("./runnable.js");
       const { pickerCandidates } = await import("./model-form.js");
+      const { planWouldRun, withPlanWords } = await import("./model.js");
       return Promise.all(base.map(async (offer): Promise<HarnessCapability> => {
         const resolved = offer.available ? await harnessModel(env, offer.id, undefined, true) : undefined;
         // The models a person may pick for it (model-form.ts), each in the form it takes: those its entry's own choice
@@ -106,7 +110,13 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
             models.push(id);
           }
         }
-        return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, run_memory_mib: entry.runMib };
+        // One that runs nothing here for want of a key (unavailable with `keys`, or available with no default model for
+        // want of one: pi's) says what would give it a model: a key, and for codex and pi the ChatGPT sign-in where this
+        // server signs in (planWouldRun), in its reason and in `needs`.
+        const wantsKey = offer.available ? resolved !== undefined && "why" in resolved && resolved.needs === "key" : Boolean(offer.keys?.length);
+        const sayWhy = !wantsKey ? {} : offer.available ? { reason: (resolved as { why: string }).why } : offer.reason ? { reason: withPlanWords(env, offer.id, offer.reason) } : {};
+        const needs: HarnessNeed[] = wantsKey ? ["key", ...(planWouldRun(env, offer.id) ? (["chatgpt"] as const) : [])] : [];
+        return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}) };
       }));
     })();
     offered.set(env, offers);

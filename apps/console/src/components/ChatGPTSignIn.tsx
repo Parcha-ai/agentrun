@@ -208,8 +208,13 @@ export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; wri
   );
 }
 
-/** A harness the server says needs a key (its `reason` names one), as against one it doesn't run here for another reason. */
-const needsKey = (reason: string | undefined) => !!reason && /\bkey\b/i.test(reason);
+/** A harness's state as the server's `needs` says it: one the ChatGPT sign-in would run, one a key would, one that runs
+ *  here, or one that doesn't for another reason. Never read off its words. */
+function harnessChip(h: HarnessInfo): { tone: ChipTone; text: string } {
+  if (h.needs?.includes("chatgpt")) return { tone: "warning", text: "runs after Continue with ChatGPT" };
+  if (h.needs?.includes("key")) return { tone: "warning", text: "needs a key" };
+  return h.available ? { tone: "success", text: "ready" } : { tone: "warning", text: "not here" };
+}
 
 /** What runs here, harness by harness, as the capabilities say: ready (on its default model), or what it needs, in the
  *  server's words. Nothing when the server lists no harness. */
@@ -219,15 +224,18 @@ export function WhatRunsHere({ harnesses, routePrefix }: { harnesses: readonly H
     <section aria-label="What runs here">
       <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">What runs here</h2>
       <ul className="border">
-        {harnesses.map((h) => (
-          <li key={h.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2.5 last:border-b-0">
-            <span className="font-mono text-body font-semibold">{harnessLabel(h.id)}</span>
-            <Chip tone={h.available ? "success" : "warning"}>{h.available ? "ready" : needsKey(h.reason) ? "needs a key" : "not here"}</Chip>
-            {h.available
-              ? h.default_model && <span className="font-mono text-small text-muted-foreground">{modelLabel(h.default_model, routePrefix).text}</span>
-              : h.reason && <span className="text-small text-muted-foreground">{h.reason}</span>}
-          </li>
-        ))}
+        {harnesses.map((h) => {
+          const chip = harnessChip(h);
+          return (
+            <li key={h.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2.5 last:border-b-0">
+              <span className="font-mono text-body font-semibold">{harnessLabel(h.id)}</span>
+              <Chip tone={chip.tone}>{chip.text}</Chip>
+              {h.available && !h.needs?.length
+                ? h.default_model && <span className="font-mono text-small text-muted-foreground">{modelLabel(h.default_model, routePrefix).text}</span>
+                : h.reason && <span className="text-small text-muted-foreground">{h.reason}</span>}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

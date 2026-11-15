@@ -4,7 +4,7 @@
 // would have read live: the same text after the run's scrub (a credential the result echoes is cut) and the server's
 // size bound (a long answer filed, its start shown). On pi (the faux model), claude-agent (the pinned Agent SDK and Claude CLI against a scripted Messages endpoint),
 // codex (the stand-in for Codex's app-server, its model a scripted Responses endpoint) and opencode (the stand-in for
-// `opencode serve`, its model a scripted Responses endpoint). No key, no network. pi's row is open (OPEN, a todo).
+// `opencode serve`, its model a scripted Responses endpoint). No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -158,6 +158,8 @@ async function deniedSibling(api, fake, answer, start, seen, id) {
   await follow(api, runId, ["input_required"], { deadlineMs: 180_000 });
   const pending = (await api("GET", `/runs/${runId}`)).body.pending;
   assert.deepEqual([pending?.kind, pending?.tool], ["approval", "mcp:fake/note"], JSON.stringify(pending));
+  // The run reads parked once the write's ask lands; the read beside it, started first, may still be on its way.
+  for (const until = Date.now() + 10_000; calls(fake, "add").length === 0 && Date.now() < until;) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(calls(fake, "add").length, 1, "the read ran with no one asked");
   assert.equal(calls(fake, "note").length, 0, "the write waits");
   const before = seen().length;
@@ -176,13 +178,8 @@ async function deniedSibling(api, fake, answer, start, seen, id) {
   return { final, after: seen().slice(before) };
 }
 
-/** pi's gap, open: its park seals the claim and closes the session while the read beside it is still in flight, so the
- *  read is never sent and the model reads it interrupted. A park that waits, within a bound, for the calls already running
- *  beside it would close it. */
-const OPEN = { pi: "a park seals while a sibling call is in flight: the read is never sent and the model is told it was interrupted" };
-
 for (const harness of HARNESSES) {
-  test(`${harness}: a read that ran beside a write parked in the same answer keeps its result: once the write is denied, the model is sent the read's result with the refusal, and the read runs once`, { timeout: 240_000, ...(OPEN[harness] ? { todo: OPEN[harness] } : {}) }, async (t) => {
+  test(`${harness}: a read that ran beside a write parked in the same answer keeps its result: once the write is denied, the model is sent the read's result with the refusal, and the read runs once`, { timeout: 240_000 }, async (t) => {
     const { api, fake, answer, start, seen } = await setup(t, harness);
     const { final, after } = await deniedSibling(api, fake, answer, start, seen, `siblings-${harness}`);
     if (harness !== "pi") {
@@ -190,6 +187,7 @@ for (const harness of HARNESSES) {
       assert.equal(after[0].read, "5", `the first request after the deny holds the read's result: ${JSON.stringify(after[0].raw).slice(0, 3000)}`);
       assert.match(after[0].refusal ?? "", /den/i, "and the write's refusal");
     }
+    assert.doesNotMatch(final, /interrupted/, `the read is not told to the model as cut: ${final}`);
     assert.match(final, /mcp_{1,2}fake__add=5/, `the model answers from the read's result: ${final}`);
   });
 }
