@@ -2,7 +2,7 @@
 // provider's rules in a `ProviderPolicy`. Written for AgentRun.
 export { ANTHROPIC_IMAGE_TOKENS_MAX, ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS, ASSUMED_TOOL_PROMPT_TOKENS, anthropicImageTokens, GEMINI_HIGH_RESOLUTION_TOKENS, geminiImageTokens, imageInputOf, imageProviderOf, imageSizeOf, imageTokens, INPUT_OVERHEAD_APIS, messagesImagesIn, OPENAI_IMAGE_TOKENS_MAX, openaiImageTokens, OPENAI_INPUT_COUNTER, openaiPatchMultiplier, providerInputOverhead, responsesEscapedBytes, responsesImagesIn, responsesInputOverhead, type ImageInput, type InputShape } from "./overhead.js";
 export { LOCAL_COUNT_MARGIN, o200kModel, o200kTokens, responsesLocalInputTokens } from "./local-count.js";
-export { COUNT_TIMEOUT_MS, countedInputOf, CredentialUnavailable, localInputOf, hostHeaderProblems, lastObjectOf, NATIVE_SEARCH_USD, ProxyRefusal, sameKey, startModelProxy } from "./proxy.js";
+export { COUNT_TIMEOUT_MS, countedInputOf, CredentialUnavailable, localInputOf, hostHeaderProblems, lastObjectOf, NATIVE_SEARCH_USD, ProxyRefusal, rateLimitOf, sameKey, startModelProxy, usageCostOf } from "./proxy.js";
 export type { InputCounter, ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRequest, ProxyRequestContext, ProxyRoute, ProxyUsage } from "./proxy.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";

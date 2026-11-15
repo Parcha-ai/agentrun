@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
+import { rateLimitOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
@@ -39,8 +40,10 @@ export type RouteUsage = { input: number; output: number; cacheRead: number; cac
  *  when its model speaks no wire of the caller's. The fields of the learning grader's route (learning-ask.ts GraderRoute),
  *  and `cost` beside them. */
 export interface ModelRoute {
-  /** `plan`: a ChatGPT plan's route (provider.ts billing "plan"), billed to the plan: no price, its rules on the wire. */
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
+  /** `plan`: a ChatGPT plan's route (provider.ts billing "plan"), billed to the plan: no price, its rules on the wire.
+   *  `usageCost`: its answers state what they cost in their usage (OpenRouter's, or this route's own translation of
+   *  one): the proxy books that figure, its price's beside it (ModelProxyOptions.usageCost). */
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void>; readonly usageCost?: boolean };
   readonly model: string;
   /** The model as the run names it (`provider/model-id`, chooseModel's): what the `llm` tool's answer says it ran on,
    *  never the session provider the runner reaches it through. */
@@ -105,7 +108,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // Messages, so the prompt cache marks pi-ai puts on the request reach it (provider.ts).
   if (target.api === "anthropic-messages" && chosen.model.provider === MODEL_PROVIDER && wires.includes("anthropic-messages")) {
     const to = providerFor("anthropic-messages", env, chosen.model, "pi");
-    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth }, like: settings };
+    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth, ...usageCostOn(to.origin) }, like: settings };
   }
   // A model pi-ai speaks Responses to, for a caller that speaks it: that wire itself, where main sends it (provider.ts).
   if (target.api === "openai-responses" && wires.includes("openai-responses")) {
@@ -116,11 +119,45 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
     const plan = onPlan ? { price: () => null, unpriced: true as const } : {};
     return {
       ...route, model: to.modelId, ...plan,
-      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}) },
+      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}), ...usageCostOn(to.origin) },
       like: onPlan ? { ...settings, developerRole: true } : settings,
     };
   }
-  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
+  // The translation writes an answer's cost in its usage only where pi-ai read the provider's own (OpenRouter's).
+  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route", usageCost: true }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
+}
+
+/** OpenRouter's origin: every answer it gives states its cost in its usage (https://openrouter.ai/docs/use-cases/usage-accounting). */
+const OPENROUTER_HOST = "openrouter.ai";
+const onOpenRouter = (origin: string): boolean => URL.canParse(origin) && new URL(origin).hostname === OPENROUTER_HOST;
+/** A route's `usageCost` on `origin`: OpenRouter's alone. */
+export const usageCostOn = (origin: string): { usageCost?: true } => (onOpenRouter(origin) ? { usageCost: true } : {});
+/** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
+const piOnOpenRouter = (target: PiModel): boolean => target.provider === "openrouter" || onOpenRouter(target.baseUrl ?? "");
+
+/** How much of an answer's text the rate-limit tap keeps: its end, where a stream's error event is. */
+const TAP_WINDOW = 64 * 1024;
+
+/** `upstream` (the network when absent) with the end of each answer's body kept (`kept()`), as it streams by: what the
+ *  provider said when pi-ai reports a failure, read for a rate limit by its fields (rateLimitOf), which pi-ai's client
+ *  drops (it keeps the words alone). The body reaches pi-ai as it came. */
+function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept: () => string } {
+  let kept = "";
+  const send = upstream ?? globalThis.fetch;
+  const fetcher = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const response = await send(input, init);
+    kept = "";
+    if (!response.body) return response;
+    const decoder = new TextDecoder();
+    const keep = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        kept = (kept + decoder.decode(chunk, { stream: true })).slice(-TAP_WINDOW);
+        controller.enqueue(chunk);
+      },
+    });
+    return new Response(response.body.pipeThrough(keep), { status: response.status, statusText: response.statusText, headers: response.headers });
+  }) as typeof fetch;
+  return { fetch: fetcher, kept: () => kept };
 }
 
 /** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which
@@ -141,7 +178,10 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     // result of its history as text, and its calls read from its reply. A request with no tools goes as it is.
     const asText = target.toolsAs === "text" && (built.tools?.length ?? 0) > 0;
     const context = asText ? toolsAsText(built) : built;
-    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) };
+    // On OpenRouter, each answer's end is kept as it streams by, for a rate limit it ends in (limitedWords).
+    const tap = piOnOpenRouter(target) ? tapped(upstream) : undefined;
+    const sendWith = tap?.fetch ?? upstream;
+    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -150,7 +190,21 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         // A failed request's error event carries its words alone, one data line each: pi-ai's Messages client throws an
         // error event's data as the request's error, so the caller reads the model's own error as main's in-process pi
         // reports it ("500 {...}"), never this route's envelope around it.
-        const sendError = (words: string) => controller.enqueue(encoder.encode(`event: error\n${words.split(/\r?\n/).map((line) => `data: ${line}`).join("\n")}\n\n`));
+        const sendWords = (words: string) => controller.enqueue(encoder.encode(`event: error\n${words.split(/\r?\n/).map((line) => `data: ${line}`).join("\n")}\n\n`));
+        // A rate limit the provider wrote inside its 200 stream (the tap's kept end, read by its fields: rateLimitOf) goes
+        // as Messages writes one, `rate_limit_error`, so the proxy books it refused at nothing (a refusal is never run);
+        // its top-level `message` is the same words, which pi-ai's Messages client reads as the request's error.
+        const sendError = (words: string) => {
+          const limited = tap ? rateLimitOf(tap.kept()) : undefined;
+          if (limited === undefined) return sendWords(words);
+          send({ type: "error", message: words, error: { type: "rate_limit_error", message: words } });
+        };
+        // What the provider said the answer cost (pi-ai reads OpenRouter's usage.cost: totalFromProvider), in the
+        // message's usage as `cost`, for the proxy to book (usageCostOf). Never pi-ai's own pricing of it.
+        const reportedOf = (used: RouteUsage | undefined): number | undefined => {
+          const cost = (used as { cost?: { total?: unknown; totalFromProvider?: unknown } } | undefined)?.cost;
+          return cost?.totalFromProvider === true && typeof cost.total === "number" && Number.isFinite(cost.total) && cost.total > 0 ? cost.total : undefined;
+        };
         send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
         // Messages blocks are numbered as sent. A thinking block is sent too, so the model's reasoning reaches the run's
         // record as a Timeline row; its text goes through the run's one redactor, so a held key the model quoted in its
@@ -209,7 +263,8 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                 break;
               }
               const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-              send({ type: "message_delta", delta: { stop_reason: stopReasonOf(event.reason ?? message.stopReason), stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite } });
+              const cost = reportedOf(message.usage);
+              send({ type: "message_delta", delta: { stop_reason: stopReasonOf(event.reason ?? message.stopReason), stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite, ...(cost === undefined ? {} : { cost }) } });
               send({ type: "message_stop" });
             }
           }
@@ -220,6 +275,8 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             // left of it once the tries so far and the re-ask's own input, uncached, are paid.
             const tools = built.tools ?? [];
             const used = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+            // The provider's cost of every try, summed while each stated one; unknown once one did not.
+            let reported: number | undefined = 0;
             const outputHeld = body.max_tokens ?? target.maxTokens;
             let heldUsd = 0;
             let spentUsd = 0;
@@ -240,6 +297,8 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                 used.output += part.output;
                 used.cacheRead += part.cacheRead;
                 used.cacheWrite += part.cacheWrite;
+                const cost = reportedOf(message.usage);
+                reported = reported === undefined || cost === undefined ? undefined : reported + cost;
                 if (attempt === 1 && outputHeld !== undefined) heldUsd = priceOn(target, { ...part, output: outputHeld });
                 spentUsd += priceOn(target, part);
                 const said = (message.content ?? []).filter((each) => each.type === "text").map((each) => each.text ?? "").join("");
@@ -276,7 +335,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                   send({ type: "content_block_stop", index });
                 }
                 const reason = read.calls.length ? "tool_use" : stopReasonOf(event.reason === "toolUse" ? "stop" : event.reason ?? message.stopReason);
-                send({ type: "message_delta", delta: { stop_reason: reason, stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite } });
+                send({ type: "message_delta", delta: { stop_reason: reason, stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite, ...(reported === undefined ? {} : { cost: reported }) } });
                 send({ type: "message_stop" });
               }
               if (!again) break;

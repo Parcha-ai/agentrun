@@ -4,9 +4,10 @@
  * under-count: a request counts at what it can have cost, never less.
  *
  * A path says how its request ended (`Ended`), and `bookRequest` gives its figure:
- * - `answered`: a whole answer, at the cost its usage (or its gateway) says, else the hold;
- * - `nothing`: the provider answered a status before any event (not a gateway's timeout), or the request provably never
- *   left (`isConnectCode`): 0;
+ * - `answered`: a whole answer, at the cost its usage (or its gateway) says, else the hold. A figure the provider reported
+ *   above the hold (the request's worst case at list) is not believed: the table's figure beside it, else the hold;
+ * - `nothing`: the provider answered a status before any event (not a gateway's timeout), the request provably never
+ *   left (`isConnectCode`), or the provider refused it inside its answer (a rate limit in a 200 stream): 0;
  * - `lost`: anything that can have been billed and says no cost (a transport error once it left, a cut answer, a
  *   gateway's 504 or 524, an answer after an attempt that was lost, which can have been billed twice, a crash): the hold;
  * - `stopped`: our abort, its client gone part way: what streamed (its content, and the part of a hidden reasoning
@@ -15,10 +16,13 @@
  */
 
 /** How a request ended, as its path saw it. `label` names the case for the record (`rule`); it changes no figure but
- *  `answered`'s `filtered` (a content-filter end: its reported usage, else the hold, as any answer). */
+ *  `answered`'s `filtered` (a content-filter end: its reported usage, else the hold, as any answer). An answer's
+ *  `tableUsd`: beside a figure the provider reported (`usd`), the price table's for the same usage. A refusal's `reason`:
+ *  the provider's own words, the credential cut. */
 export type Ended =
-  | { end: "answered"; usd: number | null; label?: "filtered" }
+  | { end: "answered"; usd: number | null; label?: "filtered"; tableUsd?: number | null }
   | { end: "nothing"; label: "status" | "never_left" }
+  | { end: "nothing"; label: "refused"; reason?: string }
   | { end: "lost"; label: "error_before" | "error_after" | "gateway_timeout" | "retried" | "cut"; began?: boolean }
   | { end: "stopped"; streamedTokens: number };
 
@@ -39,6 +43,9 @@ export function bookRequest(ended: Ended, priced: Priced): Booked {
     case "answered": {
       // A content filter's end is an answer: its usage when it reported one, else the hold.
       const usd = figure(ended.usd);
+      // A provider's figure above what the cap held for the request (its worst case at list) is not what it can have
+      // cost: the table's figure for the same usage stands, else the hold. A table's own figure (no `tableUsd`) is not judged.
+      if (usd !== undefined && hold !== undefined && usd > hold && ended.tableUsd !== undefined) return { usd: figure(ended.tableUsd) ?? hold, rule: `${rule}:over_hold` };
       return { usd: usd ?? hold ?? null, rule };
     }
     case "nothing":

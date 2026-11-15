@@ -39,7 +39,7 @@ import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
-import { PI_WIRES, storeSettings } from "./adapter-run-spec.js";
+import { capModelOf, PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
@@ -93,6 +93,8 @@ export interface WorkflowProvider {
   readonly plan?: boolean;
   /** Told the credential an upstream 401 refused, so the next one is renewed (a ChatGPT plan's route). */
   readonly refused?: (credential: string) => Promise<void>;
+  /** Its answers state their cost (OpenRouter's): the proxy books that figure, the price's beside it (ModelRoute). */
+  readonly usageCost?: boolean;
 }
 
 /** A tier's provider from the runner's model route (model-route.ts routeOf), the one way the runner resolves a model
@@ -118,11 +120,13 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     policy: await policyFor(route.provider, route.model, []),
     price: (route.price ?? (() => null)) as (model: string, usage: ProxyUsage) => number | null,
-    // A ChatGPT plan's route is billed to the plan: its requests cost the run no dollars (CapModel.plan).
-    capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null, ...(route.provider.plan ? { plan: true } : {}) },
+    // As a pi turn's (capModelOf): a ChatGPT plan's route is billed to the plan (CapModel.plan), and a model serve has no
+    // price for (a router's zeros, a gateway model nothing prices) has none, never its placeholder's $0: a cap refuses it.
+    capModel: capModelOf(route),
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(route.provider.plan ? { plan: true } : {}),
     ...(route.provider.refused ? { refused: route.provider.refused } : {}),
+    ...(route.provider.usageCost ? { usageCost: true } : {}),
   };
 }
 
@@ -277,6 +281,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         ...(provider.headers ? { headers: provider.headers } : {}),
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
         ...(provider.refused ? { credentialRefused: provider.refused } : {}),
+        ...(provider.usageCost ? { usageCost: true } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
       // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.
