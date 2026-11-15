@@ -120,7 +120,7 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
             {record?.reason}
           </p>
         )}
-        {replay && step.digest && <ReplayRevision v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={!replacedBy && replayable(standing)} onDecided={replay.onDecided} />}
+        {replay && step.digest && <ReplayRevision key={step.digest} v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={!replacedBy && replayable(standing)} resume={record?.decided === "replaying" ? (record.replay_id ?? null) : null} onDecided={replay.onDecided} />}
       </div>
       {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
       <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">

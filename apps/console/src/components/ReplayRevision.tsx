@@ -44,10 +44,10 @@ export function decisionLine(read: ReplayRead): { text: string; score: string | 
 }
 
 /** The Replay button of one revision of a learned workflow, and what its replay is doing or decided. */
-export function ReplayRevision({ v2, agentId, workflow, digest, offered, onDecided, pollMs = POLL_MS }: { v2: Client; agentId: string; workflow: string; digest: string; offered: boolean; onDecided?: () => void; pollMs?: number }) {
-  const [state, setState] = useState<State>({ at: "idle" });
-  // Another revision's card never shows this one's replay.
-  useEffect(() => { setState({ at: "idle" }); }, [workflow, digest]);
+export function ReplayRevision({ v2, agentId, workflow, digest, offered, resume = null, onDecided, pollMs = POLL_MS }: { v2: Client; agentId: string; workflow: string; digest: string; offered: boolean; resume?: string | null; onDecided?: () => void; pollMs?: number }) {
+  // `resume`: the id of this revision's replay that is running (its promotion record's replay_id), so a card opened or
+  // reloaded mid-replay follows it. The caller keys the card by revision: another revision starts clean.
+  const [state, setState] = useState<State>(resume ? { at: "running", replay: resume, read: null } : { at: "idle" });
   const decided = useRef(onDecided);
   decided.current = onDecided;
   const replay = state.at === "running" ? state.replay : null;

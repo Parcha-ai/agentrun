@@ -116,15 +116,17 @@ describe("Replay on a revision", () => {
     await flush();
     expect(text(host, "replay-decision")).toContain("Still held. Worse");
   });
-  it("another revision's card starts clean", async () => {
-    const v2 = fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ status: "done", decided: "hold", reason: "worse" })]);
-    const host = mountOne(v2);
-    act(() => button(host)!.click());
+  it("follows a replay already running (the record's replay_id) without a click, and decides it", async () => {
+    const onDecided = vi.fn();
+    const v2 = fake(async () => ({ replay: "unused", inputs: 0 }), [read({ replay: "rp_9", outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 } }), read({ replay: "rp_9", status: "done", decided: "promote", reason: "good" })]);
+    const host = mountOne(v2, { offered: false, resume: "rp_9", onDecided });
     await flush();
-    expect(text(host, "replay-decision")).toBeDefined();
-    act(() => root!.render(createElement(ReplayRevision, { v2, agentId: "a", workflow: "sorter", digest: "4".repeat(16), offered: true })));
-    expect(host.querySelector('[data-testid="replay-decision"]')).toBeNull();
-    expect(button(host)!.textContent).toBe("Replay");
+    expect(v2.startLearnedWorkflowReplay).not.toHaveBeenCalled();
+    expect(v2.learnedWorkflowReplay).toHaveBeenCalledWith("a", "sorter", DIGEST, "rp_9");
+    expect(text(host, "replay-progress")).toContain("2 of 5 ended");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(text(host, "replay-decision")).toContain("Promoted");
+    expect(onDecided).toHaveBeenCalledTimes(1);
   });
   it("keeps the decision after the tab reads again and the revision no longer offers Replay", async () => {
     const v2 = fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ status: "done", decided: "promote", reason: "good" })]);
@@ -160,6 +162,16 @@ describe("on the workflow card", () => {
     act(() => root!.unmount());
     const edited = mount(createElement(Steps, { data, promotions: [promo(1, "promote")], serving: "1".repeat(16), replay: { v2: v2(), agentId: "a" } }));
     expect(button(edited)).toBeDefined();
+  });
+  it("a revision replaying follows its record's replay, and stepping to another revision and back starts clean", async () => {
+    const replaying = { ...promo(2, "replaying"), replay_id: "rp_7" } as Promotion;
+    const client = fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ replay: "rp_7" })]);
+    const host = mount(createElement(Steps, { data, promotions: [promo(1, "promote"), replaying], serving: "1".repeat(16), replay: { v2: client, agentId: "a" } }));
+    await flush();
+    expect(client.learnedWorkflowReplay).toHaveBeenCalledWith("a", "sorter", "2".repeat(16), "rp_7");
+    expect(text(host, "replay-progress")).toContain("Replaying on 5 graded inputs");
+    act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
+    expect(host.querySelector('[data-testid="replay-revision"]')).toBeNull();
   });
   it("offers none on a card with no replay wired (a read-only view)", () => {
     expect(button(mount(createElement(Steps, { data, promotions: [promo(2, "hold")] })))).toBeUndefined();
