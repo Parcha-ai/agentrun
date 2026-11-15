@@ -4,7 +4,7 @@
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
 // grants, a fresh agent per run, its learning seeded from the case's notes; one run per `runs` with the prompt's body as
-// its input and the case's cap, waited for; then its answer, its tool calls (its timeline read with calls=whole, each
+// its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
 // call's arguments and its output's head through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
 // server: a grader agent with no tools that sees the rubric, the run's input, its answer and its calls, never another
@@ -26,6 +26,7 @@ import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
@@ -55,7 +56,7 @@ export const GRADER_NAME = "Template eval grader";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "learning"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "learning", "now"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -107,6 +108,9 @@ export type EvalCase = {
   /** The notes a run's agent starts with (not MEMORY.md, which the server builds from them). */
   learning: { file: string; text: string }[];
   graders: Grader[];
+  /** The case's clock (`now:`, an RFC 3339 date-time with its offset, as written): each run's current date and time,
+   *  which the eval's own runner alone sets, and its llm graders are told. Absent: the real clock. */
+  now?: string;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -268,6 +272,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     for (const field of unknown(c, CASE_FIELDS)) bad(`${at}/case.yaml: no field ${field}: its fields are ${CASE_FIELDS.join(", ")}`);
     if (c.parameters !== undefined && !isObject(c.parameters)) bad(`${at}/case.yaml: parameters is a mapping, the apply's parameters`);
     if (c.grants !== undefined && !(Array.isArray(c.grants) && c.grants.every((g) => typeof g === "string"))) bad(`${at}/case.yaml: grants is a list of gate names (mcp:<server>/<tool>)`);
+    if (c.now !== undefined && instantOf(c.now) === undefined) bad(`${at}/case.yaml: now is a date and time with its offset (2026-11-14T09:00:00Z), not ${JSON.stringify(c.now)}`);
     const parameters = isObject(c.parameters) ? c.parameters : {};
     const grants = Array.isArray(c.grants) ? (c.grants as string[]) : [];
     // The apply's own check of its body, here: a parameter or grant it would refuse fails the case before any run.
@@ -345,7 +350,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), learning, graders,
+      parameters, grants, mcp, ...(web ? { web } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -367,6 +372,8 @@ export type RunRecord = {
   mcpCalls: ToolCall[];
   /** The paths of its files, from its work folder. */
   files: string[];
+  /** The clock it ran on, its case's `now`; absent, the real one. */
+  now?: string;
 };
 export type Verdict = { pass: boolean; reason: string; cost_usd?: number | null; run_id?: string };
 
@@ -500,13 +507,16 @@ export function outputVerdict(pkg: Package, result: unknown): GraderResult | und
   return { grader: "output", type: "output", cost_usd: null, pass: why === undefined, reason: why === undefined ? `the answer's json meets ${pkg.output.schema}` : `the answer misses ${pkg.output.schema}: ${why}` };
 }
 
-/** The input a grader run gets for an llm grader: the rubric, the run's input, its answer (its target field marked when
- *  the grader names one) and its calls. Never another grader, the case's description or anything the case expects. */
+/** The input a grader run gets for an llm grader: the rubric, the clock the run ran on when its case set one (the grader's
+ *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one) and its
+ *  calls. Never another grader, the case's description or anything the case expects. */
 export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max = GRADER_PROMPT_MAX): string {
   const target = grader.target ? targetOf(run.answer, grader.target) : undefined;
+  const at = run.now === undefined ? undefined : instantOf(run.now);
   const before = [
     "Grade this run against the rubric.",
     `<rubric>\n${grader.rubric}\n</rubric>`,
+    ...(at === undefined ? [] : [`The run ran on a clock set to ${run.now}: its date was ${new Date(at).toISOString().slice(0, 10)} (UTC), whatever today's date is where you are.`]),
     `<task untrusted>\n${input}\n</task>`,
     `<answer untrusted>\n${run.answer || "(the run gave no answer)"}\n</answer>`,
     ...(grader.target ? [`The rubric is about the answer's \`${grader.target}\`${target && "text" in target ? ", shown here; the whole answer is above for anything else it checks" : ""}.`, `<target field="${grader.target}" untrusted>\n${target && "text" in target ? target.text : `(${(target as { why: string }).why})`}\n</target>`] : []),
@@ -810,8 +820,9 @@ export type EvalOptions = {
 /** What the eval made on the server: its agents (archived at the end on an owner's server), its runs not known to have
  *  ended (cancelled at each case's end), and the package's triggers its applies made (deleted). */
 type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
-/** `webs`: each run's web fake by its agent's id, read by the eval's own runner (runner/beside.ts webFakes). */
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; webs: Map<string, WebFake> };
+/** `webs`: each run's web fake by its agent's id, read by the eval's own runner (runner/beside.ts webFakes). `clocks`:
+ *  each run's clock by its agent's id, read the same way (runner/beside.ts clockOf). */
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; webs: Map<string, WebFake>; clocks: Map<string, Date> };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 /** A run's tokens, model requests and tool calls as its end wrote them (GET /stats over the run's agent: an eval makes a
  *  fresh agent for each run). `input` excludes cached input: the whole prompt is `input + cache_read + cache_write`.
@@ -852,6 +863,11 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   if (options.server && faked.length) throw new CaseError(options.dir, faked.map((one) => `evals/${one.name}: web fakes the web tools on the eval's own server alone: run it without --server`));
   // Each run's web fake, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
   const webs = new Map<string, WebFake>();
+  // A case's clock is set by the eval's own runner, in this process: a named server's runs would run on its real clock.
+  const clocked = cases.filter((one) => one.now !== undefined);
+  if (options.server && clocked.length) throw new CaseError(options.dir, clocked.map((one) => `evals/${one.name}: now sets its runs' clock on the eval's own server alone: run it without --server`));
+  // Each run's clock, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
+  const clocks = new Map<string, Date>();
   const started = new Date().toISOString();
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
   let close = async () => undefined as unknown;
@@ -876,7 +892,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), clockOf: (agentId) => clocks.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -891,7 +907,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
   const ctx: Ctx = {
-    api, pkg, options, made, log, webs,
+    api, pkg, options, made, log, webs, clocks,
     graderAgent: async () => {
       if (grader) return grader;
       const agent = expectOk("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: GRADER_NAME, description: "Grades a template eval's runs against a rubric: answers {pass, reason}.", instructions: GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, max_cost_usd: GRADER_CAP_USD, ...(options.graderModel ? { model: options.graderModel } : {}) } }));
@@ -1010,6 +1026,8 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   stopped();
   // The case's web fake, for this run's agent alone, before its run can be claimed.
   if (one.web !== undefined) ctx.webs.set(agentId, one.web);
+  // The case's clock, for this run's agent alone, before its run can be claimed.
+  if (one.now !== undefined) ctx.clocks.set(agentId, new Date(instantOf(one.now)!));
   const runId = await startRun(ctx, agentId, { input: runInput(one.input, one.fields), ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.
@@ -1045,6 +1063,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
       const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
       return [...listed, ...(await presentOf(api, runId, named.filter((path) => !listed.includes(path))))];
     })(),
+    ...(one.now !== undefined ? { now: one.now } : {}),
   };
   stopped();
   const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view), answer: record.answer, calls: record.calls, mcp_calls: record.mcpCalls, created_at: typeof view.created_at === "string" ? view.created_at : null, ended_at: typeof view.ended_at === "string" ? view.ended_at : null, metrics };

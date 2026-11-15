@@ -33,7 +33,7 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
  *  holds each paired computer's socket in this process, so a run here takes one. Returns the runner and a close() that
  *  stops both and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, webFakes, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; webFakes?: import("../web-fake.js").WebFakes; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, webFakes, clockOf, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; webFakes?: import("../web-fake.js").WebFakes; clockOf?: (agentId: string) => Date | undefined; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -66,8 +66,8 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
   // loopback; any other runner's runs never do. A run's log lines (a learning run's skipped generality check) go to
   // stderr with the runner's other lines. `webFakes`: the template eval's web fakes (web-fake.ts), by the agent each of its
-  // runs is of; only the eval, in its own process, hands them.
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(webFakes ? { webFakes } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
+  // runs is of; only the eval, in its own process, hands them. `clockOf`: its clocks (a case's `now`), the same way.
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(webFakes ? { webFakes } : {}), ...(clockOf ? { clockOf } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
   // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).
