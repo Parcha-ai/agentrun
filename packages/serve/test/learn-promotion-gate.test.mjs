@@ -256,7 +256,9 @@ async function reservedOf({ made = 0, raced = [] } = {}) {
   const ids = Array.from({ length: 6 }, (_, i) => `replay-${i}`);
   const given = ids.slice(0, made).map((id, i) => ({ id, state: "ended", metrics: { path: "replay", replay: { of: `graded-${i}`, outcome: "answered" } }, archivedAt: null, costUsd: 0.01,
     launch: { input: { question: `Question ${i}` }, title: "", place: { mode: "runner" }, learning: LEARNING, replay: { of: `graded-${i}`, workflow: "answer", digest } } }));
-  const record = { workflow: "answer", digest, at: new Date(0).toISOString(), decided: "replaying", source: "replay", reason: "replaying", runs: ids, inputs: ids.map((_, i) => `graded-${i}`), commit: "s" };
+  // Its launch, chosen when it was reserved (PromotionRecord.launch): what a later claim creates its missing runs from.
+  const launch = { revision: "rev", body: { input: null, title: "", place: { mode: "runner" }, learning: LEARNING } };
+  const record = { workflow: "answer", digest, at: new Date(0).toISOString(), decided: "replaying", source: "replay", reason: "replaying", runs: ids, inputs: ids.map((_, i) => `graded-${i}`), launch, commit: "s" };
   return { text, digest, ids, ...(await replayStoreOf({ rows: given, records: [record], raced })) };
 }
 
