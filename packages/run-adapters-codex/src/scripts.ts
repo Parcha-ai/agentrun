@@ -85,6 +85,11 @@ export class Scripts {
     return { kind: "finished", exec, output: textOf(output), failed: FAILED.test(statusOf(output)) };
   }
 
+  /** The unfinished `exec` that yielded on cell `cell`, if any. */
+  execOn(cell: string): string | undefined {
+    return this.open.find((x) => x.cell === cell)?.exec;
+  }
+
   /** The script of an unfinished `exec` whose line the rollout holds; none for any other. */
   inputOf(exec: string): string | undefined {
     return this.open.find((x) => x.exec === exec)?.input;

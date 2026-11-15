@@ -188,8 +188,8 @@ export function codeMode(deps: CodeModeDeps) {
   const recovered = new Map<string, { tool: string; text: string; sent?: string }[]>();
   /** Each `exec` whose row this drive opened on the host's record (SessionIO.ownCalls): its end waits for that write. */
   const rows = new Map<string, Promise<void>>();
-  /** Each cut-off `exec` a recovery answered (recoverItems), and whether that answer tells a script that failed
-   *  (recoveredFailed): its output carries no status header for the rollout's line to be read by. */
+  /** Each cut-off `exec` a recovery answered (recoverItems), directly or through the `wait` on its cell, and whether that
+   *  answer tells a script that failed (recoveredFailed): its output carries no status header for the rollout's line to be read by. */
   const cutEnds = new Map<string, boolean>();
   /** The host's record of `exec`'s end, once its row is written: `output`, failed as `failed` says. A crash leaves an exec
    *  open on the record (its start is marked as one its harness answers), so its end is always one of these. */
@@ -393,7 +393,11 @@ export function codeMode(deps: CodeModeDeps) {
       // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its end)
       // is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
       const told = new Map((recoveryNote(state)?.calls ?? []).map((c) => [c.callId, c.status] as const));
-      const listed = recoveryFacts(execs, ties, since, (tie) => ({ ...factOf(state, rolled, tie, told), ...(resumed.has(tie.callId) ? { resumed: resumed.get(tie.callId)! } : {}) }));
+      const fact = (tie: Tie): NestedFact => ({ ...factOf(state, rolled, tie, told), ...(resumed.has(tie.callId) ? { resumed: resumed.get(tie.callId)! } : {}) });
+      const listed = recoveryFacts(execs, ties, since, fact);
+      // The exec each dangling `wait`'s cell belongs to, as the rollout has it.
+      const yielders = new Scripts();
+      for (const line of lines) yielders.note(line);
       // The outputs built here hold their quoted results to their own bound (scripts.ts EXEC_RECOVERY_MAX_CHARS): every other is
       // held to the host's below. The calls whose outcome they tell, for the turn's recovery note.
       const built = new Set<number>();
@@ -414,6 +418,9 @@ export function codeMode(deps: CodeModeDeps) {
             built.add(i);
             shown.push(...recovered.shown);
           }
+          // This output finishes the cell's exec, and it carries no status header: that exec ends as its last call says.
+          const exec = cell === undefined ? undefined : yielders.execOn(cell);
+          if (exec !== undefined) cutEnds.set(exec, recoveredFailed(ties.filter((tie) => tie.exec === exec).map(fact)));
           items[i] = withOutputKind(waited !== undefined ? { ...item, output: waited } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
