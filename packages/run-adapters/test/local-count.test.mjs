@@ -62,6 +62,24 @@ test("encrypted reasoning counts at its bytes and an image at what it is billed 
   assert.equal(await responsesLocalInputTokens(image), withMargin(await o200kTokens(JSON.stringify(blanked)), 1) + billed);
 });
 
+test("an image by file id or with no URL counts at the most an image of unknown size is billed as, as the byte bound counts it", async () => {
+  // No bytes and no size in the body: the provider bills the stored image, so it counts at the largest per-image figure
+  // (imageTokens with no size), never as the few tokens of its JSON.
+  const most = imageTokens(MODEL, { bytes: 0 });
+  assert.ok(most >= 1_000, `the unknown-size figure: ${most}`);
+  for (const part of [{ type: 'input_image', file_id: 'file-abc123', detail: 'high' }, { type: 'input_image', file_id: 'file-abc123' }, { type: 'input_image' }]) {
+    const body = { model: MODEL, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is this?' }, part] }] };
+    const counted = await responsesLocalInputTokens(body);
+    assert.equal(counted, withMargin(await o200kTokens(JSON.stringify(body)), 1) + imageTokens(MODEL, { bytes: 0, ...(part.detail ? { detail: part.detail } : {}) }), `the image counted once at its billed most: ${JSON.stringify(part)}`);
+    assert.ok(counted > most, `never under the image alone: ${counted}`);
+  }
+  // As an input item of its own and in a function call's output, the same.
+  const item = { model: MODEL, input: [{ type: 'input_image', file_id: 'file-abc123' }] };
+  assert.ok((await responsesLocalInputTokens(item)) > most);
+  const output = { model: MODEL, input: [{ type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', file_id: 'file-abc123' }] }] };
+  assert.ok((await responsesLocalInputTokens(output)) > most);
+});
+
 test("only a model on o200k_base is counted; any other, and a body with a file input, keeps its byte bound", async () => {
   for (const model of [MODEL, 'openai/gpt-6.1-sol', 'gpt-5.5', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o4-mini', 'codex-mini-latest', 'gpt-oss-120b', 'chatgpt-4o-latest']) {
     assert.ok(o200kModel(model), model);

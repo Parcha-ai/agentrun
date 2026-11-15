@@ -86,18 +86,21 @@ export async function responsesLocalInputTokens(body: Record<string, unknown>): 
   const model = body.model as string;
   if (hasFile(body.input)) return undefined;
   const images = imageParts(body.input);
+  // Every image the API reads counts once, at the most it is billed as, whatever names it: a data URL by its size, and an
+  // http URL, a file id or no reference at all at the most an image of unknown size is billed (`imageTokens`), as the
+  // byte bound counts it (`responsesImagesIn`). Never as the few tokens of its JSON.
   let opaque = 0;
+  for (const part of images) {
+    const { image_url: url, detail } = part as { image_url?: unknown; detail?: unknown };
+    opaque += imageTokens(model, { ...imageInputOf(url), ...(typeof detail === "string" ? { detail } : {}) });
+  }
   // The body as sent, with what the tokenizer cannot count left out of the text and counted on its own.
   const text = JSON.stringify(body, function (this: unknown, key: string, value: unknown) {
     if (key === "encrypted_content" && typeof value === "string") {
       opaque += Buffer.byteLength(value, "utf8");
       return "";
     }
-    if (key === "image_url" && typeof value === "string" && typeof this === "object" && this !== null && images.has(this)) {
-      const detail = (this as { detail?: unknown }).detail;
-      opaque += imageTokens(model, { ...imageInputOf(value), ...(typeof detail === "string" ? { detail } : {}) });
-      return "";
-    }
+    if (key === "image_url" && typeof value === "string" && typeof this === "object" && this !== null && images.has(this)) return "";
     return value;
   });
   const items = list(body.input).length + list(body.tools).length + (typeof body.instructions === "string" && body.instructions !== "" ? 1 : 0);
