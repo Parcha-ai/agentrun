@@ -86,11 +86,12 @@ export function waitOf(retryAfter: string | number | undefined, nowMs: number): 
  *  open when that ends later (two calls in flight: a short wait never shrinks a long one), anything else leaves it as it
  *  is. A rate limit marked repeatIsQuota (keyless Exa's) after an earlier marked one whose wait has passed counts as a
  *  quota answer: off for the run. One that comes while a wait is open (in flight with the first) only holds it, and a
- *  success between the two does not reset the count, which is Exa's daily one. */
+ *  search that succeeds in between resets the count: once Exa's daily count is spent every keyless call is limited, so a
+ *  success means it is not. A failed search that is no limit resets nothing. */
 export function searchBreaker(now: () => number = Date.now): { held(): Search | undefined; read(searched: Searched): Search } {
   let off = false;
   let until = 0;
-  // A marked rate limit (keyless Exa's) has opened a wait in this run.
+  // A marked rate limit (keyless Exa's) has opened a wait in this run, with no search succeeding since.
   let marked = false;
   return {
     held() {
@@ -99,6 +100,7 @@ export function searchBreaker(now: () => number = Date.now): { held(): Search | 
       return left > 0 ? { error: searchBusy(Math.max(1, Math.ceil(left / 1_000))) } : undefined;
     },
     read({ answer, limit }) {
+      if (!("error" in answer)) marked = false;
       if (limit?.kind === "quota") off = true;
       else if (limit) {
         const at = now();
