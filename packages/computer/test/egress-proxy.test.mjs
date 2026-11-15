@@ -841,6 +841,8 @@ test("the proxy container's entry refuses to start with no list, an empty one, a
 		[['--socket', path, '--allow', 'pypi.org'], /no deadline/],
 		[['--socket', path, '--deadline', 'tomorrow', '--allow', 'pypi.org'], /no deadline/],
 		[['--socket', path, '--deadline', deadline, '--allow', 'pypi.org', '--colour', 'red'], /--colour/],
+		[['--socket', path, '--deadline', deadline, '--open', 'all'], /--open takes "public"/],
+		[['--socket', path, '--deadline', deadline, '--open', 'public', '--allow', 'pypi.org'], /both --open and --allow/],
 	]) {
 		const run = entry(args);
 		const { code } = await run.exited;
@@ -867,6 +869,26 @@ test("the proxy container's entry listens on its socket (0600), says it is ready
 		run.child.kill('SIGTERM');
 		assert.deepEqual(await run.exited, { code: 0, signal: null });
 		assert.equal(existsSync(path), false, 'the socket went with it');
+	} finally {
+		if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGKILL');
+	}
+});
+
+test("the proxy container's entry with --open public says it is ready open, takes a public host off any list, and still refuses the host's own addresses and private ones", async () => {
+	const path = socketPath();
+	mkdirSync(join(path, '..'), { recursive: true });
+	const deadline = new Date(Date.now() + 60_000).toISOString();
+	const run = entry(['--socket', path, '--deadline', deadline, '--open', 'public', '--local', PUBLIC], (out) => out.includes('egress ready'));
+	try {
+		await run.seen;
+		assert.match(run.out(), /^egress ready open$/m);
+		const self = head((await talk(path, CONNECT(`${PUBLIC}:443`), ended)).got);
+		assert.equal(self.line, 'HTTP/1.1 403 Egress refused: this-host', '--local is refused as the host\'s own');
+		const meta = head((await talk(path, CONNECT(`${METADATA}:80`), ended)).got);
+		assert.match(meta.line, /^HTTP\/1\.1 403 Egress refused: /, 'metadata is refused under open');
+		assert.doesNotMatch(run.out(), /not-listed/, 'open has no list to be off');
+		run.child.kill('SIGTERM');
+		assert.deepEqual(await run.exited, { code: 0, signal: null });
 	} finally {
 		if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGKILL');
 	}
