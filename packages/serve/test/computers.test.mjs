@@ -12,7 +12,7 @@ import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { createComputerRoutes, folderModeOf, hostCommandRefusals, hostCommandWhy, KeysRefused, networkWords } from "../dist/computers.js";
+import { createComputerRoutes, folderModeOf, hostCommandRefusals, hostCommandWhy, KeysRefused, modeRefusal, networkWords } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
 import { fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
@@ -120,30 +120,38 @@ test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready
 const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps run folders on (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)";
 
 /** Why a vendor's sandbox, or desktop, that would mount Archil is refused in Mode 2: it needs Archil's image in the
- *  owner's own vendor account, which this server can't put there yet. */
+ *  owner's own vendor account, which this server can't put there yet. No built-in provider is refused so (every one
+ *  that mounts the disk prepares its image), so the rule is held on a made-up entry. */
 const MODE2_SANDBOX = (article, label, kind = "sandbox") =>
   `${article} ${label} ${kind} can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (Settings → Computers)`;
 
-test("Mode 2: Docker's sandbox can't mount the owner's disk, nor can Daytona's (saying why); E2B's needs Archil's image in the owner's account, keys or not; Modal's sandbox and Agent37's sandbox and desktop are ready with their keys (their prepareImage answers the box image); a desktop, phone or browser is offered", async (t) => {
+test("Mode 2: a provider that mounts the disk and prepares no image is refused for its sandbox and its desktop with files and exec, in words; one that prepares its image, and Mode 1, are not", () => {
+  const e2b = PROVIDERS.find((one) => one.id === "e2b");
+  const unprepared = { ...e2b, id: "made-up", label: "Acme", prepareImage: undefined };
+  assert.equal(modeRefusal("sandbox", unprepared, "disk"), MODE2_SANDBOX("An", "Acme"));
+  assert.equal(modeRefusal("desktop", unprepared, "disk"), MODE2_SANDBOX("An", "Acme", "desktop"));
+  assert.equal(modeRefusal("desktop", unprepared, "local"), undefined, "Mode 1: a desktop mounts nothing");
+  for (const kind of ["sandbox", "desktop"]) assert.equal(modeRefusal(kind, e2b, "disk"), undefined, `e2b's ${kind}: it prepares its image`);
+});
+
+test("Mode 2: Docker's sandbox can't mount the owner's disk, nor can Daytona's (saying why); Modal's sandbox and E2B's and Agent37's sandbox and desktop are ready with their keys (their prepareImage answers the box image); a desktop, phone or browser is offered", async (t) => {
   const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret", AGENT37_SSH_KEY: "not-a-secret-either" };
   const { routes } = await setup(t, { mode: "disk", env });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
   assert.equal(providerOf(view, "sandbox", "daytona").why, DAYTONA_NO_DISK);
-  assert.deepEqual([providerOf(view, "sandbox", "e2b").ready, providerOf(view, "sandbox", "e2b").why], [false, MODE2_SANDBOX("An", "E2B")], "e2b: its key is saved, and still not ready");
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "e2b" }), MODE2_SANDBOX("An", "E2B"), "e2b: claimRefusal says the same");
   // Modal prepares its image (the box image's public tag, pulled by Modal at the first create): ready once its keys are saved.
   assert.deepEqual([providerOf(view, "sandbox", "modal").ready, providerOf(view, "sandbox", "modal").why], [true, undefined], "modal: its keys are saved, so it is ready");
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "modal: claimRefusal lets it");
-  assert.equal(kindOf(view, "sandbox").offered, true, "Modal's and Agent37's sandboxes mount the owner's disk");
+  assert.equal(kindOf(view, "sandbox").offered, true, "Modal's, E2B's and Agent37's sandboxes mount the owner's disk");
   assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
-  // E2B's desktop would mount the disk (it has files and exec), so it needs the same image.
-  assert.deepEqual([providerOf(view, "desktop", "e2b").ready, providerOf(view, "desktop", "e2b").why], [false, MODE2_SANDBOX("An", "E2B", "desktop")], "e2b's desktop: its key is saved, and still not ready");
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "e2b" }), MODE2_SANDBOX("An", "E2B", "desktop"), "e2b's desktop: claimRefusal says the same");
-  // Agent37 prepares its image: ready means its keys are saved, and the first claim waits on the registration.
-  for (const kind of ["sandbox", "desktop"]) {
-    assert.deepEqual([providerOf(view, kind, "agent37").ready, providerOf(view, kind, "agent37").why], [true, undefined], `agent37's ${kind}: its keys are saved, so it is ready`);
-    assert.equal(await routes.claimRefusal({ kind, provider: "agent37" }), undefined, `agent37's ${kind}: claimRefusal lets it`);
+  // E2B and Agent37 prepare their image (E2B's public box template; Agent37 registers the box image, and the first claim
+  // waits on the registration): their sandbox and their desktop, which mounts the disk too, are ready once the keys are saved.
+  for (const provider of ["e2b", "agent37"]) {
+    for (const kind of ["sandbox", "desktop"]) {
+      assert.deepEqual([providerOf(view, kind, provider).ready, providerOf(view, kind, provider).why], [true, undefined], `${provider}'s ${kind}: its keys are saved, so it is ready`);
+      assert.equal(await routes.claimRefusal({ kind, provider }), undefined, `${provider}'s ${kind}: claimRefusal lets it`);
+    }
   }
   assert.equal(providerOf(view, "desktop", "orgo").why, "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers", "Orgo's desktop mounts nothing: only its key");
   assert.equal(kindOf(view, "desktop").offered, true);

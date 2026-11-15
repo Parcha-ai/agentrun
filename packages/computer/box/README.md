@@ -10,4 +10,5 @@ copies (`recipe.mjs`). A changed recipe is a new image, and the same recipe is t
 
 Each release publishes it (`.github/workflows/release.yml`, the `box` job) as `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
 and `:<release tag>`, for linux/amd64, and builds the public E2B template `agentrun-archil-<recipe hash>` from it (the
-`box-e2b` job). The build-* scripts here say how to build it for each provider.
+`box-e2b` job), which E2B's provider starts in any account as `boxE2bTemplate()` (`src/box-image.ts`). The build-*
+scripts here say how to build it for each provider.
