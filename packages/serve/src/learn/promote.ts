@@ -61,8 +61,8 @@ export interface Grade {
 }
 
 /** What a replay says (learn/refit.ts scoreRows), the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
- *  `n` inputs; `agree`, how many the workflow answered alone with the agent's recorded answer; `agent_acc`, the agent's
- *  recorded answers' accuracy; `wf_acc`, the workflow's, a hand-back counting as the agent's answer; `delta` = wf_acc -
+ *  `n` inputs; `agree`, how many the workflow answered alone with the graded run's recorded answer; `agent_acc`, the
+ *  agent's accuracy on them (agentRight); `wf_acc`, the workflow's, a hand-back counting as the agent's answer; `delta` = wf_acc -
  *  agent_acc; `handed_back`, how many it handed back (it answered n - handed_back alone: answersAlone). Accuracies to
  *  1e-4. */
 export interface ReplayScore {
@@ -358,7 +358,8 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
   return items.filter((_, i) => keep.has(i));
 }
 
-/** One replayed input: the graded run it replays (`of`), the agent's recorded answer and its grade, and what the workflow
+/** One replayed input: the graded run it replays (`of`), its recorded answer, its grade and the path it took (whose
+ *  answer it is: agentRight), and what the workflow
  *  did on it: answered alone (`answer`), handed back (it escalated: an escalate node or a guard), or failed (a step failed,
  *  on a credential or tool the replay lacked among them, or its output off its schema; no workflow, a stale digest, a run
  *  that did not end completed); with its guard rows, read record-only (recordOnly) so each step's p is known. A failed
@@ -367,7 +368,7 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
  *  which a replay never runs (learn/replay-calls.ts), the one named in `skipped`. */
 export interface ReplayRow {
   readonly of: string;
-  readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
+  readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly path: RunPath; readonly expected?: Readonly<Record<string, unknown>> };
   readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
   readonly skipped?: Skipped;
   readonly answer: string | null;
@@ -408,22 +409,31 @@ function same(a: unknown, b: unknown): boolean {
 /** Whether two answers say the same: equal as JSON values, else as trimmed text. */
 export const sameAnswer = (a: string | null, b: string | null): boolean => a !== null && b !== null && same(valueOf(a), valueOf(b));
 
-/** Whether the workflow's `answer` to a graded input is right: with the grade's expected fields, when its JSON holds each
- *  of them (or, one field expected, when the answer is that field's text: a workflow whose output is one text field
- *  answers with that text, learned-workflow.ts learnedOutput); else when it says what the agent's graded answer said,
- *  that answer's grade. An answer that differs from the agent's when the agent's was wrong is counted wrong: nothing says
- *  it is right (a replay never flatters the workflow). */
+/** Whether the workflow's `answer` to a graded input is right by its grade: with the grade's expected fields, when its JSON
+ *  holds each of them (or, one field expected, when the answer is that field's value: a workflow whose output is one
+ *  field answers with its text, or its JSON text when it is no text, learned-workflow.ts learnedOutput). Else, graded
+ *  right, when it says what the graded run said; graded wrong, when it says anything else (the bar on a wrong grade is the
+ *  grade: saying what was graded wrong again is never a tie), and wrong when what the graded run said could not be read
+ *  (nothing says it differs). */
 export function answerCorrect(answer: string | null, recorded: ReplayRow["recorded"]): boolean {
   if (answer === null) return false;
   if (recorded.expected) {
     const value = valueOf(answer);
     const fields = Object.values(recorded.expected);
-    if (fields.length === 1 && typeof fields[0] === "string" && answer.trim() === fields[0].trim()) return true;
+    if (fields.length === 1 && (typeof fields[0] === "string" ? answer.trim() === fields[0].trim() : same(value, fields[0]))) return true;
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     return Object.entries(recorded.expected).every(([key, want]) => same((value as Record<string, unknown>)[key], want));
   }
-  return sameAnswer(answer, recorded.answer) ? recorded.correct : false;
+  return recorded.correct ? sameAnswer(answer, recorded.answer) : recorded.answer !== null && !sameAnswer(answer, recorded.answer);
 }
+
+/** Whether the agent's answer to a replayed input is right, the agent's side of a replay's score: the graded run's grade
+ *  when the answer graded is the agent's (path `agent`, or `handed_back`: the agent finished it). On a run a learned
+ *  workflow answered alone (`workflow`) the store holds no answer of the agent's on that input, so a right grade is the
+ *  agent's too and a wrong one counts the agent right: the grade's expected answer is the agent's when it gave one, and
+ *  with none the agent is the default. So a revision held on runs it served wrong never ties its own wrong answers; it
+ *  serves again only by answering them right (answerCorrect) or handing them back. */
+export const agentRight = (recorded: ReplayRow["recorded"]): boolean => recorded.correct || recorded.path === "workflow";
 
 /** The thresholds a workflow's guards serve at, by step label (the guard rows' `node`): every step of the workflow
  *  with a `guard` and a `label` (walkGuards). A label names one step: a learned draft that repeats one never runs

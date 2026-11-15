@@ -396,7 +396,8 @@ type GradedInput = { readonly grade: Grade; readonly launch: RunLaunch };
 
 /** The paths a graded run a replay runs on took: the agent's (`agent`, or `handed_back`: the agent finished it), or a
  *  learned workflow's alone (`workflow`). Each has a recorded answer (the run's final answer, whoever wrote it) and its
- *  grade, which is all a replay scores against (answerCorrect reads the grade, not the path); a replay run never is one. */
+ *  grade, which is what a replay scores against (answerCorrect); the path says only whose answer it was (agentRight: on a
+ *  `workflow` run graded wrong the agent counts right); a replay run never is one. */
 const REPLAYABLE: ReadonlySet<string> = new Set(["agent", "handed_back", "workflow"]);
 
 /** The agent's newest graded runs a replay runs on (REPLAYABLE), newest first: at most REPLAY_INPUTS, or `pick.n`; only
@@ -542,7 +543,7 @@ async function replayRows(deps: Pick<PromotionDeps, "store" | "agentId" | "conte
     const stoppedAt = outcome === "skipped_write" ? m.replay?.skipped : undefined;
     rows.push({
       of,
-      recorded: { answer: await answerOf(store, of, context), correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}) },
+      recorded: { answer: await answerOf(store, of, context), correct: grade.correct, path: grade.path, ...(grade.expected ? { expected: grade.expected } : {}) },
       outcome,
       ...(stoppedAt ? { skipped: stoppedAt } : {}),
       answer: outcome === "answered" ? await answerOf(store, run.id, context) : null,
