@@ -585,6 +585,18 @@ test("a server with no key says codex and pi run after a ChatGPT sign-in, and Cl
   assert.doesNotMatch(harness(expired, "claude-agent").reason ?? "", /ChatGPT/);
 });
 
+test("a server whose AGENT_MODEL names a key's model, with no key, offers no ChatGPT sign-in for it: signed in, codex and pi would still run AGENT_MODEL", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { ...CODEX_STAND_IN, AGENT_MODEL: "openai/gpt-6.1-sol" }, [...MODEL_VARS, ...Object.keys(CODEX_STAND_IN)]);
+  fakeOpenAI(t);
+  const { api } = await serve(t, { faux: undefined });
+  const body = (await api("GET", "/capabilities")).body;
+  for (const id of ["codex", "pi"]) {
+    const offer = body.harnesses.find((each) => each.id === id);
+    assert.deepEqual(offer.needs, ["key"], `${id}: ${JSON.stringify(offer)}`);
+    assert.doesNotMatch(offer.reason ?? "", /ChatGPT/, `${id}: ${JSON.stringify(offer)}`);
+  }
+});
+
 test("a sign-out while a sign-in is finishing says revoked false when OpenAI doesn't confirm the dropped sign-in's revocation", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");

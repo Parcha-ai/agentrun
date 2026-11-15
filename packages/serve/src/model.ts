@@ -87,11 +87,13 @@ export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${[
 
 /** Whether a ChatGPT sign-in here would give `harness` its model, where it wants a key now: `signed_out` (none yet) or
  *  `expired` (sign in again). None where it would not: a harness that needs a key whatever the plan (PLAN_HARNESSES), a
- *  server that cannot sign in (a runner, a faux model), one behind serve's gateway (its model is the gateway's), or one
- *  signed in. */
+ *  server that cannot sign in (a runner, a faux model), one behind serve's gateway (its model is the gateway's), one
+ *  signed in, or one whose AGENT_MODEL names a key's model the harness runs (hostModel keeps it signed in or not). */
 export function planWouldRun(env: NodeJS.ProcessEnv, harness: string): "signed_out" | "expired" | undefined {
   const plan = planOf(env);
   if (!plan || env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || !PLAN_HARNESSES.includes(harness) || plan.state === "signed_in") return undefined;
+  const named = env.AGENT_MODEL;
+  if (named && !named.startsWith(`${PLAN_PROVIDER}/`) && harnessRuns(env, named, harness)) return undefined;
   return plan.state;
 }
 

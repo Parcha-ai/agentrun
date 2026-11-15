@@ -25,7 +25,8 @@ export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; 
  *  the memory a run of it reserves (`run_memory_mib`). */
 export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; run_memory_mib: number; needs?: HarnessNeed[] };
 /** What would give a harness that runs nothing here a model, any one of them: a model key (`key`), or the ChatGPT sign-in
- *  (`chatgpt`: codex and pi, on a server that signs in, not signed in or signed in no longer). */
+ *  (`chatgpt`: codex and pi, on a server that signs in, not signed in or signed in no longer, AGENT_MODEL naming no key's
+ *  model the harness runs: planWouldRun). */
 export type HarnessNeed = "key" | "chatgpt";
 
 

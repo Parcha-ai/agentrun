@@ -4,7 +4,7 @@ import { ChatGPTSignIn, WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { KEY_ADVICE, KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
-import { PLAN_RUNS } from "@/lib/chatgpt";
+import { isPlanModel, PLAN_RUNS } from "@/lib/chatgpt";
 import { type Client, ClientError } from "@/lib/client";
 import type { HarnessInfo } from "@/lib/models";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
@@ -39,8 +39,9 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
       .catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(() => { if (needs !== "model") load(); }, [v2, needs]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The default's provider, when the server's default names one of these keys: that key alone runs it.
-  const provider = model?.includes("/") ? model.slice(0, model.indexOf("/")) : undefined;
+  // The default's provider, when the server's default names one of these keys: that key alone runs it. The plan's own
+  // model (chatgpt/<id>, the default once signed in) names no key.
+  const provider = model?.includes("/") && !isPlanModel(model) ? model.slice(0, model.indexOf("/")) : undefined;
   const required = rows?.find((k) => k.id === provider);
   const offered = required ? [required] : rows;
   const picked = rows?.find((k) => k.id === pick);
