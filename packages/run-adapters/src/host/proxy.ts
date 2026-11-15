@@ -785,6 +785,27 @@ export function streamErrorOf(text: string): StreamError | undefined {
   return undefined;
 }
 
+/** The words of a stream's last event that carries data when it is an error event (`event: error`) whose data is words,
+ *  not JSON: how a translation sends a failure it cannot read for the provider's error event (serve's model-route
+ *  messagesFetch: a provider's error status, a transport error), for its client to throw as the request's error. Never
+ *  read for a refusal: what such a failure cost is unknown. Undefined for any other stream. */
+export function wordsErrorOf(text: string): string | undefined {
+  const events = text.replace(/\r\n|\r/g, "\n").split("\n\n");
+  for (let at = events.length - 1; at >= 0; at--) {
+    const lines = events[at]!.split("\n");
+    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n").trim();
+    if (!data || data === "[DONE]") continue;
+    if (!lines.some((line) => /^event:\s*error\s*$/.test(line))) return undefined;
+    try {
+      JSON.parse(data);
+      return undefined;
+    } catch {
+      return data;
+    }
+  }
+  return undefined;
+}
+
 /** Whether a stream shows the model began its output, read from each event's data by its fields, never its words: a
  *  Messages block it opened (`content_block_start`), a Responses output item (`response.output_item.added`) or a
  *  Responses delta with something in it, a Chat Completions chunk whose delta holds content, reasoning, a refusal or a
@@ -1696,6 +1717,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         erredIn = wordsOf(failed.words);
         say(`model proxy (${policy.id}): the provider ended its answer in an error; booked at what it reported${unread && reported === undefined ? " (none: an unknown cost)" : ""}`);
       }
+      // A translation's failure in words (wordsErrorOf): an answer that ended in an error all the same, its client asking
+      // again. Booked as before, as any answer cut short; only its end says the error.
+      const translated = failed === undefined ? wordsErrorOf(kept) : undefined;
+      if (translated !== undefined) erredIn = wordsOf(translated);
       try {
         usd = refusedIn !== undefined ? 0 : unread ? null : options.price?.(asked, usage) ?? null;
         if (refusedIn !== undefined) own = true;

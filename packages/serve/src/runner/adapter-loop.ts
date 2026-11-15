@@ -2193,12 +2193,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // waits: the proxy calls this as its client has the end, so a client's retry finds the note told or on offer.
             const held = carried?.turn !== undefined && carried.turn === ticket?.turn ? carried : undefined;
             if (held) carried = undefined;
-            // An answer the model gave: not the provider's error inside one (a stream ended in an error event: the client
-            // drops it and asks again), and one that shows the model ran, a cost known or tokens reported. A translated
-            // route's failure (model-route.ts messagesFetch: the provider's status sent as words in an error event) comes
-            // here as an answer cut short with nothing reported, and the client asks again.
-            const ran = ended?.end === "answered" && ended.label !== "error" && (ended.usd !== null || usage.input + usage.output + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) > 0);
-            const row = held && ran ? tell(held) : undefined;
+            // An answer the model gave, not the provider's error inside one (a stream ended in an error event, a translated
+            // route's failure in words included: the client drops it and asks again).
+            const row = held && ended?.end === "answered" && ended.label !== "error" ? tell(held) : undefined;
             try {
               await hooks.beforeBooking?.();
               await port.afterRequest(usage, ticket, ended);
