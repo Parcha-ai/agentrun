@@ -136,6 +136,28 @@ test("a keyed provider's quota answer stops the run's search for good, and its r
   }
 });
 
+test("Anthropic's hosted search whose later search is rate-limited in the same request (too_many_requests after a search that found results): the call answers its results, and the next call within 60 s is busy, unsent; a search that only ran out of its uses trips nothing", async (t) => {
+  await t.test("too_many_requests after results", async (t) => {
+    const { env, search: models, searches } = await hosted(t, "anthropic/claude-sonnet-5-5", "partial:too_many_requests");
+    const search = await bindRun(env, models);
+    const found = said(await search("widgets"));
+    assert.equal(found.provider, "native", JSON.stringify(found));
+    assert.ok(found.results.some((hit) => hit.url === "http://public.example/"), JSON.stringify(found));
+    // No Retry-After reaches a search's own error: 60 s.
+    busy(await search("gadgets"), 59, 60);
+    assert.equal(await searches(), 1, "the call within the wait was not sent");
+  });
+  // Anthropic's search errors name no quota (a key out of credit is the request's 402 billing_error, above), and running
+  // out of the request's own searches is no limit of the key's.
+  await t.test("max_uses_exceeded after results", async (t) => {
+    const { env, search: models, searches } = await hosted(t, "anthropic/claude-sonnet-5-5", "partial:max_uses_exceeded");
+    const search = await bindRun(env, models);
+    assert.equal(said(await search("widgets")).provider, "native");
+    assert.equal(said(await search("gadgets")).provider, "native");
+    assert.equal(await searches(), 2);
+  });
+});
+
 test("the lead's case: a 429 with Retry-After 2 holds search for 2 s, a call within it answers busy unsent, and a call 3 s later reaches the provider", async (t) => {
   const { env, searches } = await parallel(t, "429@2;ok");
   const search = await bindRun(env);
