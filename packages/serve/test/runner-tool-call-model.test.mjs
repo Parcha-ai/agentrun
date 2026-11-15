@@ -110,6 +110,16 @@ function toolResults(request) {
 
 const READ_PIC = { call: "read", args: { path: "pic.png" } };
 
+test("a Responses route carries its catalog model's thinking levels, and the session's model keeps them: pi's thinking off sends no \"none\" effort to a model that takes none (gpt-6.1-sol)", async () => {
+  const { sessionModel } = await import("../dist/port-models.js");
+  const route = await routeOf("openai/gpt-6.1-sol", { OPENAI_API_KEY: `not-a-secret-${"o"}` }, "default", ["anthropic-messages", "openai-responses"]);
+  assert.equal(route.provider.api, "openai-responses");
+  assert.equal(route.like?.thinkingLevelMap?.off, null, `sol's off is null in pi-ai's catalog, and the route says so: ${JSON.stringify(route.like)}`);
+  assert.equal(route.like?.thinkingLevelMap?.high, "high", JSON.stringify(route.like));
+  const model = sessionModel("openai-responses", "http://127.0.0.1:1", "gpt-6.1-sol", { provider: "agentrun-session", like: route.like, reasoning: true });
+  assert.deepEqual(model.thinkingLevelMap, route.like.thinkingLevelMap, "the session's model keeps the route's thinking levels");
+});
+
 test("a route carries what its catalog model takes as input, on every wire: a text-only model's route says so, an image model's says it takes images", async () => {
   const key = { OPENAI_API_KEY: `not-a-secret-${"o"}`, ANTHROPIC_API_KEY: `not-a-secret-${"a"}` };
   // o3-mini takes text alone in pi-ai's catalog: through the route's own Messages translation, and on OpenAI's Responses.

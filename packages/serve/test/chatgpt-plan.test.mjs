@@ -110,6 +110,10 @@ function fakeOpenAI(t) {
       const body = JSON.parse(text || "{}");
       o.responses.push({ authorization: request.headers.get("authorization"), originator: request.headers.get("originator"), body });
       if (!liveAccess(request)) return Response.json({ error: { message: "bad token" } }, { status: 401 });
+      // As OpenAI answered a live plan run of pi on 2026-11-15: sol takes no "none" effort (pi-ai's catalog: off is null).
+      if (body.model === "gpt-6.1-sol" && body.reasoning?.effort === "none") {
+        return Response.json({ error: { message: "Unsupported value: 'none' is not supported with the 'gpt-6.1-sol' model. Supported values are: 'low', 'medium', 'high', 'xhigh'.", type: "invalid_request_error", param: "reasoning.effort", code: "unsupported_value" } }, { status: 400 });
+      }
       const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: o.reply, annotations: [] }] };
       const usage = { input_tokens: 120, output_tokens: 12, total_tokens: 132 };
       const events = [
@@ -256,6 +260,7 @@ test("a server with no model key runs codex and pi on a person's ChatGPT plan: s
       assert.equal(request.authorization, `Bearer ${openai.issued[0].access}`, `${id} sends the plan's bearer`);
       assert.equal(request.body.model, "gpt-6.1-sol", id);
       assert.equal("max_output_tokens" in request.body, false, `${id}: no max_output_tokens on the plan`);
+      assert.notEqual(request.body.reasoning?.effort, "none", `${id}: no "none" effort to a model whose catalog takes none (sol's off is null)`);
     }
     const turns = turnsOf(done.runId);
     assert.ok(turns.length > 0, `${id} booked its turns`);
