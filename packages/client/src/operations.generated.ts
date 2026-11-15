@@ -721,6 +721,8 @@ export type TimelineRow = {
     expect?: "met" | "unmet";
   }>;
   computer_calls_dropped?: number;
+  tool_input?: Record<string, unknown>;
+  tool_result_text?: string | null;
   learning?: {
     state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
     reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
@@ -2800,6 +2802,7 @@ export interface GetTimelineParams {
   after?: number;
   wait_ms?: number;
   limit?: number;
+  calls?: "whole";
   "Last-Event-ID"?: string;
 }
 export type GetTimelineResponse = TimelinePage;
@@ -4096,7 +4099,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   startRun: {"method":"POST","path":"/runs/{run_id}/start","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   stopRun: {"method":"POST","path":"/runs/{run_id}/stop","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   takeOverRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/take-over","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapabilities: {"method":"GET","path":"/capabilities","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getHealth: {"method":"GET","path":"/health","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},

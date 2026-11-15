@@ -1059,6 +1059,8 @@ export interface components {
       expect?: "met" | "unmet";
     }[];
     computer_calls_dropped?: number;
+    tool_input?: Record<string, unknown>;
+    tool_result_text?: string | null;
     learning?: {
       state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
       reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
