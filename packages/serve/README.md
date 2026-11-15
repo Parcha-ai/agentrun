@@ -1302,7 +1302,9 @@ Keyless Exa, where `web_search` resolves to it, searches through Exa's public MC
 the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
 from the run, and no key. It goes to Exa over IPv4, straight from the run's process. Exa is a third party: its free,
 keyless use has a rate limit it does not publish, and its own terms. Past that limit the search is tried once more, and
-then is a tool error in our words (above): the model reads why and answers without it. A search ends at 60 s, its retry
+then is a tool error in our words (above): the model reads why and answers without it, and the run's later searches
+are held for the wait. Exa answers its daily count running out the same way, naming no wait, so a second limit naming no
+wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
 included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
 relies on. Keyless Exa is the default for a harness with no native search when the server holds no Parallel key; `off`
