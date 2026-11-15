@@ -18,7 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { composioServerId } from "./composio-preset.js";
+import { COMPOSIO_USER, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -522,6 +522,23 @@ export class McpServersOverStore {
     if (row.auth !== "oauth") return undefined;
     const open = openMcpRow(this.sealKey, row);
     return "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
+  }
+
+  /** A saved Composio preset server's key (its sealed x-api-key), the Composio user its address names (`user_id`, the
+   *  preset's default when none) and its toolkit: what its Composio triggers are made with (composio-triggers.ts). Refused
+   *  when `name` is no such server: on the trigger's `source.server` at its create (`field`), as a 404 on the server's own
+   *  routes (`route`). The key goes only to Composio. */
+  async composioOf(name: string, refusal: "field" | "route"): Promise<{ key: string; user: string; toolkit: string }> {
+    const refuse = (message: string) => (refusal === "route" ? new ApiError("not_found", message) : invalid([{ field: "source.server", reason: "not_an_option", message }]));
+    const row = await this.store.mcp.server(name);
+    if (!row) throw refusal === "route" ? notFound(name) : refuse(`No MCP server ${name}: save a Composio server in Settings → MCP servers first.`);
+    const { source, toolkit } = await this.sourceOf(row);
+    if (source !== "composio" || row.auth !== "headers") throw refuse(`${name} is not a Composio server: only one saved with Settings → MCP servers → Composio makes Composio triggers.`);
+    if (!toolkit) throw refuse(`${name} is a Composio server of no toolkit this server can name: save it again with its toolkit's slug.`);
+    const { headers } = await this.opened(name, row, refusal === "field" ? "source.server" : "api_key");
+    const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
+    if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
+    return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit };
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's
