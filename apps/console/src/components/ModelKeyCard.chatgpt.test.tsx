@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelKeyCard } from "./ModelKeyCard";
 import { NoModelBanner } from "./NoModelBanner";
+import { buttonVariants } from "./ui/button";
 import { createClient } from "@/lib/client";
 import { servedKey } from "@/test/keys";
 import type { ChatGPTView, ToolKeys } from "@/lib/v2";
@@ -61,8 +62,8 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
     const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES });
     expect(card.buttons().slice(0, 2)).toEqual(["Continue with ChatGPT", "Add a key"]);
     const primary = [...card.host.querySelectorAll("button")].find((b) => b.textContent === "Continue with ChatGPT")!;
-    // The card's one main action: the filled button.
-    expect(primary.className).toContain("bg-primary text-primary-foreground");
+    // Sign-in uses the shared main-action treatment; its colors are covered by the primitive's tests.
+    expect(primary.className).toBe(buttonVariants({ variant: "primary", size: "sm" }));
     expect(card.host.textContent).toContain(LINE);
     // The providers wait behind Add a key.
     expect(card.host.querySelector('[role="group"][aria-label="Provider"]')).toBeNull();

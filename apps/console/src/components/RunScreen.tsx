@@ -251,8 +251,8 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
         {/* Who drives, for a desktop or a phone: GET /computer's hold is theirs. A browser is taken over in its own viewer,
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
         <span className="flex-1 font-mono text-small text-muted-foreground">{who}</span>
-        {!full && hands}
         {!full && fill}
+        {!full && hands}
       </header>
       {metered && kind !== "browser" && <p className="border-b px-4 py-2 text-small text-muted-foreground">{METERED}</p>}
       {!full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
@@ -264,8 +264,8 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             {full && (
               <div className="flex items-center gap-3 border-b bg-background px-4 py-2 text-foreground">
                 <span className="flex-1 font-mono text-small">{who}</span>
-                {hands}
                 {fill}
+                {hands}
               </div>
             )}
             {/* A refused Take over or Hand back, said where the person is looking. */}
