@@ -154,4 +154,43 @@ describe("ChatGPTSignIn", () => {
     expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/v2/settings/chatgpt/sign-in", "/v2/settings/chatgpt/sign-in"]);
     expect(tab.location.href).toBe(`${AUTHORIZE}&n=2`);
   });
+
+  it("a page opened on a sign-in already waiting says until when it waits, from the server's view", async () => {
+    const expires = new Date(Date.now() + 420_000).toISOString();
+    const waiting: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE, expires_at: expires };
+    const { v2 } = server(() => waiting, () => json(500, {}));
+    const page = await mount(v2, waiting);
+    const until = new Date(expires).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+    expect(page.host.textContent).toContain(`Waits until ${until}`);
+  });
+
+  it("while a pasted sign-in finishes, reads that still say waiting show no error, and it ends signed in", async () => {
+    let state: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE };
+    let answer!: () => void;
+    const { v2, calls } = server(() => state, () => new Promise<Response>((resolve) => { answer = () => { state = SIGNED_IN; resolve(json(200, SIGNED_IN)); }; }) as unknown as Response);
+    const page = await mount(v2, state);
+    await page.paste(PASTED);
+    await act(async () => { page.button(/^Finish sign-in$/)!.click(); });
+    // The server reads its models (up to 5 s) before it answers; meanwhile its GET says pending.
+    await page.wait(() => calls.some((c) => c.method === "GET"), "the page reads the state while it finishes");
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+    expect(page.host.textContent).toContain("Finishing");
+    await act(async () => { answer(); });
+    await page.settle();
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+    expect(page.host.textContent).toContain("Signed in as person@example.com (Plus)");
+  });
+
+  it("a paste that lands after the browser's return finished the sign-in shows signed in, not the server's refusal", async () => {
+    let state: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE };
+    const words = "No ChatGPT sign-in is waiting (one lasts 10 minutes): start the sign-in again.";
+    const { v2 } = server(() => state, () => { state = SIGNED_IN; return json(400, { error: { code: "bad_request", message: words, retryable: false } }); });
+    const seen: ChatGPTView[] = [];
+    const page = await mount(v2, state, (v) => seen.push(v));
+    await page.paste(PASTED);
+    await page.click(/^Finish sign-in$/);
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+    expect(page.host.textContent).toContain("Signed in as person@example.com (Plus)");
+    expect(seen.at(-1)).toEqual(SIGNED_IN);
+  });
 });

@@ -93,6 +93,16 @@ describe("Settings → Model keys, the ChatGPT plan row", () => {
     expect(page.button(/^Continue with ChatGPT$/)).toBeTruthy();
   });
 
+  it("a reload while a sign-in waits: the paste step, and until when it waits, read from the server", async () => {
+    const expires = new Date(Date.now() + 300_000).toISOString();
+    const { v2 } = server(() => ({ state: "pending", authorize_url: "https://auth.openai.com/api/accounts/authorize?state=fake-state", expires_at: expires }));
+    const page = await open(v2);
+    const until = new Date(expires).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+    expect(page.row()!.textContent).toContain("waiting");
+    expect(page.row()!.querySelector('input[name="redirect_url"]')).toBeTruthy();
+    expect(page.row()!.textContent).toContain(`Waits until ${until}`);
+  });
+
   it("on a server with no ChatGPT sign-in (no such route), no row", async () => {
     const { v2 } = server(() => json(404, { error: { code: "not_found", message: "no route", retryable: false } }));
     const page = await open(v2);

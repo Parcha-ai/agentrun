@@ -140,7 +140,8 @@ test("a server with no model key runs codex and pi on a person's ChatGPT plan: s
   assert.equal(link.searchParams.get("agent_name_hint"), "AgentRun");
   assert.match(link.searchParams.get("ext_agent_host_id"), /^urn:uuid:[0-9a-f-]{36}$/);
   assert.ok(Date.parse(first.body.expires_at) > Date.now() + 9 * 60_000, "a sign-in waits 10 minutes");
-  assert.equal((await api("GET", "/settings/chatgpt")).body.state, "pending");
+  // A read while it waits says until when, as the start did: a page reloaded meanwhile shows it.
+  assert.deepEqual((await api("GET", "/settings/chatgpt")).body, { state: "pending", authorize_url: first.body.authorize_url, expires_at: first.body.expires_at });
   const second = await api("POST", "/settings/chatgpt/sign-in");
   assert.equal(second.status, 200, JSON.stringify(second.body));
   assert.equal(new URL(second.body.authorize_url).searchParams.get("ext_agent_host_id"), link.searchParams.get("ext_agent_host_id"), "one host id, kept");
