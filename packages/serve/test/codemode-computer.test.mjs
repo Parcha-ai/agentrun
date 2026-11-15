@@ -146,7 +146,7 @@ test("a script's calls sit under the script's own call on the timeline: each nes
   const rows = await runTimeline(server, "run-1", ctx);
   const outer = rows.find((row) => row.kind === "tool_use" && row.tool_name === CODEMODE);
   assert.equal(outer.parent_tool_use_id, undefined, "the script's own call is the model's: no parent");
-  assert.equal(outer.tool_input_preview, script, "the script's row shows its script");
+  assert.equal(outer.tool_input_preview, null, "the script's row shows no script: it can hold what an act types");
   assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_name === CODEMODE)?.parent_tool_use_id, undefined);
   const nested = nestedRows(rows);
   assert.equal(nested.length, 4, JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.tool_use_id])));
