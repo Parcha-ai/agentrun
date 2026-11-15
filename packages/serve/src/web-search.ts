@@ -28,7 +28,7 @@ import { clip, TITLE_CAP } from "./web-fetch-direct.js";
 import { forModel } from "./result.js";
 import { fauxFetch } from "./decisions.js";
 import { FAUX_ENV } from "./model.js";
-import { exaSearch, FAUX_EXA_ENV } from "./exa-keyless.js";
+import { type ExaLimited, exaSearch, FAUX_EXA_ENV } from "./exa-keyless.js";
 import { hostedSearched, type SearchModels } from "./hosted-search.js";
 import { PaidRefused } from "./paid-calls.js";
 import { planeOf, whyUnavailable } from "./tool-plane.js";
@@ -64,8 +64,8 @@ export type Hit = { url: string; title: string; snippet: string; published?: str
 export type Search = { provider: "native" | "exa-keyless" | "parallel"; query: string; results: Hit[]; text?: string; omitted?: number } | { error: string };
 /** What a provider's failure said of the run's search: out of quota, or rate-limited, with the wait it named as it
  *  handed it back (a Retry-After header's value, delta-seconds or an HTTP date, or Exa's seconds). `repeatIsQuota`, the
- *  server's mark on keyless Exa's alone: Exa answers its daily count running out as the same rate limit, naming no wait,
- *  so the same answer again once a wait has passed is that count (searchBreaker). */
+ *  server's mark on keyless Exa's limit naming no wait alone (exaLimitOf): Exa answers its daily count running out as
+ *  that limit, so the same answer again once a wait has passed is that count (searchBreaker). */
 export type Limit = { kind: "quota" } | { kind: "rate"; retryAfter?: string | number; repeatIsQuota?: true };
 /** A Search, and the limit its provider answered, if any: the run's breaker reads `limit` (searchBreaker), the model the
  *  Search alone. */
@@ -84,10 +84,10 @@ export function waitOf(retryAfter: string | number | undefined, nowMs: number): 
  *  up, so at least 1); else undefined, and the call asks the provider. `read` takes a search's own answer and its limit:
  *  a quota answer turns search off for good, a rate limit holds search for its wait from now, or for the wait already
  *  open when that ends later (two calls in flight: a short wait never shrinks a long one), anything else leaves it as it
- *  is. A rate limit marked repeatIsQuota (keyless Exa's) after an earlier marked one whose wait has passed counts as a
- *  quota answer: off for the run. One that comes while a wait is open (in flight with the first) only holds it, and a
- *  search that succeeds in between resets the count: once Exa's daily count is spent every keyless call is limited, so a
- *  success means it is not. A failed search that is no limit resets nothing. */
+ *  is. A rate limit marked repeatIsQuota (keyless Exa's, naming no wait) after an earlier marked one whose wait has
+ *  passed counts as a quota answer: off for the run. One that comes while a wait is open (in flight with the first) only
+ *  holds it, and a search that succeeds in between resets the count: once Exa's daily count is spent every keyless call
+ *  is limited, so a success means it is not. A failed search that is no limit resets nothing. */
 export function searchBreaker(now: () => number = Date.now): { held(): Search | undefined; read(searched: Searched): Search } {
   let off = false;
   let until = 0;
@@ -218,8 +218,16 @@ async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, s
   const found = await exaSearch(query, n, { ...(faux ? { send: faux } : {}), ...(signal ? { signal } : {}) });
   // Which limit Exa met is the server's to read, never the model's: it reads the error alone.
   if (!("limit" in found)) return { answer: found };
-  // Exa's daily count running out reads as the same rate limit: a second one past a wait is that count (repeatIsQuota).
-  return { answer: { error: found.error }, ...(found.limit === "rate_limited" ? { limit: { kind: "rate", repeatIsQuota: true, ...(found.retryAfterS !== undefined ? { retryAfter: found.retryAfterS } : {}) } } : {}) };
+  const limit = exaLimitOf(found);
+  return { answer: { error: found.error }, ...(limit ? { limit } : {}) };
+}
+
+/** Keyless Exa's refusal as the run's breaker reads it: a rate limit, with the wait it named. One naming no wait (its MCP
+ *  notice, as its daily count running out answers) is marked repeatIsQuota, so a second one past a wait is that count; a
+ *  429 with Retry-After is a timed limit, unmarked. A refused connection is no limit (a 403 no wait lifts). */
+export function exaLimitOf(found: ExaLimited): Limit | undefined {
+  if (found.limit !== "rate_limited") return undefined;
+  return found.retryAfterS === undefined ? { kind: "rate", repeatIsQuota: true } : { kind: "rate", retryAfter: found.retryAfterS };
 }
 
 /** The agent's tool: the Search as JSON text. A run whose web_search resolves to Parallel reads its key as the tool is
