@@ -96,7 +96,7 @@ test("an email case on a folder whose server keeps an email account is refused b
   const { data } = await ownersFolder(t, (first) => saved(asOwner(first), faux));
   await assert.rejects(evalTemplate({ dir: await mailPackage(), data, serve: { faux: FAUX } }), (error) => {
     assert.match(error.message, new RegExp(`keeps an email account \\(${ADDRESS}\\)`));
-    assert.match(error.message, /Settings → Email/);
+    assert.match(error.message, /remove it \(DELETE \/v2\/settings\/email\)/);
     return true;
   });
   const again = await serve(t, { data });

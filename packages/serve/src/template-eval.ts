@@ -1066,7 +1066,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
         await close();
         removeTree(scratch!);
         throw new Error(typeof address === "string"
-          ? `the server on ${options.data} keeps an email account (${address}), and an email case saves its fake mailbox as the server's account in its place: remove it in Settings → Email, run the eval, and save it again; or run the eval without --on-data`
+          ? `the server on ${options.data} keeps an email account (${address}), and an email case saves its fake mailbox as the server's account in its place: remove it (DELETE /v2/settings/email), run the eval, and save it again; or run the eval without --on-data`
           : `the server on ${options.data} did not say whether it keeps an email account (GET /settings/email ${kept?.status ?? "failed"}), which an email case's fake mailbox would replace: nothing ran`);
       }
     }
