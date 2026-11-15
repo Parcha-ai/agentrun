@@ -38,8 +38,10 @@ End your reply with exactly one fenced json block and nothing after it:
 /** Each grader run's cap, in dollars. */
 export const GRADER_CAP_USD = 0.5;
 /** The most characters an llm grader's prompt takes (about 30k tokens, under GRADER_CAP_USD at $15 per million input
- *  tokens): past it, its calls are cut, the middle of the longest results first, then the middle calls (fitCalls). The
- *  rubric, the task and the answer are never cut. */
+ *  tokens): past it, its calls and a fake MCP server's calls share what is left, each list cut in proportion to its
+ *  size, the middle of the longest results (or arguments) first, then the middle calls (fitCalls). The rubric, the task
+ *  and the answer are never cut: they are what the grader judges, so a prompt can pass the cap by what they hold alone,
+ *  and then the calls are cut to a note that says so. */
 export const GRADER_PROMPT_MAX = 120_000;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
@@ -485,22 +487,30 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     `<answer untrusted>\n${run.answer || "(the run gave no answer)"}\n</answer>`,
     ...(grader.target ? [`The rubric is about the answer's \`${grader.target}\`${target && "text" in target ? ", shown here; the whole answer is above for anything else it checks" : ""}.`, `<target field="${grader.target}" untrusted>\n${target && "text" in target ? target.text : `(${(target as { why: string }).why})`}\n</target>`] : []),
   ];
-  const after = run.mcpCalls.length ? [`<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${run.mcpCalls.map((call) => JSON.stringify({ tool: call.tool, arguments: call.arguments })).join("\n")}\n</mcp-calls>`] : [];
-  // Each call with its arguments (else its input's preview), its status and its output's head, in the room the rest leaves.
+  // Each call with its arguments (else its input's preview), its status and its output's head.
   const lines = run.calls.map((call, i) => ({
     head: `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`,
     result: call.result ?? "",
   }));
+  // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
+  const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
-  const room = max - [...before, ...after, wrap("")].reduce((sum, part) => sum + part.length + 2, 0);
-  return [...before, wrap(lines.length ? fitCalls(lines, room) : "(none)"), ...after].join("\n\n");
+  const wrapMcp = (text: string) => `<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${text}\n</mcp-calls>`;
+  // Both lists share the room the rubric, the task and the answer leave, each in proportion to its whole size.
+  const room = max - [...before, wrap(""), ...(mcpLines.length ? [wrapMcp("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
+  const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
+  const [callsWhole, mcpWhole] = [wholeOf(lines), wholeOf(mcpLines)];
+  const mcpRoom = callsWhole + mcpWhole <= room ? mcpWhole : Math.floor((room * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
+  const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
+  return [...before, wrap(lines.length ? fitCalls(lines, room - mcpRoom) : "(none)"), ...after].join("\n\n");
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
  *  each result past a length L keeps its first two thirds and last third of L with its middle cut and marked, L the
  *  longest that fits; else, every result cut to nothing, the middle calls dropped and marked. A cut says so on the
- *  list's first line, so the grader knows what it does not see. */
-export function fitCalls(lines: readonly { head: string; result: string }[], room: number): string {
+ *  list's first line, so the grader knows what it does not see; `what` names what follows each head there (a fake MCP
+ *  server's list cuts a call's arguments). */
+export function fitCalls(lines: readonly { head: string; result: string }[], room: number, what = "result"): string {
   const line = (head: string, result: string) => (result ? `${head}: ${result}` : head);
   const whole = lines.map((one) => line(one.head, one.result)).join("\n");
   if (whole.length <= room) return whole;
@@ -511,7 +521,8 @@ export function fitCalls(lines: readonly { head: string; result: string }[], roo
     const tail = Math.floor(keep / 3);
     return `${text.slice(0, keep - tail)}${marker}${text.slice(text.length - tail)}`;
   };
-  const NOTE = said("each long result keeps its head and tail, its middle cut where marked").length + 1;
+  const LONG = said(`each long ${what} keeps its head and tail, its middle cut where marked`);
+  const NOTE = LONG.length + 1;
   // The marker a cut adds is at most 40 characters: counted on every result L cuts.
   const size = (keep: number) => NOTE + lines.reduce((sum, one) => sum + line(one.head, one.result.length > keep ? "x".repeat(keep + 40) : one.result).length + 1, 0);
   if (size(0) <= room) {
@@ -521,7 +532,7 @@ export function fitCalls(lines: readonly { head: string; result: string }[], roo
       if (size(mid) <= room) low = mid;
       else high = mid - 1;
     }
-    return [said("each long result keeps its head and tail, its middle cut where marked"), ...lines.map((one) => line(one.head, middle(one.result, low)))].join("\n");
+    return [LONG, ...lines.map((one) => line(one.head, middle(one.result, low)))].join("\n");
   }
   // Not even every call's head fits: the first and last calls, as many as fit, with no result, the middle ones dropped.
   const heads = lines.map((one) => one.head);
@@ -535,7 +546,7 @@ export function fitCalls(lines: readonly { head: string; result: string }[], roo
     else kept[1].unshift(heads[j--]!);
   }
   const dropped = heads.length - kept[0].length - kept[1].length;
-  return [said(`every result is left out, and ${dropped} call${dropped === 1 ? "" : "s"} in the middle`), ...kept[0], `[... ${dropped} call${dropped === 1 ? "" : "s"} cut ...]`, ...kept[1]].join("\n");
+  return [said(`every ${what} is left out, and ${dropped} call${dropped === 1 ? "" : "s"} in the middle`), ...kept[0], `[... ${dropped} call${dropped === 1 ? "" : "s"} cut ...]`, ...kept[1]].join("\n");
 }
 
 /** A grader run's answer read as its verdict: the last json block's (else the last JSON object's) {pass, reason}. */

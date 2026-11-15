@@ -14,7 +14,7 @@ import { withDecisions } from "./decision-rows.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
 import { withLearning } from "./learning-run.js";
 import { runLearningEnd } from "./store-reads/learning.js";
-import { redacted } from "./key-refusal.js";
+import { heldNumber, redacted } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
 import { launchOf } from "./handed-values.js";
@@ -66,7 +66,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // Over is not final: an agentic run a person stopped is final in the store but reads running in its view (readRun: its
       // turn is over, the run can go on), and its usage row says what it has cost so far there, so here too.
       const view = await readRun(snapshot, runId, context);
-      const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redacted(text, values, CALL_RESULT_CHARS) } } : {}) };
+      const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redacted(text, values, CALL_RESULT_CHARS), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values));
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf), a cache miss within the bound of the

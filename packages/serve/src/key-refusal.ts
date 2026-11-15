@@ -114,19 +114,21 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
   return valueMatcher(secrets)(out) ? "[redacted]" : out;
 }
 
+/** Whether a number shows a held value. A held value can be all digits (a gateway's key), and a record or a call's
+ *  arguments can quote it as a number: one whose digits hold a held value, by the same rule as a string's, is held. A
+ *  number can also EQUAL a held value whose text differs from its own (a leading zero, 1e21, a long key read lossy). A
+ *  boolean's text is shorter than any held value. */
+export function heldNumber(value: number | bigint, secrets: readonly string[]): boolean {
+  const text = String(value);
+  return redactedAnswer(text, secrets) !== text || secrets.some((secret) => secret.trim() !== "" && Number(secret) === Number(value));
+}
+
 /** `value`, a run's workflow output, with redactedAnswer applied to each string and number in it, property NAMES
  *  included (a dictionary field can be keyed by anything a run wrote), its shape kept. Two names of one object that come
  *  out the same would merge one value over the other: that object is withheld whole, as "[redacted]". */
 export function redactedOutput(value: unknown, secrets: readonly string[]): unknown {
   if (typeof value === "string") return redactedAnswer(value, secrets);
-  // A held value can be all digits (a gateway's key), and a record can quote it as a number: one whose digits hold a held
-  // value, by the same rule as a string's, is withheld as "[redacted]". A boolean's text is shorter than any held value.
-  // A number can also EQUAL a held value whose text differs from its own (a leading zero, 1e21, a long key read lossy).
-  if (typeof value === "number" || typeof value === "bigint") {
-    const text = String(value);
-    const held = redactedAnswer(text, secrets) !== text || secrets.some((secret) => secret.trim() !== "" && Number(secret) === Number(value));
-    return held ? "[redacted]" : value;
-  }
+  if (typeof value === "number" || typeof value === "bigint") return heldNumber(value, secrets) ? "[redacted]" : value;
   if (Array.isArray(value)) return value.map((item) => redactedOutput(item, secrets));
   if (value && typeof value === "object") {
     const entries = Object.entries(value).map(([key, item]) => [redactedAnswer(key, secrets), redactedOutput(item, secrets)] as const);

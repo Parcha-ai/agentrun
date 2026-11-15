@@ -255,7 +255,7 @@ test("a tool_used grader naming a monid endpoint the package does not grant by n
 });
 
 test("an llm grader sees each call's whole arguments, a web_fetch's URL with its query, and never a secret one carried", { timeout: 300_000 }, async (t) => {
-  // A secret-shaped header and api_key (an sk- key, a GitHub token): the run's own redaction takes them out of what is
+  // A secret-shaped header and github token (an sk- key, a GitHub token): the run's own redaction takes them out of what is
   // served, so neither the grader's prompt nor the report holds them. The URL's query is no secret, and is shown whole.
   const url = "https://pricing.example.test/plans?tier=enterprise&seats=50";
   // Both are built at run time, so no key-shaped literal sits in the source.
@@ -270,7 +270,7 @@ test("an llm grader sees each call's whole arguments, a web_fetch's URL with its
   const at = join(dir, "evals", "fetch-args");
   mkdirSync(join(at, "graders"), { recursive: true });
   writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\n");
-  const call = { url, headers: { Authorization: "Bearer {{env:EVAL_ARGS_BEARER}}" }, api_key: "{{env:EVAL_ARGS_GITHUB}}" };
+  const call = { url, headers: { Authorization: "Bearer {{env:EVAL_ARGS_BEARER}}" }, github: "{{env:EVAL_ARGS_GITHUB}}" };
   writeFileSync(join(at, "prompt.md"), `---\ndescription: Fetches the pricing page with a header.\n---\nCall web_fetch with ${JSON.stringify(call)}\nAnswer:\nFETCH-ARGS done\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "fetch-args"}\n\`\`\`\n`);
   writeFileSync(join(at, "graders", "fetched.md"), `---\ntype: llm\n---\nPass if the answer contains "FETCH-ARGS".\nThe run fetched ${url}.\n`);
   // Every call's arguments are known now, so tool_used's args match a call of a tool no fake serves.
@@ -288,7 +288,7 @@ test("an llm grader sees each call's whole arguments, a web_fetch's URL with its
     assert.ok(!JSON.stringify(report).includes(secret), "no secret reaches the report");
   }
   const fetched = run.calls.find((one) => one.tool === "web_fetch");
-  assert.deepEqual(fetched?.arguments, { url, headers: { Authorization: "Bearer [redacted]" }, api_key: "[redacted]" }, JSON.stringify(run.calls));
+  assert.deepEqual(fetched?.arguments, { url, headers: { Authorization: "Bearer [redacted]" }, github: "[redacted]" }, JSON.stringify(run.calls));
 });
 
 test("a grader's prompt stays under its cap: the longest results lose their middle first, then the middle calls, and the list says so", () => {
@@ -310,6 +310,16 @@ test("a grader's prompt stays under its cap: the longest results lose their midd
   assert.ok(crowded.length <= 4000, String(crowded.length));
   assert.match(crowded, /\(Cut to keep this prompt under its cap: every result is left out, and \d+ calls in the middle\.\)\n1\. web_fetch/);
   assert.match(crowded, /\[\.\.\. \d+ calls cut \.\.\.\]\n(?:.+\n)*400\. web_fetch \{"url":"https:\/\/example\.test\/400"\} -> success\n<\/tool-calls>/);
+  // A fake MCP server's calls share the same room: its long arguments lose their middle too, and the cap holds.
+  const mcp = (i) => ({ tool: "mcp__crm__lookup", arguments: { note: long, i } });
+  const faked = { ...run, mcpCalls: [mcp(1), mcp(2), mcp(3)] };
+  const both = graderInput(grader, "task", faked, 9000);
+  assert.ok(both.length <= 9000, String(both.length));
+  const fakes = both.slice(both.indexOf("<mcp-calls untrusted>"));
+  assert.match(fakes, /^<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n\(Cut to keep this prompt under its cap: each long argument list keeps its head and tail, its middle cut where marked\.\)\n1\. mcp__crm__lookup: \{"note":"HEAD-a+ \[\.\.\. \d+ characters cut \.\.\.\] b+-TAIL","i":1\}\n/);
+  assert.match(both, /<tool-calls untrusted>\n\(Cut to keep this prompt under its cap: each long result/);
+  // Under the cap, whole, one call to a line.
+  assert.ok(graderInput(grader, "task", faked).includes(`1. mcp__crm__lookup: ${JSON.stringify(mcp(1).arguments)}`));
 });
 
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {

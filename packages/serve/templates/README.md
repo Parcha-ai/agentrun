@@ -204,8 +204,9 @@ JSON, or refused by the schema, after the runner's one retry). The report lists 
   given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
   that field besides (the whole answer stays, for anything else the rubric checks). Each call shows its arguments as
   `tool_used` reads them, its status, and its result's first 8,000 characters through the same redaction. The prompt
-  stays under 120,000 characters: past that, the longest results lose their middle first (marked), then the middle
-  calls, and the list's first line says what was cut; the rubric, task and answer are never cut. Never another grader, the case's
+  stays under 120,000 characters: past that, the two call lists share what the rest leaves, the longest results (and a
+  fake's longest arguments) lose their middle first (marked), then the middle calls, and each list's first line says
+  what was cut. The rubric, task and answer are never cut, so they alone can pass the cap. Never another grader, the case's
   description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block; any other answer
   fails the grader.
 

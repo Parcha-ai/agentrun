@@ -238,8 +238,9 @@ export type TimelineOptions = {
   /** For a reader that grades the run (a template eval): each `tool_use` row carries its call's arguments whole
    *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`),
    *  made safe by `redact`, a redactor that reads that far (the rows' own `redact` stops at the head a row shows).
-   *  Without `redact`, the rows' own. */
-  calls?: { result: number; redact?: (text: string) => string };
+   *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
+   *  digits); such a number is shown as "[redacted]". */
+  calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -505,13 +506,15 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
 /** A call's arguments as `tool_input` carries them, their values already redacted (argsOf): each string cut at `max`, and
- *  each property name through `redact` too, as only this field shows them. An object two of whose names come out the
- *  same is withheld whole, as "[redacted]", never one value merged over the other. */
-const inputShown = (value: unknown, max: number, redact: (text: string) => string = (text) => text): unknown => {
+ *  each property name through `redact` too, as only this field shows them, and each number `held` names as
+ *  "[redacted]". An object two of whose names come out the same is withheld whole, as "[redacted]", never one value
+ *  merged over the other. */
+const inputShown = (value: unknown, max: number, redact: (text: string) => string = (text) => text, held: (value: number | bigint) => boolean = () => false): unknown => {
   if (typeof value === "string") return cut(value, max);
-  if (Array.isArray(value)) return value.map((item) => inputShown(item, max, redact));
+  if (typeof value === "number" || typeof value === "bigint") return held(value) ? "[redacted]" : value;
+  if (Array.isArray(value)) return value.map((item) => inputShown(item, max, redact, held));
   if (!value || typeof value !== "object") return value;
-  const entries = Object.entries(value).map(([key, item]) => [redact(key), inputShown(item, max, redact)] as const);
+  const entries = Object.entries(value).map(([key, item]) => [redact(key), inputShown(item, max, redact, held)] as const);
   return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : "[redacted]";
 };
 /** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
@@ -677,7 +680,7 @@ function createProjector(options: TimelineOptions) {
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args), ...fields });
   /** A `calls` read's `tool_input` (inputShown); none when the arguments themselves are withheld. */
   const inputOf = (args: Obj): { tool_input?: Obj } => {
-    const shown = options.calls ? obj(inputShown(args, caps.text, options.redact)) : undefined;
+    const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
   /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own. */
