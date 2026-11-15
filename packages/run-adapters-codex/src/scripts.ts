@@ -26,36 +26,47 @@ export const UNWATCHED = "(unwatched answer)";
  *  are live; or hold it, as no script is known yet. */
 export type Tie = { kind: "tied"; exec: string } | { kind: "held"; exec: string } | { kind: "ambiguous"; live: string[] } | { kind: "none" };
 
+/** What a rollout line says of a script: its `exec` line opened it (`input`, the script), or an output finished it (`output`,
+ *  that output's text; `failed`, the script failed, as its status header says). */
+export type ScriptEvent = { kind: "opened"; exec: string; input: string } | { kind: "finished"; exec: string; output: string; failed: boolean };
+
 /** Codex's status header of an exec's or a wait's output: the text it starts with (its first part), never what the script printed after it. */
 const statusOf = (output: unknown): string =>
   typeof output === "string" ? output : Array.isArray(output) && typeof (output[0] as { text?: unknown } | undefined)?.text === "string" ? (output[0] as { text: string }).text : "";
 /** A cell that yielded and still runs, as its status header says. */
 const RUNNING = /^Script running with cell ID (\S+)/;
+/** A script that failed (it threw, or its cell was gone), as its status header says. The rollout's output line has no
+ *  status field of its own: this header is the only place Codex says how a script ended. */
+const FAILED = /^Script failed\b/;
 
 const textOf = (output: unknown): string =>
   typeof output === "string" ? output : Array.isArray(output) ? output.map((part: { text?: unknown }) => (typeof part?.text === "string" ? part.text : "")).join("\n") : "";
 
 export class Scripts {
-  private readonly open: { exec: string; cell?: string }[] = [];
+  private readonly open: { exec: string; cell?: string; input: string }[] = [];
   /** The `exec` calls whose script finished. */
   private readonly done = new Set<string>();
   /** The cell each `wait` call in the rollout resumes. */
   private readonly waitsOn = new Map<string, string>();
 
-  /** Reads one rollout line. */
-  note(line: string): void {
-    if (!line.includes("call_id")) return;
+  /** Reads one rollout line: what it says of a script, if anything. A script opened (its `exec` line, with its input, the
+   *  script) or finished (the output that ended it: its own, or the `wait`'s on its cell). */
+  note(line: string): ScriptEvent | undefined {
+    if (!line.includes("call_id")) return undefined;
     const p = parseLine(line)?.payload;
-    if (!p || typeof p.call_id !== "string") return;
+    if (!p || typeof p.call_id !== "string") return undefined;
     const id: string = p.call_id;
     const running = RUNNING.exec(statusOf(p.output));
     if (p.type === "custom_tool_call" && p.name === "exec") {
-      if (!this.open.some((x) => x.exec === id)) this.open.push({ exec: id });
+      if (this.open.some((x) => x.exec === id)) return undefined;
+      const input = typeof p.input === "string" ? p.input : "";
+      this.open.push({ exec: id, input });
+      return { kind: "opened", exec: id, input };
     } else if (p.type === "custom_tool_call_output") {
       const at = this.open.findIndex((x) => x.exec === id);
-      if (at < 0) return;
+      if (at < 0) return undefined;
       if (running) this.open[at]!.cell = running[1]!;
-      else this.done.add(this.open.splice(at, 1)[0]!.exec);
+      else return this.finish(at, p.output);
     } else if (p.type === "function_call" && p.name === "wait") {
       try {
         const cell = (JSON.parse(String(p.arguments)) as { cell_id?: unknown }).cell_id;
@@ -63,8 +74,20 @@ export class Scripts {
       } catch {}
     } else if (p.type === "function_call_output" && this.waitsOn.has(id) && !running) {
       const at = this.open.findIndex((x) => x.cell === this.waitsOn.get(id));
-      if (at >= 0) this.done.add(this.open.splice(at, 1)[0]!.exec);
+      if (at >= 0) return this.finish(at, p.output);
     }
+    return undefined;
+  }
+
+  private finish(at: number, output: unknown): ScriptEvent {
+    const exec = this.open.splice(at, 1)[0]!.exec;
+    this.done.add(exec);
+    return { kind: "finished", exec, output: textOf(output), failed: FAILED.test(statusOf(output)) };
+  }
+
+  /** The script of an unfinished `exec` whose line the rollout holds; none for any other. */
+  inputOf(exec: string): string | undefined {
+    return this.open.find((x) => x.exec === exec)?.input;
   }
 
   /** The scripts that may call a host tool now: the rollout's unfinished ones, and the `exec` the proxy's latest answer carried

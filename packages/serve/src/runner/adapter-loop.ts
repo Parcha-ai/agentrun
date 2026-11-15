@@ -17,7 +17,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NestedCalls, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NestedCalls, type NoteRequest, type OwnCalls, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
@@ -578,6 +578,9 @@ interface CliRecord {
    *  its end, refused in the gate's words, in one commit, as pi writes a refused call and its error result (once per call
    *  id). The same entries a parked call refused ends with (park, then end refused), with no wait between. */
   refused(callId: string, tool: string, input: unknown, replaySafe: boolean, words: string): Promise<void>;
+  /** The call `callId` runs inside the harness's own call `parent` (SessionIO.ownCalls.nestedIn): its start, written after
+   *  this, names it (CallStartData.parent). */
+  nestedIn(callId: string, parent: string): void;
   /** The calls parked at their gate and never sent, still with no end: what a stop withdraws on the record. */
   unsentParked(): string[];
   /** An end written elsewhere in a commit of the loop's own (the stop's withdrawal, in its end's commit): kept as this
@@ -631,6 +634,12 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   const sent = new Set<string>();
   // A call of a tool that only nests calls (its start marked `nests`): never ended interrupted, as it runs again whole.
   const nesting = new Set<string>();
+  // The call of the harness's own each call runs inside (nestedIn), named on the call's start.
+  const parents = new Map<string, string>();
+  const parentOf = (callId: string): { parent: string } | Record<string, never> => {
+    const parent = parents.get(callId);
+    return parent === undefined ? {} : { parent };
+  };
   // The command rows a message was about to be sent for (their intent marks): one sent again is a retry.
   const sending = new Set<number>();
   let personWritten = false;
@@ -762,7 +771,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
           }
           return;
         }
-        await append(KINDS.callStart, { callId, tool, input, replaySafe, ...(nests ? { nests } : {}), ...(cwd ? { cwd } : {}) });
+        await append(KINDS.callStart, { callId, tool, input, replaySafe, ...(nests ? { nests } : {}), ...parentOf(callId), ...(cwd ? { cwd } : {}) });
         started.set(callId, false);
       });
     },
@@ -770,7 +779,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       await flushText();
       await inTurn(async () => {
         if (started.has(callId)) return;
-        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, ...(cwd ? { cwd } : {}) });
+        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, ...parentOf(callId), ...(cwd ? { cwd } : {}) });
         started.set(callId, false);
         parked.add(callId);
       });
@@ -780,7 +789,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       await inTurn(async () => {
         if (started.get(callId) === true) return;
         const at = now();
-        const start: CallStartData = { callId, tool, input, replaySafe, at };
+        const start: CallStartData = { callId, tool, input, replaySafe, ...parentOf(callId), at };
         const end: CallEndData = { callId, status: "refused", output: words, at };
         await harness.commit(async (tx) => {
           if (!started.has(callId)) await tx.appendEntry(root.id, { kind: KINDS.callStart, data: start as unknown as JsonValue });
@@ -790,6 +799,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         ends.set(callId, { status: "refused", output: words });
       });
     },
+    nestedIn: (callId, parent) => void parents.set(callId, parent),
     unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
     noteEnd(callId, status, output) {
       started.set(callId, true);
@@ -2344,7 +2354,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (askCut.armed && event.type === "tool_start") askCut.disarm();
           theRecord.onEvent(event);
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
+        // A call of the CLI's own that its host tool calls run inside (Codex's code-mode `exec`): on its record as a call, never
+        // run again after a crash (a crash ends it interrupted, as its CLI's resume answers it), and each call it makes named
+        // under it, so its rows read as a codemode script's do on every other harness.
+        const ownCalls: OwnCalls | undefined = record
+          ? {
+              opened: (callId, name, input) => record.start(callId, name, input, false).catch(unlessSealed),
+              nestedIn: (callId, parent) => record.nestedIn(callId, parent),
+              ended: (callId, output, failed) => record.end(callId, failed ? "failed" : "done", output).catch(unlessSealed),
+            }
+          : undefined;
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
         // The end-of-run turn an earlier claim asked and never saw end (its runner lost mid look-back or mid compile): the
         // root's newest input still in flight is that turn's (end-of-run.ts REFLECT_PREFIX), which pi picks up again as its
         // session opens. The job's turn ended before it, answered: this pass runs no job turn (no recovery as the job's, no

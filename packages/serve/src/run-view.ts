@@ -769,6 +769,13 @@ const unrefused = (row: TimelineEvent): TimelineEvent => {
   const { refused: _refused, ...rest } = row;
   return rest;
 };
+/** A row made from a call's own row for its approval or for what came of it: without the `refused` mark (unrefused), and
+ *  without the computer calls the call made, which are its own result row's alone, as a call that never waited has
+ *  them (a sum over rows counts each once). */
+const madeFrom = (row: TimelineEvent): TimelineEvent => {
+  const { computer_calls: _calls, computer_calls_dropped: _dropped, ...rest } = unrefused(row);
+  return rest;
+};
 /** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */
 const approvalRowId = (callId: string) => `approval:${callId}`;
 
@@ -820,17 +827,17 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? (answer.decision === "deny" ? "Denied by the tool's setting on this server" : "Allowed by the tool's setting") : "Asked your approval";
     // Its time is the ask's (the gate's requestedAt), never the row it was made from.
     const when = approval.requested_at ? { timestamp: approval.requested_at, created_at: approval.requested_at } : {};
-    const asked: TimelineEvent = { ...unrefused(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const asked: TimelineEvent = { ...madeFrom(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     const placed = !askHere ? [own] : result ? [asked, own] : [own, asked];
     if (!last || !outcome) return placed;
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
-    const told: TimelineEvent = { ...unrefused(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    const told: TimelineEvent = { ...madeFrom(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
     // A person's message that declined the call (runs-over-store.ts message: a deny carrying their words) is theirs as any
     // message is: its own row, between the approval and what came of it, as main's declineBy kept it.
     if (answer!.decision === "deny" && answer!.by === "message" && answer!.note) {
       const words = redact(answer!.note);
-      const { origin: _origin, ...base } = unrefused(result ?? row);
+      const { origin: _origin, ...base } = madeFrom(result ?? row);
       const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
       return [...placed, theirs, told];
     }
