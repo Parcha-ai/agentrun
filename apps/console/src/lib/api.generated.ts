@@ -16,6 +16,40 @@ export interface components {
     home_etag: string;
     created_at: components["Timestamp"];
     updated_at: components["Timestamp"];
+    native_status?: {
+      runtime: "claude-code" | "codex";
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      version: string | null;
+      model: string | null;
+      fingerprint: string;
+      configuration: {
+        path: string;
+        sha256: string;
+      }[];
+      skills: string[];
+      mcp_servers: string[];
+      state: "needs_verification" | "needs_attention" | "ready";
+      issues: string[];
+      capabilities: {
+        launch: boolean;
+        notes: boolean;
+        skills: boolean;
+        workflows: false;
+        approval: "native" | "unavailable";
+        usage: boolean;
+      };
+      connected: boolean;
+      verified_at?: string;
+      remote?: {
+        connector_id: string;
+        target_id: string;
+      };
+    };
     external?: {
       source: string;
       kind: string;
@@ -239,6 +273,9 @@ export interface components {
     output_schema?: components["JsonObject"];
     workflow?: components["JsonObject"];
     max_cost_usd?: number;
+    sdk?: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+    };
     native?: {
       runtime: "claude-code" | "codex";
       project: string;
@@ -268,6 +305,10 @@ export interface components {
       };
       connected: boolean;
       verified_at?: string;
+      remote?: {
+        connector_id: string;
+        target_id: string;
+      };
     };
     model?: string;
     model_tiers?: {
@@ -625,6 +666,7 @@ export interface components {
       min: components["Usd"];
       max: components["Usd"];
     } | null;
+    free_model_requests?: number;
   };
   MessageCreate: {
     content: string;
@@ -714,6 +756,19 @@ export interface components {
     error: components["RunError"] | null;
     cost: components["Cost"];
     poll_after_ms: number;
+    sdk?: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
     native?: {
       runtime: string;
       project: string;
@@ -832,6 +887,7 @@ export interface components {
       kind: "budget";
       cap_usd: number;
       spent_usd?: number;
+      held_usd?: number;
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
@@ -946,6 +1002,19 @@ export interface components {
     created_at: components["Timestamp"];
     ended_at: components["Timestamp"] | null;
     cost: components["Cost"];
+    sdk?: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
     native?: {
       runtime: string;
       project: string;
@@ -1038,6 +1107,7 @@ export interface components {
       kind: "budget";
       cap_usd: number;
       spent_usd?: number;
+      held_usd?: number;
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
@@ -1371,6 +1441,36 @@ export interface operations {
     body: never;
     answer: components["CancelResult"];
   };
+  completeRemoteCommand: {
+    body: {
+      lease_token: string;
+      result?: unknown;
+      error?: string;
+    };
+    answer: {
+      accepted: true;
+    };
+  };
+  completeSdkRun: {
+    body: {
+      status: "completed" | "failed" | "cancelled";
+      answer: string;
+      error?: string;
+      model?: string;
+      session_id?: string;
+      usage?: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      };
+      evidence_complete?: boolean;
+    };
+    answer: {
+      accepted: true;
+    };
+  };
   connectGitHub: {
     body: {
       org?: string;
@@ -1421,6 +1521,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       };
     };
   };
@@ -1908,6 +2012,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       };
     };
   };
@@ -1946,6 +2054,20 @@ export interface operations {
           usage: boolean;
         };
       }[];
+    };
+  };
+  enrollRemoteConnector: {
+    body: {
+      label?: string;
+      capabilities?: {
+        native_execution?: boolean;
+        history_import?: boolean;
+      };
+    };
+    answer: {
+      enrollment_token: string;
+      expires_at: string;
+      workspace_id: "local";
     };
   };
   finishChatGPTSignIn: {
@@ -2471,6 +2593,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       } | null;
     };
   };
@@ -2703,6 +2829,15 @@ export interface operations {
         patch?: string;
         withheld?: "too_large" | "secret";
       }[];
+    };
+  };
+  getSdkRun: {
+    body: never;
+    answer: {
+      run_id: string;
+      state: "running" | "processing" | "completed" | "failed" | "cancelled";
+      learning_run_id?: string;
+      learning: unknown;
     };
   };
   getStats: {
@@ -3084,6 +3219,99 @@ export interface operations {
     answer: {
       hold: "agent" | "pending" | "person";
       outcome?: "done" | "cancelled" | "expired";
+    };
+  };
+  importRemoteHistory: {
+    body: {
+      sessions: Record<string, unknown>[];
+    };
+    answer: {
+      agent_id: string;
+      runs: {
+        session_id: string;
+        run_id: string;
+        already: boolean;
+      }[];
+      imported: number;
+      already: number;
+    };
+  };
+  importRemoteTarget: {
+    body: {
+      target_id: string;
+      name?: string;
+      target: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
+      };
+      history_only?: boolean;
+    };
+    answer: {
+      agent_id: string;
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
+      };
     };
   };
   importTemplate: {
@@ -3617,6 +3845,25 @@ export interface operations {
       }[];
     };
   };
+  listRemoteConnectors: {
+    body: never;
+    answer: {
+      connectors: {
+        id: string;
+        connector_id: string;
+        label: string;
+        created_at: string;
+        last_seen_at: string | null;
+        status: "online" | "offline" | "revoked";
+        capabilities: {
+          observe: true;
+          native_execution: boolean;
+          history_import: boolean;
+        };
+        targets: Record<string, unknown>[];
+      }[];
+    };
+  };
   listRevisions: {
     body: never;
     answer: {
@@ -4003,6 +4250,21 @@ export interface operations {
       run_id: string;
       paused: boolean;
       status: components["RunStatus"];
+    };
+  };
+  pollRemoteConnector: {
+    body: {
+      worker_id: string;
+      active?: {
+        command_id: string;
+        lease_token: string;
+      }[];
+    };
+    answer: {
+      commands: Record<string, unknown>[];
+      cancelled: string[];
+      server_time: number;
+      lease_ttl_ms: number;
     };
   };
   previewMcpServer: {
@@ -4444,12 +4706,51 @@ export interface operations {
       };
     };
   };
+  registerRemoteConnector: {
+    body: {
+      installation_id: string;
+      operation_id: string;
+      label?: string;
+      capabilities: {
+        native_execution: boolean;
+        history_import?: boolean;
+      };
+    };
+    answer: {
+      connector: {
+        id: string;
+        connector_id: string;
+        label: string;
+        created_at: string;
+        last_seen_at: string | null;
+        status: "online" | "offline" | "revoked";
+        capabilities: {
+          observe: true;
+          native_execution: boolean;
+          history_import: boolean;
+        };
+        targets: Record<string, unknown>[];
+      };
+      credential: string;
+      credential_expires_at: string;
+    };
+  };
   releaseRunComputer: {
     body: Record<string, never>;
     answer: {
       held: {
         state: "released";
       };
+    };
+  };
+  remoteCommandEvents: {
+    body: {
+      lease_token: string;
+      sequence: number;
+      events: Record<string, unknown>[];
+    };
+    answer: {
+      accepted: true;
     };
   };
   restoreLearningFile: {
@@ -4467,6 +4768,25 @@ export interface operations {
   retireLearningFile: {
     body: never;
     answer: never;
+  };
+  revokeRemoteConnector: {
+    body: never;
+    answer: {
+      connector: {
+        id: string;
+        connector_id: string;
+        label: string;
+        created_at: string;
+        last_seen_at: string | null;
+        status: "online" | "offline" | "revoked";
+        capabilities: {
+          observe: true;
+          native_execution: boolean;
+          history_import: boolean;
+        };
+        targets: Record<string, unknown>[];
+      };
+    };
   };
   rotateComposioSecret: {
     body: never;
@@ -4708,6 +5028,29 @@ export interface operations {
       note: string;
     };
   };
+  sdkRunEvents: {
+    body: {
+      sequence: number;
+      events: ({
+        type: "text";
+        text: string;
+      } | {
+        type: "session";
+        session_id: string;
+      } | {
+        type: "tool";
+        id: string;
+        name: string;
+        status: "started" | "completed" | "failed";
+        input?: unknown;
+        output?: unknown;
+        parent_tool_use_id?: string;
+      })[];
+    };
+    answer: {
+      accepted: true;
+    };
+  };
   sendMessage: {
     body: components["MessageCreate"];
     answer: components["MessageResult"];
@@ -4758,6 +5101,43 @@ export interface operations {
     answer: {
       held: {
         state: "started";
+      };
+    };
+  };
+  startSdkRun: {
+    body: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+      input: string;
+      instructions: string;
+      model?: string;
+      workflow_tools?: {
+        name: string;
+        description: string;
+        input_schema: Record<string, unknown>;
+        output_schema?: Record<string, unknown>;
+        permission: "allow" | "ask" | "deny";
+        price_usd?: number;
+      }[];
+      workflow_adapters?: ("runNode" | "runJudge")[];
+    };
+    answer: {
+      run_id: string;
+      agent_id: string;
+      console_url: string;
+      token: string;
+      learning: {
+        enabled: boolean;
+        revision: string | null;
+        context: string;
+        skills: {
+          name: string;
+          files: Record<string, string>;
+        }[];
+        workflows: {
+          name: string;
+          workflow: string;
+          description: string;
+        }[];
       };
     };
   };
@@ -5162,6 +5542,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       };
     };
   };

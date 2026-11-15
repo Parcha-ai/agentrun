@@ -29,7 +29,8 @@ import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type OpenComputerView } from "./computer-for-claim.js";
+import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -253,9 +254,25 @@ const OS_NAMES: Readonly<Record<string, string>> = { linux: "Linux", windows: "W
 export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "provider" | "kind">): string => `Starting a ${kind} from ${provider}…`;
 
 /** The run's timeline phase once its claim's computer is connected (computerForClaim's onConnected): what it says it
- *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." */
-export const computerReadyWords = ({ provider, kind, hello }: ComputerSaid): string =>
-  `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
+ *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." A computer that
+ *  replaced an earlier claim's (`replaced`) says it is a new one, never why the old one went (a lost runner, a crash, a
+ *  server's stop, a park: the words fit each), and, where the run's folder is on Archil and mounted in it
+ *  (`folderKept`), that the folder is kept. */
+export const computerReadyWords = ({ provider, kind, hello, replaced }: ComputerSaid): string => {
+  const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
+  if (!replaced) return ready;
+  return `${ready} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
+};
+
+/** What the run's model is told, once, on its next request after its claim gave it a computer that replaced an earlier
+ *  claim's (the adapter loop's computer note), labelled as the server's (SERVER_NOTE_LABEL): a desktop's or a phone's
+ *  screen and refs are gone, so it looks again; a sandbox's files and processes are gone, so it checks its files again.
+ *  `folderKept`: the folder is on Archil and mounted in the computer, so it is kept (on a sandbox, the one place that is). */
+export const computerReplacedNote = ({ kind, folderKept }: Replaced): string => {
+  const gone = `${SERVER_NOTE_LABEL}your computer was replaced. The earlier one is gone, with its`;
+  if (kind !== "sandbox") return `${gone} screen and refs. Look at the screen again before acting.${folderKept ? " The run folder is kept." : ""}`;
+  return `${gone} files and processes. ${folderKept ? "The run folder is kept; anything outside it is gone." : "Check its files again before relying on them."}`;
+};
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */

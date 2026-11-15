@@ -12,7 +12,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
+import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
@@ -86,7 +86,7 @@ export interface PiAdapterOptions {
    *  Messages or OpenAI's Responses) at `origin`, its credential, sent as `auth` says (Messages' default x-api-key;
    *  Responses' is always a bearer token). `api` is the one source of the session's wire: its policy, pi-ai's client and
    *  its port all read it. */
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void>; readonly usageCost?: boolean };
   /** The model pi asks for. */
   readonly model: string;
   /** The catalog's entry for the model: whether it reasons, its window and its output ceiling, as pi-ai's model of it. */
@@ -194,6 +194,8 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(redact ? { redact } : {}),
+    // An answer that states its cost (OpenRouter's) is booked at it, the price's figure beside it (model-route.ts).
+    ...(route.provider.usageCost ? { usageCost: true } : {}),
   }, randomBytes(32).toString("base64url"));
 }
 
@@ -298,6 +300,15 @@ async function withSearches(api: Wire, price: NonNullable<PiAdapterOptions["pric
   return codex.withWebSearches(price);
 }
 
+/** The session's thinking level: the one asked (the run's effort), except that a model whose catalog says it can't stop
+ *  reasoning (its thinkingLevelMap's `off` is null: Claude Sonnet 5.5) is never left at off, pi's default. OpenRouter
+ *  refuses such a request ("Reasoning is mandatory"), so with none asked, or off, it thinks at its lowest supported level.
+ *  A model that can stop keeps none (pi's off). */
+function mandatoryThinking(own: Parameters<typeof getSupportedThinkingLevels>[0] | undefined, asked: SessionSpec["thinking"]): SessionSpec["thinking"] {
+  if ((asked && (asked as string) !== "off") || !own || getSupportedThinkingLevels(own).includes("off")) return asked;
+  return clampThinkingLevel(own, "off") as SessionSpec["thinking"];
+}
+
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
 async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context, tiers: TierProxies): Promise<AdapterSession> {
   const { run, model, like } = options;
@@ -391,8 +402,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // session's tools and the run's native extensions, on every open. A conversation a native tool opens takes this agent's
   // model (pi copies its owner's), so its requests go through this session's proxy.
   const instructions = spec.system.join("\n\n");
-  // Its thinking level, the session's (the run's effort), on every open; none leaves pi's default.
-  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}), ...(spec.thinking ? { thinkingLevel: spec.thinking } : {}) };
+  // Its thinking level, the session's (the run's effort), on every open; none leaves pi's default (off).
+  const thinking = mandatoryThinking(models.getModel(PROVIDER, model), spec.thinking);
+  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}), ...(thinking ? { thinkingLevel: thinking } : {}) };
   const root: Conversation = await run.harness.root(context, { agent } as never);
   await root.configure(agent as never, context);
 
@@ -523,8 +535,8 @@ export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS 
  *  Each one's end goes to the host (`ended`: PiSessionIO.nestedEnded), which keeps it on the run's record. */
 function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>, ended?: PiSessionIO["nestedEnded"]): NestedCalls {
   return {
-    async call(name, args, key) {
-      const result = await api.executeTool(name, args as JsonObject, context, { key });
+    async call(name, args, key, signal) {
+      const result = await api.executeTool(name, args as JsonObject, signal ? withAbortSignal(signal, context) : context, { key });
       const callId = `${api.callId}/${key}`;
       const codes = result.diagnostics.map((one) => one.code);
       const refused = (result.details as { [CALL_REFUSED]?: unknown } | undefined)?.[CALL_REFUSED] === true || codes.includes("blocked") || codes.includes("tool_unavailable");
@@ -550,7 +562,12 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
         fresh: touched.has(callId),
       };
     },
-    memo: (key, value) => api.memo(`nested:${key}`, value, context),
+    // A value given as a function is called only while the task holds none for `key`, so a rerun never calls it again.
+    async memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T> {
+      if (typeof value !== "function") return api.memo(`nested:${key}`, value, context) as Promise<T>;
+      const held = await api.memo(`nested:${key}`, context);
+      return (held !== undefined ? held : await api.memo(`nested:${key}`, await value(), context)) as T;
+    },
   };
 }
 

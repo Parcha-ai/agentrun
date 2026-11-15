@@ -74,7 +74,7 @@ test("the worked example is a whole job the checks pass, its judgment steps guar
     const doc = compile.compileExample(judges);
     const text = JSON.stringify(doc);
     const decisions = judges ? { providers: registry.providers, default: registry.default } : undefined;
-    assert.deepEqual(draftProblems(dsl, text, [], {}, {}, undefined, decisions), [], `judges ${judges}`);
+    assert.deepEqual(draftProblems(dsl, text, [], {}, {}, decisions), [], `judges ${judges}`);
     const dry = await draftDryRun(dsl, text, JSON.stringify(compile.EXAMPLE_INPUT));
     assert.notEqual(dry.status, "failed", JSON.stringify(dry));
     const kinds = dsl.inspectWorkflow(doc).nodes.map((node) => node.kind);
@@ -327,7 +327,7 @@ test("Jev by default: the worked example with Jev guards its judgment steps on b
   assert.deepEqual(step("decide").guard, { signal: "both", threshold: compile.GUARD_THRESHOLD });
   assert.deepEqual(step("judge").guard, { signal: "both", threshold: compile.GUARD_THRESHOLD });
   assert.deepEqual(step("extract").guard, { signal: "jev", threshold: compile.GUARD_THRESHOLD });
-  assert.deepEqual(draftProblems(dsl, JSON.stringify(doc), [], {}, {}, undefined, decisions), []);
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(doc), [], {}, {}, decisions), []);
   const dry = await draftDryRun(dsl, JSON.stringify(doc), JSON.stringify(compile.EXAMPLE_INPUT));
   assert.notEqual(dry.status, "failed", JSON.stringify(dry));
   // Without Jev the same job guards on its own confidence, and its extract step takes none.

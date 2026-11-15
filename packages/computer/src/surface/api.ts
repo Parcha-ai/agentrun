@@ -1,7 +1,7 @@
 // The computer as an agent's code sees it: one typed `computer` object. This file is the source of computer.d.ts
 // (scripts/generate-computer-surface.mjs renders it, with the protocol's types it names) and of the per-step tools'
-// schemas (computer_observe, computer_act, computer_screenshot, computer_script). Every surface answers through one
-// core (core.ts): a script's call, a per-step tool and the claim's MCP endpoint return the same values.
+// schemas (computer_observe, computer_act, computer_screenshot). Every surface answers through one core (core.ts): a
+// script's call, a per-step tool and the claim's MCP endpoint return the same values.
 //
 // A member of Computer marked `@group <name> [<name> ...]` exists only on a computer that declares one of those groups
 // (its hello), so a model is never offered what the computer can't do. The steps are the protocol's own (UiStep): one step language for a
@@ -225,14 +225,4 @@ export interface ActArgs {
 export interface ScreenshotArgs {
 	/** [x, y, w, h] in screen pixels. */
 	region?: Rect;
-}
-
-/** computer_script: run JavaScript against the `computer` object. */
-export interface ScriptArgs {
-	/** An async function's body; `return` what you need. */
-	code: string;
-	/** For the run's timeline. */
-	title?: string;
-	/** Default 120000, at most 600000. */
-	timeoutMs?: number;
 }

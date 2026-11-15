@@ -1,4 +1,5 @@
 import type { Api, Model, MutableModels, Provider } from "@earendil-works/pi-ai";
+import { ROUTERS } from "@parcha/agentrun-kernel/kernel/cap";
 
 /** Particle-1's price, USD per million tokens: Particle's own list price, from https://docs.particle.ai/models (read
  *  2026-11-07: $0.25 input, $0.03 cached input, $1.00 output; no cache-write price, so $0). */
@@ -58,18 +59,20 @@ const added = <M extends { id: string }>(list: readonly M[], adds: typeof ADDED_
   }),
 ];
 
-/** OpenRouter's routers: each picks a model per request. OpenRouter lists the price of `auto`, `openrouter/auto*`,
- *  `openrouter/fusion`, `openrouter/pareto-code` and `typesafe/jev-router` as -1, the routed model's (read 2026-11-15), which
- *  pi-ai's catalog writes as 0; `openrouter/free` routes to a different free model per request. Their zeros say no
- *  model's price, so none of them is free. */
-const ROUTERS: ReadonlySet<string> = new Set(["auto", "openrouter/auto", "openrouter/auto-beta", "openrouter/auto-code", "openrouter/free", "openrouter/fusion", "openrouter/pareto-code", "typesafe/jev-router"]);
+/** Whether `provider`/`id` is one of OpenRouter's routers, each of which picks a model per request (the kernel cap's
+ *  ROUTERS, the one list). OpenRouter lists the price of `auto`, `openrouter/auto*`, `openrouter/fusion`,
+ *  `openrouter/pareto-code` and `typesafe/jev-router` as -1, the routed model's (read 2026-11-15), which pi-ai's catalog
+ *  writes as 0; `openrouter/free` routes to a different free model per request. Their zeros say no model's price, so
+ *  none of them is free: a model serve has no price for, which a cap cannot be kept on and which is never booked at its
+ *  catalog's $0 (model.ts runModels' `unpriced`). */
+export const isRouter = (provider: string, id: string): boolean => provider === "openrouter" && ROUTERS.has(id);
 
 const PRICE_FIELDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
 /** Whether a catalog entry runs at $0: its price is all zeros, every price tier's too. Read from the price alone, never
  *  from the id (a `:free` id at a price is not free), except an OpenRouter router (ROUTERS), whose zeros are no price. */
 export function isFree(model: { provider: string; id: string; cost?: Partial<Model<Api>["cost"]> }): boolean {
-  if (model.provider === "openrouter" && ROUTERS.has(model.id)) return false;
+  if (isRouter(model.provider, model.id)) return false;
   if (!model.cost) return false;
   // The price fields alone: a tier's `inputTokensAbove` is where it starts, a token count, not a price. A field left out is $0.
   const zero = (price: Record<string, unknown>) => PRICE_FIELDS.every((k) => (price[k] ?? 0) === 0);

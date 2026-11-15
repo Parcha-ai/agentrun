@@ -68,9 +68,26 @@ test("observe names the app; with no ui group it was a screenshot; a script's ti
   assert.equal(labelOf("computer_observe", {}, view("screen 1080×2400 px · com.android.settings in front · this computer has no ui group")), "Took a screenshot, listed the apps");
   assert.equal(labelOf("computer_observe", {}), "Looked at the window");
   assert.equal(labelOf("computer_screenshot", {}), "Took a screenshot");
+  // computer_script is no longer offered: an earlier run's stored rows still read as they did.
   assert.equal(labelOf("computer_script", { code: "await computer.app().observe()" }), "Ran a script on the computer");
   assert.equal(labelOf("computer_script", { code: "1", title: "Open Settings and find Display" }), "Open Settings and find Display");
   assert.equal(nameOf("computer_act"), "Act on the computer");
+});
+
+test("a script's computer op (computer_op) reads as the call it made on the computer, never as its op's name", () => {
+  const op = (name, args = {}) => labelOf("computer_op", { op: name, args });
+  assert.equal(op("shell.run", { command: "echo hi" }), "Ran a command");
+  assert.equal(op("processes.start", { command: "mousepad" }), "Started a process");
+  assert.equal(op("files.write", { path: "/workspace/a.txt", data: "secret" }), "Wrote a file");
+  assert.equal(op("files.read", { path: "/workspace/a.txt" }), "Read a file");
+  assert.equal(op("files.list", { path: "/workspace" }), "Listed a folder");
+  assert.equal(op("files.stat", { path: "/workspace/a.txt" }), "Looked up a file");
+  assert.equal(op("apps.list"), "Listed the apps");
+  assert.equal(op("apps.open", { id: "firefox-esr", url: "https://example.com/" }), "Opened Firefox");
+  assert.equal(op("input.act", { actions: [{ type: "type", text: "hunter2" }] }), "Used the pointer and keys");
+  assert.equal(labelOf("computer_op", { op: "files.write", args: { path: "/a" } }, view("bash is denied", true)), "Could not write a file");
+  assert.ok(!op("files.write", { path: "/a", data: "secret" }).includes("secret"), "no data shows");
+  assert.equal(nameOf("computer_op"), "Use the computer's apps, shell and files");
 });
 
 test("on the timeline the call's row says it, once its answer is in", () => {

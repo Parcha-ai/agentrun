@@ -21,7 +21,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
-import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
+import { freeRequestsNote, harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, type Places } from "@/lib/place";
 import { providerLabel, resolution } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
@@ -211,7 +211,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
         ) : null}
         <SignIns agent={agent} v2={v2} onAgent={setAgent} poll={poll} refresh={afterForget} />
       </header>
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
+      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} freeNote={workflow ? null : freeRequestsNote(d.model ?? fallback, d.harness ?? "pi", harnesses, limits?.free_model_requests)} />}
       <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
         {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}

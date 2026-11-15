@@ -94,6 +94,11 @@ export const KINDS = {
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** The claim made the run a computer of its own (`computer`: its kind, desktop, sandbox or phone; computer-for-claim.ts
+   *  ClaimComputer.made): written on the root at the claim's first pass. A later claim's computer is a new one, and this
+   *  entry is how that claim knows the run had one when nothing of the earlier claim's is left to let go (a server's
+   *  stop, a park): computer-journal.ts hadComputer. Neither a call nor a message, and never on the Timeline. */
+  computerMade: "agentrun.computer.made",
   /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
    *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
    *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
@@ -181,10 +186,11 @@ export function capNowOf(launchCapUsd: number | undefined, entries: readonly { r
   return raised ? (raised.data as RaiseData).capUsd : launchCapUsd;
 }
 
-/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
- *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
+/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what it had spent, what it held for steps
+ *  still running, the least the refused request needs, the least cap that sends it and the raise offered, in the run's
+ *  money units (dollars). */
 export interface BudgetData {
-  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
+  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly held_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
   /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
@@ -194,6 +200,8 @@ export interface BudgetData {
 
 export interface CallStartData {
   readonly callId: string;
+  /** A checked SDK workflow callback's owning learned_workflow invocation. */
+  readonly parentCallId?: string;
   readonly tool: string;
   readonly input: unknown;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */

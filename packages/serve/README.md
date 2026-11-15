@@ -75,7 +75,8 @@ place: a token from the environment stays out of the logs. `DIR/.token`'s token 
 it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
 link carries a launch code this start made at random (`?launch=<code>`), never the token. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
-use it.
+use it. `AGENTRUN_FREE_MODEL_REQUESTS` (default 60) is the most requests on free models a run makes
+([a limit on free requests](#a-limit-on-free-requests)).
 
 ## Sandbox in 60 seconds
 
@@ -283,7 +284,9 @@ and a 200 says it can work, and the platforms here take one path.
 
 A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A runner that stops, or cannot renew in
 time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
-claim lapses another runner claims the run and resumes it from its journal. `agentrun-serve runner --check --data DIR --name N`
+claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
+runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
+timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) says whether the runner named `N` has a fresh heartbeat: it exits 0
 when it does and 1 when it does not, and 2 when no name is given. Name a runner you start yourself with
 `agentrun-serve runner --data DIR --name N`.
@@ -626,7 +629,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -634,12 +637,18 @@ A desktop's and a phone's tools are one set over the computer's groups. With the
 the app window's elements as compact lines (`@e12 button "Save"`), and `computer_act` runs steps on them by ref (press,
 set, click, type, key, scroll, drag, nav), each step saying its route and whether a readback verified it, and the answer
 ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
-`computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
-network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
-declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. The computer's
-tools are the run's own, so a `codemode` script calls them as `tools.computer_act(...)` and the rest: each is a call of
-its own, held to the kind's setting and recorded with its computer calls, and it answers the tool's value. In Codex's
-code mode, a script's call of a computer tool answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+Scripts are the host's `codemode` (no network, no keys): a known sequence of steps is one script, and it returns only
+what the next decision needs. On a desktop or a phone its script has a typed `computer` object beside `tools`, whose
+declarations codemode's description gives for the computer's groups (`spec/computer/computer.d.ts`, generated from
+`packages/computer/src/surface/api.ts`). Every method of `computer` is a nested call of the script: observe, act and
+the screenshot are the tools of those names, and the rest (apps, the shell, files, processes, raw input) is
+`computer_op` (`{op, args}`), a tool bound for scripts alone. Each call is held to the run's gate and recorded on the
+timeline like a tool's, and a crash rerun of the script answers a call that already ran from its record: a shell
+command (`shell.run`) is held to the agent's `bash` setting, a started process to `bash_background`, a file written to
+`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A script's call
+of a computer tool answers the tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
+`computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
+JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
@@ -3144,13 +3153,13 @@ step is sent only when the run's spend plus that step's least (its whole input b
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`), five requests (four screenshots, then the answer), spending about $0.04 in
-all. Through a gateway the first request's byte bound is 11,496 tokens, so it needs $0.058 and the whole run $0.117;
+all. Through a gateway the first request's byte bound is 9,121 tokens, so it needs $0.050 and the whole run $0.108;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
 $0.030 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
-| Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
+| Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
 | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
@@ -3254,6 +3263,22 @@ retry reads only an error's text, and takes "out of budget" as final whatever di
 refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
 request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
 the $0.15 left of the run's $0.50 cap could buy."
+
+### A limit on free requests
+
+A request on a free model costs $0, so no dollar cap can stop one: a free model is one whose catalog price is all zeros
+(an OpenRouter `:free` model and the like, as `harnesses[].free_models` lists them; an OpenRouter router is none, since
+it bills the model it picks), with no fee beside the request. Its provider's shared daily quota is what a looping run
+burns. So a run has a limit on those requests: 60, or `AGENTRUN_FREE_MODEL_REQUESTS` (a whole number above 0; anything
+else refuses the server's start and the runner's). ChatGPT-plan requests don't count. Capabilities'
+`limits.free_model_requests` says it, and the console says "free model: up to 60 requests" beside the cap of an agent
+on a free model. A run may make that many; the next is not sent, and the run ends `failed` as one its
+cap ends, its error `spend_cap_reached`: "Not sent: this run reached its 60-request limit for free models." (the number
+is the limit). No raise lifts it, and it holds capped or not, on every harness: pi, claude-agent, codex, opencode and a
+workflow's agent nodes. Every such request of the run counts, its own model's, its subagents', its side calls' (a
+compaction, a title), and one a crash cut, which is booked at $0, a known cost; a paid request, a paid tool call and a
+workflow's decision never count, and are never refused by it. The count is read from the run's booking records at each
+request, so a restart or a claim moved to another runner keeps it.
 
 ### A run paused at its cap
 

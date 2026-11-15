@@ -15,8 +15,16 @@ test("a refusal for room parks the run unsent, with pending (least, raise) in th
   const park = parkOf(refusal, 0.05);
   assert.equal(park.outcome, "parked");
   assert.equal(park.error, undefined);
-  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 1 });
+  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, held_usd: 0, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 1 });
   assert.equal(park.words, refusal.message.replace(/^spend_cap_reached \(out of budget\): /, ""));
+});
+
+test("a park's pending says what was spent and what was held apart: a hold is never spend, and the raise covers both", () => {
+  const refusal = new CapRefused("spend_cap_reached (out of budget): Not sent: no room", { forGood: false, spentUsd: 0.03, figures: { spentUsd: 0.03, heldUsd: 0.47, needsUsd: 0.1, leastCapUsd: 0.6 } });
+  const { pending } = parkOf(refusal, 0.5);
+  assert.deepEqual([pending.spent_usd, pending.held_usd, pending.needs_usd], [0.03, 0.47, 0.1]);
+  // $0.03 + $0.47 + 10 x $0.10 = $1.50: the next dollar up.
+  assert.equal(pending.suggested_cap_usd, 2);
 });
 
 test("a park's pending names no bound: a refused step's need is its worst case, so nothing could pass it", () => {

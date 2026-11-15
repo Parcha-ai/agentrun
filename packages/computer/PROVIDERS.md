@@ -112,7 +112,10 @@ A user on a bigger plan raises the option, up to the fact.
 ```
 
 **`create(req, ctx)`** makes one machine and answers as soon as you have its id. Don't wait for it to boot, because
-AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds machines by them. `req.egress` is always
+AgentRun polls `get`. The exception is a vendor that applies a machine's settings only once it is ready, as boxd does
+its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
+machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
+finds machines by them. `req.egress` is always
 `false`, except for a computer with an Archil storage mount. There AgentRun asks `true` so its root can reach Archil,
 and the agent's programs still have no network. `req.cpus` and `req.memoryMb` come whenever the spec gives them: a
 vendor whose size is its image's refuses them in its own `check`.

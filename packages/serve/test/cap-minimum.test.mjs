@@ -5,9 +5,9 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter: the bound is the bytes, 11,496 tokens at first, most of them the computer's tools' and
-//    codemode's definitions), the first request needs $0.058 and the whole run $0.117: $0.12, documented, takes it to its
-//    answer, $0.11 parks it before its last step;
+//  - through a gateway (OpenRouter: the bound is the bytes, 9,121 tokens at first, most of them the computer's tools' and
+//    codemode's definitions, the computer's types among them), the first request needs $0.050 and the whole run $0.108:
+//    $0.11, documented, takes it to its answer, $0.10 parks it before its last step;
 //  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt), so the first
 //    request needs $0.030 and the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it. The count
 //    here is the one recorded from a real desktop run before codemode was offered beside the computer's tools; the fake
@@ -24,7 +24,7 @@ const { fauxComputers } = await import("../dist/faux-computers.js");
 after(closeOpenSessions);
 
 /** The minimums serve's README states for pi on Sonnet: through a gateway, and straight to Anthropic. */
-const GATEWAY_MINIMUM = 0.12;
+const GATEWAY_MINIMUM = 0.11;
 const DIRECT_MINIMUM = 0.09;
 /** A step's least, as the cap prices it here: its input bound at the cache-write price and a 1,024-token answer. */
 const leastOf = (bound) => (bound * 3.75 + 1_024 * 15) / 1e6;
@@ -35,8 +35,8 @@ const toldToWrapUp = (sent) => sent.some((body) => JSON.stringify(body.messages 
 const SONNET = Object.freeze({ id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const priceOf = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
 /** What a desktop run on pi is offered: its granted tools, the desktop's, and the host's codemode (one code mode on every
- *  run; its scripts call the desktop's tools). */
-const DESKTOP_OFFERED = ["codemode", "computer_act", "computer_observe", "computer_request_handoff", "computer_screenshot", "computer_script", "edit", "read", "write"];
+ *  run; its scripts drive the desktop as `computer`, over its tools and computer_op, which is bound for scripts alone). */
+const DESKTOP_OFFERED = ["codemode", "computer_act", "computer_observe", "computer_request_handoff", "computer_screenshot", "edit", "read", "write"];
 const offeredOf = (body) => (body?.tools ?? []).map((tool) => tool.name).sort();
 const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers() });
 const TASK = "Open a terminal, run hostname, and write what it prints to answer.md in your work folder.";
@@ -84,21 +84,21 @@ async function neededFor(t, origin) {
   return { sent, first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked };
 }
 
-test("the documented minimums are what the run needs, to the cent above: $0.12 through a gateway, $0.09 straight to Anthropic", async (t) => {
+test("the documented minimums are what the run needs, to the cent above: $0.11 through a gateway, $0.09 straight to Anthropic", async (t) => {
   const gateway = await neededFor(t, "https://openrouter.ai/api");
   const direct = await neededFor(t, "https://api.anthropic.com");
   t.diagnostic(`measured: ${JSON.stringify({ offered: offeredOf(gateway.sent[0]), gateway: { first: gateway.first, whole: gateway.whole, bound: gateway.asked[0].request.inputTokensMax }, direct: { first: direct.first, whole: direct.whole } })}`);
   assert.deepEqual(offeredOf(gateway.sent[0]), DESKTOP_OFFERED, "the run is offered a desktop run's tools, the host's codemode among them");
   assert.ok(gateway.asked[0].request.inputTokensMax > 9_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
   assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675, "straight to Anthropic, by its count and the tool-use prompt");
-  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.058, 0.03], "the first request's least");
+  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.05, 0.03], "the first request's least");
   assert.deepEqual([Math.ceil(gateway.whole * 100) / 100, Math.ceil(direct.whole * 100) / 100], [GATEWAY_MINIMUM, DIRECT_MINIMUM], JSON.stringify({ gateway: gateway.whole, direct: direct.whole }));
 });
 
 test("through a gateway, a pi desktop run on Sonnet under $0.04 is refused its first request unsent, in the words that name what it needs", async (t) => {
   const { asked, sent, row } = await desktopRun(t, 0.04, "https://openrouter.ai/api");
   assert.equal(sent.length, 0, "nothing sent");
-  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.06/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
+  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.05/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
 });
 
 // A cent under the minimum the cap parks the run before its last step, by either route: through a gateway the input bound

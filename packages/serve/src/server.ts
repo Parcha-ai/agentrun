@@ -1,3 +1,8 @@
+import { SdkRuns, sdkOf } from "./sdk/runs.js";
+import { gradeRouteFor } from "./runner/harness-loops.js";
+import { routeOf as sdkModelRoute } from "./runner/model-route.js";
+import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
+import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
 import { isNativeRuntime } from "./native/runtimes.js";
@@ -35,7 +40,7 @@ import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
-import { HarnessInstall, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
+import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -147,7 +152,6 @@ import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendo
 import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
-import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
@@ -156,6 +160,7 @@ import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS,
 import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
@@ -304,6 +309,9 @@ export type ServeOptions = {
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
    *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
   harnessLocks?: Readonly<Record<string, string>>;
+  /** For a caller in this process: what a harness's first use installs it with, in place of npm into the data
+   *  (harness-install.ts sharedInstaller, the template eval's). No environment variable or flag reaches it. */
+  harnessInstall?: HarnessInstaller;
   /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
    *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
   fauxMountinfo?: string;
@@ -429,6 +437,19 @@ export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
   | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
+  {method:"GET",pattern:/^\/connectors$/,name:"listRemoteConnectors"},
+  {method:"POST",pattern:/^\/connectors\/enrollment$/,name:"enrollRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors$/,name:"registerRemoteConnector"},
+  {method:"DELETE",pattern:/^\/connectors\/([^/]+)$/,name:"revokeRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/import$/,name:"importRemoteTarget"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/history$/,name:"importRemoteHistory"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/sdk-runs$/,name:"startSdkRun"},
+  {method:"GET",pattern:/^\/sdk-runs\/([^/]+)$/,name:"getSdkRun"},
+  {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/events$/,name:"sdkRunEvents"},
+  {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/complete$/,name:"completeSdkRun"},
   {method:"POST",pattern:/^\/native\/discover$/,name:"discoverNative"},
   {method:"POST",pattern:/^\/native\/connect$/,name:"connectNative"},
   {method:"GET",pattern:/^\/agents\/([^/]+)\/native$/,name:"getNative"},
@@ -829,6 +850,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
       input_wait_s: null,
       max_cost_usd: null,
+      // The most requests on free models a run makes (AGENTRUN_FREE_MODEL_REQUESTS, else 60): each costs $0, so the
+      // dollar cap cannot stop them, and this does (the kernel cap's free.ts). ChatGPT-plan requests don't count.
+      free_model_requests: freeModelRequestsOf(env),
     },
   };
 }
@@ -879,6 +903,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const learning = learningOf(process.env, options.learning);
   const learningBudget = learningBudgetOf(process.env, options.learningBudget);
+  // A limit on a run's requests on free models that is no whole number above 0 stops the start, naming its variable.
+  freeModelRequestsOf(process.env);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
@@ -1325,11 +1351,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const lock = options.harnessLocks?.[entry.id];
     // npm past its SIGTERM's grace (it waits on a tarball once it writes): killed, and the line says so.
     const onKilled = () => log?.(logLine("harness_install_killed", { harness: entry.id, said: `npm did not stop within ${NPM_STOP_GRACE_MS / 1000} s of SIGTERM; killed` }));
-    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, (entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal, onKilled, ...(lock ? { lock } : {}) }), (ms) => {
+    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, options.harnessInstall ?? ((entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal, onKilled, ...(lock ? { lock } : {}) })), (ms) => {
       log?.(logLine("harness_installed", { harness: entry.id, ms, dir: installDirOf(data, entry.id) }));
       void probe(`${entry.id}_installed`).catch(() => undefined);
     })];
   }));
+  // Each harness found installed as this server starts has what earlier installs left beside it swept (HarnessInstall
+  // needed): the point sure to come after an install that could not remove one (a crashed server's npm still writing in
+  // it), since no install runs again until the pin changes. Not waited for; the close waits for it (install.stop).
+  for (const install of Object.values(installs)) void install.needed().catch(() => undefined);
   // A capped start prices each OpenRouter Decisions model a workflow pins (runnable.ts) from OpenRouter's public catalog,
   // read once for this server (and again after a read that failed), through the faux one under --faux.
   let pricing: Promise<{ priceOf(model: string): Promise<unknown> }> | undefined;
@@ -1765,13 +1795,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return Buffer.concat(chunks);
   }
 
-  async function bodyOf(req: IncomingMessage): Promise<Json> {
+  async function bodyOf(req: IncomingMessage, max = MAX_BODY): Promise<Json> {
     // Read once: the secret-write check reads a registered operation's body before its route does (secret-writes.ts).
     const read = bodies.get(req);
     if (read !== undefined) return read;
     const type = String(req.headers["content-type"] ?? "");
     if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
-    const bytes = await bytesOf(req);
+    const bytes = await bytesOf(req, max);
     let value: unknown;
     try {
       value = JSON.parse(bytes.toString("utf8") || "null");
@@ -1786,23 +1816,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
    *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
-  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> {
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions }> {
     const revision = (entry ?? (await needAgent(id))).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
-    const [{ learnedDraftTools }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
+    const [{ learnedDraftTools }, { permissionFrom }] = await Promise.all([import("./tools.js"), import("./tool-gate.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
     // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
-    const { tools, gated, deniedBy, asked } = learnedDraftTools(body.tools ?? [], (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
-    // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
-    const ask = { asked, fits: learnedAskFits };
+    const { tools, gated, deniedBy } = learnedDraftTools(body.tools ?? [], (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // A draft's decision nodes (LS-07), as a run's learning end checks them: on this server's decision providers (its
     // keys, saved ones among them: env), each held to the gate by its bare id; deny alone refuses one.
     const [{ decisionProvidersIn }, { DECISION_PROVIDER_KEYS }] = await Promise.all([import("./decisions.js"), import("./tool-plane.js")]);
     const providers = await decisionProvidersIn(env);
-    if (!providers) return { tools, gated, deniedBy, ask };
+    if (!providers) return { tools, gated, deniedBy };
     const decided: Record<string, string> = {};
     const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
     for (const provider of DECISION_PROVIDER_KEYS) {
@@ -1811,7 +1839,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       decided[provider] = permission;
       if (permission === "deny") decisionDeniedBy[provider] = from as "agent" | "server" | "default";
     }
-    return { tools, gated, deniedBy, ask, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
+    return { tools, gated, deniedBy, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1828,10 +1856,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** An agent view's extra fields (agents-store agentView): its saved sign-ins, its learning count, and its run counts.
    *  The run counts read the store's runs (store-reads/runs.ts listRuns): `count` is every run the agent has, `live` those
    *  still running (runReadState 'running': queued, running or parked), the same numbers the file-backed view showed. */
-  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number }; ownComputer: Record<string, unknown> | null }> => {
+  const agentExtra = async (entry: AgentEntry): Promise<{ nativeStatus?: import("./native/types.js").NativeBinding; signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number }; ownComputer: Record<string, unknown> | null }> => {
     const learning = await learningOfAgent(entry);
+    const native = nativeOf(entry.revision?.body);
+    const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
     const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
     return {
+      ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
       ...(learning ? { learning } : {}),
       runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length },
@@ -1910,6 +1941,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+    if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
     if (native) {
       const overrides = nativeModelOverrides(revision.body);
@@ -1917,9 +1949,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const execution = nativeExecutionOverrides(revision.body);
       if (execution.length) throw new ApiError("agent_not_runnable", NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, { fields: execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })) });
       if (((revision.body as { maxToolCalls?: number }).maxToolCalls ?? 0) > 0) throw new ApiError("agent_not_runnable", NATIVE_TOOL_BUDGET_UNSUPPORTED, { fields: [{ field: "definition.max_tool_calls", reason: "not_an_option", message: NATIVE_TOOL_BUDGET_UNSUPPORTED }] });
-      if ((options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
+      if (!native.remote && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
       if (capped) throw new ApiError("agent_not_runnable", "Native runs retain their own limits; AgentRun cannot enforce a dollar cap on this connection. Remove max_cost_usd and use native limits.");
-      await launchNative(native); return;
+      if(native.remote)await new RemoteConnectors(store).assertReady(native);else await launchNative(native); return;
     }
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
     // An agentic revision's MCP tools are checked as its save pinned them (its pin, never the server's listing now), for
@@ -2043,6 +2075,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
       return { warnings: [], stamp: {} };
     }
+    if (sdkOf(body)) return { warnings: [], stamp: {} };
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
     if (install) {
@@ -3033,6 +3066,41 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       secretSeen = checked.seen;
     }
+    // Connector credentials have no authority over the ordinary API. Enrollment is a one-use owner grant;
+    // subsequent calls are restricted to one connector and its explicitly imported target allowlist.
+    if (found.name === "registerRemoteConnector") {
+      const credential = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+      return send(res, 200, await new RemoteConnectors(store).register(credential, await bodyOf(req)));
+    }
+    if (found.name === "revokeRemoteConnector" && String(req.headers.authorization ?? "").startsWith("Bearer ar_connector_")) {
+      const connectorId = decodeURIComponent(found.pattern.exec(path)![1]!);
+      const broker = new RemoteConnectors(store);
+      await broker.authenticate(connectorId, String(req.headers.authorization).slice(7));
+      return send(res, 200, await broker.revoke(connectorId));
+    }
+    if (["importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"].includes(found.name)) {
+      const parts = found.pattern.exec(path)!;
+      const connectorId = decodeURIComponent(parts[1]!);
+      const broker = new RemoteConnectors(store);
+      await broker.authenticate(connectorId, String(req.headers.authorization ?? "").replace(/^Bearer /, ""));
+      // History pages and command completions have separate bounded contracts; other JSON keeps MAX_BODY.
+      const limit = found.name === "importRemoteHistory" ? REMOTE_HISTORY_BODY_BYTES
+        : found.name === "completeRemoteCommand" ? REMOTE_COMPLETION_BODY_BYTES : MAX_BODY;
+      const body = await bodyOf(req, limit);
+      if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body));
+      if (found.name === "importRemoteHistory") return send(res, 200, await broker.importHistory(connectorId, decodeURIComponent(parts[2]!), body, [token,String(req.headers.authorization??"").replace(/^Bearer /,"")]));
+      if (found.name === "pollRemoteConnector") return send(res, 200, await broker.poll(connectorId, body));
+      const commandId = decodeURIComponent(parts[2]!);
+      return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
+    }
+    if (["getSdkRun","sdkRunEvents","completeSdkRun"].includes(found.name)) {
+      const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
+      const sdk=new SdkRuns(store,data,token,serverSecrets);
+      await sdk.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
+      if(found.name==="sdkRunEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
+      if(found.name==="completeSdkRun")return send(res,200,await sdk.complete(runId,await bodyOf(req)));
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
@@ -3042,6 +3110,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {
+      case "startSdkRun": {
+        if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
+        const body=await bodyOf(req),entry=await needAgent(id);
+        let gradeModel=gradeModelOf(env,options.gradeModel);
+        if(!gradeModel && sdkOf(entry.revision?.body) && learnsOf((entry.revision!.body as AgenticBody).learning) && learning!=="off"){
+          try{const chosen=await runModelRef(env,(await pinnedOf(entry,{}))!.revision);if(chosen)gradeModel=`${chosen.provider}/${chosen.modelId}`;}catch{}
+        }
+        const sdk=new SdkRuns(store,data,token,serverSecrets);
+        const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,{...startDeps,...(gradeModel?{gradeModel}:{})},origin,async model=>{
+          try{const route=await gradeRouteFor({model,agentId:id},env,sdkModelRoute);await route.provider.credential();}catch{throw new ApiError("agent_not_runnable","Self-improving SDK runs need a working server model key and grading model. Configure Model keys or turn self-improving off.");}
+        },linkOrigin(req))}));
+        // Re-read the pinned receipt even on an in-memory replay: credentials saved since
+        // the first response must still be withheld without reselecting a different seed.
+        const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
+        return send(res,answer.status,receipt,answer.headers);
+      }
+      case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
+      case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
+      case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
       case "discoverNative": {
         const body=await bodyOf(req);
         if(typeof body.project!=="string" || (body.runtime!==undefined && !isNativeRuntime(body.runtime))) throw new ApiError("input_invalid","Choose the project directory on this source machine and a supported CLI runtime.");
@@ -3054,18 +3141,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getNative": {
         const entry=await needAgent(id);
         const native=nativeOf(entry.revision?.body);
-        return send(res,200,{native:native??null});
+        return send(res,200,{native:native?.remote?await new RemoteConnectors(store).status(native):native??null});
       }
       case "verifyNative": {
         const before=await needAgent(id);
-        if(options.apiOnly || options.publicUrl || !isLoopback(host))throw new ApiError("forbidden","Local native verification must run on the source machine.");
-        const entry=await verifyConnection(store,before);
+        if(!nativeOf(before.revision?.body)?.remote && (options.apiOnly || options.publicUrl || !isLoopback(host)))throw new ApiError("forbidden","Local native verification must run on the source machine.");
+        const entry=nativeOf(before.revision?.body)?.remote?await verifyRemote(store,before):await verifyConnection(store,before);
         return send(res,200,{native:nativeOf(entry.revision?.body)});
       }
       case "disconnectNative": {
         const entry=await needAgent(id); const native=nativeOf(entry.revision?.body);
         if(!native)throw new ApiError("not_found","This agent has no native connection.");
         const changed=await updateNative(store,entry,{...native,connected:false});
+        if(native.remote)await new RemoteConnectors(store).disconnectTarget(native);
         return send(res,200,{native:nativeOf(changed.revision?.body)});
       }
       case "createAgent": {

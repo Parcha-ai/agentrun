@@ -85,6 +85,12 @@ export type TimelineEvent = {
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
 export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
+/** The call a nested call (the kernel's NestedCalls: a script's, tools_call's) was made in, read off its id
+ *  (`<callId>/<key>`); undefined for a call the model made itself. */
+export const nestingCallOf = (callId: string): string | undefined => {
+  const at = callId.lastIndexOf("/");
+  return at > 0 ? callId.slice(0, at) : undefined;
+};
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
@@ -174,8 +180,13 @@ export const BROWSER_CHARGE = "browser";
 export const chargedTool = (row: TimelineEvent): string | undefined =>
   !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" && row.tool_name !== null && BROWSER_STEPS.has(row.tool_name) ? BROWSER_CHARGE : undefined;
 /** The spend cap's wrap-up (serve's cap.ts): the run's model was told once, near its cap, to finish (`words`, what it was
- *  told). A row of its own, the server's ("AgentRun: …"); no request, no cost. */
+ *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
+ *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
+/** The run's model was told once, on its first request after its claim gave it a computer in place of an earlier
+ *  claim's, that the old one is gone with what was on it (`words`, what it was told after the label, as the wrap-up's).
+ *  A row of its own, the server's, as the wrap-up's; no request, no cost. */
+export const COMPUTER_NOTE = "agentrun.computer_note";
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
  *  (`not_metered`); it is no charge and never makes the cost unknown. */
@@ -816,9 +827,10 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === CAP_WRAPUP) {
-      // What the run's model was told near its cap: the server's row (`origin: "server"`, in the words of its other rows),
-      // no request, no cost, and no message any turn took (its id ends in NOTE_SUFFIX, which isMessageRow passes over).
+    if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE) {
+      // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
+      // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in
+      // NOTE_SUFFIX, which isMessageRow passes over).
       const words = str(obj(entry.data)?.words);
       if (words) add(make("phase", conv, `${base}${NOTE_SUFFIX}`, { summary: `AgentRun: ${words}`, text: words, origin: "server" }));
       return out;
@@ -899,7 +911,9 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
+          // Recorded managed calls derive their nesting from the id; SDK calls keep their validated explicit parent.
+          const nesting = (entry.recordedCall ? nestingCallOf(id) : undefined) ?? str(obj(entry.data)?.parentCallId);
+          const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
           calls.set(`${conv}:${id}`, opened);
@@ -937,7 +951,7 @@ function createProjector(options: TimelineOptions) {
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown, call?.use.parent_tool_use_id);
       if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
       add(row);
       if (!view.isError) {
