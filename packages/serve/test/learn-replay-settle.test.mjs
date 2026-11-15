@@ -14,13 +14,17 @@
 //   - r8: a promotion's `since` names it: each run it serves keeps it, and its check counts only those runs' grades (a run
 //     served before a re-promotion and graded after never counts for the new one); a check whose promotion was replaced
 //     meanwhile writes nothing.
-// The replay runs are records the read reads (row, launch, metrics); the learning folder is real (landWorkflows).
+//   - a revision held on its served runs graded wrong never re-promotes by answering them as wrongly again: on a wrong
+//     grade the bar is the grade, and the agent's side of a run it never answered is right.
+// The replay runs are records the read reads (row, launch, metrics, and the answer said(): a real run's journal); the
+// learning folder is real (landWorkflows).
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -43,6 +47,9 @@ const FLOW = {
 };
 const DIGEST = workflowDigest({ workflow: JSON.stringify(FLOW) });
 const T0 = Date.parse("2026-11-14T12:00:00.000Z");
+/** What a graded run graded wrong said (world's said): 41. A replay that answers 42 now is right by the grade. */
+const SAID = "41";
+const FIXED = () => "42";
 
 /** An agent that learned `answer`, `graded` graded runs on the agent's path (graded `agentCorrect`), and replay runs the
  *  test sets (`replayRun`): rows and launches the read reads, never run. `now` moves with `clock.at`. */
@@ -100,10 +107,28 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
       };
     },
   });
+  /** What a run's final answer says (answerOf reads it from the run's timeline): `said(id, text)` points run `id`'s journal
+   *  at a real run whose one turn answered `text` (one per text). A run with none answers nothing (null). */
+  const saying = new Map();
+  const sayers = new Map();
+  const said = async (id, text) => {
+    if (!sayers.has(text)) {
+      const run = `says-${sayers.size}`;
+      await store.runs.create({ id: run, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf("says") });
+      const journal = store.journal(await store.claim(run, "runner-a", { leaseMs: 60_000 }));
+      const entry = async (kind, model) => ({ id: await journal.mintId(), conversationId: 1, kind, model });
+      const asked = await entry("pi.user", [{ role: "user", content: "Answer.", timestamp: T0 }]);
+      const answered = await entry("pi.assistant", [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }], timestamp: T0 }]);
+      await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }, { type: "entry", value: asked }, { type: "entry", value: answered }], BACKGROUND_CONTEXT);
+      sayers.set(text, run);
+    }
+    saying.set(id, sayers.get(text));
+  };
   const storeOf = (inner) => {
     const runs = runsOf(inner);
     const settings = settingsOf(inner);
-    return new Proxy(inner, { get: (target, key) => (key === "runs" ? runs : key === "settings" ? settings : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+    const readJournal = (id) => inner.readJournal(saying.get(id) ?? id);
+    return new Proxy(inner, { get: (target, key) => (key === "runs" ? runs : key === "settings" ? settings : key === "readJournal" ? readJournal : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
   };
   const clock = { at: T0 };
   const logs = [];
@@ -124,7 +149,7 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
   };
   const records = async () => promotionsOf(store.settings, "agent-1");
   const read = (id) => replayView(ask(), "answer", DIGEST, id);
-  return { store: () => store, seed, gradedRuns, replayRun, reserve, reopen, records, read, ask, clock, gate, logs, creates };
+  return { store: () => store, seed, gradedRuns, replayRun, said, reserve, reopen, records, read, ask, clock, gate, logs, creates };
 }
 
 test("two reads settling one replay at once write it once: a newer replay of the same revision started meanwhile stays replaying", async (t) => {
@@ -310,6 +335,7 @@ test("#2823 review: an owner's replay stopped after 2 of its 5 runs is finished 
 async function heldOnServedPromoted(t) {
   const w = await world(t, { graded: 7, agentCorrect: false });
   const settings = w.store().settings;
+  for (const run of w.gradedRuns) await w.said(run, SAID);
   const older = w.gradedRuns.slice(0, 5);
   const score = { n: 5, agree: 5, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 };
   await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t1", decided: "promote", source: "replay", reason: "r", replay: { ...score, of: older }, commit: w.seed }, () => true);
@@ -331,11 +357,16 @@ async function heldOnServed(t) {
   return { w, settings, older, gate };
 }
 
-/** The owner's default replay of DIGEST; its replay runs end as `outcome(of)` says for the graded run each replays. */
-async function ownersReplay(w, outcome) {
+/** The owner's default replay of DIGEST; its replay runs end as `outcome(of)` says for the graded run each replays, each
+ *  answering what `answer(of)` says (undefined: nothing). */
+async function ownersReplay(w, outcome, answer = () => undefined) {
   const { replay } = await askReplay(w.ask(), "answer", DIGEST, "held");
   const record = (await w.records()).findLast((one) => one.replay_id === replay);
-  record.runs.forEach((id, i) => w.replayRun(id, record.inputs[i], { outcome: outcome(record.inputs[i]) }));
+  for (const [i, id] of record.runs.entries()) {
+    w.replayRun(id, record.inputs[i], { outcome: outcome(record.inputs[i]) });
+    const text = answer(record.inputs[i]);
+    if (text !== undefined) await w.said(id, text);
+  }
   return { record, view: await w.read(replay) };
 }
 
@@ -352,7 +383,7 @@ test("#2823 r7: a revision held on runs it served graded wrong is replayed on th
   assert.match(skipped.view.reason, /did not answer on 2 graded runs it was held on/);
   assert.deepEqual([...(await w.records()).at(-1).held_on].sort(), ["graded-5", "graded-6"], "still owed by its next replay");
   // A replay that answers on them too promotes it.
-  const answered = await ownersReplay(w, () => "answered");
+  const answered = await ownersReplay(w, () => "answered", FIXED);
   assert.deepEqual([...answered.record.inputs].sort(), [...older, "graded-5", "graded-6"].sort());
   assert.deepEqual([answered.view.status, answered.view.decided], ["done", "promote"], JSON.stringify(answered.view));
   assert.equal((await w.records()).at(-1).held_on, undefined, "a promotion owes nothing");
@@ -360,7 +391,7 @@ test("#2823 r7: a revision held on runs it served graded wrong is replayed on th
 
 test("#2823 r7: a revision held, replayed and promoted again is checked only on the grades after that promotion, never the ones it was held on", async (t) => {
   const { w, settings, gate } = await heldOnServed(t);
-  const { view } = await ownersReplay(w, () => "answered");
+  const { view } = await ownersReplay(w, () => "answered", FIXED);
   assert.deepEqual([view.status, view.decided], ["done", "promote"], JSON.stringify(view));
   const promoted = (await w.records()).at(-1);
   const grades = await gradesOf(settings, "agent-1");
@@ -388,7 +419,7 @@ test("#2823 r8: a stale check that read the promotion before a hold and a re-pro
   await reached;
   // Meanwhile another claim's check holds P1 on the 20 it served wrong, and the owner's replay promotes it again: P2.
   assert.equal(await gate(), undefined, "held on the 20 it served wrong");
-  const { view } = await ownersReplay(w, () => "answered");
+  const { view } = await ownersReplay(w, () => "answered", FIXED);
   assert.deepEqual([view.status, view.decided], ["done", "promote"], JSON.stringify(view));
   const p2 = (await w.records()).at(-1);
   assert.equal(typeof p2.since, "number");
@@ -404,7 +435,7 @@ test("#2823 r8: a stale check that read the promotion before a hold and a re-pro
 // TL on #2823 r8: a run served under P1 (before the re-promote) but graded after P2 counts for P1, never for P2's check.
 test("#2823 r8: a run served before the re-promotion and graded wrong after it never counts toward the new promotion's check", async (t) => {
   const { w, settings, gate } = await heldOnServed(t);
-  const { view } = await ownersReplay(w, () => "answered");
+  const { view } = await ownersReplay(w, () => "answered", FIXED);
   assert.deepEqual([view.status, view.decided], ["done", "promote"], JSON.stringify(view));
   const p2 = (await w.records()).at(-1);
   // 20 runs served under P1 (their grades keep P1's promotion: none) graded wrong now, after P2: never P2's check.
@@ -421,4 +452,71 @@ test("#2823 r8: a run served before the re-promotion and graded wrong after it n
   for (let i = 0; i < 20; i++) await putGrade(settings, "agent-1", { run: `p2-${i}`, correct: true, source: "eval", at: "t", path: "workflow", workflow: "answer", digest: DIGEST, promotion: p2.since });
   assert.ok(await gate(), `it serves on: ${w.logs.join("\n")}`);
   assert.deepEqual([(await w.records()).at(-1).decided, (await w.records()).at(-1).since], ["promote", p2.since]);
+});
+
+// autoqa on #2823 (main 725382acb0): 20 served runs graded wrong held a revision, and its owner's replay promoted it at
+// 0.0% against 0.0%: on a run the workflow served there is no answer of the agent's, so the revision tied its own wrong
+// answers. TL ruling: on a wrong grade the bar is the grade. The replay's answer is right only when the grade says so
+// (its expected answer, else at least not the answer graded wrong), and the agent's side is its own answer when it gave
+// one, else right: a held workflow earns its way back.
+/** DIGEST promoted by its dry run, then serving all 20 graded runs (each replayable), graded wrong (`expected` when
+ *  given), each having said SAID; ten agent runs graded right by hand. A claim's check holds it on the 20. */
+async function heldOnTwenty(t, { expected } = {}) {
+  const w = await world(t, { graded: 20, agentCorrect: false });
+  const settings = w.store().settings;
+  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t1", decided: "promote", source: "dry_run", reason: "r", commit: w.seed }, () => true);
+  for (let i = 0; i < 10; i++) await putGrade(settings, "agent-1", { run: `hand-${i}`, correct: true, source: "eval", at: "t", path: "agent" });
+  for (const run of w.gradedRuns) {
+    await putGrade(settings, "agent-1", { run, correct: false, source: "eval", at: "t", path: "workflow", workflow: "answer", digest: DIGEST, ...(expected ? { expected } : {}) });
+    await w.said(run, SAID);
+  }
+  const gate = promotionGate({ store: w.ask().store, agentId: "agent-1", runId: "now", revisionId: "rev-1", launch: { input: { content: "Now?", question: "Now" }, title: "Now", place: { mode: "runner" }, learning: startAt(w.seed) }, context: BACKGROUND_CONTEXT, log: (line) => w.logs.push(line), now: () => w.clock.at });
+  assert.equal(await gate({ name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(FLOW) }, DIGEST), undefined, "held on the 20 it served wrong");
+  const held = (await w.records()).at(-1);
+  assert.deepEqual([held.decided, held.source, held.held_on.length], ["hold", "graded", 20]);
+  return w;
+}
+
+for (const [graded, expected] of [["with the grade's expected answer", { answer: 42 }], ["with no expected answer", undefined]]) {
+  test(`a revision held on 20 served runs graded wrong never re-promotes by tying its own wrong answers (${graded}); answering them right promotes it`, async (t) => {
+    const w = await heldOnTwenty(t, { expected });
+    // The QA shape: the owner's replay answers what each run was graded wrong for.
+    const tie = await ownersReplay(w, () => "answered", () => SAID);
+    assert.equal(tie.record.inputs.length, 20);
+    assert.deepEqual([tie.view.status, tie.view.decided], ["done", "hold"], JSON.stringify(tie.view));
+    assert.deepEqual([tie.view.score.wf_acc, tie.view.score.agent_acc, tie.view.score.delta], [0, 1, -1], "the agent's side of a wrong grade it never answered is right");
+    assert.match(tie.view.reason, /more than 2 pts under the agent/);
+    assert.equal(servingOf(await w.records())[0].digest, null, "still held: nothing serves");
+    assert.equal((await w.records()).at(-1).held_on.length, 20, "still owed by its next replay");
+    // Its next replay answers them right by the grade: promoted.
+    const fixed = await ownersReplay(w, () => "answered", FIXED);
+    assert.deepEqual([fixed.view.status, fixed.view.decided], ["done", "promote"], JSON.stringify(fixed.view));
+    assert.deepEqual([fixed.view.score.wf_acc, fixed.view.score.agent_acc], [1, 1]);
+    assert.equal(servingOf(await w.records())[0].digest, DIGEST, "it serves again");
+  });
+}
+
+test("a revision held on 20 served runs graded wrong that hands each back to the agent is the agent on them: promoted only on what it answered alone", async (t) => {
+  const w = await heldOnTwenty(t);
+  // Hands back on 15 (the agent's answer, right by default) and answers 5 alone, the same wrong answer: 75% under 100%.
+  const half = await ownersReplay(w, (of) => (Number(of.split("-")[1]) < 15 ? "handed_back" : "answered"), () => SAID);
+  assert.deepEqual([half.view.decided, half.view.score.wf_acc, half.view.score.agent_acc, half.view.score.handed_back], ["hold", 0.75, 1, 15], JSON.stringify(half.view));
+});
+
+// Greptile P1 on #2877: gains on other inputs never pay for the runs it was held on. Held on X and Y (served, graded wrong),
+// its replay answers the five agent inputs right by their expected answer (the agent's were wrong) and says 41 again on X
+// and Y: 5/7 against the agent's 2/7 overall, yet each run it was held on is as wrong as before. The runs it was held on
+// are scored on their own too, and must be within the bar.
+test("a revision held on runs it served wrong never re-promotes on gains elsewhere while it repeats their wrong answers", async (t) => {
+  const { w, settings, older } = await heldOnServed(t);
+  for (const run of older) await putGrade(settings, "agent-1", { run, correct: false, expected: { answer: 42 }, source: "eval", at: "t", path: "agent" });
+  const held = (await w.records()).at(-1).held_on;
+  const mixed = await ownersReplay(w, () => "answered", (of) => (held.includes(of) ? SAID : "42"));
+  assert.deepEqual([mixed.view.score.wf_acc, mixed.view.score.agent_acc], [0.7143, 0.2857], `overall it clears: ${JSON.stringify(mixed.view)}`);
+  assert.deepEqual([mixed.view.status, mixed.view.decided], ["done", "hold"], JSON.stringify(mixed.view));
+  assert.match(mixed.view.reason, /on the 2 graded runs it was held on/);
+  assert.deepEqual([...(await w.records()).at(-1).held_on].sort(), ["graded-5", "graded-6"], "still owed by its next replay");
+  // Right on them too: promoted.
+  const fixed = await ownersReplay(w, () => "answered", FIXED);
+  assert.deepEqual([fixed.view.status, fixed.view.decided], ["done", "promote"], JSON.stringify(fixed.view));
 });

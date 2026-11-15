@@ -151,9 +151,11 @@ Docker socket, so each run's Docker sandbox is a container beside the server's, 
 volume ([in the published image](#in-the-published-image)). It takes Docker Engine 26 or later, which mounts a
 volume's subpath.
 
-1. Start it (below).
+1. Start it (below). It needs no model key.
 2. Open the console and set your password.
-3. Sign in with it on any browser; the token in the log stays for scripts and the CLI.
+3. Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or add a model key
+   there instead ([on a ChatGPT plan](#on-a-chatgpt-plan)).
+4. Sign in with your password on any browser; the token in the log stays for scripts and the CLI.
 
 On a fresh server with no `AGENTRUN_PUBLIC_URL`, whoever reaches the console first sets the password, so set it right after
 the start, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code the server
@@ -163,11 +165,16 @@ On a Linux host with Docker Engine 26 or later, with no checkout:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
-export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
 echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" >> .env && chmod 600 .env   # once; keep it
 docker compose up -d
 docker compose logs agentrun | grep Open
+```
+
+For a model key as well, save it in the console, or export it before `docker compose up`:
+
+```sh
+export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 ```
 
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
@@ -880,11 +887,11 @@ its provider's capable everyday model, not its dearest ($2 in and $10 out per mi
 another. claude-agent takes only the Anthropic one and codex only the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
-`source` is `gateway`, `providers` or `faux` (the published document marks these as `models/2`, beyond the contract's
-`managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
+`source` is `gateway`, `providers`, `chatgpt` or `faux` (the published document marks `gateway` and `providers` as
+`models/2`, beyond the contract's `managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
 model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source.
 `models` also says `ready`, whether a revision that names no model runs here, and when it does not, `needs`: `key` (no
-model provider's key, or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
+model provider's key and no [ChatGPT sign-in](#on-a-chatgpt-plan), or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
 know); and `priced`, whether that model has a price here, which a run's `max_cost_usd` needs (false for a gateway
 model with no price set that the catalog does not list in any form; null while `ready` is false, with no model to price). Where the models come from:
 
@@ -915,6 +922,8 @@ model with no price set that the catalog does not list in any form; null while `
   gets that as a warning. One
   without a cap runs, on every harness, with each request's cost unknown: codex's and opencode's proxy books it unknown,
   never $0, so the run's `cost.usd` is `null` and `/usage` counts it in `unpriced_runs`.
+- A ChatGPT plan signed in here ([below](#on-a-chatgpt-plan)), with no provider's key: `source` is `chatgpt`, and pi
+  and codex run on the plan's models (`chatgpt/<model-id>`) with no key.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, Bedrock's `AWS_*` keys, ...), and its catalog prices the run. The `AGENT_MODEL`
   variables are then `provider/model-id` too. The launcher holds every key pi-ai reads, as it holds the rest, and a run's
@@ -948,6 +957,52 @@ above the harness's highest runs at that highest (Codex and OpenCode stop at `xh
 `low`, `medium` or `high` also gets a short note on how to work, right after its instructions, on every harness
 (`src/effort-guidance.ts`): `low` answers directly, `medium` plans briefly and checks once, `high` plans each part, fills
 the gaps and reviews. A run with no level, or one above `high`, gets no note.
+
+### On a ChatGPT plan
+
+A server needs no model key to start, on any of its deploys. With none, capabilities say `models.ready: false` and
+`needs: "key"`, and each harness's `reason` names the keys it takes. Codex's and pi's add "or sign in with ChatGPT
+(Settings → Model keys) to run it on your ChatGPT plan" (after an expiry: "your ChatGPT sign-in expired: sign in again
+(Settings → Model keys)"), and their entries say `needs: ["key", "chatgpt"]`; Claude Agent's and OpenCode's say
+`needs: ["key"]`. The console's first screen then offers **Continue with ChatGPT** beside **Add a key** (also under
+Settings → Model keys), and its "What runs here" reads `needs`: Codex and pi "run after Continue with ChatGPT". The owner
+signs in with their ChatGPT plan, and pi and codex run on it with no key. Claude Agent, OpenCode, Jev decisions and paid
+tools still need their own keys.
+
+The sign-in is the owner's alone, over the owner's signed-in session (the API token gets `403`, as for every secret):
+
+- `POST /v2/settings/chatgpt/sign-in` answers `authorize_url`, OpenAI's sign-in page, and `expires_at`: one sign-in
+  waits at a time, for 10 minutes, and starting again replaces it. Where the browser and the server share a computer
+  (`npx @parcha/agentrun`), it finishes by itself. On a server that isn't this computer (Render, a container), the
+  sign-in tab ends on a page that won't load: copy its whole address into the console, which sends it as
+  `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
+- `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
+  (with `email`, `plan` and the plan's `models`) or `expired`.
+- `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
+  `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
+  When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
+  the revocation: remove AgentRun in your ChatGPT settings."}`. Signing in again revokes the sign-in it replaces, and a
+  renewal that finishes after a sign-out revokes the tokens it got.
+
+A curl call with the owner's session (the console's cookie: `__Host-agentrun-session` on https) sends this server's own
+`origin` and `content-type: application/json` on every write, a `DELETE` with no body too: without them the cookie
+does not count, and the server answers `401` ([the console](#the-console)).
+
+```sh
+S=(-H "cookie: __Host-agentrun-session=$SESSION" -H "origin: $BASE" -H 'content-type: application/json')
+curl -X POST "$BASE/v2/settings/chatgpt/sign-in" "${S[@]}"
+curl -X POST "$BASE/v2/settings/chatgpt/sign-in/finish" "${S[@]}" -d '{"redirect_url":"<the address the sign-in tab ended on>"}'
+curl "$BASE/v2/settings/chatgpt" "${S[@]}"
+curl -X DELETE "$BASE/v2/settings/chatgpt" "${S[@]}"   # 200 {"revoked": true}, or {"revoked": false, "message": "..."}
+```
+
+The sign-in is sealed in the store under the seal key, like a saved key. Any process that holds the store and the seal
+key (the server, each runner) renews the sign-in, so it is as trusted as the server; the seal key already opens every
+sealed key. Signed in, with no provider's key, capabilities
+say `models.source: "chatgpt"` and a revision that names no model runs on `chatgpt/gpt-6.1-sol` where the plan lists it.
+A run on the plan books its tokens and no dollars (`cost.plan`). Eligible usage in this app uses your ChatGPT plan.
+Manage usage in your ChatGPT settings. A sign-in is for the person who runs this server: don't share it or let others
+run agents on it.
 
 ## Tools
 
@@ -2374,7 +2429,8 @@ model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
-`reason` says what is missing. `claude-agent` and `codex` install themselves on first use: AgentRun never ships the
+`reason` says what is missing. With a ChatGPT plan signed in, pi and codex need no key
+([on a ChatGPT plan](#on-a-chatgpt-plan)); claude-agent and opencode still do. `claude-agent` and `codex` install themselves on first use: AgentRun never ships the
 Claude Agent SDK or the Codex CLI, and the first run on each (or the first agent saved on it) installs the version AgentRun
 pins (`@anthropic-ai/claude-agent-sdk@0.3.286`, `@openai/codex@0.164.0`) from npm into `<data>/harnesses/claude-agent`
 or `<data>/harnesses/codex`, with the npm that runs the server, once. Each install is pinned by the lock the server
