@@ -41,26 +41,34 @@ after(closeOpenSessions);
 // it says (onEvent) wakes `upon`, which then reads the store again. On a loaded machine the runner's claim loop runs
 // late, and a wait that raced a budget ran out; this one waits as long as the runner takes. HANG_MS is only a hang
 // guard, far above any loaded time, so a run that never gets there fails with its name rather than stalling the file.
-const HANG_MS = 600_000;
+const HANG_MS = 90_000;
+// A test's timeout sits 30 s above the hang guard, so a stuck wait fails at HANG_MS with its dump before the test's own
+// timeout can fire and lose it.
+const LONG_TEST_MS = HANG_MS + 30_000;
 const wakers = new Set();
 let pulses = 0;
+// What the run in the test now under way looks like, for the hang guard's dump (set by runOf).
+let probe = async () => "no run opened";
 const pulse = () => {
   pulses++;
   for (const wake of [...wakers]) wake();
 };
-/** Reads `check` again after each signal of the runner until it returns a truthy value, which it returns. */
+/** Reads `check` again after each signal of the runner until it returns a truthy value, which it returns. When the guard
+ *  fires (it wakes the wait itself, so a silent runner cannot stall it) the error names the wait and dumps the state. */
 async function upon(check, what) {
   let hung = false;
-  const guard = setTimeout(() => (hung = true), HANG_MS);
+  let wakeSelf = () => {};
+  const guard = setTimeout(() => ((hung = true), wakeSelf()), HANG_MS);
   try {
     for (;;) {
       const seen = pulses;
       const value = await check();
       if (value) return value;
-      if (hung) throw new Error(`hung (no signal in ${HANG_MS} ms): ${what}`);
+      if (hung) throw new Error(`hung (${HANG_MS} ms): ${what}\n${await probe().catch((error) => `dump failed: ${error}`)}`);
       if (pulses !== seen) continue;
       await new Promise((resolve) => {
         const wake = () => (wakers.delete(wake), resolve());
+        wakeSelf = wake;
         wakers.add(wake);
       });
     }
@@ -121,14 +129,44 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
     return made;
   };
   /** A runner on the run's store, its loop the run's own (its model requests and its tool's runs counted as one). */
+  const names = [];
+  let lastBeatAt = 0;
+  probe = async () => {
+    const row = await opened.server.runs.get("run-1");
+    const commands = await opened.server.commands("run-1", 0);
+    const held = await Promise.all(names.map(async (name) => [name, (await opened.runners[0].claimsOf(name)).map((claim) => `${claim.runId}@${claim.epoch}`)]));
+    return JSON.stringify({
+      storeNow: now(),
+      skewMs: opened.clock.skewMs,
+      row,
+      leaseLeftMs: typeof row.leaseUntil === "number" ? row.leaseUntil - now() : "no leaseUntil on the row",
+      backoffLeftMs: row.backoffUntil === null ? null : row.backoffUntil - now(),
+      commands,
+      claimsHeld: held,
+      beats: beats.count,
+      lastBeatAgoMs: Date.now() - lastBeatAt,
+      starts,
+      lastEvents: events.slice(-8).map((event) => ({ ...event, claim: event.claim && `${event.claim.runId}@${event.claim.epoch}` })),
+    });
+  };
   const spawn = (name) => {
-    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, onEvent: (event) => (events.push(event), pulse()), onBeat: () => (beats.count++, pulse()), ...TIMING });
+    names.push(name);
+    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, onEvent: (event) => (events.push(event), pulse()), onBeat: () => (beats.count++, (lastBeatAt = Date.now()), pulse()), ...TIMING });
     t.after(() => runner.close());
     return runner;
   };
   const runner = spawn("runner-a");
   if (parks) await upon(async () => (await opened.server.runs.get("run-1")).state === "parked", "the run parked on the call");
   return { server: opened.server, runnerStore: opened.runners[0], runner, spawn, clock: opened.clock, now, sent, requests, events, starts, beats };
+}
+
+/** Closes `runner` as a test's "no runner holds the run now". A close that gives up on a loop slow to stop (a loaded box:
+ *  runner.ts close, after the lease less its margin in real time) leaves its claim on the row until the lease runs out
+ *  on the store's clock, which is frozen here and would never get there: the clock moves past the lease, where a real
+ *  next runner would have waited it out. A claim the close did release is unaffected. */
+async function closeRunner(runner, clock) {
+  await runner.close();
+  clock.skewMs += STEADY_LEASE.leaseMs;
 }
 
 /** The run's journal entries as they stand. */
@@ -197,7 +235,7 @@ async function releasedAfter(server, tries) {
 /** The waits the runner said it retries in, by the run's name, in order. */
 const waitsSaid = (events) => events.filter((event) => event.type === "error" && event.runId === "run-1" && REFUSED.test(event.message)).map((event) => Number(REFUSED.exec(event.message)[2]));
 
-test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads nothing pending and the call withdrawn", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads nothing pending and the call withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   let reached;
   const atEnd = new Promise((resolve) => (reached = resolve));
   let go;
@@ -212,7 +250,7 @@ test("a stop of a run parked on a call ends it withdrawn in one write: every rea
   await staysWithdrawn(server, sent);
 });
 
-test("a refused stopped end of a run claimed from parked is not claimed again before its backoff: one claim and one refusal per backoff step, never a burst", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a refused stopped end of a run claimed from parked is not claimed again before its backoff: one claim and one refusal per backoff step, never a burst", { timeout: LONG_TEST_MS }, async (t) => {
   const { server, clock, events, beats } = await runOf(t, { onEnd: async () => {
     throw new Error("the journal refused the end (a test's refusal)");
   } });
@@ -240,7 +278,7 @@ test("a refused stopped end of a run claimed from parked is not claimed again be
   assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [2, 1], "one claim (and its release) and one refusal for the step");
 });
 
-test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   let refusing = false;
   const { server, clock, now, sent, requests, events, starts } = await runOf(t, { onEnd: async () => {
     if (refusing) throw new Error("the journal refused the end (a test's refusal)");
@@ -260,7 +298,7 @@ test("a stop whose end the journal refuses never leaves the run stopped with its
   assert.equal(starts.length, loops, "the retried claim started no loop");
 });
 
-test("a journal that never takes the stopped end: the backoff doubles from 5 s to its 5 min cap, each try said by name, and after 11 tries at the cap the run ends stopped on its row alone with one error naming it", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a journal that never takes the stopped end: the backoff doubles from 5 s to its 5 min cap, each try said by name, and after 11 tries at the cap the run ends stopped on its row alone with one error naming it", { timeout: LONG_TEST_MS }, async (t) => {
   assert.deepEqual([runnerModule.END_RETRY_BACKOFF_MS, runnerModule.END_RETRY_CAP_MS, runnerModule.END_RETRY_AT_CAP], [BACKOFF_MS, CAP_MS, AT_CAP], "the stated defaults");
   const { server, clock, sent, requests, events } = await runOf(t, { onEnd: async () => {
     throw new Error("the journal refused the end (a test's refusal)");
@@ -296,7 +334,7 @@ test("a journal that never takes the stopped end: the backoff doubles from 5 s t
   assert.deepEqual(sent, [], "the call was never sent");
 });
 
-test("a journal that cannot be read when the stop ends the run: the run is released with a backoff, not ended, and once it reads again the next claim ends it withdrawn", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a journal that cannot be read when the stop ends the run: the run is released with a backoff, not ended, and once it reads again the next claim ends it withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   // The loop's own end is refused too, so the runner ends the run itself (endRun), whose read of the journal throws.
   let unreadable = false;
   const { server, clock, sent, requests, events } = await runOf(t, {
@@ -319,9 +357,9 @@ test("a journal that cannot be read when the stop ends the run: the run is relea
   assert.equal(requests.length, asked, "the retried claim made no model request");
 });
 
-test("a stop row whose tries a failed resume raised is a stop all the same: the next claim only ends the run, withdrawn, with no model request and no tool run", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a stop row whose tries a failed resume raised is a stop all the same: the next claim only ends the run, withdrawn, with no model request and no tool run", { timeout: LONG_TEST_MS }, async (t) => {
   const { server, runnerStore, runner, spawn, clock, now, sent, requests, starts } = await runOf(t);
-  await runner.close();
+  await closeRunner(runner, clock);
   const stop = await server.command("run-1", { kind: "stop" });
   // As a resume that threw counts its waking row (runner.ts resumeFailed: store.retry, then a parked release with a
   // backoff), here on the stop row.
@@ -337,9 +375,9 @@ test("a stop row whose tries a failed resume raised is a stop all the same: the 
   assert.ok(!starts.includes("runner-b"), "the claim after the failed resume started no loop: it only ended the run");
 });
 
-test("an allow written just after a stop (its write raced the stop's) never runs the call: the runner reads the stop first, and the stopped end refuses the allow, the call withdrawn", { timeout: HANG_MS + 60_000 }, async (t) => {
-  const { server, runner, spawn, sent } = await runOf(t);
-  await runner.close();
+test("an allow written just after a stop (its write raced the stop's) never runs the call: the runner reads the stop first, and the stopped end refuses the allow, the call withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, runner, spawn, clock, sent } = await runOf(t);
+  await closeRunner(runner, clock);
   const ask = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask").data;
   // The two rows as the race leaves them, with no runner holding the run: the stop, then the allow.
   const stop = await server.command("run-1", { kind: "stop" });
@@ -357,9 +395,9 @@ test("an allow written just after a stop (its write raced the stop's) never runs
 // run: a cancel is the run's end from its 202 on, whoever holds the run then. Here the cancel's row is written while no
 // runner holds the parked run (its runner gone); the next claim only ends it cancelled, never as its cut turn reads, and
 // no paid turn follows a cancel.
-test("a cancel row written while no runner holds the run: the next claim only ends it cancelled, its waiting call canceled, with no model request and no tool run", { timeout: HANG_MS + 60_000 }, async (t) => {
-  const { server, runner, spawn, sent, requests } = await runOf(t);
-  await runner.close();
+test("a cancel row written while no runner holds the run: the next claim only ends it cancelled, its waiting call canceled, with no model request and no tool run", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, runner, spawn, clock, sent, requests } = await runOf(t);
+  await closeRunner(runner, clock);
   const cancel = await server.command("run-1", { kind: "cancel" });
   const asked = requests.length;
   spawn("runner-b");
@@ -378,7 +416,7 @@ test("a cancel row written while no runner holds the run: the next claim only en
   assert.deepEqual(sent, [], "the waiting call was never sent");
 });
 
-test("a stopped end with no call to withdraw still ends stopped on the run's row alone when the journal refuses it, with no backoff", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a stopped end with no call to withdraw still ends stopped on the run's row alone when the journal refuses it, with no backoff", { timeout: LONG_TEST_MS }, async (t) => {
   // Stopped before it is claimed, its one call allowed: nothing waits for an answer when its end is refused.
   const { server, events } = await runOf(t, { onEnd: async () => {
     throw new Error("the journal refused the end (a test's refusal)");
@@ -393,7 +431,7 @@ test("a stopped end with no call to withdraw still ends stopped on the run's row
   assert.deepEqual((await entriesOf(server)).filter((entry) => entry.kind === "agentrun.answer"), []);
 });
 
-test("a stopped end whose claim was lost (Fenced) writes nothing and is not retried here, as before", { timeout: HANG_MS + 60_000 }, async (t) => {
+test("a stopped end whose claim was lost (Fenced) writes nothing and is not retried here, as before", { timeout: LONG_TEST_MS }, async (t) => {
   let fencing = false;
   const { server, events } = await runOf(t, { onEnd: async () => {
     if (fencing) throw new Fenced("run-1", 0);
