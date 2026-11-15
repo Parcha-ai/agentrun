@@ -452,9 +452,12 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
         <fieldset aria-label="Model" className="mt-6">
           <legend className="caps text-small font-semibold">Model</legend>
           <div className="mt-2 divide-y border">
-            {[{ id: "", label: `Your default: ${t.model.tier} on ${t.harness?.[0] ?? "this server's harness"}`, warning: null, note: null }, ...t.model.choices].map((c) => (
-              <label key={c.id || "default"} data-choice={c.id || "default"} className="flex items-start gap-3 px-4 py-3">
-                <input type="radio" name="model-choice" value={c.id} className="mt-1 accent-primary" checked={choice === c.id} onChange={() => setChoice(c.id)} />
+            {/* The default's harness is the first of the package's list this server runs, which the form can't know: one
+                harness is named, several are said as the list apply picks from. A choice's id is kebab, so "(default)"
+                is no choice's. */}
+            {[{ id: "", label: `Your default: ${t.model.tier} on ${!t.harness?.length ? "this server's default harness" : t.harness.length === 1 ? t.harness[0] : `the first of ${t.harness.join(", ")} this server runs`}`, warning: null, note: null }, ...t.model.choices].map((c) => (
+              <label key={c.id || "(default)"} data-choice={c.id || "(default)"} className="flex items-start gap-3 px-4 py-3">
+                <input type="radio" name="model-choice" value={c.id} className="mt-1 accent-primary" checked={choice === c.id} onChange={() => { setChoice(c.id); setIssues((was) => was.filter((i) => i.field !== "overrides.choice")); }} />
                 <span className="min-w-0">
                   <span className="font-mono text-body" data-choice-label>{c.label}</span>
                   {"model" in c && <span className="block font-mono text-label text-muted-foreground">{c.model} on {c.harness}</span>}

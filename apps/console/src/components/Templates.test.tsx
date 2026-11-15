@@ -537,13 +537,13 @@ describe("applying a template", () => {
 
   it("offers a package's model choices in one Model group, the default first, each choice's warning and note shown word for word before it is picked, and sends the pick as overrides.choice", async () => {
     const WARNING = "Free models may keep and train on what you send. Your email goes to whoever serves this model.";
-    const NOTE = "Turn on OpenRouter Settings → Privacy → ZDR only.";
+    const NOTE = "In OpenRouter's privacy settings, turn on ZDR only.";
     const INBOX: TemplateView = { ...NOTES, name: "inbox", harness: ["codex", "pi"], model: { tier: "balanced", choices: [{ id: "free", label: "Free model", model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", harness: "pi", warning: WARNING, note: NOTE, secrets: ["OPENROUTER_API_KEY"] }] } };
     const t = await open("inbox", { templates: [INBOX] });
     const group = t.host.querySelector('fieldset[aria-label="Model"]');
     expect(group).toBeTruthy();
     const radios = [...group!.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
-    expect(radios.map((r) => r.closest("label")!.querySelector("[data-choice-label]")!.textContent)).toEqual(["Your default: balanced on codex", "Free model"]);
+    expect(radios.map((r) => r.closest("label")!.querySelector("[data-choice-label]")!.textContent)).toEqual(["Your default: balanced on the first of codex, pi this server runs", "Free model"]);
     expect(radios[0].checked).toBe(true);
     // Shown while the default is picked: the owner reads it before choosing.
     expect(group!.querySelector('[data-choice-warning="free"]')!.textContent).toBe(WARNING);
@@ -551,6 +551,16 @@ describe("applying a template", () => {
     await t.click(radios[1]);
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.overrides).toEqual({ approvals: "ask", choice: "free" });
+    // A choice the server can't run: its refusal shows in the Model group, and goes once the owner picks another.
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const refusal = "The inbox template's choice Free model runs it on pi, which this server can't run. Nothing was created.";
+    const refused = await open("inbox", { templates: [INBOX], apply: async () => { throw Object.assign(new ClientError(409, "agent_not_runnable", refusal), { fields: [{ field: "overrides.choice", reason: "not_set_up_here", message: refusal }] }); } });
+    const choiceRadio = (id: string) => refused.host.querySelector<HTMLInputElement>(`[data-choice="${id}"] input[type="radio"]`);
+    await refused.click(choiceRadio("free"));
+    await refused.click(refused.button(/^Apply/));
+    expect(refused.host.querySelector('fieldset[aria-label="Model"]')!.textContent).toContain(refusal);
+    await refused.click(choiceRadio("(default)"));
+    expect(refused.host.querySelector('fieldset[aria-label="Model"]')!.textContent).not.toContain(refusal);
     // A package with no choices: no Model group, and no choice sent.
     act(() => root?.unmount()); document.body.innerHTML = "";
     const plain = await open("meeting-notes");

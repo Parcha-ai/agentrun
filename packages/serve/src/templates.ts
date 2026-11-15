@@ -953,9 +953,11 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
 }
 
 /** Why this server can't run a model choice's model on its harness, in words; undefined when it can. Unlike `prefer`
- *  (packageModel), a choice is never swapped for the tier's model: the owner who picked it gets it, or apply refuses. A
- *  gateway (AGENT_MODEL_BASE_URL) never said it serves the model, so a choice is refused there, as `prefer` is skipped. */
-export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoice): Promise<string | undefined> {
+ *  (packageModel), a choice is never swapped for the tier's model: the owner who picked it gets it, or apply refuses. The
+ *  harness is the server's offer of it (`offer`, capabilities' harnesses): one not available here runs nothing. A gateway
+ *  (AGENT_MODEL_BASE_URL) never said it serves the model, so a choice is refused there, as `prefer` is skipped. */
+export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoice, offer: { available: boolean; reason?: string } | undefined): Promise<string | undefined> {
+  if (!offer?.available) return `${choice.harness} is not available here${offer?.reason ? `: ${offer.reason.replace(/\.$/, "")}` : ""}`;
   if (env.AGENT_MODEL_BASE_URL) return "this server reaches its models through a gateway, which has not said it serves that model; overrides.model picks one it serves";
   if (!harnessRuns(env, choice.model, choice.harness)) return `${choice.harness} does not run that model here`;
   const chosen = await chooseModel(env, choice.model, "default", choice.harness);

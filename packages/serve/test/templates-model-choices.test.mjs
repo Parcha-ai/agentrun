@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { PackageError, readPackage } from "../dist/templates.js";
+import { choiceUnrunnable, PackageError, readPackage } from "../dist/templates.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
@@ -87,6 +87,19 @@ test("the validator refuses a choice whose harness is not one of the package's, 
   await refused(one(", tier: fast"), /model\.choices\[0\] has no field tier: a choice is \{id, label, model, harness, warning\?, note\?, secrets\?\}/);
   assert.deepEqual(await problemsOf(t, manifest(one(""))), [], "one choice with no warning reads");
   assert.deepEqual(await problemsOf(t, manifest(one("").replace("harness: pi", "harness: claude-agent"), "[pi, claude-agent]")), [], "any harness of the package's list");
+});
+
+test("a choice runs only where its harness is available, its model in that harness's catalog with a key for it, and never through a gateway", async () => {
+  const env = { OPENROUTER_API_KEY: "fake-test-key" };
+  const free = { id: "free", label: "Free model", model: FREE, harness: "pi", secrets: [] };
+  const up = { available: true };
+  assert.equal(await choiceUnrunnable(env, free, up), undefined);
+  assert.equal(await choiceUnrunnable(env, free, { available: false, reason: "Its install failed its check." }), "pi is not available here: Its install failed its check");
+  assert.equal(await choiceUnrunnable(env, free, undefined), "pi is not available here");
+  assert.match(await choiceUnrunnable(env, { ...free, model: UNLISTED }, up), /is not a model pi runs here/);
+  assert.match(await choiceUnrunnable({}, free, up), /No OpenRouter key here for/);
+  assert.match(await choiceUnrunnable({ ...env, AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENT_MODEL_API_KEY: "fake-test-key" }, free, up), /through a gateway, which has not said it serves that model/);
+  assert.match(await choiceUnrunnable(env, { ...free, harness: "claude-agent" }, up), /claude-agent does not run that model here/);
 });
 
 /** A server with an OpenRouter key alone (no other model key, no gateway), serving the inbox package. */
