@@ -142,3 +142,15 @@ test("a replay is refused: a token (403), an unknown agent, workflow or revision
     assert.match(bad.json.error.message, /inputs is "held"/);
   }
 });
+
+test("an archived agent's replay is refused as its run's start is (409 agent_not_runnable): nothing reserved, no run started", { timeout: 180_000 }, async (t) => {
+  const { api, replay } = await world(t, { graded: 1 });
+  assert.equal((await api("POST", "/agents/source/archive")).status, 200);
+  const refused = await replay();
+  assert.deepEqual([refused.status, refused.json?.error?.code], [409, "agent_not_runnable"], refused.text);
+  assert.match(refused.json.error.message, /archived: unarchive it to run it/);
+  assert.equal(typeof refused.json.error.details?.archived_at, "string");
+  assert.deepEqual((await api("GET", "/agents/source/learning/promotions")).body.promotions, [], "no replay reserved");
+  const runs = (await api("GET", "/agents/source/runs?archived=true")).body.runs;
+  assert.equal(runs.length, 1, `only the graded run: ${JSON.stringify(runs)}`);
+});

@@ -19,7 +19,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
-const { replayView } = await import("../dist/runner/promotion.js");
+const { askReplay, promotionGate, replayView } = await import("../dist/runner/promotion.js");
+const { launchBody } = await import("../dist/run-launch.js");
+const { sealRunMcpAuth } = await import("../dist/store/seal.js");
 const { REPLAY_DEADLINE_MS, REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
 const { championOf, GRADES_KEPT, gradesKey, promotionOf, promotionsOf, putGrade, recordPromotion, servingOf, trimPromotions, PROMOTIONS_KEPT } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -53,6 +55,8 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
   const old = new Map(gradedRuns.map((run, i) => [run, launchOf(`Question ${i}`)]));
   for (const run of gradedRuns) await putGrade(store.settings, "agent-1", { run, correct: agentCorrect, source: "eval", at: new Date(T0).toISOString(), path: "agent" });
   const fake = new Map();
+  /** How many more runs a create makes before the server "stops" (`left`, undefined: no stop). */
+  const creates = { left: undefined };
   /** Replay run `id` of graded run `of`: `state` (ended: its `outcome`), what it cost (`costUsd`, null: unknown), its
    *  answer step's guard p, read record-only (`p`; none: no guard row). */
   const replayRun = (id, of, { state = "ended", outcome = "answered", costUsd = 0.01, p } = {}) => fake.set(id, { of, state, outcome, costUsd, guards: p === undefined ? [] : [{ node: "answer", signal: "self", self: p, p, threshold: 0.8, escalated: false }] });
@@ -68,6 +72,10 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
       if (old.has(id)) return { runId: id, body: old.get(id), sealed: null, createdAt: 1 };
       const one = fake.get(id);
       return one ? { runId: id, body: { ...old.get(one.of), replay: { of: one.of, workflow: "answer", digest: DIGEST } }, sealed: null, createdAt: 1 } : inner.runs.launch(id);
+    };
+    runs.create = async (...args) => {
+      if (creates.left !== undefined && creates.left-- <= 0) throw new Error("the server stopped mid-launch");
+      return inner.runs.create(...args);
     };
     return runs;
   };
@@ -111,7 +119,7 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
   };
   const records = async () => promotionsOf(store.settings, "agent-1");
   const read = (id) => replayView(ask(), "answer", DIGEST, id);
-  return { store: () => store, seed, gradedRuns, replayRun, reserve, reopen, records, read, ask, clock, gate, logs };
+  return { store: () => store, seed, gradedRuns, replayRun, reserve, reopen, records, read, ask, clock, gate, logs, creates };
 }
 
 test("two reads settling one replay at once write it once: a newer replay of the same revision started meanwhile stays replaying", async (t) => {
@@ -257,4 +265,35 @@ test("a run answered under its guard's threshold counts answered while the repla
   assert.deepEqual([seen.score.n, seen.score.handed_back, seen.alone], [5, 1, 4], `the threshold reads the low one as handed back: ${JSON.stringify(seen)}`);
   const record = (await w.records()).findLast((one) => one.replay_id === "replay-g");
   assert.deepEqual(record.replay.outcomes, { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, "kept with the decision");
+});
+
+test("#2823 review: an owner's replay stopped after 2 of its 5 runs is finished by a later claim on the owner's launch (model, revision, no per_run credentials), never the claim's", async (t) => {
+  const w = await world(t);
+  const store = w.store();
+  const OWNER_MODEL = { provider: "anthropic", modelId: "claude-sonnet-5-5" };
+  // The owner's replay: the server stops after creating 2 of its 5 reserved runs.
+  w.creates.left = 2;
+  await assert.rejects(askReplay(w.ask(), "answer", DIGEST, 5), /stopped mid-launch/);
+  w.creates.left = undefined;
+  const reserved = (await w.records()).at(-1);
+  assert.deepEqual([reserved.decided, reserved.runs.length], ["replaying", 5]);
+  assert.equal((await Promise.all(reserved.runs.map((id) => store.runs.get(id)))).filter(Boolean).length, 2);
+  // A later run of the agent: another revision, another model, handed a per_run MCP credential.
+  await store.agents.addRevision({ agentId: "agent-1", id: "rev-2", kind: "agentic", body: { instructions: "Answer, later.", tools: ["read"], learning: true } });
+  const SEAL_KEY = Buffer.alloc(32, 5);
+  const later = { input: { content: "Later?", question: "Later" }, title: "Later", place: { mode: "runner" }, model: { provider: "openai", modelId: "gpt-6.1-sol" }, learning: startAt(w.seed) };
+  await store.runs.create({ id: "claimed-later", agentId: "agent-1", revisionId: "rev-2" }, { body: launchBody(later), sealed: sealRunMcpAuth(SEAL_KEY, "claimed-later", { fake: { headers: { authorization: "Bearer later-token" }, origin: "https://mcp.example" } }) });
+  // Its claim lays the same digest past the launch grace: it finishes the owner's replay.
+  w.clock.at = T0 + REPLAY_LAUNCH_GRACE_MS + 1_000;
+  const deps = { store: w.ask().store, agentId: "agent-1", runId: "claimed-later", revisionId: "rev-2", launch: later, context: BACKGROUND_CONTEXT, log: (line) => w.logs.push(line), sealKey: SEAL_KEY, now: () => w.clock.at };
+  await promotionGate(deps)({ name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(FLOW) }, DIGEST);
+  assert.ok(w.logs.some((line) => /launch was interrupted; 3 replay runs it reserved started now/.test(line)), w.logs.join("\n"));
+  // Every run of the one replay on the owner's settings: its revision, its model, its seed, no per_run credentials.
+  for (const id of reserved.runs) {
+    const row = await store.runs.get(id);
+    assert.ok(row, `replay run ${id} exists`);
+    const launch = await store.runs.launch(id);
+    assert.deepEqual([row.revisionId, launch.body.model, launch.body.learning?.seed, launch.sealed ?? null], ["rev-1", OWNER_MODEL, w.seed, null], `replay run ${id}: ${JSON.stringify(launch.body)}`);
+  }
+  assert.equal((await w.records()).at(-1).decided, "replaying", "still replaying: nothing ended yet");
 });
