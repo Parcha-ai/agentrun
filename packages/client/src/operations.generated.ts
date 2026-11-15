@@ -2021,6 +2021,7 @@ export type GetLearningCostResponse = {
     workflow: string | null;
     learned_revision: string | null;
     cost_usd: number | null;
+    cost_upper_bound: boolean;
     learning_usd: number | null;
     total_usd: number | null;
   }>;
@@ -2058,6 +2059,16 @@ export type GetLearningCostResponse = {
     hand_backs: {
       ran: number;
       back: number;
+    } | null;
+    withheld: {
+      unknown: number;
+      at_most: number;
+    } | null;
+    replay: {
+      n: number;
+      workflow_pct: number;
+      agent_pct: number;
+      cleared: boolean;
     } | null;
   };
 };

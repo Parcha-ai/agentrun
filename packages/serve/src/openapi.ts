@@ -1202,6 +1202,7 @@ const COST_RUN = closed({
   workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
   learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
   cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before it looked back; for a run that did not look back, its whole cost."),
+  cost_upper_bound: { type: "boolean", description: "The run's stored cost counts a model request cut at its cap hold: `cost_usd` and `total_usd` are at most those figures, never a known cost. `summary` reads such a run as no figure." },
   learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet."),
   total_usd: COST_USD("The run's all-in cost, `cost_usd` and `learning_usd` together; null when either is."),
 });
@@ -1221,10 +1222,17 @@ const LEARNING_COST = closed({
   }), description: "Each learned workflow that has run first on one of these runs, at its newest version, and where it stands against the money rule: it runs first while its cost a run stays under the agent's by hand. It does not catch a workflow that answers wrong with confidence." },
   summary: closed({
     takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow finished alone (`path` `workflow`); null before one." },
-    before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known; null when there is none."),
-    after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of every run from the takeover on whose total is known; null before a takeover."),
-    times_cheaper: { type: ["number", "null"], minimum: 0, description: `\`before\` over \`after\`, to a tenth, once \`after\` counts ${CHEAPER_AFTER_RUNS} runs or more; else null. Learning is left out of the before side and kept in the after side, so it never flatters learning.` },
+    before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known exactly (never `cost_upper_bound`); null when there is none."),
+    after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of every run from the takeover on whose total is known exactly (never `cost_upper_bound`); null before a takeover."),
+    times_cheaper: { type: ["number", "null"], minimum: 0, description: `\`before\` over \`after\`, to a tenth, once \`after\` counts ${CHEAPER_AFTER_RUNS} runs or more and \`withheld\` is null; else null. Learning is left out of the before side and kept in the after side, so it never flatters learning.` },
     hand_backs: { oneOf: [closed({ ran: COUNT, back: COUNT }), { type: "null" }], description: "Of the runs a learned workflow ran first on from the takeover on (`path` `workflow` or `handed_back`), how many (`ran`) and how many it handed back to the agent (`back`); null before a takeover." },
+    withheld: { oneOf: [closed({ unknown: { ...COUNT, description: "Runs whose cost is unknown." }, at_most: { ...COUNT, description: "Runs whose cost is known only as at most (`cost_upper_bound`)." } }), { type: "null" }], description: "After a takeover, the runs `before` and `after` would read whose cost is not known exactly: while any is, `times_cheaper` is null, so the ratio is never over a partial set. Null when every one is known, and before a takeover." },
+    replay: { oneOf: [closed({
+      n: { ...COUNT, description: "The graded inputs it replayed." },
+      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "The workflow's accuracy on them, in percent to a tenth (a hand-back counts as the agent's answer)." },
+      agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's accuracy on them, in percent to a tenth." },
+      cleared: { type: "boolean", description: "The workflow was at most the promotion bar under the agent: the same accuracy, as promotion reads it." },
+    }), { type: "null" }], description: "The replay the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves, or it was promoted with no replay (a dry run)." },
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
