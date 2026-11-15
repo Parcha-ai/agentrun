@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent>; promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent>; promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost>; batches?: boolean };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -67,6 +67,10 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     learningLog: async (_id: string, cursor: string) => { calls.push(`log after ${cursor}`); return (fake.log ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
+    ...(fake.batches ? {
+      learningBatches: async () => { calls.push("batches"); return { batches: [] }; },
+      startLearningBatch: async () => { calls.push("start-batch"); throw new Error("No batch should start while inspecting learning"); },
+    } : {}),
     // The cost per run chart's read (CostPerRun.test.tsx draws it): no run yet.
     learnedWorkflowRevisions: async (_id: string, name: string) => ({ name, revisions: [], total: 0, truncated: false }),
     learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] })))(),
@@ -1632,4 +1636,73 @@ describe("the loop on the Learning tab", () => {
     expect(compiled).toContain("Superseded");
     expect(compiled).not.toContain("Held");
   });
+});
+
+
+describe("learning-loop integration with source-owned execution", () => {
+  it.each(["claude-code", "codex"] as const)("native %s learning never promises automatic compilation or takeover", async runtime => {
+    const native: NonNullable<Agent["definition"]["native"]> = { runtime, model: null, project: "/workspace/app", selector: { kind: "project" as const }, machine_id: "source", version: "1", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready" as const, issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z", capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native" as const, usage: true } };
+    const t = await open(agent(true, { native }));
+    const story = t.host.querySelector('[data-testid="loop-story"]')!;
+    expect(story.textContent).toContain("Native runs receive accepted notes and skills");
+    expect(t.text()).toContain("Native run costs");
+    expect(t.text()).not.toContain("takes the job over");
+    expect(story.textContent).not.toContain("compiles at");
+    expect(story.querySelector('[data-testid="stage-took_over"]')).toBeNull();
+    expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
+  });
+  it.each(["claude-agent-sdk", "codex-sdk"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
+    const t = await open(agent(true, { sdk: { runtime } }));
+    const story = t.host.querySelector('[data-testid="loop-story"]')!;
+    expect(story.textContent).toContain("Your backend keeps launching each run");
+    expect(t.text()).toContain("SDK run costs");
+    expect(t.text()).not.toContain("takes the job over");
+    expect(story.textContent).toContain("MCP with explicitly bound tools");
+    expect(story.textContent).not.toContain("serves first");
+    expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
+  });
+});
+
+
+describe("learning task entry follows the loaded execution binding", () => {
+  const native = (runtime: "claude-code" | "codex"): NonNullable<Agent["definition"]["native"]> => ({
+    runtime, model: null, project: "/workspace/app", selector: { kind: "project" }, machine_id: "source", version: "1", fingerprint: "abc",
+    configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true,
+    capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true },
+  });
+  const sourceBindings = [
+    ["native Claude Code", { native: native("claude-code") }, "original Claude Code or Codex setup"],
+    ["native Codex", { native: native("codex") }, "original Claude Code or Codex setup"],
+    ["Claude SDK", { sdk: { runtime: "claude-agent-sdk" } }, "backend using this agent’s SDK wrapper"],
+    ["Codex SDK", { sdk: { runtime: "codex-sdk" } }, "backend using this agent’s SDK wrapper"],
+  ] as const;
+  const learned = (empty: boolean) => empty
+    ? view({ notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null } })
+    : view({ skills: [{ name: "find-policies", file: "skills/find-policies/SKILL.md", description: "Find a store’s policies", status: "active", run: "run-b", bytes: 92, etag: '"skill-v1"' }] });
+  for (const empty of [true, false]) {
+    it.each(sourceBindings)(`%s keeps source task guidance and omits CSV batches in the ${empty ? "empty" : "populated"} tab`, async (_name, binding, guidance) => {
+      const t = await open(agent(true, binding), { learning: async () => learned(empty), runs: [], batches: true }, { server: "on" });
+      expect(t.host.querySelector('section[aria-label="Learn from a CSV"]')).toBeNull();
+      expect(t.button(/^Learn from a CSV$/)).toBeUndefined();
+      expect(t.host.querySelector('input[type="file"]')).toBeNull();
+      expect(t.text()).toContain(guidance);
+      expect(t.host.querySelector('a[href="#/agents/refunds/runs"]')?.textContent).toBe("Open the agent’s Run controls");
+      expect(t.calls).not.toContain("batches");
+      expect(t.calls).not.toContain("start-batch");
+      expect(t.calls.some((call) => call.startsWith("put "))).toBe(false);
+      if (!empty) {
+        expect(t.card("Keep it to three lines")).not.toBeNull();
+        expect(t.card("find-policies")).not.toBeNull();
+      }
+    });
+    it(`a managed agent retains the CSV form in the ${empty ? "empty" : "populated"} tab without starting work`, async () => {
+      const t = await open(agent(true), { learning: async () => learned(empty), runs: [], batches: true });
+      expect(t.calls).toContain("batches");
+      await t.click(/^Learn from a CSV$/);
+      expect(t.host.querySelector('input[aria-label="CSV file"]')).not.toBeNull();
+      expect(t.button(/^Learn$/)?.disabled).toBe(true);
+      expect(t.calls).not.toContain("start-batch");
+      expect(t.text()).not.toContain("CSV learning batches require server-managed execution");
+    });
+  }
 });

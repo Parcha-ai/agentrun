@@ -260,14 +260,15 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     expect(html).toContain("$0.0123 est. known · 1 not priced");
     expect(html).not.toContain("Unknown");
   });
-  it("puts what needs you first, and before a first run of your own, the start-here panel in place of the counts", () => {
+  it("keeps counts, analytics and recent runs visible alongside first-run onboarding", () => {
     const needs = createElement("section", { "aria-label": "Needs you" }, "the strip");
     const first = createElement("section", { "aria-label": "Start here" }, "the panel");
     const withNeeds = renderToStaticMarkup(createElement(MissionControl, { view, needsYou: needs }));
     expect(withNeeds.indexOf("the strip")).toBeLessThan(withNeeds.indexOf("Needs input"));
     const fresh = renderToStaticMarkup(createElement(MissionControl, { view, startHere: first }));
     expect(fresh).toContain("the panel");
-    expect(fresh).not.toContain("Needs input");
-    expect(fresh).not.toContain("Recent runs");
+    expect(fresh).toContain("Needs input");
+    expect(fresh).toContain("Recent runs");
+    expect(fresh).toContain('aria-label="Analytics"');
   });
 });

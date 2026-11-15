@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
 import { agentHash } from "@/components/AgentPage";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { Banner } from "@/components/ui";
+import { backendSdkOf } from "@/lib/backendSdk";
+import { editAgentPrompt } from "@/lib/codingAgentPrompts";
 import { AgentsList } from "@/components/AgentsList";
-import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
+import { ConnectExistingAgents } from "@/components/NativeConnections";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
@@ -24,10 +28,16 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
       .then((a) => { if (n === asked.current) setAgents(a); })
       .catch((e) => { if (n === asked.current) setError(problemOf(e).message); });
   };
-  useEffect(load, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    load();
+    const refresh = () => { if (!document.hidden) load(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <AgentsList agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
-      handoff={<CodingAgentHandoff context={{ kind: "create" }} label="Build with your coding agent" size="lg" iconOnPhone className="max-sm:w-11" />}
+      handoff={<ConnectExistingAgents />}
       actions={{
         onOpen: (id) => go(agentHash(id)),
         onEdit: (id) => go(agentHash(id, "edit")),
@@ -116,7 +126,12 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-body text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form, and its Save reads "Saved".
-    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
+    agent && backendSdkOf(agent.definition) ? <section className="space-y-4 p-5 md:p-8">
+      <h1 className="text-2xl font-semibold">Edit {agent.definition.name}</h1>
+      <Banner>This agent runs in your backend. Edit its application code with your coding agent; manage self-improving in its Learning tab.</Banner>
+      <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, false, backendSdkOf(agent.definition)!.runtime)} />
+      <a href={agentHash(agent.agent_id)} className="block text-body underline underline-offset-2">Back to agent</a>
+    </section> : <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {
         let saved;
         try {

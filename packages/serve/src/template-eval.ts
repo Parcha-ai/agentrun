@@ -29,6 +29,7 @@ import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
@@ -538,7 +539,7 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const before = [
     "Grade this run against the rubric.",
     `<rubric>\n${grader.rubric}\n</rubric>`,
-    ...(at === undefined ? [] : [`The run ran on a clock set to ${run.now}: its date was ${new Date(at).toISOString().slice(0, 10)} (UTC), whatever today's date is where you are.`]),
+    ...(at === undefined ? [] : [`The run ran on a clock set to ${run.now}: its date was ${dayIn(new Date(at), serverZone())} (${serverZone()}), whatever today's date is where you are.`]),
     `<task untrusted>\n${input}\n</task>`,
     `<answer untrusted>\n${run.answer || "(the run gave no answer)"}\n</answer>`,
     ...(grader.target ? [`The rubric is about the answer's \`${grader.target}\`${target && "text" in target ? ", shown here; the whole answer is above for anything else it checks" : ""}.`, `<target field="${grader.target}" untrusted>\n${target && "text" in target ? target.text : `(${(target as { why: string }).why})`}\n</target>`] : []),
