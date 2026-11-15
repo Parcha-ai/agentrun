@@ -4,6 +4,7 @@
 // slow interrupted. A cancel while the park waits ends the run at once, in its words, slow cut and nothing more sent.
 // (A sibling that ends within the bound keeps its result: mcp-parked-sibling's pi row.)
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
@@ -60,18 +61,39 @@ async function siblings(t, parkSiblingsMs, { late = false } = {}) {
   const script = [{ calls: [{ call: "slow" }, { call: "note" }, ...(late ? [{ call: "late" }] : [])] }, { say: "done" }];
   const requests = [];
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
-  const createLoop = createAdapterLoop(async (claim, run) => {
+  const inner = createAdapterLoop(async (claim, run) => {
     const spec = await base(claim, run);
     return { ...spec, parkSiblingsMs, gate: async (call, how) => (call.tool === "late" ? (await lateAllowed, "allow") : spec.gate(call, how)) };
   });
+  // The first claim's signal and its start(), settled: the claim that parks and waits.
+  const claims = [];
+  const createLoop = (deps) => {
+    const loop = inner(deps);
+    const start = loop.start.bind(loop);
+    loop.start = (claim) => {
+      const end = start(claim);
+      claims.push({ signal: deps.signal, settled: Promise.resolve(end).then(() => undefined, () => undefined) });
+      return end;
+    };
+    return loop;
+  };
   const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
-  return { server: opened.server, running, slow, requests, letGo, allowLate };
+  return { server: opened.server, running, slow, requests, letGo, allowLate, claims };
+}
+
+/** The parking claim's start() settles and leaves no abort listener on its signal, whichever way its wait ended. */
+async function leavesNoListener(claims, how) {
+  assert.ok(claims.length >= 1, "a claim started");
+  let timer;
+  await Promise.race([claims[0].settled, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("the parking claim's start() never settled")), 15_000)))]);
+  clearTimeout(timer);
+  assert.equal(getEventListeners(claims[0].signal, "abort").length, 0, `no abort listener left on the claim's signal once its wait ${how}`);
 }
 
 test("pi: a call beside the parked one that outlasts the park's bound is cut at the bound, and once the parked call is answered the model reads it interrupted", { timeout: 60_000 }, async (t) => {
   const bound = 300;
-  const { server, running, slow, requests } = await siblings(t, bound);
+  const { server, running, slow, requests, claims } = await siblings(t, bound);
   const startedAt = await running;
   const parked = await until(async () => {
     const now = await server.runs.get("run-1");
@@ -83,6 +105,7 @@ test("pi: a call beside the parked one that outlasts the park's bound is cut at 
   assert.ok(slow.cutAt !== undefined, "slow's signal was aborted: it was cut");
   assert.ok(slow.cutAt - startedAt >= bound - SLACK, `cut no sooner than the bound: ${slow.cutAt - startedAt} ms`);
   assert.equal(requests.length, 1, `nothing sent while it parks: ${JSON.stringify(parked)}`);
+  await leavesNoListener(claims, "passed its bound");
   const callId = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data.callId;
   assert.ok(callId, "note was asked");
   await server.command("run-1", { kind: "deny", body: { approval: callId } });
@@ -99,7 +122,7 @@ test("pi: a call beside the parked one that outlasts the park's bound is cut at 
 
 test("pi: a cancel while the park waits for the call beside it ends the run at once, in the cancel's words, that call cut and nothing more sent", { timeout: 60_000 }, async (t) => {
   const bound = 20_000;
-  const { server, running, slow, requests } = await siblings(t, bound);
+  const { server, running, slow, requests, claims } = await siblings(t, bound);
   await running;
   await until(async () => (await server.runs.get("run-1")).state === "parked", "note's ask landed", 15_000);
   assert.notEqual((await server.runs.get("run-1")).runner, null, "the claim still holds: the park waits for slow");
@@ -116,10 +139,11 @@ test("pi: a cancel while the park waits for the call beside it ends the run at o
   assert.ok(slow.cutAt !== undefined, "slow was cut");
   assert.equal(slow.starts, 1);
   assert.equal(requests.length, 1, "nothing more sent to the model");
+  await leavesNoListener(claims, "was ended by a cancel");
 });
 
 test("pi: a call the gate allows while the park waits never starts in that claim: it is asked again on the resume and runs once then", { timeout: 60_000 }, async (t) => {
-  const { server, running, slow, requests, letGo, allowLate } = await siblings(t, 20_000, { late: true });
+  const { server, running, slow, requests, letGo, allowLate, claims } = await siblings(t, 20_000, { late: true });
   await running;
   await until(async () => (await server.runs.get("run-1")).state === "parked", "note's ask landed", 15_000);
   assert.notEqual((await server.runs.get("run-1")).runner, null, "the claim still holds: the park waits for slow");
@@ -132,6 +156,7 @@ test("pi: a call the gate allows while the park waits never starts in that claim
     return now.state === "parked" && now.runner === null;
   }, "slow ended, and the claim let go", 15_000);
   assert.equal(slow.lateRuns, 0, "late never started in the parking claim");
+  await leavesNoListener(claims, "ended with the call beside it settled");
   const callId = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data.callId;
   await server.command("run-1", { kind: "deny", body: { approval: callId } });
   const ended = await until(async () => {

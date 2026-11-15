@@ -3407,20 +3407,32 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function siblingsSettled(on: Harness, spec: AdapterRunSpec): Promise<void> {
     const until = Date.now() + (spec.parkSiblingsMs ?? PARK_SIBLINGS_MS);
     let over = false;
-    const ended = Promise.race([stopping, on.closed.then(() => undefined, () => undefined), new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })))]).then(() => {
+    let end: () => void = () => {};
+    const ended = new Promise<void>((resolve) => (end = resolve)).then(() => {
       over = true;
     });
-    while (!over && !gate?.sealed && Date.now() < until) {
-      let tasks: Awaited<ReturnType<Harness["inspect"]>>["tasks"];
-      try {
-        ({ tasks } = await on.inspect(context));
-      } catch {
-        return;
+    // Its own listener on the claim's signal, taken off on every way out (settled, past the bound, sealed): a loop leaves
+    // nothing on the signal it was lent. The stop and the Harness's close are promises, which hold nothing on it.
+    const onAbort = () => end();
+    if (deps.signal.aborted) end();
+    else deps.signal.addEventListener("abort", onAbort, { once: true });
+    void stopping.then(() => end());
+    void on.closed.then(() => end(), () => end());
+    try {
+      while (!over && !gate?.sealed && Date.now() < until) {
+        let tasks: Awaited<ReturnType<Harness["inspect"]>>["tasks"];
+        try {
+          ({ tasks } = await on.inspect(context));
+        } catch {
+          return;
+        }
+        if (siblingsRunning(tasks).length === 0) return;
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([ended, new Promise<void>((resolve) => (timer = setTimeout(resolve, Math.max(0, Math.min(SIBLINGS_POLL_MS, until - Date.now())))))]);
+        clearTimeout(timer);
       }
-      if (siblingsRunning(tasks).length === 0) return;
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([ended, new Promise<void>((resolve) => (timer = setTimeout(resolve, Math.max(0, Math.min(SIBLINGS_POLL_MS, until - Date.now())))))]);
-      clearTimeout(timer);
+    } finally {
+      deps.signal.removeEventListener("abort", onAbort);
     }
   }
 
