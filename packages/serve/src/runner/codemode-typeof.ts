@@ -41,7 +41,8 @@ export function typeofTools(script: string): string {
   let out = script;
   for (const { start, end, name } of edits.sort((a, b) => b.start - a.start)) {
     const key = JSON.stringify(name);
-    out = `${out.slice(0, start)}(Object(tools) === tools && ${key} in tools ? tools[${key}] : undefined)${out.slice(end)}`;
+    // Only `tools` and syntax: no name of the script's own (an `Object`, an `undefined` it declares) can change the answer.
+    out = `${out.slice(0, start)}(tools !== null && (typeof tools === "object" || typeof tools === "function") && ${key} in tools ? tools[${key}] : void 0)${out.slice(end)}`;
   }
   return out;
 }
