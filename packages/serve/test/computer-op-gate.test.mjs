@@ -48,18 +48,20 @@ test("a script on a desktop that mounts no folder: bash's setting holds shell.ru
   assert.equal(asks.askedAs("computer_op", { op: "processes.start", args: { command: "sleep 2" } }), "bash_background");
 });
 
-test("a script's files.write is held to write's setting and files.read, list and stat to read's; apps and input to the computer kind's", async () => {
+test("a script's files.write is held to write's setting and files.read, list and stat to read's; apps and input to the computer kind's, whose deny refuses every op first", async () => {
   const { runners } = await stores({ runners: 1 });
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" }, read: { permission: "ask" }, desktop: { permission: "deny" } } } }, root(), "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" }, read: { permission: "ask" } } } }, root(), "none");
   const wrote = await gate(op("files.write", { path: "/tmp/a", data: "x" }));
   assert.equal(typeof wrote, "object", "files.write: refused by write's deny");
-  assert.match(wrote.deny, /write/, wrote.deny);
+  assert.match(wrote.deny, /write is set to deny/, wrote.deny);
   for (const name of ["files.read", "files.list", "files.stat"]) assert.equal(await gate(op(name, { path: "/tmp/a" })), "ask", `${name}: read's ask`);
   assert.equal(gate.askedAs("computer_op", { op: "files.read", args: { path: "/tmp/a" } }), "read");
-  for (const name of ["apps.list", "apps.open", "input.act"]) {
-    const decision = await gate(op(name, {}));
+  // The desktop set to deny: apps and input are the kind's, and the kind's deny comes before any op's own tool.
+  const kindDenied = await adapterRunGate(runners[0], { runId: "run-2" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "allow" }, desktop: { permission: "deny" } } } }, root(), "none");
+  for (const name of ["apps.list", "apps.open", "input.act", "files.write"]) {
+    const decision = await kindDenied(op(name, { path: "/tmp/a", data: "x" }));
     assert.equal(typeof decision, "object", `${name}: held to desktop's deny`);
-    assert.match(decision.deny, /desktop/, decision.deny);
+    assert.match(decision.deny, /desktop is set to deny/, decision.deny);
   }
 });
 
