@@ -522,6 +522,31 @@ test("a sign-out while a sign-in is finishing (its model list still out) wins: t
   assert.ok(openai.revoked.some((revoked) => revoked.token === openai.issued.at(-1).refresh), "the dropped sign-in is revoked at OpenAI");
 });
 
+test("a sign-out while a sign-in is finishing says revoked false when OpenAI doesn't confirm the dropped sign-in's revocation", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const plan = new ChatGPTPlan({ store, sealKey: randomBytes(32) });
+  t.after(() => plan.close());
+  openai.modelsDelayMs = 500;
+  openai.revokeStatus = 503;
+  const { authorize_url } = await plan.startSignIn();
+  const finishing = plan.finishSignIn(callbackFor(authorize_url));
+  finishing.catch(() => undefined);
+  const started = Date.now();
+  while (openai.codes === 0 && Date.now() - started < 5_000) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openai.codes, 1, "the sign-in's code was exchanged");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const { revoked } = await plan.signOut();
+  await finishing.catch(() => undefined);
+  assert.equal(store.sealed.get(PLAN_ROW), undefined, "no sign-in row written after the sign-out");
+  assert.equal(openai.revocationsOf(openai.issued.at(-1).refresh), 1, "the dropped sign-in's revocation was asked");
+  assert.equal(revoked, false, "OpenAI didn't confirm it, so the sign-out doesn't say revoked");
+  // The next sign-out, with nothing dropped and nothing signed in, is revoked again.
+  openai.revokeStatus = 200;
+  assert.deepEqual(await plan.signOut(), { revoked: true });
+});
+
 test("a sign-out while a renewal is out wins: the renewal's new pair is revoked at OpenAI and never handed out, and the sign-out says OpenAI's word is not the whole answer", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const [one, two] = await Promise.all([import("../dist/chatgpt-plan.js?process=signout-server"), import("../dist/chatgpt-plan.js?process=signout-runner")]);
