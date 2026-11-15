@@ -17,7 +17,7 @@ import { git, repoOf } from "./learn-support.mjs";
 
 const compile = await import("../dist/learn/compile.js");
 const { draftProblems, draftDryRun } = await import("../dist/learn/skills.js");
-const { answerTierProblems, checkProposal } = await import("../dist/learn/check.js");
+const { answerTierProblems, checkProposal, quoteCheckProblems } = await import("../dist/learn/check.js");
 const { compiledInto, parseNoteFile } = await import("../dist/learn/notes.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { seedOf } = await import("../dist/learning.js");
@@ -559,6 +559,63 @@ test("answerTierProblems: the answering step is the model node writing output.pa
   // A call's args or a step's state holding a `node` key is data, never a step; no output.path, nothing read.
   assert.deepEqual(answerTierProblems(flow({ node: "call", label: "c", as: "r", args: { node: "agent", label: "answer", tier: "fast" } })), []);
   assert.deepEqual(answerTierProblems({ root: { node: "agent", label: "answer", tier: "fast" } }), []);
+});
+
+// H5: a Jev judge asked whether an answer's quotes were verbatim runs of the fetched pages flagged 149 of 170 answers,
+// while 416 of 429 quotes were in those pages (verbatim, or after case, quote, dash and space normalisation, or read as
+// letters and digits alone). The quote check of a compiled workflow is the DSL's code predicate, quote_missing: a draft
+// whose answer carries quotes and which fetches pages is refused without one, in words the compile retry acts on.
+const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {} } = {}) => ({
+  v: 2, name: "find-policies",
+  schemas: {
+    Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+    Page: { type: "object" },
+    Facts: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] },
+    Evidence: { type: "object", properties: { quote: { type: "string" }, url: { type: "string" } }, required: ["quote", "url"] },
+    Answer: { type: "object", properties: { refunds: { type: "boolean" }, evidence: { type: "array", items: { $ref: "#/definitions/Evidence" } } }, required: ["refunds", "evidence"], ...answer },
+  },
+  input: { schemaId: "Store" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [
+    { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+    { node: "extract", label: "facts", instructions: "Sum up the refund policy on {page}.", out: "Facts", as: "facts", tier: "fast" },
+    { node: "decide", label: "answer", instructions: "Say whether {page} states a refund policy, quoting it.", out: "Answer", as: "answer" },
+    ...extra,
+    ...(check ? [{ node: "escalate", label: "quotes", when: { predicate: "quote_missing", path: "answer.evidence", field: "quote", ...check }, kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
+  ] },
+});
+const NO_QUOTE_CHECK = 'the answer carries quotes (Answer.evidence[].quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]} (pages: the state keys its call steps write), never a judge';
+
+test("the quote check is code: a draft whose answer carries quotes and which fetches pages is refused without a quote_missing escalate on its answer, a judge's quote question in its place included; with one it passes", () => {
+  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  assert.deepEqual(checked(citedDraft()), []);
+  assert.deepEqual(checked(citedDraft({ check: null })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_QUOTE_CHECK }]);
+  // A judge asked whether the quotes are verbatim, and an escalate on its answer: still no code check.
+  const judged = citedDraft({ check: null, extra: [
+    { node: "extract", label: "verbatim", instructions: "Are the answer's quotes verbatim runs of {page}? {answer}", out: "Facts", as: "verbatim", tier: "fast" },
+    { node: "escalate", label: "not_verbatim", when: { predicate: "field_equals", path: "verbatim.summary", value: "no" }, kind: "quotes", stage: "answer", summary: "quotes not verbatim" },
+  ] });
+  assert.deepEqual(checked(judged), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_QUOTE_CHECK }]);
+  // Its pages are what a call step fetched: an extract's summary of them is no page.
+  assert.deepEqual(checked(citedDraft({ check: { pages: ["page", "facts"] } })), [{ rule: "workflow", path: DRAFT_PATH, detail: 'the quote_missing escalate "quotes" reads "facts" as a page, which no call step fetched: its pages are the state keys its call steps write (page)' }]);
+  // A check of quotes outside the answer is not the answer's.
+  assert.deepEqual(checked(citedDraft({ check: { path: "facts.summary", field: undefined, pages: ["page"] } })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_QUOTE_CHECK }]);
+});
+
+test("quoteCheckProblems: quotes anywhere in the answer's schema (by $ref, items, anyOf), pages fetched by a call under a map, and nothing asked of an answer with no quotes or a workflow that fetches nothing", () => {
+  assert.deepEqual(quoteCheckProblems(JSON.parse(richWorkflow())), [], "no quotes in the answer");
+  const noFetch = citedDraft({ check: null });
+  noFetch.root.steps.shift();
+  for (const step of noFetch.root.steps) if (step.instructions) step.instructions = step.instructions.replace("{page}", "the store's text");
+  assert.deepEqual(quoteCheckProblems(noFetch), [], "nothing fetched: no page to check against");
+  // A list of quote strings, under anyOf: path names the list, no field.
+  const listed = citedDraft({ check: null, answer: { properties: { refunds: { type: "boolean" }, cited: { anyOf: [{ type: "object", properties: { quotes: { type: "array", items: { type: "string" } } } }, { type: "null" }] } } } });
+  assert.deepEqual(quoteCheckProblems(listed), ['the answer carries quotes (Answer.cited.quotes[]) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.cited.quotes", "pages": ["page"]} (pages: the state keys its call steps write), never a judge']);
+  // Pages a map's body fetched are the map's `as`.
+  const mapped = citedDraft({ check: { pages: ["page", "more"] } });
+  mapped.root.steps.splice(1, 0, { node: "map", label: "each", itemsPath: "links", as: "more", body: { node: "call", label: "get", via: "tool", tool: "web_fetch", args: { url: "{item}" }, out: "Page", as: "got", deadline_s: 30 } });
+  assert.deepEqual(quoteCheckProblems(mapped), []);
+  assert.deepEqual(quoteCheckProblems(citedDraft({ check: null })), [NO_QUOTE_CHECK]);
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /An answer that quotes pages a call step fetched is checked in code: an escalate on `\{"predicate": "quote_missing"/);
 });
 
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
