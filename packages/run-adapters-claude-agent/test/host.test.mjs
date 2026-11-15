@@ -192,6 +192,10 @@ test("usage: a stream's message_start and last message_delta, a whole body's, an
   const stream = ev('message_start', { message: { usage: { input_tokens: 120, cache_read_input_tokens: 30, cache_creation_input_tokens: 5, output_tokens: 1 } } }) + ev('content_block_delta', { delta: { type: 'text_delta', text: 'hi' } }) + ev('message_delta', { usage: { output_tokens: 7 } }) + ev('message_delta', { usage: { output_tokens: 42 } });
   assert.deepEqual(policy.usageOf(stream + ev('message_stop', {})), { input: 120, output: 42, cacheRead: 30, cacheWrite: 5 });
   assert.equal(policy.usageOf(stream), undefined, 'a stream cut before message_stop');
+  // A stream the provider ended in its error event is whole: the counts it reported before it; none when it reported none.
+  assert.deepEqual(policy.usageOf(stream + ev('error', { error: { type: 'overloaded_error', message: 'Overloaded' } })), { input: 120, output: 42, cacheRead: 30, cacheWrite: 5 });
+  assert.equal(policy.usageOf(ev('error', { error: { type: 'overloaded_error', message: 'Overloaded' } })), undefined, 'an error as the first event');
+  assert.equal(policy.usageOf(stream + 'event: error\ndata: 500 the upstream failed\n\n'), undefined, 'words, not the provider\'s event: cut');
   assert.deepEqual(policy.usageOf(JSON.stringify({ id: 'm', usage: { input_tokens: 3, output_tokens: 4 } })), { input: 3, output: 4, cacheRead: 0, cacheWrite: 0 });
 });
 
