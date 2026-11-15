@@ -40,6 +40,7 @@ import {
   WITHHELD_SIGN_IN,
   WITHHELD_TITLE,
   costView,
+  freeOf,
   soFarOf,
   usersOf,
   withAsks,
@@ -441,7 +442,9 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const plan = run.plan;
   const left = counted && plan ? counted.unpriced - plan.requests : counted?.unpriced;
   const usd = counted && left !== undefined && left <= 0 ? counted.so_far_usd : priced;
-  const soFar = counted && left !== undefined && left > 0 ? { so_far_usd: counted.so_far_usd, unpriced: left } : undefined;
+  // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
+  // decision of its own), that it is free.
+  const soFar = counted && left !== undefined && left > 0 ? { so_far_usd: counted.so_far_usd, unpriced: left } : imported || decisions?.requests ? undefined : freeOf(run.rows, usd);
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
   return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };

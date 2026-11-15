@@ -9,7 +9,7 @@ import { runBooking, type RunSessions } from "../../run-booking.js";
 import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from "../../runner.js";
 import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
 import { overCapEnd, SPEND_CAP_REACHED } from "./words.js";
-import { freeCeilingEnd, zeroPricedOf } from "./free.js";
+import { freeCeilingEnd, zeroPricedRequestOf } from "./free.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf, capRequestOf, type PricedRequest } from "./port.js";
@@ -109,24 +109,27 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
     ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
-  // The ceiling on requests priced $0, before the dollar rule and whatever the cap (the dollar cap cannot stop them): a
-  // model request of the run's own sessions on a free model or a plan, past the run's limit of them, is refused for good;
-  // one within it goes to the rule, and its admission says it is priced $0, written on its runner.request, so the next
-  // count holds it in any process. A paid tool call and a decision book under their own sessions and never count.
+  // A request priced $0 (zeroPricedRequestOf: a free model's, or a plan's), under a cap or none. The dollar cap cannot
+  // stop such requests, so a model request of the run's own sessions past the run's limit of them (`freeRequests`) is
+  // refused for good, before the dollar rule; one within it goes to the rule, and its admission says it is priced $0
+  // (`zeroPriced`, written on its runner.request, so the next count holds it in any process). A paid tool call and a
+  // decision book under their own sessions and never count. A free model's request is also admitted `free`: the runner
+  // books it a known $0 however it ends (runner.ts Admitted), never unknown. One the rule refused stays refused.
   const limit = options.freeRequests;
-  const ruled: BeforeRequest = async (request) => {
-    if (request.paid || request.key === DECISION_SESSION || request.key === TOOL_SESSION) return rule(request);
-    const zeroPriced = zeroPricedOf(pricing.modelOf(request.model, request.route));
-    if (!zeroPriced) return rule(request);
-    if (limit !== undefined && (request.zeroPricedRequests ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
+  const judge: BeforeRequest = async (request) => {
+    const zeroPriced = zeroPricedRequestOf(request, pricing.modelOf);
+    const counted = zeroPriced && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION ? zeroPriced : undefined;
+    if (counted && limit !== undefined && (request.zeroPricedRequests ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
-    return answer && "refuse" in answer ? answer : { ...(answer ?? {}), zeroPriced };
+    if (answer && "refuse" in answer) return answer;
+    if (!zeroPriced) return answer;
+    return { ...(answer ?? {}), ...(counted ? { zeroPriced: counted } : {}), ...(zeroPriced === "free" ? { free: true as const } : {}) };
   };
   const before = runBooking(options.sessions, options.judged ? async (request) => {
-    const answer = await ruled(request);
+    const answer = await judge(request);
     options.judged!(request, answer);
     return answer;
-  } : ruled);
+  } : judge);
 
   const forget = (key: string) => void deciding.delete(key);
   return {

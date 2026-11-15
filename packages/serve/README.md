@@ -3253,7 +3253,8 @@ the $0.15 left of the run's $0.50 cap could buy."
 ### A limit on free requests
 
 A request that costs $0 is one no dollar cap can stop: one on a free model (its catalog price is all zeros, as
-`harnesses[].free_models` lists them) or on a ChatGPT plan. So a run has a limit on those requests: 60, or
+`harnesses[].free_models` lists them; an OpenRouter router is none, since it bills the model it picks) or on a ChatGPT
+plan, with no fee beside it. So a run has a limit on those requests: 60, or
 `AGENTRUN_FREE_MODEL_REQUESTS` (a whole number above 0; anything else refuses the server's start and the runner's).
 Capabilities' `limits.free_model_requests` says it, and the console says "free model: up to 60 requests" beside the
 cap of an agent on such a model. A run may make that many; the next is not sent, and the run ends `failed` as one its

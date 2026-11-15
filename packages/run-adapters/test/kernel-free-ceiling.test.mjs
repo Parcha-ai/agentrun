@@ -15,7 +15,9 @@ const CHILD = "run:run-1:child";
 const FREE = { id: "free-model", api: "openai-completions", price: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1000 };
 const PAID = { id: "paid-model", api: "openai-completions", price: { input: 1, output: 1 }, outputCeiling: 1000 };
 const PLAN = { id: "gpt-6.1-sol", api: "openai-responses", price: null, outputCeiling: 1000, plan: true };
-const MODELS = new Map([FREE, PAID, PLAN].map((model) => [model.id, model]));
+/** An OpenRouter router: its catalog writes $0, but it bills the model it routes to, so it is no free model. */
+const ROUTER = { id: "openrouter/auto", api: "openai-completions", price: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1000 };
+const MODELS = new Map([FREE, PAID, PLAN, ROUTER].map((model) => [model.id, model]));
 const LIMIT_WORDS = (n) => `spend_cap_reached: Not sent: this run reached its ${n}-request limit for free models.`;
 
 const runOf = (store, { capUsd, freeRequests } = {}) => cap.runCap({ sessions: store, capUsd: () => capUsd, modelOf: (id) => MODELS.get(id), ...(freeRequests === undefined ? {} : { freeRequests }) });
@@ -59,6 +61,15 @@ test("a paid model is never stopped by the ceiling, nor counted toward it; a pla
   assert.equal(refused?.message, LIMIT_WORDS(2), "the plan's and the free model's requests share the one limit");
   assert.equal(await ask(main, PAID.id, 0.001), "sent", "a paid request past it still goes");
   assert.deepEqual((await requestsOf(store, MAIN)).map((r) => r.zeroPriced ?? null), [null, null, null, null, null, null, "plan", "free", null]);
+});
+
+test("a router's $0 listing is no free model: never counted toward the limit, never refused by it", async () => {
+  const store = memorySessionStore();
+  const run = runOf(store, { freeRequests: 1 });
+  const main = await bookingOf(store, run, MAIN);
+  for (let i = 0; i < 4; i++) assert.equal(await ask(main, ROUTER.id), "sent", `router request ${i + 1}`);
+  assert.equal(await ask(main, FREE.id), "sent", "the limit is still whole");
+  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => r.zeroPriced ?? null), [null, null, null, null, "free"]);
 });
 
 test("under a dollar cap the ceiling holds the same, and the run's paid tool calls never count toward it", async () => {

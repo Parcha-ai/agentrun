@@ -68,6 +68,27 @@ describe("cost", () => {
   });
 });
 
+// A run whose every model request went to a free model (its known price $0 for every token) costs a known $0, and its
+// cost says why, as its usage row does (the server's `free`). A $0 the server does not mark free, an unknown cost, and a
+// paid cost read as before.
+describe("a free model's cost", () => {
+  const free: Cost = { usd: 0, basis: "estimate", charge_state: null, cap_usd: null, free: true };
+  it("says $0 · free model, never $0.0000 est. and never Unknown", () => {
+    expect(cost(free)).toBe("$0 · free model");
+    expect(cost(free, { ended: true })).toBe("$0 · free model");
+  });
+  it("keeps its words beside a cap, the cap after them", () => {
+    expect(costOfCap(free, 1)).toBe("$0 · free model · cap $1.00");
+    expect(costOfCap(free, null)).toBe("$0 · free model");
+  });
+  it("a guard: only a known $0 the server marks free; an unknown cost and a paid one read as before", () => {
+    expect(cost({ usd: 0, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0000 est.");
+    expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null, free: true } as Cost)).toBe("Unknown");
+    expect(cost({ usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null, free: true } as Cost)).toBe("$0.25 est.");
+    expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0, unpriced: 9 })).toBe("so far $0.00 est. · 9 not priced");
+  });
+});
+
 describe("cost where a run is shown", () => {
   it("the run header shows a null cost as Unknown, never $0", async () => {
     const { renderToStaticMarkup } = await import("react-dom/server");
