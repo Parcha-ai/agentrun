@@ -60,11 +60,16 @@ const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i
 export function scrubUrls(text: string): string {
   return text.replace(TEXT_URL, (raw) => {
     const tail = /[.,;:!?)\]}]+$/.exec(raw)?.[0] ?? "";
-    const parts = URL_PARTS.exec(raw.slice(0, raw.length - tail.length));
-    if (!parts) return raw;
-    const keys = [...new Set((parts[4] ?? "").split("&").map((pair) => pair.split("=")[0]).filter(Boolean))];
-    return `${parts[1]}${parts[2]}${parts[3]}${keys.length ? `?${keys.map((key) => `${key}=${ELIDED}`).join("&")}` : ""}${tail}`;
+    return `${scrubUrl(raw.slice(0, raw.length - tail.length))}${tail}`;
   });
+}
+
+/** One http(s) URL, whole, as scrubUrls shows each it finds: its origin, its path and its query keys alone. */
+export function scrubUrl(url: string): string {
+  const parts = URL_PARTS.exec(url);
+  if (!parts) return url;
+  const keys = [...new Set((parts[4] ?? "").split("&").map((pair) => pair.split("=")[0]).filter(Boolean))];
+  return `${parts[1]}${parts[2]}${parts[3]}${keys.length ? `?${keys.map((key) => `${key}=${ELIDED}`).join("&")}` : ""}`;
 }
 
 /** `a, b, +2 more`. */
