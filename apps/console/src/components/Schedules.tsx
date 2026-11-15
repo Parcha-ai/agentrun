@@ -1085,7 +1085,7 @@ function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => voi
   useEffect(() => { open.current = true; return () => { open.current = false; }; }, []);
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    const { source, issues: found } = hook ? webhookSourceOf(hook.source, rules) : app ? composioSourceOf(app.source, appFirst?.where ?? [], appOthers) : githubSourceOf(picks);
+    const { source, issues: found } = hook ? webhookSourceOf(hook.source, rules) : app ? composioSourceOf(app.source, appFirst?.where ?? [], appOthers, appFirst?.was) : githubSourceOf(picks);
     setRest([]);
     if (Object.keys(found).length) { setIssues(found); return; }
     setIssues({}); setSaving(true);

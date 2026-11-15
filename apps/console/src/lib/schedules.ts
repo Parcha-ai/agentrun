@@ -441,15 +441,18 @@ export const emptyComposio = (): ComposioDraft => ({ name: "", server: "", event
 
 /** A trigger from an app's filter: its one event's conditions, a rule of their own; none takes every delivery for its
  *  instance. */
-function composioAcceptOf(event: string, where: readonly ConditionDraft[], others: readonly RuleDraft[] = []): { accept: Accept[]; issues: Record<string, string> } {
-  return acceptOf([...(where.length ? [{ event, actions: "", where }] : []), ...others]);
+function composioAcceptOf(event: string, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { accept: Accept[]; issues: Record<string, string> } {
+  // The first rule as read goes back as it came while the person leaves it (one with no conditions too); emptied, it goes.
+  const first = where.length || (read && !read.where?.length) ? [{ event, actions: "", where, ...(read ? { was: read } : {}) }] : [];
+  return acceptOf([...first, ...others]);
 }
 
 /** A trigger from an app's source with a new filter: everything else (its server, event, config, and what was made on
- *  Composio) as it was. `others`: rules after the first that the form shows as they are (one made through the API). */
-export function composioSourceOf(was: ComposioSource, where: readonly ConditionDraft[], others: readonly RuleDraft[] = []): { source: ComposioSource; issues: Record<string, string> } {
+ *  Composio) as it was. `others`: rules after the first that the form shows as they are (one made through the API).
+ *  `read`: the first rule as read, so what the person left of it goes back exactly as it came (ruleOf). */
+export function composioSourceOf(was: ComposioSource, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { source: ComposioSource; issues: Record<string, string> } {
   const { accept: _was, ...rest } = was;
-  const { accept, issues } = composioAcceptOf(was.event, where, others);
+  const { accept, issues } = composioAcceptOf(was.event, where, others, read);
   return { source: { ...rest, ...(accept.length ? { accept } : {}) } as ComposioSource, issues };
 }
 
