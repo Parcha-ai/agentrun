@@ -33,7 +33,8 @@
 // - A waiter leaves the line, admitted for nothing and holding nothing, when its client goes (its signal: a stop, a
 //   cancel, a lost claim), when the run stops (`stopped`, for a paid call or a decision too), when its booking stops (`halted`: thrown, as a stop that came during the check), or when the
 //   run parks meanwhile (`parked`: refused in its own words, so nothing more is sent until a raise).
-import { type BeforeRequest, type InFlight, RUNNER_RECORDS, sessionSpendOf } from "./runner.js";
+import { type BeforeRequest, type InFlight, sessionSpendOf } from "./runner.js";
+import { freeRequestsIn } from "./kernel/cap/free.js";
 import type { SessionRecord } from "./types.js";
 
 /** The run's sessions: every key it has, and each one's records. */
@@ -97,7 +98,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
       for (const key of await sessions.keys()) {
         const records = await sessions.read(key);
         const spend = sessionSpendOf(records);
-        for (const r of records) if (r.kind === RUNNER_RECORDS.request && (r.data as { freeRequest?: unknown } | undefined)?.freeRequest === true) freeRequestsMade += 1;
+        freeRequestsMade += freeRequestsIn(records);
         for (const turn of spend.turns) recorded.add(idOf(key, turn));
         for (const turn of spend.answered) answered.add(idOf(key, turn));
         // Each request's figure (sessionSpendOf's), but one this booking admitted and has not seen answered: that one is

@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
+import { modelPortFor, RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import * as cap from "../dist/kernel/cap/index.js";
 
@@ -140,6 +140,50 @@ test("a hold-only step is never waited on: a step that fits only once it is give
   const refused = await tools.admit(fetchCall("next", 0.3)).catch((error) => error);
   assert.ok(Date.now() - began < 1_000, "refused without waiting");
   assert.ok(refused instanceof cap.CapRefused && !refused.forGood, String(refused));
+});
+
+test("the free count an observer keeps stays the run's when a step waits: only the verdict a step goes by is told, at the count it was admitted at", async () => {
+  // The adapter loop's free count (adapter-loop.ts freeMade): the count each told verdict was judged with, and itself when
+  // it counts. A waiter's refusals are never told, so a free request admitted while a paid call waits never has its count
+  // taken back by a stale one.
+  const FREE = { id: "free-model", api: "openai-completions", price: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1000 };
+  const told = [];
+  let freeMade = 0;
+  const counts = [];
+  const { store, run } = runOn(0.5, {
+    modelOf: (id) => (id === FREE.id ? FREE : undefined),
+    freeRequests: 10,
+    judged: (request, answer) => {
+      told.push(answer);
+      if (request.freeRequestsMade !== undefined) freeMade = request.freeRequestsMade + (answer && !("refuse" in answer) && answer.freeRequest === true ? 1 : 0);
+      counts.push(freeMade);
+    },
+  });
+  const key = "run:run-1";
+  const booking = await modelPortFor(await store.open(key), { key, label: key, beforeRequest: run.before, stop: (reason, message) => Object.assign(new Error(message ?? reason), { reason }) });
+  const free = async () => {
+    const ticket = await booking.models.beforeRequest({ model: FREE.id, inputTokensMax: 100 });
+    await booking.models.afterRequest({ input: 100, output: 10, cacheRead: 0, usd: 0 }, ticket, { end: "answered", usd: 0 });
+  };
+  await free();
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  const first = await tools.admit(fetchCall("out", 0.4));
+  const order = [];
+  // $0.30 does not fit beside $0.40 held: it waits. The free request after it ($0) goes after it in the line.
+  const waiting = tools.admit(fetchCall("waits", 0.3)).then((a) => (order.push("paid"), a));
+  await sleep(150);
+  const second = free().then(() => order.push("free"));
+  await sleep(150);
+  assert.deepEqual(order, [], "neither goes while the first holds the room");
+  await tools.settle(first.id, 0.02);
+  const admitted = await waiting;
+  await second;
+  await tools.settle(admitted.id, 0.02);
+  assert.deepEqual(order, ["paid", "free"]);
+  assert.ok(told.every((answer) => !(answer && "refuse" in answer)), `no refusal was told: ${JSON.stringify(told)}`);
+  assert.deepEqual(counts, [1, 1, 1, 2], "the count after each told verdict: the free request, the two paid calls, the free request");
+  const made = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.request && r.data.freeRequest === true).length;
+  assert.equal(freeMade, made, "the observer's count is the run's records'");
 });
 
 test("the words of a model request that cannot fit alone: spent, held and the least apart", () => {

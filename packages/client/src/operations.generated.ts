@@ -1543,12 +1543,28 @@ export type EnrollRemoteConnectorBody = {
   label?: string;
   capabilities?: {
     native_execution?: boolean;
+    history_import?: boolean;
   };
 };
 export type EnrollRemoteConnectorResponse = {
   enrollment_token: string;
   expires_at: string;
   workspace_id: "local";
+};
+
+/** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+export type ImportRemoteHistoryBody = {
+  sessions: Array<Record<string, unknown>>;
+};
+export type ImportRemoteHistoryResponse = {
+  agent_id: string;
+  runs: Array<{
+    session_id: string;
+    run_id: string;
+    already: boolean;
+  }>;
+  imported: number;
+  already: number;
 };
 
 /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
@@ -1589,6 +1605,7 @@ export type ImportRemoteTargetBody = {
       target_id: string;
     };
   };
+  history_only?: boolean;
 };
 export type ImportRemoteTargetResponse = {
   agent_id: string;
@@ -1640,6 +1657,7 @@ export type ListRemoteConnectorsResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   }>;
@@ -1667,6 +1685,7 @@ export type RegisterRemoteConnectorBody = {
   label?: string;
   capabilities: {
     native_execution: boolean;
+    history_import?: boolean;
   };
 };
 export type RegisterRemoteConnectorResponse = {
@@ -1680,6 +1699,7 @@ export type RegisterRemoteConnectorResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
@@ -1709,6 +1729,7 @@ export type RevokeRemoteConnectorResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
@@ -2299,7 +2320,7 @@ export type RecordLearningEvalResponse = {
   recorded_at: string;
 };
 
-/** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+/** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
 export type GetLearnedWorkflowReplayResponse = {
   replay: string;
   workflow: string;
@@ -4840,6 +4861,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteTarget: {"method":"POST","path":"/connectors/{connector_id}/import","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRemoteConnectors: {"method":"GET","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pollRemoteConnector: {"method":"POST","path":"/connectors/{connector_id}/poll","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5007,6 +5029,8 @@ export function resources(call: Call) {
       completeRemoteCommand: (connectorId: string, commandId: string, body: CompleteRemoteCommandBody, options?: RequestOptions): Promise<CompleteRemoteCommandResponse> => call("completeRemoteCommand", [connectorId, commandId], body, undefined, options),
       /** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
       enrollRemoteConnector: (body: EnrollRemoteConnectorBody, options?: RequestOptions): Promise<EnrollRemoteConnectorResponse> => call("enrollRemoteConnector", [], body, undefined, options),
+      /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+      importRemoteHistory: (connectorId: string, targetId: string, body: ImportRemoteHistoryBody, options?: RequestOptions): Promise<ImportRemoteHistoryResponse> => call("importRemoteHistory", [connectorId, targetId], body, undefined, options),
       /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
       importRemoteTarget: (connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options),
       /** List remote source machines and imported agent targets (GET /connectors). */
@@ -5065,7 +5089,7 @@ export function resources(call: Call) {
       read: (agentId: string, file: string, options?: RequestOptions): Promise<Tagged<ReadLearningFileResponse | string>> => call("readLearningFile", [agentId, file], undefined, undefined, options),
       /** Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals). */
       recordEval: (agentId: string, body: RecordLearningEvalBody, params?: RecordLearningEvalParams, options?: RequestOptions): Promise<RecordLearningEvalResponse> => call("recordLearningEval", [agentId], body, params, options),
-      /** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+      /** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
       replay: (agentId: string, name: string, digest: string, replayId: string, options?: RequestOptions): Promise<GetLearnedWorkflowReplayResponse> => call("getLearnedWorkflowReplay", [agentId, name, digest, replayId], undefined, undefined, options),
       /** Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
       retire: (agentId: string, file: string, params?: RetireLearningFileParams, options?: RequestOptions): Promise<Tagged<string>> => call("retireLearningFile", [agentId, file], undefined, params, options),
