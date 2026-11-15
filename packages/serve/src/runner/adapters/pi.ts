@@ -17,6 +17,7 @@ import { type Conversation, defineExtension, defineTool, type Extension, Generat
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -550,7 +551,9 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
       const structured = (result.details as { [HOST_VALUE]?: JsonValue } | undefined)?.[HOST_VALUE];
       // A refusal in the gate's words (this session's), or, answered from an earlier session's record, said so.
       const words = refused ? (refusals.get(callId) ?? `${name} was refused (the run's tool settings or a person's answer), and it did not run.`) : undefined;
-      const text = words ?? (said || result.diagnostics.map((one) => one.message).join("\n"));
+      // A call a crash cut off reads in the kernel's words for an outcome not known (INTERRUPTED_TEXT), as a CLI's call cut
+      // off does on every other harness, never pi's own "Tool <name> was interrupted and may have partially run".
+      const text = words ?? (interrupted ? INTERRUPTED_TEXT : said || result.diagnostics.map((one) => one.message).join("\n"));
       await ended?.(callId, refused ? "refused" : interrupted ? "interrupted" : result.isError ? "failed" : "done", text);
       return {
         text,
