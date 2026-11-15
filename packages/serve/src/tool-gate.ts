@@ -47,10 +47,6 @@ export type Permission = (typeof PERMISSIONS)[number];
 
 // An MCP tool's gate name is its catalog name, `mcp:<server>/<tool>` (tool-names.ts).
 export { mcpToolName };
-/** A third-party catalog tool, by its name: any in MCP's namespace (`mcp:<server>/<tool>`) or monid's
- *  (`monid:<provider>/<endpoint>`), a group's wildcard too; one that does not parse too, so the default for it is a
- *  catalog tool's ask. */
-export const isCatalogTool = isCatalogName;
 /** Where a run's shell is, as its default permissions read it: `computer` false for a run with no computer (its bash, where
  *  it has one, runs on the run's folder's own exec: Archil's in Mode 2); undefined where no run is in view (the server's
  *  settings page, capabilities), which reads the computer's defaults. */
@@ -63,7 +59,7 @@ const isBuiltin = (name: string): boolean => isToolRow(name) || SERVE_OWN_TOOLS.
  *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
  *  refused. */
 export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
-  if (isCatalogTool(name) || !isBuiltin(name)) return "ask";
+  if (isCatalogName(name) || !isBuiltin(name)) return "ask";
   return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
 };
 
@@ -122,7 +118,7 @@ export function nameMapOf(harness: string): NameMap {
 export function settingsKeyOf(harness: string, name: string, names: NameMap = nameMapOf(harness)): string | undefined {
   const own = names.get(name);
   if (own !== undefined) return own;
-  return isCatalogTool(name) ? name : undefined;
+  return isCatalogName(name) ? name : undefined;
 }
 
 /** A pinned argument's scalar: `null` holds for a call that leaves the argument out (or gives null). */

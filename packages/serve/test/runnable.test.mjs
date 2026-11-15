@@ -30,6 +30,19 @@ test("a tool this host does not bind refuses the save, 422 at each tools[i] that
   await nothingSaved(api, "shell");
 });
 
+test("a name that is no tool here is refused in words that name it and say how a catalog tool is granted, never naming the package; monid's old tool gets the same words", async (t) => {
+  const { api } = await serve(t);
+  for (const tool of ["not_a_tool", "monid.run"]) {
+    const refused = await api("POST", "/agents", agent("unknown", { tools: ["read", tool] }));
+    assert.equal(refused.status, 422, JSON.stringify(refused.body));
+    const [issue] = refused.body.error.fields;
+    assert.equal(issue.field, "definition.tools[1]");
+    assert.match(issue.message, new RegExp(`^${tool.replace(".", "\\.")} is not a tool here: grant one of read, .*, an MCP server's tool as mcp:<server>/<tool>, or a monid endpoint as monid:<provider>/<endpoint>\\.$`), issue.message);
+    assert.doesNotMatch(issue.message, /agentrun-serve/, "the package is never named");
+  }
+  await nothingSaved(api, "unknown");
+});
+
 test("a model pi-ai does not know refuses the save, 422 at definition.model, saying why", async (t) => {
   const { api } = await keyless(t);
   const refused = await api("POST", "/agents", agent("nope", { model: "nope/nope" }));
