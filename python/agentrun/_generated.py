@@ -370,6 +370,7 @@ __all__ = [
     "ImportTemplateResponseTemplateMcpItemToolsItem",
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
+    "ImportTemplateResponseTemplateModelChoicesItem",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
     "InputIssue",
@@ -451,6 +452,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
+    "ListTemplatesResponseTemplatesItemModelChoicesItem",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
     "ListToolKeysResponse",
@@ -4793,6 +4795,7 @@ class ApplyTemplateBody(TypedDict, total=False):
 
 class ApplyTemplateBodyOverrides(TypedDict, total=False):
     model: str
+    choice: str
     approvals: Literal["ask", "never"]
 
 
@@ -4895,6 +4898,19 @@ class _ImportTemplateResponseTemplateModelRequired(TypedDict):
 
 class ImportTemplateResponseTemplateModel(_ImportTemplateResponseTemplateModelRequired, total=False):
     prefer: str
+    fast: str
+    strong: str
+    choices: list[ImportTemplateResponseTemplateModelChoicesItem]
+
+
+class ImportTemplateResponseTemplateModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
 
 
 class ImportTemplateResponseTemplateToolPolicy(TypedDict):
@@ -5003,6 +5019,19 @@ class _ListTemplatesResponseTemplatesItemModelRequired(TypedDict):
 
 class ListTemplatesResponseTemplatesItemModel(_ListTemplatesResponseTemplatesItemModelRequired, total=False):
     prefer: str
+    fast: str
+    strong: str
+    choices: list[ListTemplatesResponseTemplatesItemModelChoicesItem]
+
+
+class ListTemplatesResponseTemplatesItemModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
 
 
 class ListTemplatesResponseTemplatesItemToolPolicy(TypedDict):

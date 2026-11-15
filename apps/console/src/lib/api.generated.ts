@@ -1124,6 +1124,7 @@ export interface operations {
       grants?: string[];
       overrides?: {
         model?: string;
+        choice?: string;
         approvals?: "ask" | "never";
       };
     };
@@ -2679,6 +2680,17 @@ export interface operations {
         model: {
           tier: "fast" | "balanced" | "strong";
           prefer?: string;
+          fast?: string;
+          strong?: string;
+          choices?: {
+            id: string;
+            label: string;
+            model: string;
+            harness: string;
+            warning: string | null;
+            note: string | null;
+            secrets: string[];
+          }[];
         } | null;
         effort: string | null;
         tools: string[] | null;
@@ -3197,6 +3209,17 @@ export interface operations {
         model: {
           tier: "fast" | "balanced" | "strong";
           prefer?: string;
+          fast?: string;
+          strong?: string;
+          choices?: {
+            id: string;
+            label: string;
+            model: string;
+            harness: string;
+            warning: string | null;
+            note: string | null;
+            secrets: string[];
+          }[];
         } | null;
         effort: string | null;
         tools: string[] | null;

@@ -229,6 +229,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
   // on its triggers with no one there), which the owner can switch.
   const [approvals, setApprovals] = useState<Approvals>(t.approvals_default ?? "ask");
+  // The package's model choice the owner picked, by id, sent as overrides.choice; "" is the package's default model.
+  const [choice, setChoice] = useState("");
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [serversError, setServersError] = useState<Problem | null>(null);
   const [serversTries, setServersTries] = useState(0);
@@ -276,7 +278,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
-    const body = { parameters: fieldValues(form, sending), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals } };
+    const body = { parameters: fieldValues(form, sending), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals, ...(choice ? { choice } : {}) } };
     try {
       const done = await v2.applyTemplate(t.id, body, keys.keyFor(t.id, body));
       keys.done();
@@ -312,7 +314,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   };
   const params = form.fields;
   // Issues the form has no place for (a trigger's, an override's) show above the button, in the server's words.
-  const placed = (i: FieldIssue) => /^(parameters|secrets|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
+  const placed = (i: FieldIssue) => /^(parameters|secrets|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length);
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
@@ -443,6 +445,28 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
           ))}
         </Section>
       )}
+
+      {t.model?.choices?.length ? (
+        // The package's default model first, then each choice by its label. A choice's warning and note show under it
+        // whether it is picked or not, word for word: the owner reads them before choosing.
+        <fieldset aria-label="Model" className="mt-6">
+          <legend className="caps text-small font-semibold">Model</legend>
+          <div className="mt-2 divide-y border">
+            {[{ id: "", label: `Your default: ${t.model.tier} on ${t.harness?.[0] ?? "this server's harness"}`, warning: null, note: null }, ...t.model.choices].map((c) => (
+              <label key={c.id || "default"} data-choice={c.id || "default"} className="flex items-start gap-3 px-4 py-3">
+                <input type="radio" name="model-choice" value={c.id} className="mt-1 accent-primary" checked={choice === c.id} onChange={() => setChoice(c.id)} />
+                <span className="min-w-0">
+                  <span className="font-mono text-body" data-choice-label>{c.label}</span>
+                  {"model" in c && <span className="block font-mono text-label text-muted-foreground">{c.model} on {c.harness}</span>}
+                  {c.warning && <span className="mt-1 block text-small text-warning-text" data-choice-warning={c.id}>{c.warning}</span>}
+                  {c.note && <span className="mt-1 block text-small text-muted-foreground" data-choice-note={c.id}>{c.note}</span>}
+                </span>
+              </label>
+            ))}
+          </div>
+          <Issues issues={at("overrides.choice")} />
+        </fieldset>
+      ) : null}
 
       <fieldset aria-label="Approvals" className="mt-6">
         <legend className="caps text-small font-semibold">Approvals</legend>
