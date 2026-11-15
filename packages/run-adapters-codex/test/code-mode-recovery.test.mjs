@@ -350,6 +350,69 @@ test("a yielded exec's parked call that ran on an earlier recovery cut before it
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then ran: "5"\. Its effect is done; it was not run again\./);
 });
 
+/** Two crashes around one exec: a crash cuts the exec while its nested call waits on the gate (never reaching its intent), the
+ *  resume's gate refuses that call, and a second crash comes before the exec's end reaches the host's record, at `at`:
+ *  'flushed' (the recovery's records are in the journal, its output never reached the rollout, so the next drive recovers the
+ *  turn again) or 'rolled' (the output is in the rollout, so the next drive restores it). The ends the last drive records. */
+async function twoCrashes(at) {
+  const ran = [];
+  const host = { name: 'mcp__fake__add', description: 'Adds.', inputSchema: { type: 'object' }, replay: 'never', call: async (args) => (ran.push(args), { text: String(args.a + args.b) }) };
+  const deny = async () => ({ deny: 'Denied: not now.' });
+  const store = memorySessionStore();
+  const first = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
+  await first.submit({ id: 's1', kind: 'prompt', text: 'Add them.' });
+  await placeSubmissions(first, [first.pending()[0]]);
+  const since = openTurn(first.state()).since;
+  // The first crash: the call waits on its gate when the process goes.
+  void toolBridge(first, [codexTool(host)], { live: false, gate: hang }).call('mcp_fake__add', { a: 2, b: 3 }, 'exec-1').catch(() => {});
+  await pause(20);
+  const ties = [{ callId: 'exec-1', exec: EXEC, since, tool: 'mcp_fake__add', args: { a: 2, b: 3 } }];
+  const kept = [];
+  const journal = { append: (stream, data) => kept.push([stream, data]), flush: async () => {}, read: async (stream) => [...(stream === NESTED_STREAM ? ties : []), ...kept.filter(([s]) => s === stream).map(([, data]) => data)].map((data) => ({ data })) };
+  const line = (payload) => JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload });
+  const execLine = line({ type: 'custom_tool_call', name: 'exec', input: 'await tools.mcp_fake__add({a:2,b:3})', call_id: EXEC });
+  const drive = async (lines) => {
+    const ctx = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
+    const ends = [];
+    let listen;
+    const ownCalls = { opened: async () => {}, nestedIn() {}, ended: async (exec, _output, failed) => void ends.push({ exec, failed }) };
+    const bridge = toolBridge(ctx, [codexTool(host)], { live: false, gate: deny });
+    const mode = codeMode({ ctx, machine: { onRolloutLine: (fn) => (listen = fn) }, ownCalls, journal, logged: new Set(), synced: async () => {}, bridge, log() {}, lines, rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+    return { mode, ends, listen: (l) => listen(l) };
+  };
+  // The resume: the gate refuses the call, and the recovery records the exec's outcome before its output is injected.
+  const resumed = await drive([]);
+  const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
+  await resumed.mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [execLine], since, true);
+  // The second crash.
+  if (at === 'rolled') {
+    const last = await drive([execLine, line({ type: 'custom_tool_call_output', call_id: EXEC, output: items[0].output })]);
+    await pause(10);
+    return { ran, ends: last.ends, output: items[0].output };
+  }
+  const last = await drive([execLine]);
+  const again = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
+  await last.mode.recoverItems(again, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [execLine], since, true);
+  last.listen(execLine);
+  last.listen(line({ type: 'custom_tool_call_output', call_id: EXEC, output: again[0].output }));
+  await pause(10);
+  return { ran, ends: last.ends, output: again[0].output };
+}
+
+test("a crash, a resume whose gate refuses the exec's call, then a second crash after the recovery's record and before its output reached the rollout: the exec still ends failed", async () => {
+  const { ran, ends, output } = await twoCrashes('flushed');
+  assert.deepEqual(ran, [], 'never run');
+  assert.match(output, /^The exec was cut short after these calls/);
+  assert.match(output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
+  assert.deepEqual(ends, [{ exec: EXEC, failed: true }]);
+});
+
+test("a crash, a resume whose gate refuses the exec's call, then a second crash after its output reached the rollout and before the exec's end reached the host's record: the exec still ends failed", async () => {
+  const { ran, ends } = await twoCrashes('rolled');
+  assert.deepEqual(ran, [], 'never run');
+  assert.deepEqual(ends, [{ exec: EXEC, failed: true }]);
+});
+
 test("a turn ended without a recovery note never runs a nested call its cut-off exec left parked: the repair only tells the exec's output", async () => {
   // repairUnnoted answers the calls an ended (settled) turn left dangling before the next turn is sent: it is read-only, so a
   // call a person may never have answered is not run on a later, unrelated turn.
