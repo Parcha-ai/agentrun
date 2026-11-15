@@ -18,6 +18,7 @@ import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+const { recordPromotion } = await import("../dist/learn/promote.js");
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -85,6 +86,20 @@ test("a run that learns whose record names no path is left out and counted, neve
   assert.deepEqual(cost.runs.map((run) => [run.n, run.run_id, run.path, run.total_usd]), [[1, "run-1", "workflow", 0.2], [2, "run-4", "agent", 0.4]]);
   assert.deepEqual([cost.total_runs, cost.unknown_cost_runs, cost.unknown_path_runs], [2, 0, 2]);
   assert.equal(cost.summary.before, null, "no agent run before the takeover: none at $0");
+});
+
+test("the summary's replay is the serving promotion's record, read from the store's promotions; none before one", async (t) => {
+  const store = await agentOn(t);
+  const end = async (id, metrics, costUsd) => {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
+    await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd, metrics });
+  };
+  await end("run-1", { path: "agent" }, 0.9);
+  await end("run-2", { path: "workflow", workflow: "answer" }, 0.1);
+  assert.equal((await agentCostOverStore(store, "agent-1")).summary.replay, null, "no promotion recorded");
+  const replay = { n: 40, agree: 34, agent_acc: 0.82, wf_acc: 0.86, delta: 0.04, handed_back: 3, of: [] };
+  await recordPromotion(store.settings, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", source: "replay", reason: "as good as the agent", replay }, () => true);
+  assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true });
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
