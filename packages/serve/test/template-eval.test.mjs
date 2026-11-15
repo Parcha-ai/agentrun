@@ -425,6 +425,54 @@ test("the eval's exit code is 1 when any case failed, however many passed beside
   assert.deepEqual([of(true), of(true, true), of(false), of(true, false), of(false, true, true)], [0, 0, 1, 1, 1]);
 });
 
+/** A copy of the fixture package with a case `clock` whose agent answers the day its environment line names, graded by
+ *  a regex and an llm grader; its case.yaml carries `now` when given. */
+async function clockPackage(t, now, today, mark = "CLOCK-CASE") {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = join(dir, "evals", "clock");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), `parameters:\n  team: blue\n${now === undefined ? "" : `now: ${now}\n`}`);
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: The run is told the day.\n---\nAnswer:\nToday: {{today}} (${mark})\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "clock"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "day.md"), `---\ntype: regex\npattern: "Today: ${today}"\n---\n`);
+  writeFileSync(join(at, "graders", "judged.md"), `---\ntype: llm\n---\nPass if the answer contains "${mark}".\n`);
+  return dir;
+}
+
+test("a case's now is its runs' clock: the environment line names its day, and its llm graders are told it", { timeout: 300_000 }, async (t) => {
+  const report = await evalTemplate({ dir: await clockPackage(t, "2026-11-14T09:00:00Z", "2026-11-14"), cases: ["clock"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.match(run.answer, /^Today: 2026-11-14 \(CLOCK-CASE\)/, "the environment line says the case's day");
+  assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
+  const graded = graderInputs().filter((input) => input.includes("CLOCK-CASE"));
+  assert.equal(graded.length, 1);
+  assert.match(graded[0], /^The run ran on a clock set to 2026-11-14T09:00:00Z: its date was 2026-11-14 \(UTC\), whatever today's date is where you are\.$/m);
+});
+
+test("a case without now runs on the real clock, and its graders are told no clock", { timeout: 300_000 }, async (t) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const report = await evalTemplate({ dir: await clockPackage(t, undefined, today, "REAL-CLOCK"), cases: ["clock"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  // A run that crossed midnight UTC says the next day.
+  assert.ok([today, new Date().toISOString().slice(0, 10)].some((day) => run.answer.startsWith(`Today: ${day} `)), run.answer);
+  const graded = graderInputs().filter((input) => input.includes("REAL-CLOCK"));
+  assert.equal(graded.length, 1);
+  assert.doesNotMatch(graded[0], /clock set to/);
+});
+
+test("readCases refuses a now that is not a date and time with its offset, and a now case refuses a named server", async (t) => {
+  for (const bad of ["2026-11-14", "2026-11-14T09:00:00", "2026-02-30T09:00:00Z", "tomorrow", "2026-11-14T25:00:00Z"]) {
+    const dir = await clockPackage(t, bad, "x");
+    assert.throws(() => readCases(dir, ["clock"]), (thrown) => thrown instanceof CaseError && thrown.problems.includes(`evals/clock/case.yaml: now is a date and time with its offset (2026-11-14T09:00:00Z), not ${JSON.stringify(bad)}`), bad);
+  }
+  const dir = await clockPackage(t, "2026-11-14T09:00:00+02:00", "x");
+  assert.equal(readCases(dir, ["clock"]).cases[0].now, "2026-11-14T09:00:00+02:00");
+  // Only the eval's own server sets a run's clock: a named one would run the case on its own, and is refused unreached.
+  await assert.rejects(evalTemplate({ dir, cases: ["clock"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/clock: now sets its runs' clock on the eval's own server alone: run it without --server"));
+});
+
 test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
   const one = await caseOf("learned");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));

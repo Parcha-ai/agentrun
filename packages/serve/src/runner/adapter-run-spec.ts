@@ -197,6 +197,11 @@ export interface AdapterSpecDeps {
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
+  /** A template eval's clocks, by the agent a run is of (template-eval.ts, a case's `now`): such a run is told that date
+   *  and time wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date). Only the eval's own
+   *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
+   *  maps onto it. Absent, or undefined for a run: the real clock. */
+  readonly clockOf?: (agentId: string) => Date | undefined;
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -693,7 +698,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
-  const system = [environmentLine(), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
+  // The run's clock: a template eval case's (clockOf), else the real one.
+  const now = deps.clockOf?.(runRow.agentId);
+  const system = [environmentLine(now), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
@@ -714,7 +721,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         if (at.unpriced && !at.provider.plan && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
         return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
-      preamble: environmentLine(),
+      preamble: environmentLine(now),
     }));
   }
 
