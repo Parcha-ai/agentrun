@@ -258,7 +258,7 @@ test("a script's shell and files are held to the run's gate: a denied bash, a de
   assert.match(before.structured, /not attached to its scripts yet/, "no gate installed: refused, never run");
   const seen = [];
   let verdict = "allow";
-  run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
+  run.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
   assert.equal((await call(tools, "computer_script", { code })).structured, "ran");
   assert.deepEqual(seen, [["bash", { command: "echo hi" }]]);
   await call(tools, "computer_script", { code: "try { await computer.shell.run('cat passwd', { cwd: '/etc' }); } catch (error) {} return 1;" });
@@ -279,7 +279,7 @@ test("a phone's shell in a script, refused, says in a person's words what the ph
   const tools = run.hostTools(run.kindTools);
   const code = "try { await computer.shell.run('getprop ro.build.version.release'); return 'ran'; } catch (error) { return String(error.message); }";
   let verdict = "ask";
-  run.computer.guard.install(async () => verdict);
+  run.guard.install(async () => verdict);
   const asked = (await call(tools, "computer_script", { code })).structured;
   assert.match(asked, /^could not run a shell command on the phone: /, "it starts with what the phone could not do, as the timeline row shows it");
   assert.match(asked, /wait for a person's OK/, "why, in a person's words");
@@ -307,7 +307,7 @@ test("a script's processes.start is held as bash_background (bash's setting; a r
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: { ...helloOf("desktop", DESKTOP_GROUPS), display: ":0" }, check: { readBackOf } }, { mode: 1, context: ctx });
   const seen = [];
   let verdict = "allow";
-  run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
+  run.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
   const tools = run.hostTools(run.kindTools);
   const code = "try { return await computer.processes.start('mousepad', { cwd: '/tmp' }); } catch (error) { return String(error.message); }";
   assert.deepEqual((await call(tools, "computer_script", { code })).structured, { pid: 42 });
@@ -326,7 +326,7 @@ test("under a bash policy a script's shell carries the policy's git lock-down as
   const root = scratch();
   const computer = fakeScreen(root);
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx, bashPolicy: "read-only" });
-  run.computer.guard.install(async () => "allow");
+  run.guard.install(async () => "allow");
   const tools = run.hostTools(run.kindTools);
   await call(tools, "computer_script", { code: "try { await computer.shell.run('git status', { env: { GIT_CONFIG_COUNT: '0', MINE: '1' } }); } catch (error) {} return 1;" });
   const [, sent] = computer.calls.filter(([method]) => method === "exec.run").at(-1);
@@ -339,35 +339,24 @@ test("under a bash policy a script's shell carries the policy's git lock-down as
 
 // The agent's computer setting picks the computer's surface (computer-setting.ts surface, carried on the RunComputer):
 // "tools", the per-step tools and the hand-over, never a script tool; "code", the script tool and the hand-over, never
-// the per-step tools. A harness with its own code mode (pi: runTools' codeMode) has that as its script tool, so a
-// code-only computer lists no computer_script there, and a tools-only one gives it no script runtime (RunTools.computer).
-test("surface tools: a desktop's and a phone's run lists computer_observe, computer_act, computer_screenshot and the hand-over, no computer_script, and no script runtime for a harness's code mode", async () => {
+// the per-step tools. The same on every harness: the host's codemode calls whichever of them the run lists.
+test("surface tools: a desktop's and a phone's run lists computer_observe, computer_act, computer_screenshot and the hand-over, no computer_script", async () => {
   for (const [kind, groups] of [["desktop", DESKTOP_GROUPS], ["phone", PHONE_GROUPS]]) {
-    for (const codeMode of [false, true]) {
-      const run = await runTools(localWorkspace(scratch()), { kind, computer: fakeScreen(scratch()), hello: helloOf(kind, groups), surface: "tools" }, { mode: 1, context: ctx, ...(codeMode ? { codeMode } : {}) });
-      assert.deepEqual(run.kindTools, ["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"], `${kind}, code mode ${codeMode}`);
-      assert.equal(run.computer, undefined, `${kind}: no script runtime, so pi gets no codemode`);
-      await run.end();
-    }
+    const run = await runTools(localWorkspace(scratch()), { kind, computer: fakeScreen(scratch()), hello: helloOf(kind, groups), surface: "tools" }, { mode: 1, context: ctx });
+    assert.deepEqual(run.kindTools, ["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"], kind);
+    await run.end();
   }
 });
 
-test("surface code: the run lists computer_script and the hand-over (a code-mode harness: the hand-over alone, its code mode being the script), never computer_observe, computer_act or computer_screenshot", async () => {
+test("surface code: the run lists computer_script and the hand-over, never computer_observe, computer_act or computer_screenshot", async () => {
   for (const [kind, groups] of [["desktop", DESKTOP_GROUPS], ["phone", PHONE_GROUPS]]) {
     const run = await runTools(localWorkspace(scratch()), { kind, computer: fakeScreen(scratch()), hello: helloOf(kind, groups), surface: "code" }, { mode: 1, context: ctx });
     assert.deepEqual(run.kindTools, ["computer_script", "computer_request_handoff"], kind);
-    assert.equal(run.computer.declare, false, `${kind}: computer_script's description declares computer`);
     await run.end();
-    const pi = await runTools(localWorkspace(scratch()), { kind, computer: fakeScreen(scratch()), hello: helloOf(kind, groups), surface: "code" }, { mode: 1, context: ctx, codeMode: true });
-    assert.deepEqual(pi.kindTools, ["computer_request_handoff"], `${kind}, code mode`);
-    assert.ok(pi.computer, `${kind}: the harness's code mode binds computer`);
-    assert.equal(pi.computer.declare, true, `${kind}: no computer_script is listed, so the code mode declares computer itself`);
-    await pi.end();
   }
   // No surface named: both, as before.
-  const both = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeScreen(scratch()), hello: helloOf("desktop", DESKTOP_GROUPS) }, { mode: 1, context: ctx, codeMode: true });
+  const both = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeScreen(scratch()), hello: helloOf("desktop", DESKTOP_GROUPS) }, { mode: 1, context: ctx });
   assert.deepEqual(both.kindTools, TOOLS);
-  assert.equal(both.computer.declare, false);
   await both.end();
 });
 
@@ -382,7 +371,7 @@ test("exec false: no bash family even on a desktop whose provider mounts, in eit
     assert.ok(!computer.methods().includes("readBack"), `mode ${mode}: the folder is not attached`);
     assert.deepEqual(run.hands.computer.groups, ["files", "screen", "input.pointer", "input.keys"], "the computer's card has no exec or processes");
     assert.ok(!run.hostTools(["bash", "bash_background"]).length, "bash is not bound, granted or not");
-    run.computer.guard.install(async () => "allow");
+    run.guard.install(async () => "allow");
     const tools = run.hostTools(run.kindTools);
     const seen = await call(tools, "computer_script", { code: "return ['shell' in computer, 'processes' in computer, computer.card.groups];" });
     assert.deepEqual(seen.structured, [false, false, ["files", "screen", "input.pointer", "input.keys"]]);

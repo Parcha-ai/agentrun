@@ -208,7 +208,10 @@ export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
-export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event" };
+export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event", composio: "On an app event" };
+
+/** When a trigger from an app fires, in one line: its event, from the saved Composio server it names. */
+export const composioWhen = (source: Extract<TriggerSource, { kind: "composio" }>): string => `On ${source.event} from ${source.server}`;
 
 /** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
 export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;
@@ -387,6 +390,85 @@ export function githubPicksOf(accept: readonly Accept[]): GitHubPicks {
   return out;
 }
 
+/** A trigger from an app that starts a run: an event of a saved Composio server's toolkit, for the instance the server made
+ *  on Composio (`instance_id`), delivered to the project's route here (`hook`). */
+export type ComposioTrigger = Trigger & { source: ComposioSource; target: TriggerTarget };
+export type ComposioSource = Extract<TriggerSource, { kind: "composio" }>;
+export const isComposioTrigger = (t: Trigger): t is ComposioTrigger => t.source.kind === "composio" && t.target.kind === "start_run";
+
+/** One field of an event's config, read from its JSON schema (the events list's `config`): its name, title, description,
+ *  whether it is required, and how it is typed in (`json`: an object, a list or a type the form has no input for, typed as
+ *  JSON). A deprecated field is never offered. */
+export type ConfigField = { name: string; title: string; description?: string; required: boolean; type: "string" | "number" | "integer" | "boolean" | "json"; options?: string[]; initial: string };
+
+/** An event's config fields, in its schema's order. */
+export function configFieldsOf(schema: Record<string, unknown> | undefined): ConfigField[] {
+  const properties = (schema?.properties ?? {}) as Record<string, Record<string, unknown>>;
+  const required = new Set(Array.isArray(schema?.required) ? (schema.required as unknown[]).filter((x): x is string => typeof x === "string") : []);
+  return Object.entries(properties).filter(([, p]) => p && typeof p === "object" && p.deprecated !== true).map(([name, p]) => {
+    const types = (Array.isArray(p.type) ? p.type : [p.type]).filter((t) => t !== "null");
+    const type: ConfigField["type"] = types.length === 1 && ["string", "number", "integer", "boolean"].includes(String(types[0])) ? (types[0] as ConfigField["type"]) : "json";
+    const options = type === "string" && Array.isArray(p.enum) && p.enum.every((v) => typeof v === "string") ? (p.enum as string[]) : undefined;
+    const initial = p.default === undefined ? (type === "boolean" ? "false" : "") : type === "json" ? JSON.stringify(p.default) : String(p.default);
+    return { name, title: typeof p.title === "string" && p.title.trim() ? p.title : name, ...(typeof p.description === "string" && p.description.trim() ? { description: p.description } : {}), required: required.has(name), type, ...(options ? { options } : {}), initial };
+  });
+}
+
+/** An event's config as sent, from its fields as typed, each issue under `source.config.<name>`: a required field left
+ *  empty, a number that is not one, JSON that does not parse. An optional field left empty is left out. */
+export function configOf(fields: readonly ConfigField[], values: Record<string, string>, issues: Record<string, string>): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+  for (const f of fields) {
+    const text = (values[f.name] ?? f.initial).trim();
+    const at = `source.config.${f.name}`;
+    if (!text) { if (f.required) issues[at] = `${f.title} is required.`; continue; }
+    if (f.type === "boolean") config[f.name] = text === "true";
+    else if (f.type === "number" || f.type === "integer") {
+      const n = numberOf(text);
+      if (n === undefined || (f.type === "integer" && !Number.isInteger(n))) issues[at] = f.type === "integer" ? "A whole number is needed." : NEEDED;
+      else config[f.name] = n;
+    } else if (f.type === "json") {
+      try { config[f.name] = JSON.parse(text) as unknown; } catch { issues[at] = "Give it as JSON."; }
+    } else config[f.name] = text;
+  }
+  return config;
+}
+
+/** A new trigger from an app as typed: the saved Composio server, its event, the event's config by field, the filter's
+ *  conditions on the event's delivery, then the run each event starts. */
+export type ComposioDraft = { name: string; server: string; event: string; config: Record<string, string>; where: ConditionDraft[]; agentId: string; content: string; maxCost: string };
+export const emptyComposio = (): ComposioDraft => ({ name: "", server: "", event: "", config: {}, where: [], agentId: "", content: "", maxCost: "" });
+
+/** A trigger from an app's filter: its one event's conditions, a rule of their own; none takes every delivery for its
+ *  instance. */
+function composioAcceptOf(event: string, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { accept: Accept[]; issues: Record<string, string> } {
+  // The first rule as read goes back as it came while the person leaves it (one with no conditions too); emptied, it goes.
+  const first = where.length || (read && !read.where?.length) ? [{ event, actions: "", where, ...(read ? { was: read } : {}) }] : [];
+  return acceptOf([...first, ...others]);
+}
+
+/** A trigger from an app's source with a new filter: everything else (its server, event, config, and what was made on
+ *  Composio) as it was. `others`: rules after the first that the form shows as they are (one made through the API).
+ *  `read`: the first rule as read, so what the person left of it goes back exactly as it came (ruleOf). */
+export function composioSourceOf(was: ComposioSource, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { source: ComposioSource; issues: Record<string, string> } {
+  const { accept: _was, ...rest } = was;
+  const { accept, issues } = composioAcceptOf(was.event, where, others, read);
+  return { source: { ...rest, ...(accept.length ? { accept } : {}) } as ComposioSource, issues };
+}
+
+/** A new trigger from an app's create body, or what is missing: a server, an event, its config by `fields`, its filter's
+ *  shape, and bodyOf's rules for the run it starts. */
+export function composioBodyOf(d: ComposioDraft, fields: readonly ConfigField[], capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const issues: Record<string, string> = {};
+  if (!d.server) issues["source.server"] = "Pick a Composio server.";
+  if (!d.event) issues["source.event"] = "Pick an event.";
+  const config = d.event ? configOf(fields, d.config, issues) : {};
+  const { accept, issues: filter } = composioAcceptOf(d.event, d.where);
+  Object.assign(issues, filter);
+  const source = { kind: "composio", server: d.server, event: d.event, config, ...(accept.length ? { accept } : {}) } as TriggerCreate["source"];
+  return createOf(d, source, issues, capOptional, "a trigger");
+}
+
 /** A new GitHub trigger's create body, or what is missing: its filter's shape, and bodyOf's rules for the run it starts. */
 export function githubBodyOf(d: GitHubDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const { source, issues } = githubSourceOf(d);
@@ -456,8 +538,9 @@ export function issuesOf(e: unknown): { fields: Record<string, string>; rest: st
   const rest: string[] = [];
   for (const f of e.fields) {
     const at = f.field.startsWith("target.input") ? "target.input" : f.field;
-    // A filter's issues are kept by their field too: its editor shows each one it has a place for (acceptFields).
-    if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept")) && !fields[at]) fields[at] = f.message;
+    // A filter's issues are kept by their field too: its editor shows each one it has a place for (acceptFields); so are a
+    // trigger from an app's server, event and config (the form shows each under its field).
+    if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept") || at === "source.server" || at === "source.event" || at === "source.config" || at.startsWith("source.config.")) && !fields[at]) fields[at] = f.message;
     else rest.push(f.message);
   }
   return { fields, rest };

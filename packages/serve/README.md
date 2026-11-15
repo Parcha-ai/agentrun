@@ -636,10 +636,10 @@ set, click, type, key, scroll, drag, nav), each step saying its route and whethe
 ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
 `computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
 network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
-declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. On pi, a run
-with a desktop or a phone also has pi's code mode (`codemode`), whose scripts call the run's tools and have the same
-`computer` bound; the call is held to the kind's setting. In Codex's code mode, a script's call of a computer tool
-answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. The computer's
+tools are the run's own, so a `codemode` script calls them as `tools.computer_act(...)` and the rest: each is a call of
+its own, held to the kind's setting and recorded with its computer calls, and it answers the tool's value. In Codex's
+code mode, a script's call of a computer tool answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
@@ -1099,15 +1099,18 @@ them. None of them goes around the run's tool settings:
   `await tools.<name>(args)` calls are each the tool's own call, under `<callId>/s<n>`, answered one at a time. A tool is
   named as `ALL_TOOLS` gives it; the description shows the first three (`tools.<name>`) and says to leave off the prefix
   a harness shows in the model's own tool list (`hands_`, `mcp__hands__`). The
-  sandbox has the tools and nothing else of the run: no environment, key, file, network or timer. A script runs at most
+  sandbox has the tools and nothing else of the run: no environment, key, file, network or timer. A tool's image (a
+  screenshot) reaches the script with its pixels: `image(shot)` shows it to the model, and a returned one is the
+  answer's image, its data never in the answer's text. A script runs at most
   10 minutes in 256 MiB. A call that needs approval parks the run, and the script follows Codex's rule. Once a person
   answers, the script runs again from its start, and the calls it already made answer from their records. The parked
-  call runs once (or is refused), its outcome is the script's answer, and the rest of the script does not run. A
+  call runs once (or is refused), its outcome is the script's answer, and the rest of the script does not run. The
+  answer lists each call before it with its result as the script read it: a JSON value as itself, never quoted. A
   refused call ends the script with the refusal. A call cut off by a crash is told as possibly done and never run again.
 
 A paid call made through `tools_call` or a script is held at its price before it is sent and settled once, as a direct
-call is, so the cap holds it. On pi with a desktop or a phone, `codemode` is pi's own code mode (see
-[Computers](#computers)), offered in place of this one.
+call is, so the cap holds it. A run with a desktop or a phone has this same `codemode`, its computer's tools among
+the ones a script calls (see [Computers](#computers)).
 
 ### Subagents
 
@@ -3139,8 +3142,11 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
 step is sent only when the run's spend plus that step's least (its whole input bound at the cache-write price, and a
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
-($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five
-requests (four screenshots, then the answer), spending about $0.04 in all:
+($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
+write, edit, the desktop's and `codemode`), five requests (four screenshots, then the answer), spending about $0.04 in
+all. Through a gateway the first request's byte bound is 11,496 tokens, so it needs $0.058 and the whole run $0.117;
+straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
+$0.030 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
@@ -3149,7 +3155,7 @@ requests (four screenshots, then the answer), spending about $0.04 in all:
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (Through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the five-step figure parks before its last step by either route, its words naming that figure.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself

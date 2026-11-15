@@ -15,7 +15,7 @@ export type ComposioControl = { readonly baseUrl?: string; readonly fetch?: type
 
 const BASE = "https://backend.composio.dev";
 /** The one Composio user a server's actions run as, unless the owner names another. */
-const USER = "agentrun";
+export const COMPOSIO_USER = "agentrun";
 const TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const PAGE = 200;
@@ -24,13 +24,15 @@ const MAX_TOOLS = 500;
 const WAIT_MS = 20_000;
 
 export type ComposioTool = { slug: string; name: string; description: string };
-type Ask = (step: string, method: "GET" | "POST" | "DELETE", path: string, body?: unknown, missing?: string) => Promise<Json>;
+/** A Composio call (asking): its JSON answer, or the refusal in words that name its step. */
+export type Ask = (step: string, method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, missing?: string) => Promise<Json>;
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const issue = (field: string, reason: string, message: string): InputIssue => ({ field, reason, message });
 
-/** A Composio call as `key`: its JSON answer, or an error in words that name `step` and never the key. */
-function asking(control: ComposioControl, key: string, signal: AbortSignal | undefined): Ask {
+/** A Composio call as `key`: its JSON answer, or an error in words that name `step` and never the key, and end with
+ *  `outcome`, what the failure left (a save's: nothing was saved). */
+export function asking(control: ComposioControl, key: string, signal: AbortSignal | undefined, outcome = "nothing was saved"): Ask {
   const base = (control.baseUrl ?? BASE).replace(/\/+$/, "");
   const send = control.fetch ?? fetch;
   const scrub = (said: string) => said.split(key).join("[the key]").slice(0, 300);
@@ -46,7 +48,7 @@ function asking(control: ComposioControl, key: string, signal: AbortSignal | und
       });
       raw = await res.text();
     } catch {
-      throw new ApiError("upstream_failed", `Composio did not answer while ${step}: nothing was saved.`);
+      throw new ApiError("upstream_failed", `Composio did not answer while ${step}: ${outcome}.`);
     }
     let json: unknown;
     try { json = JSON.parse(raw); } catch { /* not JSON: said below */ }
@@ -54,13 +56,13 @@ function asking(control: ComposioControl, key: string, signal: AbortSignal | und
       if (isObject(json)) return json;
       // A delete may answer nothing at all.
       if (!raw.trim()) return {};
-      throw new ApiError("upstream_failed", `Composio's answer while ${step} was not JSON: nothing was saved.`);
+      throw new ApiError("upstream_failed", `Composio's answer while ${step} was not JSON: ${outcome}.`);
     }
     const said = isObject(json) && isObject(json.error) ? text(json.error.message) : isObject(json) ? text(json.message) : "";
     if (res.status === 401 || res.status === 403) throw invalid([issue("api_key", "refused", `Composio refused the API key while ${step}: check it in Composio's dashboard.`)]);
     if (res.status === 404 && missing) throw invalid([issue("toolkit", "not_found", missing)]);
     if (res.status >= 400 && res.status < 500) throw invalid([issue("body", "refused", `Composio refused the request while ${step} (${res.status})${said ? `: ${scrub(said)}` : ""}.`)]);
-    throw new ApiError("upstream_failed", `Composio failed while ${step} (${res.status}): nothing was saved.`);
+    throw new ApiError("upstream_failed", `Composio failed while ${step} (${res.status}): ${outcome}.`);
   };
 }
 
@@ -117,7 +119,7 @@ export function composioAddress(generated: string): string {
 export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }, made: { source: "composio"; toolkit: string | null }) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   const { key, toolkit, rest } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
-  const user = rest.user_id === undefined ? USER : typeof rest.user_id === "string" ? rest.user_id : "";
+  const user = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
   const issues: InputIssue[] = [];
   if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them.`));
   if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", "A user_id is letters, digits and . _ @ - (at most 128)."));
