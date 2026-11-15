@@ -345,6 +345,8 @@ function createMeter() {
   // end was one (its answer, an error's entry, may still come).
   let freeUnanswered = 0;
   let freeEnded = false;
+  // Whether the latest answer's cost was counted unknown (a cut answer's): a free end mark written after it makes it $0.
+  let lastUnknown = false;
   // Side requests (compactions, a tool's own requests), apart: one may run beside a generation. Each closes with its
   // cost, or with an end when aborted.
   let compactions = 0;
@@ -406,6 +408,7 @@ function createMeter() {
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
+      lastUnknown = false;
     } else if (entry.kind === REQUEST_COST_LATE) {
       // The answer it prices was written before its usage came in: its usage, when it has one, is that answer's tokens.
       const late = tokensOf(data?.usage);
@@ -427,17 +430,21 @@ function createMeter() {
       capRefusals = 0;
       if (freeEnded) freeUnanswered += 1;
       freeEnded = false;
+      lastUnknown = false;
       marked += 1;
       inFlight = true;
       lastClamp = clampOf(data?.clamp);
     } else if (entry.kind === REQUEST_ENDED) {
       if (unsent(entry)) marked -= 1;
       inFlight = false;
-      // Only for a request still unanswered (an end written after pi's entry for it answers nothing more).
+      // For a request still unanswered; one written after pi's entry for it (a cut answer's) makes that answer's cost $0.
       freeEnded = data?.free === true && marked - answered - freeUnanswered > 0;
+      if (data?.free === true && !freeEnded && lastUnknown) (unknown -= 1), (lastUnknown = false);
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
       if (marked > 0) answered += 1;
+      // Its request's free end mark came first: whatever it answered costs nothing.
+      const free = freeEnded;
       freeEnded = false;
       const name = str(message.model);
       if (name) {
@@ -447,7 +454,9 @@ function createMeter() {
       // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
       // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
       const aborted = message.stopReason === "aborted";
-      addCost(aborted ? undefined : obj(obj(message.usage)?.cost)?.total);
+      const before = unknown;
+      addCost(free ? 0 : aborted ? undefined : obj(obj(message.usage)?.cost)?.total);
+      lastUnknown = marked > 0 && unknown > before;
       const counted = aborted ? undefined : tokensOf(message.usage, message.stopReason === "error");
       lastUnmetered = !counted;
       addTokens(counted);
@@ -472,7 +481,7 @@ function createMeter() {
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     const unmetered = notMetered ? { not_metered: notMetered } : {};
-    if (!requests && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
+    if (!requests && !free && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
     const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - free - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;

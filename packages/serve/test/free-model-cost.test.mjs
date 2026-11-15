@@ -138,6 +138,28 @@ test("a guard: pi on a paid model is unchanged: a request cut mid-answer leaves 
   assert.deepEqual([whole.view?.cost?.usd, whole.view?.cost?.free], [0.25, undefined], JSON.stringify(whole.view?.cost));
 });
 
+// The usage row from a pi run's entries alone (timelineOf): a free request's end mark (`free`) counts it at $0 whether its
+// answer was cut (pi's "aborted" entry, written before or after the end) or never came.
+const { timelineOf, REQUEST_STARTED, REQUEST_ENDED } = await import("../dist/timeline/index.js");
+const { assistant, custom, user } = await import("./timeline-lib-support.mjs");
+const usageRow = (entries, settled = true) => timelineOf(entries, { settled }).find((row) => row.kind === "usage")?.usage;
+const started = () => custom(REQUEST_STARTED, {});
+const freeEnd = () => custom(REQUEST_ENDED, { free: true });
+const answeredAt0 = () => assistant([{ type: "text", text: "done" }], 0, { usage: { input: 10, output: 5, cost: { total: 0 } } });
+const abortedAnswer = () => assistant([{ type: "text", text: "half" }], 0, { stopReason: "aborted", usage: { input: 10, output: 0, cost: {} } });
+
+test("a free request stopped mid-answer counts $0 on the usage row, its end mark before or after pi's aborted entry; a paid one stays unknown", () => {
+  assert.deepEqual(usageRow([user("go"), started(), answeredAt0(), started(), abortedAnswer(), freeEnd()]), { usd: 0, requests: 2 }, "end after the entry");
+  assert.deepEqual(usageRow([user("go"), started(), answeredAt0(), started(), freeEnd(), abortedAnswer()]), { usd: 0, requests: 2 }, "end before the entry");
+  assert.deepEqual(usageRow([user("go"), started(), abortedAnswer(), custom(REQUEST_ENDED, {})]), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 }, "no free mark: unknown");
+});
+
+test("free requests that ended with no answer at all keep their usage row: counted at $0, never dropped", () => {
+  assert.deepEqual(usageRow([user("go"), started(), freeEnd()]), { usd: 0, requests: 1 }, "one, settled");
+  assert.deepEqual(usageRow([user("go"), started(), freeEnd(), started(), freeEnd()]), { usd: 0, requests: 2 }, "two, pi retried");
+  assert.deepEqual(usageRow([user("go"), started(), freeEnd()], false), { usd: 0, requests: 1 }, "live");
+});
+
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const fake = (name) => `not-a-secret-${name}`;
 
