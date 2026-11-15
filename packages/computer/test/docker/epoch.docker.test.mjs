@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DockerProvider } from "../../dist/docker.js";
 import { newRequest } from "./request.mjs";
 import { EPOCH_LABEL, RUN_LABEL, releaseOlder, runLabels } from "../../dist/index.js";
