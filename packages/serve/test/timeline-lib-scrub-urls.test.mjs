@@ -24,6 +24,9 @@ test("a compact quoted list's URLs are each scrubbed alone, and a URL run into a
   assert.equal(scrubUrls(`['https://a.example/x','${signed("b.example")}y?token=v']`), "['https://a.example/x','https://b.example/y?token=…']");
   // Past the first entry's "?" or "#" the rest is its query or fragment: dropped with it, never split out.
   assert.equal(scrubUrls(`['https://a.example/?k=v','${signed("b.example")}x?token=v']`), "['https://a.example/?k=…']");
+  // A query key with no "=" before the next entry: the entry rides in the key, its userinfo dropped, its values too.
+  assert.equal(scrubUrls(`['https://a.example/?flag','${signed("b.example")}?token=v']`), "['https://a.example/?flag','https://b.example/?token=…']");
+  assert.equal(scrubUrls(`https://a.example/?flag,${signed("b.example")}`), "https://a.example/?flag,https://b.example/=…");
   assert.equal(scrubUrls("https://a.example/?next='https://b.example/reset/held-token'"), "https://a.example/?next=…'");
   assert.equal(scrubUrls("https://a.example/#'https://b.example/reset/held-token'"), "https://a.example/'");
   assert.equal(scrubUrls(`https://a.example/,${signed("b.example")}`), "https://a.example/,https://b.example/");

@@ -55,7 +55,7 @@ const ELIDED = "\u2026";
 const TEXT_URL = /https?:\/\/[^\s"`<>\\]+/gi;
 const SCHEME = /https?:\/\//gi;
 const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i;
-/** The userinfo of a URL run into another's host or path. */
+/** The userinfo of a URL run into another's host, path or query key. */
 const INNER_USERINFO = /(https?:\/\/)[^@/?#\s]*@/gi;
 const TAIL = ".,;:!?)]}'";
 const ALNUM = /[A-Za-z0-9]/;
@@ -90,10 +90,11 @@ function scrubOne(raw: string): string {
   while (end > 0 && TAIL.includes(raw[end - 1]!)) end--;
   const parts = URL_PARTS.exec(raw.slice(0, end));
   if (!parts) return raw;
-  const keys = [...new Set((parts[4] ?? "").split("&").map((pair) => pair.split("=")[0]).filter(Boolean))];
-  // Another URL run into this one's host or path (after a comma, say) loses its userinfo; its query and fragment are
-  // this one's, already dropped.
-  return `${parts[1]}${`${parts[2]}${parts[3]}`.replace(INNER_USERINFO, "$1")}${keys.length ? `?${keys.map((key) => `${key}=${ELIDED}`).join("&")}` : ""}${raw.slice(end)}`;
+  // Another URL run into this one, in its host, its path or a query key with no "=" (after a comma or a quote, say),
+  // loses its userinfo; what follows a "=" or a "#" of either is dropped as this one's.
+  const bare = (text: string) => text.replace(INNER_USERINFO, "$1");
+  const keys = [...new Set((parts[4] ?? "").split("&").map((pair) => bare(pair.split("=")[0]!)).filter(Boolean))];
+  return `${parts[1]}${bare(`${parts[2]}${parts[3]}`)}${keys.length ? `?${keys.map((key) => `${key}=${ELIDED}`).join("&")}` : ""}${raw.slice(end)}`;
 }
 
 /** `a, b, +2 more`. */
