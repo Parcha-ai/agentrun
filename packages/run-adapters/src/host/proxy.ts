@@ -134,6 +134,10 @@ export interface ProviderPolicy {
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
+  /** The reasoning effort the body asks its model at, as its provider names it (Responses' `reasoning.effort`,
+   *  Messages' `output_config.effort`): what `outputLeast` read it at, handed to the host beside it (ProxyRequest.effort).
+   *  Absent, or undefined for a body: it names none. */
+  effortOf?(body: Record<string, unknown>): string | undefined;
   /** The reasoning tokens the body's request may bill that its response does not stream (a provider that streams only a
    *  summary of its reasoning, or none): its effort's or its thinking's budget, else its output limit when it reasons at
    *  an effort the body does not say. A stopped request counts them beside what streamed. Absent or 0: none. */
@@ -514,6 +518,8 @@ export interface ProxyRequest {
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
   outputTokensLeast?: number;
+  /** The reasoning effort its body names (the policy's `effortOf`), when it names one. */
+  effort?: string;
   /** What it may charge beside its tokens at most (the policy's `feeMaxUsd`), in USD: held with them. */
   feeUsd?: number;
   /** A side call, never its turn's own: on another model than the session's (a client's small-model call: a title, a
@@ -1205,6 +1211,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
     let outputTokensAsked: number | undefined;
     let outputTokensLeast: number | undefined;
+    /** The effort the body names (the policy's `effortOf`): words only, never a figure, so one it cannot read is none. */
+    let effort: string | undefined;
+    try {
+      const named = policy.effortOf?.(body);
+      effort = typeof named === "string" && named.length > 0 && named.length <= 32 ? named : undefined;
+    } catch {
+      effort = undefined;
+    }
     /** The reasoning a stop of this request leaves unseen (the policy's `reasoningHidden`), in tokens. */
     let hiddenTokens = 0;
     /** The content and the reasoning the client was sent, by the policy's reading of each event (content: text,
@@ -1321,6 +1335,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
+        ...(effort === undefined ? {} : { effort }),
         ...(feeUsd > 0 ? { feeUsd } : {}),
         ...(host === undefined ? {} : { host }),
         ...(options.route === undefined ? {} : { route: options.route }),

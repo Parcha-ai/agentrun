@@ -1,10 +1,12 @@
 // The cap's wrap-up: a run with a cap whose spend, plus what its requests and paid steps still out hold at their worst
 // case, leaves too little to keep back one typical step and one final answer (reserveFor) has every model-issued tool
-// call refused before its intent, in WRAP_UP_TEXT, on every harness and in every conversation of the run (a `subagent`
+// call refused before its intent, in WRAP_UP_TEXT (wrapUpText), on every harness and in every conversation of the run (a `subagent`
 // spawn is a call too). Nothing in flight is cut, and model requests are not touched: each conversation answers from what
 // it has, under the cap, which stays the last line. The figure is read from the run's committed booking records at each
 // call (the cap's own: a request still out counts at its hold, one a lost claim cut the same), so a restart or a
 // moved claim reads the same figure, and a raise of the cap ends the wrap-up from its next call.
+
+import { leastMoney, money } from "@parcha/agentrun-kernel/kernel/cap";
 
 /** What a call reads once its run's cap is nearly taken: the same words every time, never a count the model could argue with. */
 export const WRAP_UP_TEXT = "Budget nearly spent: stop calling tools and answer now from what you have.";
@@ -27,3 +29,34 @@ export const reserveFor = (figures: RequestFigures | undefined, typical: (step0U
  *  the next request for that), or no reserve yet (no main-model request priced on this claim) is no. */
 export const wrappingUp = (capUsd: number | undefined, takenUsd: number | null, reserveUsd: number | undefined): boolean =>
   capUsd !== undefined && takenUsd !== null && reserveUsd !== undefined && Number.isFinite(takenUsd) && Number.isFinite(reserveUsd) && takenUsd + reserveUsd > capUsd;
+
+/** What the run's model needs of a cap for one more step and an answer, by the wrap-up's own rule: a step in flight at
+ *  its least (the least the cap can send it with), and what the run keeps back to answer (reserveFor) on top. A cap below
+ *  it wraps up at the run's first tool call, whatever was spent. Undefined when the request cannot be priced. */
+export const stepAndAnswerFor = (figures: RequestFigures | undefined, typical: (step0Usd: number) => number): number | undefined =>
+  figures === undefined ? undefined : figures.leastUsd + reserveFor(figures, typical)!;
+
+/** The sentence that says a cap (`capUsd`) is below what `model`, at `effort` when its request named one, needs for one
+ *  more step and an answer (`needUsd`, stepAndAnswerFor), of a run's cap or of an agent's (`whose`); undefined when it is
+ *  not below, or the need is unknown. The one wording of the run's wrap-up (wrapUpText) and the agent's save warning. */
+export function capBelowText(whose: "run" | "agent", capUsd: number, model: string | undefined, effort: string | undefined, needUsd: number | undefined): string | undefined {
+  if (needUsd === undefined || !Number.isFinite(needUsd) || !(needUsd > capUsd)) return undefined;
+  const named = `${model ?? "its model"}${effort ? ` at ${effort} effort` : ""}`;
+  return `This ${whose}'s cap of ${money(capUsd)} is below what ${named} needs for one more step and an answer, about ${leastMoney(needUsd)}`;
+}
+
+/** The words a call reads once its run wraps up: WRAP_UP_TEXT, and on a cap (`capUsd`) below what `model` (at `effort`,
+ *  the effort its last request named) needs for one more step and an answer (`needUsd`, stepAndAnswerFor) a sentence
+ *  naming them, so whoever reads the run sees that the cap, not the run, ended its tools. The model is told the same and
+ *  answers as WRAP_UP_TEXT asks. */
+export function wrapUpText(capUsd: number, model: string | undefined, needUsd: number | undefined, effort?: string): string {
+  const below = capBelowText("run", capUsd, model, effort, needUsd);
+  return below === undefined ? WRAP_UP_TEXT : `${WRAP_UP_TEXT} ${below}.`;
+}
+
+/** The warning an agent saved with a cap below what its model needs for one more step and an answer reads (capBelowText):
+ *  its runs wrap up at their first tool call. Undefined when the cap holds one. */
+export function capBelowWarning(capUsd: number, model: string | undefined, effort: string | undefined, needUsd: number | undefined): string | undefined {
+  const below = capBelowText("agent", capUsd, model, effort, needUsd);
+  return below === undefined ? undefined : `${below}: a run will wrap up at its first tool call.`;
+}

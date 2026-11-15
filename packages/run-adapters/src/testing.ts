@@ -58,8 +58,9 @@ export function memorySessionStore(options: { scope?: string } = {}): SessionSto
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
  *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
 /** `onRefused: "next"`: a request its host refuses (its admission throws) is not the turn's end: the client goes on to its
- *  next action, as a CLI whose request the proxy refused sends another. */
-export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
+ *  next action, as a CLI whose request the proxy refused sends another. `effort`: the reasoning effort its body names, as
+ *  the proxy tells it beside its least (ProviderPolicy.effortOf). */
+export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; effort?: string; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -270,7 +271,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
               io.onEvent({ type: "text", delta: say });
             }
             // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
-            const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) };
+            const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}), ...("effort" in action && typeof action.effort === "string" ? { effort: action.effort } : {}) };
             const admit = () => io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
             let ticket: Awaited<ReturnType<typeof admit>>;
             try {

@@ -74,6 +74,15 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
 });
 
+test("the runner is told the effort the body asks its model at, beside the least it read at that effort, so the cap's words can name it; a body that names none tells none", async () => {
+  const { p, asked } = await proxy();
+  const body = { ...RECORDED_REQUEST, reasoning: { ...RECORDED_REQUEST.reasoning, effort: 'medium' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] };
+  assert.equal((await send(p.url, { body })).status, 200);
+  assert.equal((await send(p.url, { body: { ...body, reasoning: RECORDED_REQUEST.reasoning } })).status, 200);
+  assert.deepEqual(asked.map((one) => [one.effort, one.outputTokensLeast]), [['medium', 9_216], [undefined, 1_024]]);
+  assert.ok(!('effort' in asked[1]), 'no effort key when the body names none');
+});
+
 test("the Responses API adds no billed input the body does not carry: the input bound is the sent body's bytes, tools or not", async () => {
   const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
   for (const body of [{}, { tools: [{ type: 'function', name: 'lookup' }], tool_choice: 'required' }, RECORDED_REQUEST]) assert.equal(policy.serverInputOverhead(body), 0);

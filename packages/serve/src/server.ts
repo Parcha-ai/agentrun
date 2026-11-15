@@ -2089,12 +2089,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
       const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, shellOf, offers, mcp, monid })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, shellOf, offers, mcp, monid, decisionPrice });
+      const capped = await blockersOf(env, shape, {}, { capped: true, capUsd: body.maxCostUsd, boxes: boxOffers, computerReady, shellOf, offers, mcp, monid, decisionPrice });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
-      // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
+      // agent saves and updates, and only a run under the cap is refused (409). So is a cap below what the model needs for
+      // one more step and an answer (`short`): the agent saves, and its runs wrap up at their first tool call. A tool's
+      // pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));
-      blockers.push(...added.filter((b) => b.unpriced));
-      blockers.push(...added.filter((b) => !b.unpriced).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
+      blockers.push(...added.filter((b) => b.unpriced || b.short));
+      blockers.push(...added.filter((b) => !b.unpriced && !b.short).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
     }
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
