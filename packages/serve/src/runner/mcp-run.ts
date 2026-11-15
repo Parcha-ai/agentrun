@@ -22,7 +22,7 @@ import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oa
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { mcpNameOf } from "../tool-names.js";
-import { type ApprovalPrice, mcpToolName, pinnedEffect, type ToolEffect } from "../tool-gate.js";
+import { type ApprovalPrice, mcpToolName, permissionKeys, pinnedEffect, type ToolEffect } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import { registryListing } from "../mcp-pin-first.js";
@@ -93,6 +93,14 @@ export interface ClaimMcp {
   fresh(): Promise<void>;
   /** Drops every credential held: the pass ended, the claim is lost, or its signal aborted. */
   release(): void;
+}
+
+/** What a subagent may be given for the grant `grant` (subagent.ts sessionNames): the wire name of each of the run's
+ *  catalog tools (`catalog`: its MCP tools and monid endpoints, monid-run.ts withMonid) the grant gives by the gate's keys
+ *  (tool-gate.ts permissionKeys: the tool's own name, or its server's or provider's wildcard); else the grant's own. */
+export function catalogSessionNames(catalog: Pick<ClaimMcp, "tools" | "catalogOf"> | undefined, grant: string): string[] {
+  const given = (catalog?.tools ?? []).flatMap((tool) => (permissionKeys(catalog!.catalogOf(tool.name) ?? "").includes(grant) ? [tool.name] : []));
+  return given.length ? given : [wireName(grant)];
 }
 
 /** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a granted tool its pin lacks,

@@ -26,7 +26,7 @@ import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { toolEffect } from "./tool-gate.js";
 import { HARNESSES } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { mcpDroppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
+import { droppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
 import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 
@@ -610,7 +610,7 @@ function grantProblemsOf(env: NodeJS.ProcessEnv, server: string, tool: McpTool):
   if (!named && isObject(schema)) {
     for (const harness of HARNESSES) {
       const dropped = harnessOf(env, harness)?.facts?.schemaProblems?.(`mcp__${server}__${tool.name}`, schema)[0];
-      if (dropped) problems[harness] = mcpDroppedWords(server, tool.name, harness, dropped);
+      if (dropped) problems[harness] = droppedWords(mcpToolName(server, tool.name), harness, dropped);
     }
   }
   return Object.keys(problems).length ? { grant_problems: problems } : {};

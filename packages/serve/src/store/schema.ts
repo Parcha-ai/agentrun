@@ -11,6 +11,7 @@
 // (commands.answer). An agent's MCP tools are pinned on its revision when it is saved (revisions.mcp_pin, REVISIONS_MCP_PIN),
 // in place of each run's pin at its first claim (the mcp_pins table): a server open adds the column to a store an earlier
 // build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
+// Its monid endpoints are pinned beside them (revisions.monid_pin, REVISIONS_MONID_PIN), added at a server open the same way.
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index.
@@ -40,6 +41,9 @@ const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "
 /** A revision's MCP pin, as its save listed the tools (JSON, null when it grants no MCP tool). In STORE_DDL, and added at a
  *  server open to a store an earlier build of this version made (one that pinned each run in mcp_pins, dropped at that open). */
 export const REVISIONS_MCP_PIN = `ALTER TABLE revisions ADD COLUMN ${json("mcp_pin", true)}`;
+/** A revision's monid pin, as its save read monid's listing (JSON, null when it grants no monid endpoint). In STORE_DDL,
+ *  and added at a server open to a store an earlier build of this version made (one that kept it in the body). */
+export const REVISIONS_MONID_PIN = `ALTER TABLE revisions ADD COLUMN ${json("monid_pin", true)}`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -86,6 +90,7 @@ export const STORE_DDL: readonly string[] = [
   // for the v2 revisions view. `note`: the optional note a revision was committed with (the v2 note), null for none.
   // `mcp_pin`: the MCP tools the revision grants, as their servers listed them when it was saved (mcp-gateway.ts McpPin:
   // per server its URL then, the granted tools, their prices), which every run of it calls; null when it grants none.
+  // `monid_pin`: its monid endpoints as monid listed them when it was saved (agent-body.ts MonidPinBody); null for none.
   `CREATE TABLE IF NOT EXISTS revisions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
@@ -97,7 +102,8 @@ export const STORE_DDL: readonly string[] = [
     note TEXT,
     external_version TEXT,
     created_at INTEGER NOT NULL,
-    ${json("mcp_pin", true)}
+    ${json("mcp_pin", true)},
+    ${json("monid_pin", true)}
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS revisions_by_agent ON revisions (agent_id, created_at)`,
   // `external_version`: for a revision of an externally owned agent, the version it maps there (one revision per version),

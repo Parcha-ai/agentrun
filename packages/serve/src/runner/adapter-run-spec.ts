@@ -52,13 +52,12 @@ import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
-import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
+import { catalogSessionNames, type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { computerCodemode } from "./adapters/pi-computer.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
-import { wireName } from "../catalog.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
@@ -85,8 +84,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
-import type { MonidPin } from "../monid.js";
-import { monidForClaim, monidSessionNames, withMonid } from "./monid-run.js";
+import { monidForClaim, withMonid } from "./monid-run.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -227,8 +225,6 @@ type RevisionBody = {
   readonly tools?: readonly string[];
   readonly toolSettings?: unknown;
   readonly harness?: string;
-  /** Its monid endpoints as monid listed them at the save (monid.ts MonidPin). */
-  readonly monidPin?: MonidPin;
   readonly approvals?: Approvals;
   readonly skills?: Record<string, unknown>;
   /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
@@ -671,7 +667,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   gate.learn(workflows);
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the run's one redactor as the other non-hand tools'.
-  const monid = monidForClaim(body.monidPin, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined);
+  const monid = monidForClaim(revisionRow.monidPin ?? undefined, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, cut)) });
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, catalog, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
@@ -695,7 +691,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     const browserNames = native.filter((extension) => extension.name !== "ask_person").flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
     piTools.push(subagentTool({
       granted,
-      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : monidSessionNames(catalog, body.monidPin) ?? [wireName(catalog)]),
+      sessionNames: (grant) => (grant === BROWSER_TOOL ? browserNames : catalogSessionNames(catalog, grant)),
       tier: (tier) => {
         const why = tierWhy.get(tier);
         if (why !== undefined) return { why };

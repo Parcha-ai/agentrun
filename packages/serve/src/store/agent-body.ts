@@ -57,11 +57,13 @@ export type RevisionComputer = { kind: string; provider?: string; image?: string
 export type ToolSettings = Record<string, unknown>;
 /** The model of each tier an agentic revision names (its definition's `model_tiers`: fast, strong), each "provider/model-id". */
 export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
-/** A revision's monid pin (monid.ts MonidPin): each granted endpoint by its catalog name, as monid listed it at the save.
- *  Stamped by the save's check (server.ts saveable), never read from a definition nor shown in one. `usd` is its fixed
- *  price, null for one priced by usage (each call held at monid's estimate for its input). */
+/** A revision's monid pin (revisions.monid_pin, monid.ts pinMonid): each granted endpoint by its catalog name,
+ *  `monid:<provider>/<endpoint>`, as monid listed it at the save: what its tool says, the JSON Schema of its input
+ *  (`{ pathParams?, queryParams?, body? }`, as POST /v1/run takes it) and `usd`, its fixed price (monid.ts fixedUsd), sent
+ *  with each call as its maxCost; null for one priced by usage (each call held at monid's estimate for its input).
+ *  Stamped by the save's check (server.ts saveable), never read from a definition nor shown in one. */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request"; monidPin?: MonidPinBody };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already

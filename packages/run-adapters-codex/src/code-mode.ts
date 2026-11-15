@@ -116,7 +116,7 @@ function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>,
   };
 }
 
-/** A recorded result that held images (kernelTool's `{ text, images }`) as its text and a line saying how many, which are not
+/** A recorded result that held images (bridgeTool's `{ text, images }`) as its text and a line saying how many, which are not
  *  shown again after the interruption; undefined for a result with none, whose repaired output stays as it is. */
 export function imagesNoted(output: unknown): string | undefined {
   const images = (output as { images?: unknown } | null)?.images;
@@ -342,7 +342,7 @@ export function codeMode(deps: CodeModeDeps) {
           // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
           const cell = waitedCell(c);
           const item = items[i] as { call_id?: unknown; output?: unknown };
-          // A completed call whose result held images (kernelTool records { text, images }): repairOutput gives the record
+          // A completed call whose result held images (bridgeTool records { text, images }): repairOutput gives the record
           // as JSON, so the model would read their base64 as text. Its text and a line on them instead; they are not sent.
           const done = state.effects.get(toolKey(c.callId));
           const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
