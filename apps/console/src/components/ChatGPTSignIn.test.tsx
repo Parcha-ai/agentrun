@@ -130,6 +130,19 @@ describe("ChatGPTSignIn", () => {
     expect(calls.length).toBe(reads);
   });
 
+  it("a read slower than the 2 s poll still lands: one read at a time, so the next doesn't make it stale", async () => {
+    const reads: number[] = [];
+    const fetch = (async () => {
+      reads.push(Date.now());
+      await new Promise((r) => setTimeout(r, 2600));
+      return json(200, SIGNED_IN);
+    }) as typeof globalThis.fetch;
+    const page = await mount(createClient({ fetch }), { state: "pending", authorize_url: AUTHORIZE });
+    await page.wait(() => !!page.host.textContent?.includes("Signed in as person@example.com (Plus)"), "the slow read's answer lands", 9000);
+    // Each read started after the one before it answered.
+    for (let i = 1; i < reads.length; i++) expect(reads[i] - reads[i - 1]).toBeGreaterThanOrEqual(2500);
+  });
+
   it("reads nothing while the page is out of view", async () => {
     const hidden = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     const { v2, calls } = server(() => ({ state: "pending", authorize_url: AUTHORIZE }), () => json(500, {}));

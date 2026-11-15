@@ -96,6 +96,15 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
     expect(done).toBe(1);
   });
 
+  it("signed in, once capabilities name the plan's model the server's default (chatgpt/<id>), still says who and lets the card go", async () => {
+    let done = 0;
+    const card = await open({ needs: null, model: "chatgpt/gpt-6.1-sol", plan: { state: "signed_in", email: "person@example.com", plan: "plus", models: ["gpt-6.1-sol"] }, onDone: () => { done++; } });
+    expect(card.host.textContent).toContain("Signed in as person@example.com (Plus)");
+    expect(card.host.textContent).not.toContain("Add a model key");
+    await card.click(/^Done$/);
+    expect(done).toBe(1);
+  });
+
   it("with no ChatGPT sign-in on the server, offers the keys as before", async () => {
     const card = await open({ plan: null });
     expect(card.buttons()).not.toContain("Continue with ChatGPT");
