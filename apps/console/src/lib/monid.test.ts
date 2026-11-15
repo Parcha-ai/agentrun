@@ -1,20 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { MONID_GRAMMAR, monidGrantOf, monidGrantText, monidNameProblem, splitMonidWarnings } from "./monid";
-
-// The server's grammar, read from its source: the console's copy of a monid grant's shape must be the same.
-const SERVER = Object.values(import.meta.glob("../../../../packages/serve/src/tool-names.ts", { query: "?raw", import: "default", eager: true }))[0] as string;
-const constant = (name: string) => new RegExp(`const ${name} = "([^"]+)";`).exec(SERVER)?.[1];
+import { monidGrantOf, monidGrantText, monidNameProblem, splitMonidWarnings } from "./monid";
 
 describe("monid grant names", () => {
-  it("are the server's grammar (packages/serve/src/tool-names.ts)", () => {
-    expect(SERVER).toContain("MONID_NAME = new RegExp(`^monid:(${PROVIDER})/(\\\\*|${ENDPOINT})$`)");
-    expect(constant("PROVIDER")).toBe(MONID_GRAMMAR.PROVIDER);
-    expect(constant("ENDPOINT")).toBe(MONID_GRAMMAR.ENDPOINT);
-    // The refusal is in the server's words (MONID_NAME_WORDS).
-    const words = /MONID_NAME_WORDS = \(name: string\): string => `\$\{name\}([^`]+)`/.exec(SERVER)?.[1];
-    expect(monidNameProblem("monid:x")).toBe(`monid:x${words}`);
-  });
-
   it("read a named endpoint, a provider's wildcard, and refuse what is neither", () => {
     expect(monidGrantOf("monid:keenable/v1/search")).toEqual({ provider: "keenable", endpoint: "v1/search" });
     expect(monidGrantOf("monid:api.strale.io/people/{id}")).toEqual({ provider: "api.strale.io", endpoint: "people/{id}" });

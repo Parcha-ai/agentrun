@@ -3,7 +3,8 @@
 // it, and the mapping's full range is checked against a synthetic catalog.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { WIRE_NAME, wireName } from "../dist/catalog.js";
+import { wireName } from "../dist/catalog.js";
+import { WIRE_NAME } from "../dist/tool-names.js";
 import { TOOLS } from "../dist/tools.js";
 
 // A test-only catalog that exercises the mapping past the identity: a dotted name, a path name, a name of each other
