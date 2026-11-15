@@ -730,6 +730,20 @@ test("quoteCheckProblems: a quote key whose schema is a union is read branch by 
   const splitRecord = { type: "array", items: { allOf: [{ type: "object", properties: { url: { type: "string" } } }, { properties: { quote: { type: "string" } } }] } };
   assert.deepEqual(quoteCheckProblems(unionDraft(splitRecord, [RECORD_READ])), [], "records whose quote one member names");
   assert.deepEqual(quoteCheckProblems(unionDraft({ allOf: [{ type: "array" }, { minItems: 1 }] }, [STRING_READ])), [unread("quotes*")], "a list no member names the items of");
+  // A definition the answer reads as an allOf member is still read where a property uses it again.
+  const shared = citedDraft({ answer: { allOf: [{ $ref: "#/definitions/Base" }], properties: { refunds: { type: "boolean" }, nested: { $ref: "#/definitions/Base" } } } });
+  shared.schemas.Base = { type: "object", properties: { quote: { type: "string" } } };
+  shared.root.steps.at(-1).when = { predicate: "quote_missing", path: "answer.quote", pages: ["page"] };
+  assert.deepEqual(quoteCheckProblems(shared), ['the answer carries quotes (Answer.nested.quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.nested.quote", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge']);
+  // A schema that holds quotes and recurs holds them at paths no set of checks names: refused; one that recurs with no quotes asks nothing.
+  const OVER = "the answer's schema (Answer) holds quotes in more than 8 places or nests past 16 keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one";
+  const recursive = (quoted) => {
+    const doc = citedDraft({ check: null, answer: { properties: { refunds: { type: "boolean" }, thread: { $ref: "#/definitions/Comment" } } } });
+    doc.schemas.Comment = { type: "object", properties: { ...(quoted ? { quote: { type: "string" } } : { text: { type: "string" } }), replies: { type: "array", items: { $ref: "#/definitions/Comment" } } } };
+    return doc;
+  };
+  assert.deepEqual(quoteCheckProblems(recursive(true)), [OVER]);
+  assert.deepEqual(quoteCheckProblems(recursive(false)), []);
 });
 
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
