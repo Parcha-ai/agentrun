@@ -192,40 +192,6 @@ test('a pause leaves the node\'s work for the attempt\'s next entry; any other s
   }
 });
 
-test('a stop that lands as the task ends (its invocation closed under the node) still ends the call with the stop\'s own reason, and withdraws nothing it cannot reach: no rejection is left unhandled', async () => {
-  const unhandled = [];
-  const onUnhandled = (error) => unhandled.push(error);
-  process.on('unhandledRejection', onUnhandled);
-  try {
-    let asked;
-    const reachedModel = new Promise((resolve) => { asked = resolve; });
-    const { harness, nodes } = await rig([async (_context, options) => {
-      asked();
-      await new Promise((resolve) => options?.signal?.addEventListener('abort', resolve, { once: true }));
-      return submit({ verdict: 'buy' });
-    }, say('never asked')]);
-    // The owner task's invocation has ended once the stop lands: its scope refuses every read, as pi's does ("Task N invocation has ended").
-    let ended = false;
-    const under = hostScope(harness);
-    const scope = { ...under, conversation: async (id, context) => { if (ended) throw new Error('Task 29 invocation has ended'); return under.conversation(id, context); } };
-    const { runNode } = nodes.on(scope, ctx);
-    const stop = new AbortController();
-    const reason = runStoppedError('cancel');
-    const running = runNode(verdict({ signal: stop.signal }));
-    await reachedModel;
-    ended = true;
-    stop.abort(reason);
-    await assert.rejects(running, (error) => error === reason);
-    // Let the withdrawal that follows the attempt's end run.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    await harness.close(ctx);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(unhandled.map(String), [], 'the withdrawal of an ended task\'s node rejects nothing');
-  } finally {
-    process.off('unhandledRejection', onUnhandled);
-  }
-});
-
 test('a stop that lands while the host is still answering for the node ends the call at once: no conversation, no request', async () => {
   for (const asked of ['agent', 'record']) {
     const unanswered = new Promise(() => {});
@@ -249,6 +215,33 @@ test('a stop that lands while the host is still answering for the node ends the 
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual([landed.requests.length, landed.opened.length], [0, 0], 'a stop that had already landed opens nothing either');
   await landed.harness.close(ctx);
+});
+
+test('a stopped node whose owner invocation ended keeps its stop reason and handles late cleanup', async (t) => {
+  const reached = Promise.withResolvers();
+  const released = Promise.withResolvers();
+  const { harness, nodes, requests } = await rig([say('never asked')], { onNodeOpen: async () => { reached.resolve(); await released.promise; } });
+  t.after(async () => { released.resolve(); await harness.close(ctx); });
+  const scope = hostScope(harness);
+  let ended = false, closedReads = 0;
+  const owner = { ...scope, conversation: async (...args) => {
+    if (ended) { closedReads++; throw new Error('The owner invocation has ended'); }
+    return scope.conversation(...args);
+  } };
+  const stop = new AbortController();
+  const reason = runStoppedError('cancel');
+  const pending = nodes.on(owner, ctx).runNode(verdict({ signal: stop.signal }));
+  pending.catch(() => undefined);
+  await reached.promise;
+  // The task is gone before its node gets the stop: its runtime no longer permits reads.
+  ended = true;
+  stop.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+  released.resolve();
+  // The still-opening attempt now settles and makes the same best-effort cleanup lookup.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closedReads, 2, 'both immediate and late cleanup handle an already-ended owner');
+  assert.equal(requests.length, 0, 'the stopped attempt never asks a model');
 });
 
 test('no listener is left on the run\'s stop when a call ends, however it ends: a host that throws while the node is set up, or a delivery', async () => {

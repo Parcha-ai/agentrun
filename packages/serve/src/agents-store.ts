@@ -124,10 +124,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // pin's arguments sorted) so two revisions that say the same are one body. The store never reimplements it.
   const set = toolSettingsOf(definition.tool_settings);
   const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set };
-  const capped = {
-    ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}),
-    ...(typeof definition.cap_mode === "string" ? { capMode: definition.cap_mode } : {}),
-  };
+  const capped = typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {};
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
@@ -135,6 +132,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
+    ...(isObject(definition.native) ? { native: definition.native as unknown as import("./native/types.js").NativeBinding } : {}),
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
     ...(isObject(definition.model_tiers) ? { modelTiers: definition.model_tiers as ModelTiers } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
@@ -334,6 +332,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
   if (files === undefined) files = (isObject(current?.skills) ? (current!.skills as Record<string, string>) : {});
   const carried = current
     ? {
+        ...((currentBody as AgenticBody).native && definition.native === undefined ? { native: (currentBody as AgenticBody).native } : {}),
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
@@ -341,7 +340,6 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
-        ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
         // Its input's and its structured answer's schemas are the agent's contract with its callers: an edit that leaves
         // one out keeps it.
         ...(definition.input_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).inputSchema !== undefined ? { input_schema: (currentBody as AgenticBody).inputSchema } : {}),
@@ -390,10 +388,7 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as POST /agents takes one, numbered. */
 export function definitionOf(agent: AgentRow, revision: RevisionRow, version: number): Json {
   const body = revision.body as Body;
-  const common = {
-    ...(body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {}),
-    ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
-  };
+  const common = body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {};
   const kindBody = revision.kind === "agentic"
     ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
@@ -403,6 +398,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    ...((body as AgenticBody).native ? { native: (body as AgenticBody).native } : {}),
     // Its approvals, of either kind: "ask" where none is set, as the definition read says it (definitionOf).
     approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),

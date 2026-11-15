@@ -141,9 +141,9 @@ export const needsNetwork = (network: readonly string[] | undefined): boolean =>
 export const aLabel = (label: string, start = false): string => `${start ? "A" : "a"}${/^[AEIOU]/i.test(label) ? "n" : ""} ${label}`;
 
 /** Why a sandbox or a desktop that would mount the owner's Archil disk can't start in Mode 2: the mount needs Archil's
- *  image in the owner's own vendor account, and this server can't put it there yet (E2B Desktop's template has none).
- *  A provider that prepares its image (prepareImage: Agent37 registers the box image in the owner's workspace) is never
- *  refused so. Settings (computers.ts modeRefusal) and a run's start (computerReadiness) say it. */
+ *  image in the owner's own vendor account, and this server can't put it there yet. A provider that prepares its image
+ *  (prepareImage: Agent37 registers the box image in the owner's workspace, Modal pulls it, E2B starts its public
+ *  template) is never refused so; today every provider that mounts the disk does. Settings (computers.ts modeRefusal) and a run's start (computerReadiness) say it. */
 export const mode2ArchilWhy = (label: string, kind: "sandbox" | "desktop"): string =>
   `${aLabel(label, true)} ${kind} can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (${SETTINGS})`;
 

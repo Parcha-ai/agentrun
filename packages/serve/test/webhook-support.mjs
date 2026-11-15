@@ -119,9 +119,8 @@ export function logged() {
   return { lines, push, when };
 }
 
-/** `check()`'s value once truthy, read again at each change in `dir` (the store's file or its write-ahead log written
- *  there): what the server writes, awaited as it is written, never polled. A read that meets a write mid-way is read again
- *  at the next change. */
+/** `check()`'s value once truthy. Filesystem events wake the reader promptly, but can arrive before a SQLite commit or
+ *  be coalesced: recheck a pending predicate too, so a delivered message cannot wait forever for a second event. */
 export function onDisk(dir, check, what = `the state awaited in ${dir}`) {
   const read = () => {
     try {
@@ -132,19 +131,23 @@ export function onDisk(dir, check, what = `the state awaited in ${dir}`) {
   };
   const now = read();
   if (now) return Promise.resolve(now);
-  let watcher;
+  let watcher, retry;
   const written = new Promise((resolve) => {
+    const observe = () => {
+      clearTimeout(retry);
+      const value = read();
+      if (value) (watcher?.close(), resolve(value));
+      else retry = setTimeout(observe, 50);
+    };
     watcher = watch(dir, (_, file) => {
       // A reader's own shared-memory or journal file is no write of the server's.
       if (file && /-(shm|journal)$/.test(file)) return;
-      const value = read();
-      if (value) (watcher.close(), resolve(value));
+      observe();
     });
     // A change between the first read and the watch: read once more, now that it watches.
-    const value = read();
-    if (value) (watcher.close(), resolve(value));
+    observe();
   });
-  return arriving(written, what, dir).finally(() => watcher.close());
+  return arriving(written, what, dir).finally(() => { clearTimeout(retry); watcher?.close(); });
 }
 
 /** The webhook's messages, none still to try. A message is tried only while pending (webhooks.ts schedule), so with none
@@ -168,22 +171,33 @@ export const noticeId = (runId, type, marker) => `msg_${createHash("sha256").upd
 /** The store in `dir` refusing every write `when` names (a SQLite trigger that aborts it, put in on a connection of the
  *  test's own), as a store that cannot take that write: the webhook's messages (`outbox`) or its setting (`setting`). The
  *  rest of the store is written as ever. Answers its release; the test's end releases it at the latest. */
-export function refusing(t, dir, when) {
+export async function refusing(t, dir, when) {
   const name = `test_refuses_${when}`;
-  // Its schema change waits its turn behind the server's and the runner's writes, however loaded the machine.
-  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 60_000 });
+  // A writer can hold its transaction across an await on this same event loop. SQLite's synchronous busy timeout
+  // would prevent that writer from committing, and stall unrelated webhook deadlines too. Yield while it is busy.
+  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 0 });
+  const exec = async (sql) => {
+    const end = Date.now() + 60_000;
+    for (;;) {
+      try { db.exec(sql); return; }
+      catch (error) {
+        if ((error.errcode & 255) !== 5 || Date.now() >= end) throw error;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+  };
   const on = when === "outbox"
     ? [`BEFORE INSERT ON channel_posts WHEN NEW.channel = '${CHANNEL}'`]
     : [`BEFORE INSERT ON settings WHEN NEW.key = '${CHANNEL}'`, `BEFORE UPDATE ON settings WHEN NEW.key = '${CHANNEL}'`];
-  on.forEach((what, i) => db.exec(`CREATE TRIGGER ${name}_${i} ${what} BEGIN SELECT RAISE(ABORT, 'the test refuses this write'); END`));
   let released = false;
-  const release = () => {
+  const release = async () => {
     if (released) return;
+    for (let i = 0; i < on.length; i++) await exec(`DROP TRIGGER IF EXISTS ${name}_${i}`);
     released = true;
-    on.forEach((_, i) => db.exec(`DROP TRIGGER IF EXISTS ${name}_${i}`));
     db.close();
   };
   t.after(release);
+  for (const [i, what] of on.entries()) await exec(`CREATE TRIGGER ${name}_${i} ${what} BEGIN SELECT RAISE(ABORT, 'the test refuses this write'); END`);
   return release;
 }
 

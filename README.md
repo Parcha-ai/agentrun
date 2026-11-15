@@ -98,13 +98,15 @@ You need Node 24.22.3 or newer, on macOS or Linux.
    It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
    opens the console in your browser.
 
-2. **Add one model key.** In the console, set a password, then add a key under **Settings → Model keys**. One
-   `OPENROUTER_API_KEY` gives every harness a model. An Anthropic key runs pi and Claude Code; an OpenAI key runs pi,
-   Codex and OpenCode.
+2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**
+   (on the first screen, or under **Settings → Model keys**) and sign in on OpenAI's page: Codex and pi agents run on
+   your ChatGPT plan, with no key. Or add a key in the same place: one `OPENROUTER_API_KEY` gives every harness a model;
+   an Anthropic key runs pi and Claude Code; an OpenAI key runs pi, Codex and OpenCode.
 
 3. **Run your first agent.** Open **Templates**, apply **KYB due diligence**, and start a run with a company's name and
-   website. It needs nothing but your model key. When it finishes, the run's **Report** tab has a due diligence report
-   with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it kept for next time.
+   website. It needs nothing but your ChatGPT sign-in or your model key. When it finishes, the run's **Report** tab has
+   a due diligence report with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it
+   kept for next time.
 
 Rather have your coding agent do the local setup? Tell it: `Read agentrun.ai/SKILL.md and set up AgentRun locally for me`.
 
@@ -316,12 +318,15 @@ trigger.
 **Harnesses.** Name one in the agent's definition with `harness`. Approvals, caps, computers, triggers and learning work
 the same on each. `npx @parcha/agentrun server capabilities` says which harnesses your server runs.
 
-| Harness | `harness` | Notes |
-| --- | --- | --- |
-| pi | `pi` | The default |
-| Claude Code | `claude-agent` | Installs itself on first use |
-| Codex | `codex` | Installs itself on first use |
-| OpenCode | `opencode` | Needs its `opencode-ai` package beside the server; AgentRun prints the line that installs it |
+| Harness | `harness` | On a ChatGPT plan | Notes |
+| --- | --- | --- | --- |
+| pi | `pi` | Yes | The default |
+| Claude Code | `claude-agent` | No: an Anthropic or OpenRouter key | Installs itself on first use |
+| Codex | `codex` | Yes | Installs itself on first use |
+| OpenCode | `opencode` | No: an OpenAI or OpenRouter key | Needs its `opencode-ai` package beside the server; AgentRun prints the line that installs it |
+
+Signed in with ChatGPT and no key, Codex and pi agents run on your plan. Claude Code, OpenCode, Jev decisions and paid
+tools need their own keys.
 
 **Computers.** An agent gets a computer with one setting. It gets the tools for that kind and nothing else, and changing
 the computer changes nothing else about the agent.
@@ -352,8 +357,8 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   Archil disk in Settings and the folder lives there instead, and the Docker sandbox is refused. A sandbox that mounts
   the disk needs Archil's image in your own vendor account. Agent37's sandbox and desktop register it there on their
   first run (the run waits once while the image is pulled), so they are ready once the keys work. A Modal sandbox starts
-  from our public box image, which has it, so it is ready once the keys work too. An E2B sandbox and desktop can't get it
-  there yet: Settings shows them not ready. Orgo's desktop, a phone and a browser mount
+  from our public box image, which has it, so it is ready once the keys work too. An E2B sandbox and desktop start from
+  our public box template, so they are ready once the keys work as well. Orgo's desktop, a phone and a browser mount
   nothing and still run.
 - **Watching and taking over.** A browser run streams to the run's **Screen** tab through your own server, never
   through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for
@@ -448,7 +453,13 @@ The Python client is `pip install parcha-agentrun`, with the same methods
 ## Deploy it
 
 For a hosted workspace, [use AgentRun Cloud](docs/getting-started.md#agentrun-cloud). The options below deploy the
-open-source platform on infrastructure you manage.
+open-source platform on infrastructure you manage. None of them needs a model key: once it's up, Continue with ChatGPT
+(Settings → Model keys, or the first screen), then run your first agent. Or add a model key there instead.
+
+**Your server, your ChatGPT plan, only you:** a ChatGPT sign-in is for the person who runs this server. Don't share it
+or let others run agents on it. Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT
+settings. On a server that isn't this computer, the sign-in tab ends on a page that won't load: copy its whole address
+into the console.
 
 **Self-host on Render.**
 
@@ -456,9 +467,11 @@ open-source platform on infrastructure you manage.
 
 The button deploys [`render.yaml`](render.yaml): one 1 CPU / 2 GB instance with a 10 GB disk, the published image (no
 build), and the token and seal key generated for you. It needs a card on your Render workspace: about $25 a month for
-the instance and $2.50 for the disk, at Render's prices when this was written. In Render's form, paste
-`OPENROUTER_API_KEY`. We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with
-anyone. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
+the instance and $2.50 for the disk, at Render's prices when this was written. Leave the model keys in Render's form
+blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
+Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
+Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
+date. Do not share it with anyone.
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>
@@ -468,10 +481,13 @@ On a Linux machine with Docker:
 ```sh
 git clone https://github.com/Parcha-ai/agentrun && cd agentrun/deploy
 printf 'AGENTRUN_SEAL_KEY=%s\n' "$(openssl rand -base64 32)" > .env && chmod 600 .env
-echo 'OPENROUTER_API_KEY=...' >> .env
 docker compose up -d --build
 docker compose logs server     # the console's link, the first visit's setup code and, the first time, the token
 ```
+
+Open the link, set your password, then Continue with ChatGPT (Settings → Model keys, or the first screen), then run
+your first agent. Or add a model key in the console, or in `.env` before `docker compose up`
+(`echo 'OPENROUTER_API_KEY=...' >> .env`).
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
 This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker

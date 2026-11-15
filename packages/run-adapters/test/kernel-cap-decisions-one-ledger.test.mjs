@@ -13,7 +13,7 @@ const MODEL_SESSION = "workflow";
 /** A decision model whose hold is its input alone: $1 a million input tokens, its output free. */
 const DECIDER = { id: "decider", api: "openrouter", price: { input: 1, output: 0 }, outputCeiling: null };
 /** A decision request held at `usd` (its input at $1 a million tokens). */
-const decision = (id, usd) => ({ kind: "decision", id, model: DECIDER, inputTokens: Math.round(usd * 1e6), questions: 1 });
+const decision = (id, usd) => ({ kind: "decision", id, model: DECIDER, inputTokens: Math.round(usd * 1e6) });
 
 /** The run's model spend as its booking keeps it: a model request answered at `usd`. */
 async function modelSpent(store, usd) {
@@ -23,21 +23,20 @@ async function modelSpent(store, usd) {
 
 /** The run's decisions under a cap of `capUsd`, on this claim, over the run's sessions `store`. */
 async function decisionsOf(store, capUsd) {
-  const run = cap.runCap({ sessions: store, capUsd: () => capUsd, mode: "expected", now: () => T0, modelOf: () => undefined });
+  const run = cap.runCap({ sessions: store, capUsd: () => capUsd, modelOf: () => undefined });
   return run.decisions(await store.open(cap.DECISION_SESSION));
 }
 
-test("on the run's one cap a decision is held as main holds it: 256 output tokens a question (expected), its model's most (strict), its fees and images, none with no cap", async () => {
+test("on the run's one cap a decision is held as main holds it: its model's most output, its fees and images, none with no cap", async () => {
   const MODEL = { id: "openai/gpt-6.1-sol", api: "openrouter", price: { input: 1.25, output: 10 }, outputCeiling: 4_096 };
-  const asked = { kind: "decision", inputTokens: 1_000, questions: 3, images: 2, requestUsd: 0.002, imageUsd: 0.0005 };
-  for (const [mode, model] of [["expected", MODEL], ["expected", { ...MODEL, outputCeiling: null }], ["strict", MODEL]]) {
-    // The decision cap's own figure (createCap, held to main's holdOf by serve's kernel-cap-decision-parity).
-    const alone = await cap.createCap({ capUsd: () => 100, mode, now: () => T0 }).admit({ ...asked, id: "d", model });
-    const store = memorySessionStore();
-    const decisions = await cap.runCap({ sessions: store, capUsd: () => 100, mode, now: () => T0, modelOf: () => undefined }).decisions(await store.open(cap.DECISION_SESSION));
-    const admitted = await decisions.admit({ ...asked, id: "d", model });
-    near(admitted.heldUsd, alone.heldUsd, `${mode}, most output ${model.outputCeiling}`);
-  }
+  const asked = { kind: "decision", inputTokens: 1_000, images: 2, requestUsd: 0.002, imageUsd: 0.0005 };
+  // The decision cap's own figure (createCap, held to main's holdOf by serve's kernel-cap-decision-parity).
+  const alone = await cap.createCap({ capUsd: () => 100, now: () => T0 }).admit({ ...asked, id: "d", model: MODEL });
+  const runStore = memorySessionStore();
+  const decisions = await cap.runCap({ sessions: runStore, capUsd: () => 100, modelOf: () => undefined }).decisions(await runStore.open(cap.DECISION_SESSION));
+  const held = await decisions.admit({ ...asked, id: "d", model: MODEL });
+  near(held.heldUsd, alone.heldUsd, "the run's cap holds it as the decision cap does");
+  near(alone.heldUsd, (1_000 + 2 * cap.DECISION_IMAGE_TOKENS) * 1.25e-6 + 4_096 * 10e-6 + 0.002 + 2 * 0.0005, "its input and images, its most output, its fees");
   const store = memorySessionStore();
   const uncapped = await cap.runCap({ sessions: store, capUsd: () => undefined, modelOf: () => undefined }).decisions(await store.open(cap.DECISION_SESSION));
   const admitted = await uncapped.admit({ ...asked, id: "d", model: "unreadable" });
@@ -70,19 +69,18 @@ function machine() {
 
 test("a decision sent and its box lost before any later write still counts after the next claim: its hold is flushed before it leaves", async () => {
   const box = machine();
-  const first = await cap.runCap({ sessions: box, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).decisions(await box.open(cap.DECISION_SESSION), { flush: () => box.flush() });
+  const first = await cap.runCap({ sessions: box, capUsd: () => 1, modelOf: () => undefined }).decisions(await box.open(cap.DECISION_SESSION), { flush: () => box.flush() });
   const admitted = await first.admit(decision("decide-1", 0.25));
   // Its call is sent, and the box is lost before anything else is written.
   box.lose();
-  const next = await cap.runCap({ sessions: box, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).decisions(await box.open(cap.DECISION_SESSION), { flush: () => box.flush() });
-  // A decision's input-only price reads no cache, so its bound is 0: it counts at its hold plus that bound.
-  near(next.spentUsd(), admitted.heldUsd + admitted.boundUsd, "the lost decision, at its hold and bound");
+  const next = await cap.runCap({ sessions: box, capUsd: () => 1, modelOf: () => undefined }).decisions(await box.open(cap.DECISION_SESSION), { flush: () => box.flush() });
+  near(next.spentUsd(), admitted.heldUsd, "the lost decision, at its hold");
   near(admitted.heldUsd, 0.25, "its hold");
 });
 
 test("a paid tool call sent and its box lost before any later write still counts after the next claim: its hold is flushed before it leaves", async () => {
   const box = machine();
-  const toolsOn = async () => cap.runCap({ sessions: box, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).tools(await box.open(cap.TOOL_SESSION), { flush: () => box.flush() });
+  const toolsOn = async () => cap.runCap({ sessions: box, capUsd: () => 1, modelOf: () => undefined }).tools(await box.open(cap.TOOL_SESSION), { flush: () => box.flush() });
   const admitted = await (await toolsOn()).admit({ id: "call-1#1", name: "Parallel's search", holdUsd: 0.25, basis: "Parallel's list price" });
   // Its request is sent, and the box is lost before anything else is written.
   box.lose();
@@ -93,19 +91,19 @@ test("a paid tool call sent and its box lost before any later write still counts
 test("a paid tool call on the run's one cap is held at its price beside the run's spend (main's paidCall), and a later claim counts what it charged", async () => {
   const store = memorySessionStore();
   await modelSpent(store, 0.6);
-  const run = cap.runCap({ sessions: store, capUsd: () => 0.6005, mode: "expected", now: () => T0, modelOf: () => undefined });
+  const run = cap.runCap({ sessions: store, capUsd: () => 0.6005, modelOf: () => undefined });
   const tools = await run.tools(await store.open(cap.TOOL_SESSION));
   const search = { id: "call-1#1", name: "Parallel's search", holdUsd: 0.001, basis: "Parallel's list price for a fast search" };
   const refused = await tools.admit(search).then(() => undefined, (error) => error);
   assert.ok(refused instanceof cap.CapRefused, `$0.60 spent and $0.001 asked of a $0.6005 cap: refused for room: ${refused ?? "admitted"}`);
   assert.match(refused.message, /the next step, Parallel's search, could cost up to \$0\.001 \(Parallel's list price for a fast search\)/, "main's paidRefusal words");
   near(refused.figures?.spentUsd, 0.6, "spent");
-  const roomy = cap.runCap({ sessions: store, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined });
+  const roomy = cap.runCap({ sessions: store, capUsd: () => 1, modelOf: () => undefined });
   const calls = await roomy.tools(await store.open(cap.TOOL_SESSION));
   const admitted = await calls.admit(search);
   near(admitted.heldUsd, 0.001, "held at its price");
   await calls.settle("call-1#1", 0.001);
-  const next = await cap.runCap({ sessions: store, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
+  const next = await cap.runCap({ sessions: store, capUsd: () => 1, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
   near(next.spentUsd(), 0.001, "the next claim counts it");
 });
 

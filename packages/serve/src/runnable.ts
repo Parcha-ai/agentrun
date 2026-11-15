@@ -20,7 +20,7 @@ import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { MONID_KEY_ENV } from "./monid.js";
 import { mcpHeaderProblem } from "./mcp-gateway.js";
-import { droppedWords, isCatalogName, isMonidName, MCP_HANDS_WORDS, mcpNameOf, mcpWireProblem, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
+import { droppedWords, isCatalogName, isMonidName, MCP_HANDS_WORDS, mcpNameOf, MONID_NAME_WORDS, parseToolName, sameWireWords } from "./tool-names.js";
 import { wireName } from "./catalog.js";
 import type { MonidPinBody } from "./store/agent-body.js";
 import type { McpTool } from "@parcha/agentrun-kernel";
@@ -135,6 +135,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // pinned build): that would offer the model another tool than the one granted, so its grant is refused here, at the
   // save. A bound or a format it only strips is not: the server still checks it, and its error reaches the model.
   const schemaProblems = revision.kind === "agentic" ? harnessOf(env, harness)?.facts?.schemaProblems : undefined;
+  // Each MCP grant by the wire name the harnesses call it (catalog.ts wireName, hashed when long), the first to take it:
+  // a later grant called by the same name could not be told apart from it, so it is refused by name.
+  const mcpWires = new Map<string, string>();
+  for (const tool of revision.tools ?? []) if (mcpNameOf(tool) && !mcpWires.has(wireName(tool))) mcpWires.set(wireName(tool), tool);
   /** What keeps the grant of `tool`, an `mcp:` or `monid:` name, from running here (the first thing), at `field`; undefined
    *  when nothing does. The one check of a catalog grant, for an agentic revision's tools and a workflow's (grantedTools). */
   const catalogGrant = (field: string, tool: string): Blocker | undefined => {
@@ -166,8 +170,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!named) return undefined;
     const declared = listedTool?.inputSchema ? mcpHeaderProblem(listedTool.inputSchema) : undefined;
     if (declared) return refused(`The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`);
-    const wire = mcpWireProblem(named.server, named.tool);
-    return wire ? refused(`${tool} ${wire}`) : undefined;
+    const first = mcpWires.get(wireName(tool));
+    return first !== undefined && first !== tool ? refused(sameWireWords(tool, first, wireName(tool))) : undefined;
   };
   if (revision.kind === "agentic") {
     const browserComputer = revision.computer?.kind === "browser";

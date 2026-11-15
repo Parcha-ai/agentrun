@@ -7,6 +7,7 @@
 // each command on this machine, so the exec pre-check shows E2B's exec passes every byte through.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,11 @@ const HOUR = 3_600_000;
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const LINUX_GROUPS = ["exec", "files", "processes"];
 const BARE = "e2b_bare_key_must_never_be_used";
+/** The public box template release.yml's box-e2b job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
+const BOX_TEMPLATE = `agentrun-oss/agentrun-archil-${createHash("sha256")
+	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.digest("hex")
+	.slice(0, 12)}`;
 const dir = mkdtempSync(join(tmpdir(), "computer-e2b-"));
 const DAEMON_PATH = join(dir, "computerd");
 writeFileSync(DAEMON_PATH, Buffer.from("a stand-in for computerd, linux/amd64\n"));
@@ -105,6 +111,13 @@ test("an E2B desktop is kind desktop with daemon child, the desktop groups, netw
 	assert.equal(provider.version, VERSION);
 	assert.equal(provider.stream, undefined, "no stream(): a screen is streamed through agentrun, never a vendor URL");
 	assert.equal(typeof provider.extend, "function");
+});
+
+test("every E2B computer has its system paths made root's alone at create, before the daemon's upload (the adapter's root-only step)", () => {
+	for (const kind of ["desktop", "linux"]) {
+		const { provider } = setup({ kind });
+		assert.deepEqual(provider.host.facts.rootOnly, ["/usr/local", "/usr/bin/envd", "/etc/inittab"], kind);
+	}
 });
 
 test("an E2B computer never takes public traffic: the provider takes no publicStream, has no stream(), and the conformance module reads no such setting", () => {
@@ -367,7 +380,15 @@ test("E2B's exec, through the real SDK's envd client, passes the exec pre-check:
 	const start = envd.requests.find((request) => request.method === "Start");
 	assert.equal(start.headers.authorization, `Basic ${Buffer.from("root:").toString("base64")}`, "every process runs as root");
 	assert.equal(start.headers["keepalive-ping-interval"], "50");
-	assert.deepEqual([start.body.process.cmd, ...start.body.process.args.slice(0, 2)], ["/bin/bash", "-l", "-c"]);
+	// Root's command: /bin/sh by its path, no login shell, the argv as its own words, PATH the system's directories alone.
+	const starts = envd.requests.filter((request) => request.method === "Start");
+	for (const { body } of starts) {
+		assert.equal(body.process.cmd, "/bin/sh");
+		assert.deepEqual(body.process.args.slice(0, 3), ["-c", 'exec "$@"', "sh"]);
+		assert.ok(!body.process.args.includes("-l") && !body.process.args.includes("--login"), "no login shell");
+		assert.deepEqual(body.process.envs, { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" });
+	}
+	assert.deepEqual(start.body.process.args.slice(3, 5), ["sh", "-c"], "the argv as given, word for word");
 	assert.ok(!("timeout" in start.headers) && !("connect-timeout-ms" in start.headers), "the stream has no deadline");
 
 	// The SDK's own commands.run, the path exec took before: the byte 0x80 comes back as U+FFFD through onStdout.
@@ -511,5 +532,69 @@ test("the E2B conformance module: mountFor(\"archil\") gives a fresh run folder 
 	await folder.close();
 	assert.equal(objects.objects.size, 0);
 	noToken(objects.calls, "the object API's calls");
+});
+
+// --- the box template: every E2B computer a server makes starts from it ---
+
+/** A Sandbox slice whose create records the template and options it is given, then refuses as E2B does a missing one. */
+function createRecorder() {
+	const calls = [];
+	const Sandbox = {
+		...recorder().Sandbox,
+		list: () => ({ hasNext: true, nextItems: async () => ((Sandbox.listed = true), []), get hasNext() { return !Sandbox.listed; } }),
+		create: async (template, opts) => {
+			calls.push([template, opts]);
+			throw Object.assign(new Error("400: template not found"), { name: "InvalidArgumentError" });
+		},
+	};
+	return { calls, Sandbox };
+}
+
+test("E2B's descriptor says it prepares its image and names no default image: every E2B sandbox and desktop starts from the box template", async () => {
+	const { E2B } = await import("../dist/descriptors/index.js");
+	assert.equal(E2B.prepareImage, true);
+	assert.equal(E2B.defaultImage, undefined, "every E2B computer starts from the template prepareImage answers");
+	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) {
+		assert.equal(name in (await import("../dist/descriptors/index.js")), false, name);
+		assert.equal(name in (await import("../dist/index.js")), false, name);
+	}
+	const { BOX_E2B_PUBLISHER, boxE2bTemplate } = await import("../dist/box-image.js");
+	assert.equal(BOX_E2B_PUBLISHER, "agentrun-oss","the E2B team release.yml's box-e2b job publishes from");
+	assert.equal(boxE2bTemplate(), BOX_TEMPLATE);
+});
+
+test("prepareImage answers the public box template with no SDK call and no wait told, the same for a desktop and a sandbox, and create starts from it", async () => {
+	for (const kind of ["desktop", "linux"]) {
+		const { provider, rec } = setup({ kind });
+		const waits = [];
+		assert.deepEqual(await provider.prepareImage({ onWait: (...said) => waits.push(said) }), { ok: true, value: BOX_TEMPLATE }, kind);
+		assert.deepEqual(await provider.prepareImage(), { ok: true, value: BOX_TEMPLATE }, `${kind}, no context: the same template`);
+		assert.deepEqual(rec.calls, [], "no E2B call: a public template has nothing to pull ahead of create");
+		assert.deepEqual(waits, [], "never told a pull: the claim waits on create alone");
+		assert.deepEqual(provider.check({ ...SPEC, image: BOX_TEMPLATE }), [], "check takes the team/template name");
+		const { calls, Sandbox } = createRecorder();
+		const made = await new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, kind }).create({ ...SPEC, image: BOX_TEMPLATE }, { requestId: `r-box-${kind}` });
+		assert.equal(made.ok, false);
+		assert.deepEqual(calls.map(([template]) => template), [BOX_TEMPLATE], `${kind}: Sandbox.create is given the box template`);
+	}
+});
+
+test("E2B's metadata on an Archil computer of the longest agent id, on the box template: what create gives E2B, counted", async () => {
+	const RUN = "01a1d0b9-3e8b-7352-9497-a407e2909f53";
+	const { calls, Sandbox } = createRecorder();
+	const provider = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, kind: "linux" });
+	const spec = { ...SPEC, image: BOX_TEMPLATE, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: { ...MOUNT, folder: `agents/${"a".repeat(128)}/runs/${RUN}/work` } };
+	assert.deepEqual(provider.check(spec), []);
+	await provider.create(spec, { requestId: "r-box-labels" });
+	assert.equal(calls.length, 1);
+	const { metadata } = calls[0][1];
+	noToken(metadata, "E2B's metadata");
+	const pairs = Object.entries(metadata);
+	const bytes = pairs.reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+	// 9 pairs, 559 bytes of keys and values. E2B documents no cap on a sandbox's metadata, and has no 512-byte one like
+	// Modal's tags: live (11-15) it took and read back 257 pairs, and one value of 64 KiB (65,570 bytes in all), each whole.
+	assert.ok(pairs.length <= 257, `${pairs.length} pairs`);
+	assert.ok(bytes <= 65_570, `${bytes} bytes of keys and values: ${JSON.stringify(metadata)}`);
+	assert.equal(metadata["agentrun.computer.image"], BOX_TEMPLATE);
 });
 

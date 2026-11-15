@@ -65,7 +65,10 @@ function watched(store, { onEnd = async () => {}, onRead = () => {} }) {
  *  store is `watched` with `hooks`, on the store's clock. Parked on the call unless `parks` is false; `before` is done
  *  to the queued run before its runner starts. */
 async function runOf(t, hooks = {}, { permission = "ask", parks = true, before } = {}) {
-  const opened = await stores({ runners: 1 });
+  // Only explicit skew steps expire these retry backoffs; wall-clock assertion deadlines and polling still run normally.
+  const at = Date.now();
+  const time = () => at;
+  const opened = await stores({ runners: 1, time });
   await queue(opened.server, "run-1");
   if (before) await before(opened.server);
   const sent = [];
@@ -76,7 +79,7 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
   const gate = Object.assign(() => permission, { askedAs: (tool) => tool });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await base(claim, run)), gate }));
   const events = [];
-  const now = () => Date.now() + opened.clock.skewMs;
+  const now = () => time() + opened.clock.skewMs;
   // Each claim whose loop started: a claim that only ends the run starts none.
   const starts = [];
   // The runners' polls for claimable runs (and renewals) so far: a test waits on them, never on the wall clock.
@@ -163,6 +166,19 @@ async function releasedAfter(server, tries) {
 
 /** The waits the runner said it retries in, by the run's name, in order. */
 const waitsSaid = (events) => events.filter((event) => event.type === "error" && event.runId === "run-1" && REFUSED.test(event.message)).map((event) => Number(REFUSED.exec(event.message)[2]));
+
+test("the stop fixture's retry clock stays fixed while real runner polls continue, and moves only on its explicit skew", async (t) => {
+  const { server, clock, now, beats, requests, sent } = await runOf(t);
+  const [at, polled, asked] = [now(), beats.count, requests.length];
+  await until(() => beats.count >= polled + 2, "two actual runner polls after the parked call");
+  assert.equal(now(), at, "observer scheduling cannot expire the first retry backoff");
+  assert.equal(await server.sealedKeys.clock(), at, "the store and runner share that clock");
+  clock.skewMs += BACKOFF_MS;
+  assert.equal(now(), at + BACKOFF_MS);
+  assert.equal(await server.sealedKeys.clock(), at + BACKOFF_MS);
+  assert.equal(requests.length, asked);
+  assert.deepEqual(sent, []);
+});
 
 test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads nothing pending and the call withdrawn", { timeout: 60_000 }, async (t) => {
   let reached;

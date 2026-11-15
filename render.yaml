@@ -1,6 +1,10 @@
 # AgentRun Server on Render: one web service and one persistent disk, from the release's published image (no build).
 # The token is generated once; read it in the service's Environment tab.
 # Needs a paid Render instance (plan 1c-2g) and a 10 GB disk: a card on the workspace.
+# Needs no model key: leave the key fields below blank. Once it's live, set your password with the token, then Continue
+# with ChatGPT in the console (Settings → Model keys, or the first screen), then run your first agent. Codex and pi run
+# on the plan; Claude Agent, OpenCode, Jev decisions and paid tools need their own keys, here or in the console.
+# The sign-in is for the person who runs this server: don't share it or let others run agents on it.
 services:
   - type: web
     name: agentrun-server
@@ -35,7 +39,7 @@ services:
       # Every runner must be given this same value.
       - key: AGENTRUN_SEAL_KEY
         generateValue: true
-      # The recommended key: OpenRouter covers every model, Jev included.
+      # Every model key is optional. To add one, the recommended key: OpenRouter covers every model, Jev included.
       - key: OPENROUTER_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY

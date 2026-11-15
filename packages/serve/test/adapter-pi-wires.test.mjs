@@ -118,10 +118,10 @@ test("every source main's pi takes opens on the runner on its wire, offers the s
       // admitted on it; on any other origin (the gateway's, Anthropic's, a translated route) nothing is counted.
       if (source.counted) {
         assert.deepEqual(paths, gateway.requests.flatMap((request) => [COUNT_PATH, request.path]), "OpenAI's count before each answer request");
-        assert.ok(asked.length === gateway.requests.length && asked.every(({ request }) => request.inputTokensCounted === true && request.inputTokensMax === COUNTED), JSON.stringify(asked.map(({ request }) => [request.inputTokensMax, request.inputTokensCounted])));
+        assert.ok(asked.length === gateway.requests.length && asked.every(({ request }) => request.inputTokensMax === COUNTED), JSON.stringify(asked.map(({ request }) => request.inputTokensMax)));
       } else {
         assert.ok(!paths.includes(COUNT_PATH), JSON.stringify(paths));
-        assert.ok(asked.every(({ request }) => request.inputTokensCounted === undefined), "never counted off OpenAI's own origin");
+        assert.ok(asked.every(({ request }) => request.inputTokensMax !== COUNTED), "never counted off OpenAI's own origin");
       }
       assert.deepEqual(toolsOf(gateway.requests[0]), OFFERED, "the session's tool is offered");
       assert.ok((await bookedUsd(store)) > 0, "booked on the run's ledger");

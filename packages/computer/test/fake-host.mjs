@@ -140,6 +140,7 @@ export function fakeHost({
 	killHangs = false,
 	sockets = [],
 	socketsFail,
+	rootOnlyFail,
 	stale = false,
 	descriptor = FAKE_DESCRIPTOR,
 } = {}) {
@@ -411,6 +412,18 @@ export function fakeHost({
 			});
 			return proc;
 		}
+		if (kind === "root-only") {
+			// The paths made root's alone, recorded on the machine; rootOnlyFail: the script's words and exit 5.
+			queueMicrotask(() => {
+				if (rootOnlyFail !== undefined) {
+					proc.out.push(`${rootOnlyFail}\n`);
+					return proc.exit(5);
+				}
+				m.rootOnly = [...script.args];
+				proc.exit(0);
+			});
+			return proc;
+		}
 		if (kind === "log") {
 			queueMicrotask(() => {
 				proc.out.push(m.initLog ?? "");
@@ -564,7 +577,8 @@ export function fakeHost({
 						await step("upload", ctx, m);
 						if (gone(m)) throw new NotFound(`machine ${id} not found`);
 						m.files.set(path, Buffer.from(bytes));
-						fake.uploads.push({ machine: id, path, through: "upload" });
+						// What the root-only script had made root's alone when the daemon came in, if it ran.
+						fake.uploads.push({ machine: id, path, through: "upload", ...(m.rootOnly ? { rootOnly: [...m.rootOnly] } : {}) });
 					},
 				}
 			: {}),

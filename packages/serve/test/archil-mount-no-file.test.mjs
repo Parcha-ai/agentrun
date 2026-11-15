@@ -71,6 +71,8 @@ async function mountedRun(t, { existing = [] } = {}) {
   const computer = fakeComputer(scratch);
   const provider = {
     id: "fake", version: "0", capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }), check: () => [],
+    // E2B's descriptor says it prepares its image: the stand-in answers its template at once, as E2B's does.
+    prepareImage: async () => ({ ok: true, value: "agentrun/computer:test" }),
     list: async () => ({ ok: true, value: [] }),
     create: async (spec) => (created.push(spec), { ok: true, value: { id: "c1", name: "c1" } }),
     connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),

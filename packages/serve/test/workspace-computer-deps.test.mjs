@@ -119,7 +119,7 @@ test("a key named in the server's environment wins over its saved one, and goes 
   assert.deepEqual(plantsIn(spec), [], `no planted value in the computer's spec: ${JSON.stringify(spec)}`);
   assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" }, "its labels are the run's, and only those");
   assert.equal(spec.env, undefined, "no environment is handed to the computer");
-  assert.equal(spec.image, "desktop", "E2B's desktop template");
+  assert.equal(spec.image, PREPARED, "the box template E2B's prepareImage() answers");
   assert.ok(spec.lifetimeMs > 0, "a deadline");
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"]]);
@@ -279,7 +279,10 @@ test("a Daytona or an E2B sandbox under the server's default box_allow asks for 
   for (const id of ["daytona", "e2b"]) {
     const provider = await providerFor(id, { apiKey: "fake-test-key" });
     const { network: networks, maxLifetimeMs } = provider.capabilities();
-    const asked = spec(entryOf(id), "sandbox", { boxAllow: [...DEFAULT_BOX_ALLOW], networks, maxLifetimeMs });
+    // A provider that prepares its image (E2B) gets it from prepareImage() at the claim, as computer-for-claim does.
+    const named = spec(entryOf(id), "sandbox", { boxAllow: [...DEFAULT_BOX_ALLOW], networks, maxLifetimeMs });
+    const prepared = entryOf(id).prepareImage ? await provider.prepareImage() : undefined;
+    const asked = prepared?.ok ? { ...named, image: prepared.value } : named;
     assert.equal(asked.network, "none", id);
     assert.deepEqual(provider.check(asked), [], `${id}'s check takes the spec`);
     const before = { ...asked, network: { allow: [...DEFAULT_BOX_ALLOW] } };
@@ -301,7 +304,7 @@ test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no oth
   const asked = spec(entryOf("daytona"), "sandbox", { networks, maxLifetimeMs });
   assert.equal(asked.image, snapshot, "the snapshot the owner named, trimmed");
   assert.deepEqual(provider.check(asked), [], "Daytona's check takes it");
-  assert.equal(spec(entryOf("e2b"), "sandbox", {}).image, entryOf("e2b").defaultImage.sandbox, "E2B keeps its own default");
+  assert.equal("image" in spec(entryOf("e2b"), "sandbox", {}), false, "E2B names none: its prepareImage() answers the box template");
   assert.equal("image" in spec(entryOf("modal"), "sandbox", {}), false, "Modal names none: its prepareImage() answers the box image");
   assert.equal(spec(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE, "Docker keeps its recipe");
   for (const env of [{}, { AGENTRUN_DAYTONA_SNAPSHOT: "" }, { AGENTRUN_DAYTONA_SNAPSHOT: "  " }]) {
@@ -329,10 +332,12 @@ test("a cloud phone under a list, the server's default or the operator's, or wit
   assert.deepEqual(provider.check({ ...spec(entryOf("phone-harness"), "phone", { networks, maxLifetimeMs }), network: { allow: [...DEFAULT_BOX_ALLOW] } }).map((one) => one.field), ["network"], "the list the spec asked before is refused");
 });
 
-test("a vendor that prepares its image (Agent37, Modal) names none in the spec, and the owner's Docker image and Docker's recipe are Docker's alone", () => {
+test("a vendor that prepares its image (Agent37, Modal, E2B) names none in the spec, and the owner's Docker image and Docker's recipe are Docker's alone", () => {
   const owned = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "owner/box:1" });
   for (const spec of [owned, computerSpecOf({})]) {
-    for (const kind of ["sandbox", "desktop"]) assert.equal("image" in spec(entryOf("agent37"), kind, {}), false, `agent37 ${kind}: its prepareImage() answers it`);
+    for (const id of ["agent37", "e2b"]) {
+      for (const kind of ["sandbox", "desktop"]) assert.equal("image" in spec(entryOf(id), kind, {}), false, `${id} ${kind}: its prepareImage() answers it`);
+    }
     assert.equal("image" in spec(entryOf("modal"), "sandbox", {}), false, "modal sandbox: its prepareImage() answers it");
   }
   assert.deepEqual([owned(entryOf("docker"), "sandbox", {}).image, owned(entryOf("docker"), "desktop", {}).image], ["owner/box:1", "owner/box:1"]);
@@ -425,13 +430,13 @@ test("each provider's default image comes from the computer package's registry (
   assert.equal(spec({ ...entryOf("daytona"), defaultImage: { sandbox: "registry-only/snapshot-7f3a" } }, "sandbox", {}).image, "registry-only/snapshot-7f3a");
   // Every default the package's registry declares is the image of that provider's computer of that kind.
   const declared = PROVIDERS.flatMap((entry) => Object.entries(entry.defaultImage ?? {}).map(([kind, image]) => [entry.id, kind, image]));
-  assert.ok(declared.length >= 8, `the registry declares the vendors' defaults: ${JSON.stringify(declared)}`);
+  assert.ok(declared.length >= 6, `the registry declares the vendors' defaults: ${JSON.stringify(declared)}`);
   for (const [id, kind, image] of declared) assert.equal(spec(entryOf(id), kind, {}).image, image, `${id} ${kind}`);
   assert.equal(spec(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT);
   assert.equal(entryOf("docker").defaultImage?.desktop, undefined, "the sandbox recipe has no X server: no desktop image of Docker's own");
   assert.throws(() => spec(entryOf("docker"), "desktop", {}), { message: DOCKER_DESKTOP_WORDS });
   // Any other kind with no default image: refused, naming the provider.
-  assert.throws(() => spec({ ...entryOf("e2b"), defaultImage: { desktop: "desktop" } }, "sandbox", {}), { code: "computer_unavailable", message: /^E2B has no image for a sandbox computer here/ });
+  assert.throws(() => spec({ ...entryOf("e2b"), prepareImage: undefined, defaultImage: { desktop: "desktop" } }, "sandbox", {}), { code: "computer_unavailable", message: /^E2B has no image for a sandbox computer here/ });
   assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/x@sha256:" + "b".repeat(64) })(entryOf("docker"), "desktop", {}).image, "example.org/x@sha256:" + "b".repeat(64), "the image the owner named");
   // Through the claim: refused before anything is made, computer_unavailable in those words.
   const root = scratch();
@@ -644,7 +649,7 @@ test("a Docker desktop's spec carries the limits as a Docker sandbox's does; no 
   const spec = computerSpecOf({ ...LIMITS, AGENTRUN_DOCKER_IMAGE: named });
   for (const kind of ["sandbox", "desktop"]) assert.deepEqual(sizeOf(spec(entryOf("docker"), kind, { boxAllow: "none" })), SIZED, `a Docker ${kind}`);
   const vendors = PROVIDERS.flatMap((entry) => (entry.id === "docker" ? [] : Object.keys(entry.defaultImage ?? {}).map((kind) => [entry.id, kind])));
-  assert.ok(vendors.length >= 8, `the registry declares the vendors' computers: ${JSON.stringify(vendors)}`);
+  assert.ok(vendors.length >= 6, `the registry declares the vendors' computers: ${JSON.stringify(vendors)}`);
   for (const [id, kind] of vendors) assert.deepEqual(sizeOf(spec(entryOf(id), kind, {})), {}, `${id} ${kind} sizes itself`);
 });
 

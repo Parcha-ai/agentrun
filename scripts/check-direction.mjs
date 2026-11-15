@@ -43,6 +43,11 @@ export const MAY = {
 const KERNEL_DSL = ['the kernel takes the workflow types and parameter check from the DSL', 'run workflows as a harness on the kernel, so the kernel names no workflow type'];
 const PROVIDER_DSL = ['the DecisionProvider interface and its helpers live in the DSL', 'move the interface into a protocol package'];
 const CONSOLE_SOURCE = ['the console compiles library source through a path alias (tsconfig paths and the Vite alias)', 'fold the library into the server and serve what the console needs through the API'];
+// The console's two aliases into serve: @timeline (CONSOLE_SOURCE) and @agentrun/tool-names, each with its own reason and fix.
+const CONSOLE_SERVE = [
+  `@timeline: ${CONSOLE_SOURCE[0]}; @agentrun/tool-names: tool-names.ts is import-free (pinned by packages/serve/test/tool-names.test.mjs 'tool-names.ts imports nothing, so the console bundles the grammar without the server'): the grammar serve and the console must agree on`,
+  `@timeline: ${CONSOLE_SOURCE[1]}; @agentrun/tool-names: none; the alternative is a copy plus a text-reading drift test`,
+];
 const LAUNCHER_SERVER = ['the launcher installs the server at its own version and runs its start script', 'the server package carries its own start command'];
 
 /** Today's wrong edges: [file, the package it reaches, how many edges, why it is there, the change that removes it]. The
@@ -60,10 +65,10 @@ export const EXCEPTIONS = [
   ['packages/jev/src/index.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
   ['apps/console/tsconfig.json', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
-  ['apps/console/tsconfig.json', 'packages/serve', 1, ...CONSOLE_SOURCE],
+  ['apps/console/tsconfig.json', 'packages/serve', 2, ...CONSOLE_SERVE],
   ['apps/console/vite.config.ts', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
-  ['apps/console/vite.config.ts', 'packages/serve', 1, ...CONSOLE_SOURCE],
+  ['apps/console/vite.config.ts', 'packages/serve', 2, ...CONSOLE_SERVE],
   ['packages/agentrun/package.json', 'packages/serve', 1, ...LAUNCHER_SERVER],
   ['packages/agentrun/lib/start.mjs', 'packages/serve', 1, ...LAUNCHER_SERVER],
 ];

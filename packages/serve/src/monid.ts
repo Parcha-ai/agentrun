@@ -28,7 +28,7 @@
 import { randomUUID } from "node:crypto";
 import { type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import { wireName } from "./catalog.js";
-import { formatToolName, monidNameOf, parseToolName, type ToolName } from "./tool-names.js";
+import { formatToolName, monidNameOf, parseToolName, sameWireWords, type ToolName } from "./tool-names.js";
 import { redacted } from "./key-refusal.js";
 import type { MonidPinBody } from "./store/agent-body.js";
 import { isObject, type Json } from "./validate.js";
@@ -304,7 +304,7 @@ export async function pinMonid(grants: readonly string[], options: { key: string
   const wires = new Map<string, string>();
   for (const tool of Object.keys(pin).sort()) {
     const other = wires.get(wireName(tool));
-    if (other) refused.push({ tool, message: `${tool} and ${other} are called by one name on every harness (${wireName(tool)}): grant one of them by name.` });
+    if (other) refused.push({ tool, message: sameWireWords(tool, other, wireName(tool)) });
     wires.set(wireName(tool), tool);
   }
   if (refused.length) return { refused };

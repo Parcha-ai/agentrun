@@ -19,7 +19,7 @@ import { journalEntries, journalRecords, recordOf } from "../runner/journal-read
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
-import { mcpToolName } from "../tool-names.js";
+import { mcpNameOf, mcpToolName } from "../tool-names.js";
 import { Turns } from "../turns.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -224,22 +224,48 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
   // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback), marked as no
   // message of the job's (feedbackMarked).
-  const rendered = feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), read), entries);
+  const render = (catalog?: ReadonlyMap<string, string>) => feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), catalog ? { ...read, catalog } : read), entries);
+  const first = render();
+  const catalog = await runCatalog(store, runId, first);
+  // An MCP tool whose `mcp__<server>__<tool>` is too long is called by its hashed wire name, which reads as no tool's own:
+  // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
+  const hashed = hashedMcp(catalog?.values() ?? []);
+  const rendered = hashed.size ? render(hashed) : first;
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
-  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, await catalogNamed(store, runId, rows)), entries, options.redact), entries, options.redact));
+  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
 }
 
-/** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
- *  name (`mcp:<server>/<tool>`), never the wire name the harness called it by: read from the run's pins by lookup (catalog.ts
- *  wireName of each pinned tool), so one call reads one way. A row of any other tool is as it was. */
-async function catalogNamed(store: Store, runId: string, rows: TimelineEvent[]): Promise<TimelineEvent[]> {
-  if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return rows;
+/** The run's MCP tools and monid endpoints by the wire name its harness called each (catalog.ts wireName of each pinned
+ *  tool), read from the run's pins by lookup, never parsed back; undefined when no row names one by a wire name. */
+async function runCatalog(store: Store, runId: string, rows: readonly TimelineEvent[]): Promise<ReadonlyMap<string, string> | undefined> {
+  if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return undefined;
   const run = await store.runs.get(runId);
-  const pinned = Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+  const pinned = await pinnedMcp(store, runId);
   const monid = Object.keys((run && (await store.agents.revision(run.revisionId)))?.monidPin ?? {});
-  const catalog = new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
-  return rows.map((row) => (row.tool_name !== null && catalog.has(row.tool_name) ? { ...row, tool_name: catalog.get(row.tool_name)! } : row));
+  return new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
 }
+
+/** The catalog names (`mcp:<server>/<tool>`) of the MCP tools the run pinned, from its pin. */
+const pinnedMcp = async (store: Store, runId: string): Promise<string[]> =>
+  Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+
+/** Of `names` (catalog names), each MCP tool whose `mcp__<server>__<tool>` is too long, by the hashed wire name its harness
+ *  calls it (catalog.ts wireName): a name that reads as no tool of its own, so a reader names its calls by the catalog name. */
+const hashedMcp = (names: Iterable<string>): Map<string, string> =>
+  new Map([...names].flatMap((name): [string, string][] => {
+    const mcp = mcpNameOf(name);
+    return mcp !== undefined && wireName(name) !== `mcp__${mcp.server}__${mcp.tool}` ? [[wireName(name), name]] : [];
+  }));
+
+/** The run's MCP tools called by a hashed wire name, by that name (hashedMcp over its pin): what its end's metrics count
+ *  each one's calls under its catalog name by (runner/metrics.ts runMetrics's `catalog`), as its timeline names them. */
+export const hashedMcpOf = async (store: Store, runId: string): Promise<ReadonlyMap<string, string>> => hashedMcp(await pinnedMcp(store, runId));
+
+/** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
+ *  name (`mcp:<server>/<tool>`, from the run's `catalog`), never the wire name the harness called it by, so one call reads
+ *  one way. A row of any other tool is as it was. */
+const catalogNamed = (rows: TimelineEvent[], catalog: ReadonlyMap<string, string> | undefined): TimelineEvent[] =>
+  catalog ? rows.map((row) => (row.tool_name !== null && catalog.has(row.tool_name) ? { ...row, tool_name: catalog.get(row.tool_name)! } : row)) : rows;
 
 /** Whether the run's newest turn is over, cut (turns.ts: no message of the run's open, the newest one's end interrupted),
  *  its end-of-run turn's entries apart, as the run's view reads its status. */
@@ -300,10 +326,10 @@ function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLi
   const known = (own.usd ?? own.so_far_usd ?? 0) + side.known;
   const unpriced = (own.usd === null ? (own.unpriced ?? 0) : 0) + side.unpriced;
   const usd = unpriced ? null : Math.round(known * 1e6) / 1e6;
-  const requests = own.requests + side.requests;
+  const requests = own.requests === null ? null : own.requests + side.requests;
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
   const spent = usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
-  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}`);
+  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests === null ? "an unknown number of" : requests} model request${requests === 1 ? "" : "s"}`);
   const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}) };
   return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
 }
@@ -316,6 +342,7 @@ function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLi
  *  past its model proxy): its usage row says its cost is unknown, its model's work one charge with no price, so its view,
  *  live or ended, reads unknown, never $0. */
 function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
+  const nativeAggregate = entries.some(entry => entry.kind === 'runner.request' && (entry.data as {aggregate?:boolean})?.aggregate);
   const model = bookedSpend(entries, "model");
   const paid = bookedSpend(entries, "paid");
   const at = rows.findIndex((row) => row.kind === "usage");
@@ -335,10 +362,12 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   // Its tool calls with no price as the renderer counted them from the journal (TOOL_UNMETERED), as on a pi run's row.
   const notMetered = at >= 0 ? (rows[at]!.usage?.not_metered ?? 0) : 0;
   const calls = toolCallWords(paid.requests, notMetered);
-  const summary = unbooked
+  const summary = nativeAggregate
+    ? `${costLabel(options.ended === true)}: ${spent}; native model request count unavailable${calls}`
+    : unbooked
     ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
     : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
-  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}) };
+  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

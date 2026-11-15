@@ -2,6 +2,8 @@
 // learned workflow's tools (learn) and an agent's grant (grant) all accept a name, or all refuse it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 
 const { settingsIssues } = await import("../dist/tool-plane.js");
 const { learnedWorkflowTools } = await import("../dist/tools.js");
@@ -68,4 +70,10 @@ test("a monid endpoint and a provider's wildcard are settings keys of a well-for
   assert.equal(set("monid:apollo/people/match"), true);
   assert.equal(set("monid:apollo/*"), true);
   for (const name of ["monid:Apollo/*", "monid.run", "monid:apollo"]) assert.equal(set(name), false, name);
+});
+
+test("tool-names.ts imports nothing, so the console bundles the grammar without the server", () => {
+  const source = readFileSync(new URL("../src/tool-names.ts", import.meta.url), "utf8");
+  const { importedFiles, referencedFiles, typeReferenceDirectives } = ts.preProcessFile(source, true, true);
+  assert.deepEqual([...importedFiles, ...referencedFiles, ...typeReferenceDirectives].map((f) => f.fileName), [], "no static, dynamic, require or reference import");
 });
