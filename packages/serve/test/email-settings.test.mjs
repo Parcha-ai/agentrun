@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, serve, storeBytes, withEnv } from "./support.mjs";
 import { accountBody, ADDRESS, mailbox } from "./email-support.mjs";
@@ -116,7 +117,7 @@ function watchedStore() {
 
 const ACCOUNT_A = { preset: "other", address: "a@a.example", user: "a-user", password: "a-password-1", imap: { host: "imap.a.example", port: 993 }, smtp: { host: "smtp.a.example", port: 465 } };
 const ACCOUNT_B = { preset: "other", address: "b@b.example", user: "b-user", password: "b-password-2", imap: { host: "imap.b.example", port: 993 }, smtp: { host: "smtp.b.example", port: 465 } };
-const whole = (opened) => [ACCOUNT_A, ACCOUNT_B].some((one) => JSON.stringify(opened) === JSON.stringify(one));
+const whole = (opened) => [ACCOUNT_A, ACCOUNT_B].some((one) => isDeepStrictEqual(opened, one));
 
 test("the account is one row, saved in one write: a read during a switch, or after a save that failed part way, gets one account whole, never one's servers with the other's password", async () => {
   const { openAccount, saveAccount } = await import("../dist/email/account.js");
@@ -148,15 +149,17 @@ test("the account is one row, saved in one write: a read during a switch, or aft
   }
 });
 
-test("the account row holds its password sealed, never in the clear; the public part reads without it; removing it is one write; the old two-row shape reads as no account", async () => {
+test("the account row holds its password sealed, never in the clear; the public part reads with the seal key alone; removing it is one write; the old two-row shape reads as no account", async () => {
   const { accountView, keptAccount, openAccount, removeAccount, saveAccount } = await import("../dist/email/account.js");
   const { putSealedKey } = await import("../dist/server-keys.js");
   const key = randomBytes(32);
   const store = watchedStore();
   await saveAccount(store, key, ACCOUNT_A);
-  assert.ok(!JSON.stringify([...store.rows.settings.values()]).includes(ACCOUNT_A.password), "no clear password in the row");
+  const held = Buffer.concat([Buffer.from(JSON.stringify([...store.rows.settings.values()])), ...[...store.rows.sealed.values()].map((bytes) => Buffer.from(bytes))]);
+  assert.ok(!held.includes(Buffer.from(ACCOUNT_A.password)), "no clear password in any row");
   const { password, ...open } = ACCOUNT_A;
-  assert.deepEqual(await keptAccount(store), open, "the public part, with no seal key");
+  assert.ok(password);
+  assert.deepEqual(await keptAccount(store, key), open, "the public part, never the password");
   assert.equal((await accountView(store, randomBytes(32))).password_unreadable, true, "under another seal key the password does not open");
   assert.equal(await openAccount(store, randomBytes(32)), undefined);
   store.writes = 0;
@@ -170,6 +173,6 @@ test("the account row holds its password sealed, never in the clear; the public 
   await old.settings.put("email-account", { v: 1, preset: "other", address: ACCOUNT_A.address, user: ACCOUNT_A.user, imap: ACCOUNT_A.imap, smtp: ACCOUNT_A.smtp });
   await putSealedKey(old, key, "email.default.password", ACCOUNT_A.password);
   assert.equal(await openAccount(old, key), undefined);
-  assert.equal(await keptAccount(old), undefined);
+  assert.equal(await keptAccount(old, key), undefined);
   assert.equal((await accountView(old, key)).configured, false);
 });

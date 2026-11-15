@@ -13,6 +13,8 @@ export const EMAIL_ERROR_MAX_CHARS = 2_000;
 const CUT = { address: 320, name: 320, subject: 1_000, id: 1_000, date: 40, snippet: 400, attachment: 300, type: 120, mailbox: 300, note: 2_000 };
 const LIST_KEPT = 50;
 const REFERENCES_KEPT = 20;
+/** A thread read's ids left unread (`omitted`): at most so many characters as JSON together, the nearest kept. */
+const OMITTED_ROOM = 10_000;
 /** What the answer's own words take beside its messages: the count of those dropped, and how to read them. */
 const NOTE_ROOM = 300;
 
@@ -44,6 +46,22 @@ function cutList(list: unknown, kept: number, max: number, last = false): string
   const cut = taken.map((one) => cutJson(one, max));
   const more = strings.length - taken.length;
   return more > 0 ? (last ? [`… ${more} more`, ...cut] : [...cut, `… ${more} more`]) : cut;
+}
+
+/** `ids` (oldest first) within OMITTED_ROOM characters as JSON, each cut to CUT.id: the newest kept, how many earlier
+ *  ones were not said first. */
+function idsCut(ids: unknown[]): string[] {
+  const strings = ids.filter((one): one is string => typeof one === "string").map((one) => cutJson(one, CUT.id));
+  const kept: string[] = [];
+  let used = 2;
+  for (let i = strings.length - 1; i >= 0; i--) {
+    const size = jsonLength(strings[i]!) + 3;
+    if (used + size > OMITTED_ROOM - 40) break;
+    kept.unshift(strings[i]!);
+    used += size;
+  }
+  const more = strings.length - kept.length;
+  return more > 0 ? [`… ${more} more`, ...kept] : kept;
 }
 
 type Message = Record<string, unknown>;
@@ -90,6 +108,14 @@ function fieldsCut(m: Message): Message {
       case "unread":
         out[key] = value === true;
         break;
+      case "rejected":
+        // A send's refused addresses.
+        out[key] = cutList(value, LIST_KEPT, CUT.address);
+        break;
+      case "omitted":
+        // A thread read's ids left unread; a count elsewhere.
+        out[key] = Array.isArray(value) ? idsCut(value) : typeof value === "number" ? value : undefined;
+        break;
       default:
         // A field no message has here: cut as words, so nothing unbounded passes.
         out[key] = typeof value === "string" ? cutJson(value, CUT.note) : typeof value === "number" || typeof value === "boolean" || value === null ? value : undefined;
@@ -134,6 +160,16 @@ function fitted(messages: Message[], rest: Message): string | undefined {
   return json.length <= EMAIL_ANSWER_MAX_CHARS - NOTE_ROOM ? json : undefined;
 }
 
+/** What an answer says of the `dropped` messages that did not fit. A thread read that already left earlier ones unread
+ *  (`omitted` their ids) adds these, the newest, to its ids and its count; any other says how many and how to read them. */
+function droppedNote(rest: Message, dropped: Message[]): Message {
+  const n = dropped.length;
+  if (!Array.isArray(rest.omitted)) return { omitted: n, note: `${n} more message${n === 1 ? "" : "s"} did not fit in one answer: read each with email_read and its message_id, or narrow the search.` };
+  const more = (typeof rest.more === "number" ? rest.more : 0) + n;
+  const ids = dropped.flatMap((m) => (typeof m.message_id === "string" ? [m.message_id] : []));
+  return { truncated: true, more, omitted: idsCut([...rest.omitted, ...ids]), note: `${more} messages in this thread not read (the newest ${n} did not fit in one answer); email_read one by message_id` };
+}
+
 /** An email tool's answer as the model reads it: JSON, at most EMAIL_ANSWER_MAX_CHARS characters. */
 export function emailText(answer: Record<string, unknown>): string {
   const { messages, ...others } = answer;
@@ -142,11 +178,11 @@ export function emailText(answer: Record<string, unknown>): string {
   const all = messages.map((m) => fieldsCut(m && typeof m === "object" ? (m as Message) : {}));
   for (let n = all.length; n > 0; n--) {
     const dropped = all.length - n;
-    const note = dropped ? { omitted: dropped, note: `${dropped} more message${dropped === 1 ? "" : "s"} did not fit in one answer: read each with email_read and its message_id, or narrow the search.` } : {};
+    const note = dropped ? droppedNote(rest, all.slice(n)) : {};
     const json = fitted(all.slice(0, n), { ...rest, ...note });
     if (json !== undefined) return json;
   }
-  return JSON.stringify({ ...rest, messages: [], omitted: all.length, note: "The messages did not fit in one answer: narrow the search." });
+  return JSON.stringify({ ...rest, messages: [], ...(Array.isArray(rest.omitted) ? droppedNote(rest, all) : { omitted: all.length, note: "The messages did not fit in one answer: narrow the search." }) });
 }
 
 /** An email tool's error, in words: at most EMAIL_ERROR_MAX_CHARS characters. */

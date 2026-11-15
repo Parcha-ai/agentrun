@@ -236,7 +236,7 @@ test("a message whose text grows when escaped (newlines, quotes and backslashes)
     let payload;
     assert.doesNotThrow(() => (payload = JSON.parse(tagged[1])), `the payload is whole JSON: ...${tagged[1].slice(-120)}`);
     assert.deepEqual(Object.keys(payload).sort(), ["attachments", "cc", "date", "from", "from_name", "in_reply_to", "message_id", "subject", "text", "text_truncated", "to"]);
-    assert.deepEqual([payload.from, payload.cc, payload.subject, payload.message_id, payload.text_truncated], ["ana@example.com", ["bo@example.com"], m.subject, m.messageId, true]);
+    assert.deepEqual([payload.from, payload.cc, payload.subject, payload.message_id, payload.text_truncated], ["ana@example.com", ["bo@example.com"], `Escapes ${Object.keys(texts)[i]}`, m.messageId, true]);
     const original = Object.values(texts)[i];
     assert.ok(payload.text.length > 1000 && original.startsWith(payload.text.replace(/\n\[cut: [^\]]*\]$/, "")), "the text cut from its end, as much kept as fits");
     assert.ok(Buffer.byteLength(JSON.stringify(payload), "utf8") <= 16 * 1024, `within the bound: ${Buffer.byteLength(JSON.stringify(payload), "utf8")}`);

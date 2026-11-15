@@ -26,7 +26,7 @@ import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeli
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
-import { type Clock, type PollResult, second, type Source, type StartResult, type StartWhy, type TriggerAdapter, validZone } from "./trigger-adapter.js";
+import { type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type StartResult, type StartWhy, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
@@ -45,8 +45,8 @@ const FULL_RETRY_S = 30;
 export const SOURCE_KINDS: readonly string[] = TRIGGER_ADAPTERS.map((a) => a.id);
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
-/** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start. */
-export const PAYLOAD_KEPT_BYTES = 16 * 1024;
+/** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start (trigger-adapter.ts). */
+export { PAYLOAD_KEPT_BYTES };
 /** How late a missed time may be and still fire once, by default: an hour. */
 export const CATCHUP_WINDOW_S = 3600;
 /** The failed tries in a row that turn a trigger off. */

@@ -1,23 +1,22 @@
 // The server's one email account (the email account setting, /v2/settings/email): where its mail is read (IMAP) and
-// sent (SMTP), the address it sends as, and who signs in. Kept in two parts: what is no secret (the address, the user and
-// the servers) in one store.settings row, and the password sealed in the one store's sealed keys (server-keys.ts, beside
-// the tool keys), opened only with the seal key: by the server for the email trigger's polls and the connection test,
-// and by a runner for a run whose revision names an email tool (email/tools.ts, under its claim). No answer, event, log
-// line or run input holds the password; the runner's one redactor holds it as it holds every sealed key
-// (runner/store-secrets.ts).
+// sent (SMTP), the address it sends as, and who signs in. Kept whole in ONE row of the one store's sealed keys
+// (EMAIL_ACCOUNT_ROW, beside the tool keys): the servers, the address, the user and the password sealed together as one
+// JSON value, saved in one write, so a read gets one account or the other, never one's servers with another's password,
+// and a save that fails leaves the account before it whole. Opened only with the seal key: by the server for the email
+// trigger's polls and the connection test, and by a runner for a run whose revision names an email tool (email/tools.ts,
+// under its claim). No answer, event, log line or run input holds the password; the runner's one redactor holds it, read
+// out of this row (runner/store-secrets.ts).
 // One account for now, named "default": the trigger and the tools take an `account` name from day one, and only "default"
 // is accepted.
 import { ApiError, type InputIssue, invalid } from "../errors.js";
 import { getSealedKey, putSealedKey, removeSealedKey } from "../server-keys.js";
-import type { SealedKeys, Settings } from "../store/index.js";
+import type { SealedKeys } from "../store/index.js";
 import { isObject, unknownFields } from "../validate.js";
 
 /** The one account name accepted now. */
 export const DEFAULT_ACCOUNT = "default";
-/** The store.settings row of the account's public part. */
-export const EMAIL_ACCOUNT_SETTING = "email-account";
-/** The sealed key the account's password is kept under. */
-export const EMAIL_PASSWORD_KEY = "email.default.password";
+/** The sealed-keys row the account is kept in, whole: its servers, address, user and password, sealed as one JSON value. */
+export const EMAIL_ACCOUNT_ROW = "email.default.account";
 /** The loopback address a plaintext connection may go to: the fakes' (email-faux.ts), never a provider's. */
 export const PLAINTEXT_HOST = "127.0.0.1"; // key-gate: loopback-rule plaintext mail goes to the loopback fakes only
 /** Outlook's refusal: Microsoft turned off app-password sign-in for Outlook.com IMAP and SMTP. */
@@ -89,57 +88,79 @@ export function accountOf(body: Record<string, unknown>, saved?: OpenedAccount):
   return { preset: preset as string, address, user, password, imap, smtp };
 }
 
-/** The store slice the account reads and writes. */
-export type AccountStore = { readonly settings: Pick<Settings, "get" | "put" | "remove">; readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove">; flush?(): Promise<void> };
+/** The store slice the account reads and writes: the one sealed-keys row. */
+export type AccountStore = { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove">; flush?(): Promise<void> };
 
-/** The account's public part as the row keeps it, or undefined when none is kept or it does not read. */
-function keptOf(value: unknown): EmailAccount | undefined {
-  if (!isObject(value) || value.v !== 1) return undefined;
+/** The account as its row keeps it (v: 2), or undefined when the value does not read. A row of the shape before (the
+ *  servers in a settings row, the password under its own sealed key) is never read: no user has one, and half an account
+ *  is none. */
+function keptOf(plain: string | undefined): OpenedAccount | undefined {
+  let value: unknown;
+  try {
+    value = plain === undefined ? undefined : JSON.parse(plain);
+  } catch {
+    return undefined;
+  }
+  if (!isObject(value) || value.v !== 2) return undefined;
   const end = (e: unknown): Endpoint | undefined => (isObject(e) && typeof e.host === "string" && Number.isSafeInteger(e.port) ? { host: e.host, port: e.port as number } : undefined);
   const imap = end(value.imap);
   const smtp = end(value.smtp);
-  if (typeof value.address !== "string" || typeof value.user !== "string" || typeof value.preset !== "string" || !imap || !smtp) return undefined;
-  return { preset: value.preset, address: value.address, user: value.user, imap, smtp };
+  if (typeof value.address !== "string" || typeof value.user !== "string" || typeof value.preset !== "string" || typeof value.password !== "string" || !imap || !smtp) return undefined;
+  return { preset: value.preset, address: value.address, user: value.user, imap, smtp, password: value.password };
 }
+
+/** The account's row opened with `sealKey`: absent (none kept), unreadable (kept, but it does not open or read), or the
+ *  account whole. */
+async function rowOf(store: AccountStore, sealKey: Buffer): Promise<{ kept: false } | { kept: true; account: OpenedAccount | undefined }> {
+  if ((await store.sealedKeys.get(EMAIL_ACCOUNT_ROW)) === undefined) return { kept: false };
+  return { kept: true, account: keptOf(await getSealedKey(store, sealKey, EMAIL_ACCOUNT_ROW)) };
+}
+
+/** The password of an opened account row (runner/store-secrets.ts: the one redactor holds it, not the row's JSON). */
+export const accountRowSecrets = (plain: string): string[] => {
+  const password = keptOf(plain)?.password;
+  return password ? [password] : [];
+};
 
 /** Whether the saved account is Gmail's, by its preset or its IMAP host: what a tool's description says before any
  *  connection (a call itself goes by the server's X-GM-EXT-1). */
 export const isGmailAccount = (account: Pick<EmailAccount, "preset" | "imap">): boolean => account.preset === "gmail" || /(^|\.)gmail\.com$/i.test(account.imap.host);
 
-/** The account's public part as kept now, never its password; undefined when none is kept. */
-export async function keptAccount(store: AccountStore, account = DEFAULT_ACCOUNT): Promise<EmailAccount | undefined> {
-  return account === DEFAULT_ACCOUNT ? keptOf(await store.settings.get(EMAIL_ACCOUNT_SETTING)) : undefined;
+/** The account's public part as kept now, never its password; undefined when none is kept or it does not open. */
+export async function keptAccount(store: AccountStore, sealKey: Buffer, account = DEFAULT_ACCOUNT): Promise<EmailAccount | undefined> {
+  const opened = await openAccount(store, sealKey, account);
+  if (!opened) return undefined;
+  const { password: _password, ...kept } = opened;
+  return kept;
 }
 
-/** The account kept now, its password opened with `sealKey`; undefined when none is kept, or its password does not open
- *  (sealed under another key). */
+/** The account kept now, opened with `sealKey`; undefined when none is kept, or its row does not open (sealed under
+ *  another key) or read. */
 export async function openAccount(store: AccountStore, sealKey: Buffer, account = DEFAULT_ACCOUNT): Promise<OpenedAccount | undefined> {
   if (account !== DEFAULT_ACCOUNT) return undefined;
-  const kept = keptOf(await store.settings.get(EMAIL_ACCOUNT_SETTING));
-  if (!kept) return undefined;
-  const password = await getSealedKey(store, sealKey, EMAIL_PASSWORD_KEY);
-  return password === undefined ? undefined : { ...kept, password };
+  const row = await rowOf(store, sealKey);
+  return row.kept ? row.account : undefined;
 }
 
-/** The account's view (GET /settings/email): whether one is kept, and its public part. Never the password. */
+/** The account's view (GET /settings/email): whether one is kept, and its public part. Never the password. A row that does
+ *  not open under this seal key is said (password_unreadable), its parts unknown. */
 export async function accountView(store: AccountStore, sealKey: Buffer) {
-  const kept = keptOf(await store.settings.get(EMAIL_ACCOUNT_SETTING));
-  const opens = kept ? (await getSealedKey(store, sealKey, EMAIL_PASSWORD_KEY)) !== undefined : false;
-  if (!kept) return { configured: false, preset: null, address: null, user: null, imap: null, smtp: null, password_unreadable: false };
-  return { configured: opens, preset: kept.preset, address: kept.address, user: kept.user, imap: kept.imap, smtp: kept.smtp, password_unreadable: !opens };
+  const row = await rowOf(store, sealKey);
+  const kept = row.kept ? row.account : undefined;
+  if (!kept) return { configured: false, preset: null, address: null, user: null, imap: null, smtp: null, password_unreadable: row.kept };
+  return { configured: true, preset: kept.preset, address: kept.address, user: kept.user, imap: kept.imap, smtp: kept.smtp, password_unreadable: false };
 }
 
-/** The account saved: its password sealed first, then its public part, so a kept row always has its password. */
+/** The account saved whole, in one write: the one row, its servers and its password sealed together. */
 export async function saveAccount(store: AccountStore, sealKey: Buffer, account: OpenedAccount): Promise<void> {
-  await putSealedKey(store, sealKey, EMAIL_PASSWORD_KEY, account.password);
-  await store.settings.put(EMAIL_ACCOUNT_SETTING, { v: 1, preset: account.preset, address: account.address, user: account.user, imap: account.imap, smtp: account.smtp });
+  const row = { v: 2, preset: account.preset, address: account.address, user: account.user, imap: account.imap, smtp: account.smtp, password: account.password };
+  await putSealedKey(store, sealKey, EMAIL_ACCOUNT_ROW, JSON.stringify(row));
   await store.flush?.();
 }
 
-/** The account forgotten: its public part, then its password. */
+/** The account forgotten: its one row, in one write. */
 export async function removeAccount(store: AccountStore): Promise<void> {
-  await store.settings.remove(EMAIL_ACCOUNT_SETTING);
-  await removeSealedKey(store, EMAIL_PASSWORD_KEY);
+  await removeSealedKey(store, EMAIL_ACCOUNT_ROW);
   await store.flush?.();
 }
 

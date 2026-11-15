@@ -119,6 +119,20 @@ export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | 
   };
 }
 
+/** A message as a thread read first sees it: where it is, its ids, its date and its size, no body. */
+export type MailHead = Pick<MailMessage, "uid" | "mailbox" | "date" | "message_id" | "in_reply_to" | "references"> & { size: number };
+
+/** A header's value in `raw` (a message's header lines), folded lines joined; undefined when it has none. */
+const headerIn = (raw: string, name: string): string | undefined => new RegExp(`^${name}:[ \\t]*(.*)$`, "im").exec(raw.replace(/\r?\n[ \t]+/g, " "))?.[1]?.trim();
+
+/** A fetched row of `heads`: its ids and its date read from the headers (the Date header, else INTERNALDATE). */
+function headOf(row: Pick<FetchMessageObject, "uid" | "internalDate" | "size" | "headers">, mailbox: string): MailHead {
+  const raw = row.headers?.toString("utf8") ?? "";
+  const stated = headerIn(raw, "date");
+  const date = [stated ? new Date(stated) : undefined, row.internalDate ? new Date(row.internalDate) : undefined].find((d) => d && Number.isFinite(d.getTime()));
+  return { uid: row.uid, mailbox, size: typeof row.size === "number" ? row.size : 0, date: date ? date.toISOString() : null, message_id: firstId(headerIn(raw, "message-id")), in_reply_to: firstId(headerIn(raw, "in-reply-to")), references: idsOf(headerIn(raw, "references")) };
+}
+
 /** The payload's fields (a trigger's firing, a read's message). */
 export const payloadOf = (m: MailMessage) => ({ from: m.from, from_name: m.from_name, to: m.to, cc: m.cc, subject: m.subject, date: m.date, message_id: m.message_id, in_reply_to: m.in_reply_to, text: m.text, attachments: m.attachments });
 /** A read's message: the payload and its references. */
@@ -190,6 +204,14 @@ export class ImapSession {
     const rows = await this.client.fetchAll(uids.join(","), { uid: true, flags: true, internalDate: true, source: { maxLength: bytes } }, { uid: true });
     const messages = await Promise.all(rows.map((row) => messageOf(row, path)));
     return messages.sort((a, b) => a.uid - b.uid);
+  }
+
+  /** The open mailbox's messages of `uids`, read cheaply: their ids, their date and their size from a few headers,
+   *  INTERNALDATE and RFC822.SIZE, never a body. What a thread read picks from before it fetches any message whole. */
+  async heads(path: string, uids: readonly number[]): Promise<MailHead[]> {
+    if (!uids.length) return [];
+    const rows = await this.client.fetchAll(uids.join(","), { uid: true, internalDate: true, size: true, headers: ["message-id", "in-reply-to", "references", "date"] }, { uid: true });
+    return rows.map((row) => headOf(row, path)).sort((a, b) => a.uid - b.uid);
   }
 
   /** Whether the server says it does `capability` (X-GM-EXT-1: Gmail's labels). */
@@ -295,17 +317,24 @@ export async function smtpSignIn(account: OpenedAccount): Promise<void> {
   }
 }
 
-/** `raw` sent through `account`'s SMTP to `to`, from its address. A failure is a MailError. */
-export async function smtpSend(account: OpenedAccount, to: readonly string[], raw: Buffer): Promise<void> {
+/** `raw` sent through `account`'s SMTP to `to`, from its address: the addresses the server took and those it refused (a
+ *  server refuses some at RCPT and takes the rest, and nodemailer sends to those, throwing nothing). A failure, every
+ *  recipient refused among them, is a MailError. */
+export async function smtpSend(account: OpenedAccount, to: readonly string[], raw: Buffer): Promise<{ accepted: string[]; rejected: string[] }> {
   const transport = transportOf(account);
   try {
-    await transport.sendMail({ envelope: { from: account.address, to: [...to] }, raw });
+    const info = await transport.sendMail({ envelope: { from: account.address, to: [...to] }, raw });
+    const address = (one: unknown) => (typeof one === "string" ? one : isAddress(one) ? one.address : String(one));
+    return { accepted: (info.accepted ?? []).map(address), rejected: (info.rejected ?? []).map(address) };
   } catch (error) {
     throw mailError(error, account.smtp, "SMTP", account.password);
   } finally {
     transport.close();
   }
 }
+
+/** A nodemailer address object ({name, address}). */
+const isAddress = (one: unknown): one is { address: string } => typeof one === "object" && one !== null && typeof (one as { address?: unknown }).address === "string";
 
 /** A message built whole: its bytes and its Message-ID. */
 export async function composed(fields: { from: string; to: readonly string[]; cc: readonly string[]; subject: string; text: string; inReplyTo?: string; references?: readonly string[]; headers?: Record<string, string> }): Promise<{ raw: Buffer; messageId: string }> {

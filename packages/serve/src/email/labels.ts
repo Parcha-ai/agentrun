@@ -63,11 +63,14 @@ const readLabel: LabelFn = (args, result) => {
   return thread ? `Read the thread ${subject}` : `Read ${subject}`;
 };
 
-/** email_draft and email_send: a reply (in_reply_to) or an email, to whom, and its subject. */
-const writeLabel = (verb: string): LabelFn => (args) => {
+/** email_draft and email_send: a reply (in_reply_to) or an email, to whom, and its subject; a send some of whose
+ *  recipients the mail server refused says how many, from its answer's `rejected`. */
+const writeLabel = (verb: string): LabelFn => (args, result) => {
   const to = addressed(args.to);
   const subject = subjectOf(args.subject);
-  return `${verb} ${words(args.in_reply_to) ? "a reply" : "an email"}${to ? ` to ${to}` : ""}${subject ? `: ${subject}` : ""}`;
+  const rejected = answerOf(result)?.rejected;
+  const refused = Array.isArray(rejected) && rejected.length ? ` (refused: ${rejected.length})` : "";
+  return `${verb} ${words(args.in_reply_to) ? "a reply" : "an email"}${to ? ` to ${to}` : ""}${subject ? `: ${subject}` : ""}${refused}`;
 };
 
 /** email_file: "Filed an email under <to>" while it runs; then its answer's subject, and ", out of the inbox" when it left it. */

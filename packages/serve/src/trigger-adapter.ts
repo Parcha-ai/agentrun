@@ -7,6 +7,9 @@ import type { SettingsSpec } from "./sealed-settings-store.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
+/** The most of a firing's payload passed on, in bytes of UTF-8 (triggers.ts cuts past it, at a character's start). A
+ *  source that answers JSON fits its payload within it first (trigger-email.ts), so its JSON is never cut. */
+export const PAYLOAD_KEPT_BYTES = 16 * 1024;
 /** A source as the store keeps it: its kind, the adapter's id, and the adapter's own fields. */
 export type Source = { kind: string } & Json;
 
