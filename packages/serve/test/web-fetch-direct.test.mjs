@@ -128,6 +128,8 @@ test("an Atom feed lists its entries' links: an attribute's URL, and its escaped
   // A single-quoted attribute ends at its quote too, and an entity in it is undone.
   const { linksOf } = await import("../dist/web-fetch-direct.js");
   assert.deepEqual([...linksOf("<feed><link href='https://example.com/release'/><link href = 'https://example.com/a?x=1&amp;y=O&apos;Reilly'/></feed>")], ["https://example.com/release", "https://example.com/a?x=1&y=O%27Reilly"], "an apostrophe in a query, as the URL standard writes it");
+  // An attribute named in any script is read so too.
+  assert.deepEqual([...linksOf("<feed xmlns:é='https://example.com/ns'/>")], ["https://example.com/ns"]);
   // A double-quoted attribute is left as it is, an "='" in its query too.
   assert.deepEqual([...linksOf(`<feed><link href="https://example.com/?q='hello'&amp;x=1"/></feed>`)], ["https://example.com/?q=%27hello%27&x=1"]);
   // Every URL the body writes out: its namespace's and the one in its tag URI's id too, as the text holds them.

@@ -150,7 +150,7 @@ const XML_ENTITY = /&(?:(quot|amp|lt|gt|apos)|#(\d{1,7})|#x([0-9a-f]{1,6}));/gi;
 const NAMED: Record<string, string> = { quot: '"', amp: "&", lt: "<", gt: ">", apos: "'" };
 /** An XML attribute, its value in double quotes (kept as it is, so an "='" in its query is never taken for an attribute)
  *  or in single quotes (the second group). */
-const ATTRIBUTE = /(\s[\w:.-]+\s*=\s*)(?:"[^"]*"|'([^'<]*)')/g;
+const ATTRIBUTE = /(\s[^\s=<>"'/]+\s*=\s*)(?:"[^"]*"|'([^'<]*)')/g;
 
 /** Where a markdown link's target (the text after its "](") ends: at whitespace or at the ")" that closes the link, so
  *  parentheses it holds in pairs (a wiki title's) stay. */
