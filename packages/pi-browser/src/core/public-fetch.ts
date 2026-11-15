@@ -114,6 +114,8 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
       }
       const contentType = res.headers.get("content-type") ?? "";
       if (!res.ok) return { url: target.href, status: res.status, contentType, body: null };
+      // A 2xx with no body at all (204, 205) is an empty page, whatever type it names.
+      if (!res.body) return { url: target.href, status: res.status, contentType, body: "" };
       if (!TEXT_TYPE.test(contentType)) throw refusedError(`refused: ${contentType || "an unknown content type"} is not text`);
       const chunks: Uint8Array[] = [];
       let size = 0;

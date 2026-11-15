@@ -27,7 +27,7 @@ export type ScriptDecide = (tool: string, args: unknown) => Promise<"allow" | "a
 /** The tool a script's computer call is held to, as the run's own tool of that name is: the shell is bash's, a program
  *  started to run on (processes.start) bash_background's (bash's setting, and a read-only bash policy refuses it), a
  *  file's write is write's, a file's read, listing or stat is read's. The other ops (looking, acting) are the computer
- *  kind's, which the call of computer_script or codemode was already held to. */
+ *  kind's, which the call of computer_script was already held to. */
 const HELD_AS: Readonly<Record<string, "bash" | "bash_background" | "write" | "read">> = Object.freeze({ "shell.run": "bash", "processes.start": "bash_background", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
 /** The ops whose command runs in the computer's shell: each gets the bash policy's safeguards. */
 const SHELL_OPS: ReadonlySet<string> = new Set(["shell.run", "processes.start"]);

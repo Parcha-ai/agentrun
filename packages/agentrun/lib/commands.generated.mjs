@@ -1287,6 +1287,28 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "delete-composio-subscription"
+    ],
+    "operationId": "deleteComposioSubscription",
+    "method": "DELETE",
+    "path": "/settings/mcp-servers/{name}/composio/subscription",
+    "pathParams": [
+      "name"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Delete the Composio project's webhook subscription, once no trigger uses it"
+  },
+  {
+    "command": [
+      "local",
       "delete-computer"
     ],
     "operationId": "deleteComputer",
@@ -1389,6 +1411,50 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-composio-events"
+    ],
+    "operationId": "listComposioEvents",
+    "method": "GET",
+    "path": "/settings/mcp-servers/{name}/composio/events",
+    "pathParams": [
+      "name"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "List a saved Composio server's toolkit's events, for a composio trigger"
+  },
+  {
+    "command": [
+      "local",
+      "list-composio-triggers"
+    ],
+    "operationId": "listComposioTriggers",
+    "method": "GET",
+    "path": "/settings/mcp-servers/{name}/composio/triggers",
+    "pathParams": [
+      "name"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A saved Composio server's triggers, each with its instance's state on Composio"
+  },
+  {
+    "command": [
+      "local",
       "list-computer-choices"
     ],
     "operationId": "listComputerChoices",
@@ -1427,6 +1493,52 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved"
+  },
+  {
+    "command": [
+      "local",
+      "receive-hook-composio"
+    ],
+    "operationId": "receiveHook_composio",
+    "method": "POST",
+    "path": "/hooks/composio/{hook}",
+    "pathParams": [
+      "hook"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "*/*"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Fire a Composio trigger: a request it checks, no token"
+  },
+  {
+    "command": [
+      "local",
+      "rotate-composio-secret"
+    ],
+    "operationId": "rotateComposioSecret",
+    "method": "POST",
+    "path": "/settings/mcp-servers/{name}/composio/rotate-secret",
+    "pathParams": [
+      "name"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Rotate the Composio project's webhook subscription's secret, and keep the new one"
   },
   {
     "command": [
@@ -2522,7 +2634,7 @@ export const COMMANDS = [
           "whole"
         ],
         "required": false,
-        "description": "`whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`."
+        "description": "`whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`."
       }
     ],
     "headers": [

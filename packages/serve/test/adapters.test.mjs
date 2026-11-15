@@ -186,6 +186,19 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
   assert.deepEqual(given.slice(1).map((options) => "skills" in options), [false, false], "none: no option, so the adapter keeps its Skill tool off");
 });
 
+test("a run's clock (a template eval case's now) reaches claude-agent's adapter, whose turn date reads it; a run with none hands no clock", async () => {
+  const real = await import("@parcha/agentrun-harness-claude");
+  const given = [];
+  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, models: { getModel: () => undefined } };
+  const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
+  const now = () => new Date("2026-11-14T09:00:00Z");
+  await claudeOf(env, { ...needs, now }, load, loadedSdk);
+  await claudeOf(env, needs, load, loadedSdk);
+  assert.equal(given[0].now, now);
+  assert.equal("now" in given[1], false, "the real clock: the adapter's own default");
+});
+
 test("each adapter harness's check of skills is its own package's skillProblems, by its table entry (packageSkillCheck); none where a package has no check of its own (each package is a dependency of serve, so it is never missing)", async () => {
   const [{ packageSkillCheck }, { builtinHarness }, claude, codex, opencode] = await Promise.all([import("../dist/adapters.js"), import("../dist/harness-table.js"), import("@parcha/agentrun-harness-claude"), import("@parcha/agentrun-harness-codex"), import("../dist/harness-opencode/index.js")]);
   for (const [id, pkg] of [["claude-agent", claude], ["codex", codex], ["opencode", opencode]]) assert.equal(typeof pkg.skillProblems, "function", `${id}'s package has a check of its own`);
