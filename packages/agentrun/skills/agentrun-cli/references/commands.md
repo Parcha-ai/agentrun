@@ -656,6 +656,7 @@ Route: `GET /runs/{run_id}/timeline`.
 - `--after INTEGER` (integer): The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.
 - `--wait-ms INTEGER` (integer): JSON only. How long to hold the request for a change after `after`.
 - `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500); has_more says when another waits.
+- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
 

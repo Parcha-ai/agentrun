@@ -10,7 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, markdownReport, metricsOf, outputVerdict, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, graderInput, markdownReport, metricsOf, outputVerdict, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
@@ -260,6 +260,8 @@ test("an llm grader sees each call's whole arguments, a web_fetch's URL with its
   const url = "https://pricing.example.test/plans?tier=enterprise&seats=50";
   const bearer = "sk-evalargs0123456789abcdefghijklmn";
   const github = `ghp_${"Ab1".repeat(12)}`;
+  // The faux fills them into its call from the environment, so the run's input (the grader's <task>) never holds them.
+  withEnv(t, { EVAL_ARGS_BEARER: bearer, EVAL_ARGS_GITHUB: github });
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   const manifest = readFileSync(join(dir, "agent.md"), "utf8");
@@ -267,22 +269,46 @@ test("an llm grader sees each call's whole arguments, a web_fetch's URL with its
   const at = join(dir, "evals", "fetch-args");
   mkdirSync(join(at, "graders"), { recursive: true });
   writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\n");
-  const call = { url, headers: { Authorization: `Bearer ${bearer}` }, api_key: github };
+  const call = { url, headers: { Authorization: "Bearer {{env:EVAL_ARGS_BEARER}}" }, api_key: "{{env:EVAL_ARGS_GITHUB}}" };
   writeFileSync(join(at, "prompt.md"), `---\ndescription: Fetches the pricing page with a header.\n---\nCall web_fetch with ${JSON.stringify(call)}\nAnswer:\nFETCH-ARGS done\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "fetch-args"}\n\`\`\`\n`);
   writeFileSync(join(at, "graders", "fetched.md"), `---\ntype: llm\n---\nPass if the answer contains "FETCH-ARGS".\nThe run fetched ${url}.\n`);
+  // Every call's arguments are known now, so tool_used's args match a call of a tool no fake serves.
+  writeFileSync(join(at, "graders", "url.md"), `---\ntype: tool_used\ntool: web_fetch\ncount: 1\nargs: { url: "${url}" }\n---\n`);
   const report = await evalTemplate({ dir, cases: ["fetch-args"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.equal(graderOf(run, "url.md").reason, `1 call of web_fetch with {"url":"${url}"}; the grader expects exactly 1`);
   const prompt = graderInputs().find((input) => input.includes("The run fetched https://pricing.example.test"));
   assert.ok(prompt, "the grader ran");
   const calls = prompt.slice(prompt.indexOf("<tool-calls untrusted>"));
   assert.ok(calls.includes(url), `the grader's calls hold the whole URL:\n${calls}`);
   for (const secret of [bearer, github]) {
-    assert.ok(!prompt.includes(secret), "no secret reaches the grader's prompt");
+    assert.ok(!prompt.includes(secret), `no secret reaches the grader's prompt:\n${calls}`);
     assert.ok(!JSON.stringify(report).includes(secret), "no secret reaches the report");
   }
   const fetched = run.calls.find((one) => one.tool === "web_fetch");
-  assert.equal(fetched?.arguments?.url, url, JSON.stringify(run.calls));
+  assert.deepEqual(fetched?.arguments, { url, headers: { Authorization: "Bearer [redacted]" }, api_key: "[redacted]" }, JSON.stringify(run.calls));
+});
+
+test("a grader's prompt stays under its cap: the longest results lose their middle first, then the middle calls, and the list says so", () => {
+  const grader = { file: "g.md", type: "llm", rubric: "Pass if it fetched the page." };
+  const call = (i, result) => ({ tool: "web_fetch", arguments: { url: `https://example.test/${i}` }, status: "success", result });
+  const long = `HEAD-${"a".repeat(6000)}-MIDDLE-${"b".repeat(6000)}-TAIL`;
+  const run = { answer: "done", calls: [call(1, "short one"), call(2, long), call(3, long)], mcpCalls: [], files: [] };
+  // Under the cap, whole.
+  assert.ok(graderInput(grader, "task", run).includes(long));
+  const prompt = graderInput(grader, "task", run, 6000);
+  assert.ok(prompt.length <= 6000, String(prompt.length));
+  const calls = prompt.slice(prompt.indexOf("<tool-calls untrusted>"));
+  assert.match(calls, /^<tool-calls untrusted>\n\(Cut to keep this prompt under its cap: each long result keeps its head and tail, its middle cut where marked\.\)\n1\. web_fetch \{"url":"https:\/\/example\.test\/1"\} -> success: short one\n/);
+  assert.equal(calls.match(/HEAD-a+ \[\.\.\. \d+ characters cut \.\.\.\] b+-TAIL/g)?.length, 2, calls);
+  assert.doesNotMatch(calls, /MIDDLE/);
+  // So many calls that not even their heads fit: the first and last stay, the middle ones are dropped, and said.
+  const many = { ...run, calls: Array.from({ length: 400 }, (_, i) => call(i + 1, long)) };
+  const crowded = graderInput(grader, "task", many, 4000);
+  assert.ok(crowded.length <= 4000, String(crowded.length));
+  assert.match(crowded, /\(Cut to keep this prompt under its cap: every result is left out, and \d+ calls in the middle\.\)\n1\. web_fetch/);
+  assert.match(crowded, /\[\.\.\. \d+ calls cut \.\.\.\]\n(?:.+\n)*400\. web_fetch \{"url":"https:\/\/example\.test\/400"\} -> success\n<\/tool-calls>/);
 });
 
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {

@@ -4132,6 +4132,8 @@ class TimelineRow(_TimelineRowRequired, total=False):
     learned_nodes: list[TimelineRowLearnedNodesItem]
     computer_calls: list[TimelineRowComputerCallsItem]
     computer_calls_dropped: int
+    tool_input: dict[str, Any]
+    tool_result_text: str | None
     learning: TimelineRowLearning
 
 
@@ -6393,7 +6395,7 @@ OPERATIONS: dict[str, Operation] = {
     "startRun": Operation(method="POST", path="/runs/{run_id}/start", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "stopRun": Operation(method="POST", path="/runs/{run_id}/stop", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "takeOverRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/take-over", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getCapabilities": Operation(method="GET", path="/capabilities", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getHealth": Operation(method="GET", path="/health", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6807,9 +6809,9 @@ class RunsResource(Group):
         """Take over the run's desktop or phone (POST /runs/{run_id}/computer/take-over)."""
         return self._call("takeOverRunComputer", (run_id,), body, None, timeout=timeout)
 
-    def timeline(self, run_id: str, *, after: int | None = None, wait_ms: int | None = None, last_event_id: str | None = None, limit: int | None = None, timeout: float | None = None) -> GetTimelineResponse:
+    def timeline(self, run_id: str, *, after: int | None = None, wait_ms: int | None = None, last_event_id: str | None = None, limit: int | None = None, calls: Literal["whole"] | None = None, timeout: float | None = None) -> GetTimelineResponse:
         """The run's timeline, as a page or a stream (GET /runs/{run_id}/timeline)."""
-        return self._call("getTimeline", (run_id,), None, {"after": after, "wait_ms": wait_ms, "Last-Event-ID": last_event_id, "limit": limit}, timeout=timeout)
+        return self._call("getTimeline", (run_id,), None, {"after": after, "wait_ms": wait_ms, "Last-Event-ID": last_event_id, "limit": limit, "calls": calls}, timeout=timeout)
 
     def unarchive(self, run_id: str, *, timeout: float | None = None) -> UnarchiveRunResponse:
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""

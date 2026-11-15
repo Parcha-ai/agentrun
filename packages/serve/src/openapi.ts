@@ -4,7 +4,7 @@
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { TRIGGER_SOURCES } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
@@ -2819,6 +2819,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "On a `tool_result` row whose call made more than 200 computer calls: how many past the 200 its record left out. Absent otherwise.",
       "x-agentrun-serve": "computercalls/1",
     },
+    tool_input: {
+      type: "object", additionalProperties: true,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`) and cut at ${CAPS.text} characters. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      "x-agentrun-serve": "callswhole/1",
+    },
+    tool_result_text: {
+      type: ["string", "null"],
+      description: `On a \`tool_result\` row of a timeline read with \`calls=whole\` alone: the head of the call's output, to ${CALL_RESULT_CHARS} characters, through the run's redaction, its URLs' query values elided as \`tool_result_preview\`'s are; null for an empty output. Absent otherwise.`,
+      "x-agentrun-serve": "callswhole/1",
+    },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
       description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. Its \`summary\` and \`text\` are its \`detail\` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
@@ -3336,8 +3346,12 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
   const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
-  timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
-  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
+  timeline.parameters = [
+    ...(timeline.parameters as Json[]),
+    { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } },
+    { name: "calls", in: "query", required: false, description: `\`whole\`: each \`tool_use\` row carries its call's arguments (\`tool_input\`) and each \`tool_result\` row the head of its output to ${CALL_RESULT_CHARS} characters (\`tool_result_text\`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (\`after\`, \`Last-Event-ID\`) from one read goes with the same \`calls\`.`, schema: { enum: ["whole"] } },
+  ];
+  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1", calls: "callswhole/1" };
   changed.push("GET /runs/{run_id}/timeline");
   // GET /agents also takes `archived`, as GET /runs already does (server.ts archivedParam, shared by both routes):
   // true lists only archived agents, false (the default) the others.

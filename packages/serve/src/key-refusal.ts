@@ -58,17 +58,18 @@ const SHOWN = 2000;
  *  Only the head serve can show is read: SHOWN characters, plus room for the longest held value in its widest encoded
  *  form (6 times it, for JSON's \uXXXX; percent is 3, hex 2, base64 4/3) and 16 more. A key whose start the cut can show
  *  starts before SHOWN, so it ends inside that head and is found whole; one that starts later is never shown. So a long
- *  error costs no more to redact than a short one, whatever it holds. */
-export function redacted(text: string, secrets: readonly string[]): string {
+ *  error costs no more to redact than a short one, whatever it holds. `shown`: a head of another length, for a reader
+ *  that is shown more (a template eval's grader reads a call's result to CALL_RESULT_CHARS). */
+export function redacted(text: string, secrets: readonly string[], shown = SHOWN): string {
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
-  const window = SHOWN + 6 * longest + 16;
+  const window = shown + 6 * longest + 16;
   if (text.length <= window) return redactSecrets(text, secrets, Buffer.byteLength(text));
   const out = redactSecrets(text.slice(0, window), secrets, window * 4);
   // A replacement moves what follows it left by at most S characters in all: the shortening, plus 2 for each "[redacted]"
-  // (a value of 8 or 9 characters grows into it). So output[0, SHOWN - S) comes from raw text before SHOWN, where every
+  // (a value of 8 or 9 characters grows into it). So output[0, shown - S) comes from raw text before `shown`, where every
   // key that starts ends inside the window and was found whole; past that, a copy the window cut could come into view.
   const shift = window - out.length + 2 * out.split("[redacted]").length - 2;
-  const keep = SHOWN - shift;
+  const keep = shown - shift;
   return keep <= 0 ? "[redacted]" : `${out.slice(0, keep)}...`;
 }
 

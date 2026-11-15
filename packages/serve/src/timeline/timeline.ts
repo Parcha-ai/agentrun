@@ -72,6 +72,12 @@ export type TimelineEvent = {
    *  counts the calls past the record's bound. This projector writes none (store-reads/journal.ts withComputerCalls). */
   computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
+  /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
+   *  makes it where the call is first seen, cut at CAPS.text. */
+  tool_input?: Obj;
+  /** On a `tool_result` row of a timeline read with `calls`: the head of the call's output, to `calls.result` characters,
+   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are. */
+  tool_result_text?: string | null;
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -81,6 +87,10 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 
 /** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
+/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a search's first rows (web_search
+ *  answers up to 10 results, each snippet at most 3,000 characters, most far shorter) or a fetched page's first screens,
+ *  and still one redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). */
+export const CALL_RESULT_CHARS = 8000;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
  *  that answered or failed has a `pi.assistant` entry; one aborted before its first content has none; a start with no
@@ -225,6 +235,11 @@ export type TimelineOptions = {
    *  this for the full protection: a key a stream wraps with only part of its tail streamed is covered by a held-back
    *  tail as long as a key, not by the word holdback. */
   redactLive?: (text: string) => string;
+  /** For a reader that grades the run (a template eval): each `tool_use` row carries its call's arguments whole
+   *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`),
+   *  made safe by `redact`, a redactor that reads that far (the rows' own `redact` stops at the head a row shows).
+   *  Without `redact`, the rows' own. */
+  calls?: { result: number; redact?: (text: string) => string };
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -489,6 +504,9 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** `value` with each string in it cut at `max` (a call's arguments as `tool_input` carries them): its shape kept. */
+const cutStrings = (value: unknown, max: number): unknown =>
+  typeof value === "string" ? cut(value, max) : Array.isArray(value) ? value.map((item) => cutStrings(item, max)) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cutStrings(item, max)])) : value;
 /** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
 const WHOLE: ReadonlySet<TimelineKind> = new Set(["user_message", "text_block", "final_answer"]);
 /** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
@@ -649,7 +667,10 @@ function createProjector(options: TimelineOptions) {
   const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(tool, shown(args)) : label(tool, args, result));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
-    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
+    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...(options.calls ? { tool_input: cutStrings(args, caps.text) as Obj } : {}), ...fields });
+  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own. */
+  const wholeRedact = options.calls?.redact ?? options.redact;
+  const resultText = (text: string): string | null => (text ? cut(scrubUrls(wholeRedact ? wholeRedact(text) : text), options.calls!.result) : null);
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
   /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
    *  outcome is read once, for the summary and the status both. */
@@ -672,6 +693,7 @@ function createProjector(options: TimelineOptions) {
       summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
+      ...(options.calls ? { tool_result_text: resultText(view.text) } : {}),
     });
   };
 

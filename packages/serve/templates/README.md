@@ -118,7 +118,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   regular expression, so no query can stall the eval), as `path:line: text` lines, at most `limit` (100).
 - `fixtures/`: what the case's fakes and notes read.
 - `graders/*.md`, each one check of every run, by its front matter's `type`:
-  - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its preview) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
+  - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its arguments and the head of its result) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
   - `regex`: `pattern` over the answer (or `target`), with `flags` and `expect: match` (the default) or `no_match`.
   - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `count` and
     `args` (the arguments a call must carry).
@@ -195,12 +195,17 @@ JSON, or refused by the schema, after the runner's one retry). The report lists 
   (`monid:<provider>/*`) is filled from monid's listing when the agent is saved, so the eval cannot check a name under
   it before the run. A faked MCP tool's calls are its fake's log, the calls that reached it; any other tool's are the
   timeline's. With `count`, exactly that many calls; else `expect: called`, one or more, or `not_called`, none. `args` keeps the calls
-  that carry each of its arguments (an object's own fields compared the same way, any other value equal), and is
-  allowed on a faked MCP tool only: the timeline keeps a call's input as a preview.
+  that carry each of its arguments (an object's own fields compared the same way, any other value equal), on any
+  tool's calls: the eval reads the timeline with `calls=whole`, which carries each call's arguments through the run's
+  redaction (a held value or a key-shaped string reads `[redacted]`, and so never matches), each string cut at 2,000
+  characters.
 - `file_exists`: `path`, relative to the run's work folder, among its files.
 - `llm`: a run of a grader agent on the same server, with no tools, a fixed instruction and the `--grader-model`. It is
   given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
-  that field besides (the whole answer stays, for anything else the rubric checks). Never another grader, the case's
+  that field besides (the whole answer stays, for anything else the rubric checks). Each call shows its arguments as
+  `tool_used` reads them, its status, and its result's first 8,000 characters through the same redaction. The prompt
+  stays under 120,000 characters: past that, the longest results lose their middle first (marked), then the middle
+  calls, and the list's first line says what was cut; the rubric, task and answer are never cut. Never another grader, the case's
   description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block; any other answer
   fails the grader.
 

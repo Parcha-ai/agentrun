@@ -1466,7 +1466,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
     // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
     // from its journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses }, forStore, runId, context),
+    timelineRows: (forStore, runId, context, calls) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses }, forStore, runId, context, calls),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
@@ -2445,11 +2445,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const asked = url.searchParams.get("limit");
     if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
     const limit = asked === null ? PAGE_ROWS : Number(asked);
+    // `calls=whole`: each call's arguments and its output's head too (tool_input, tool_result_text), for a grader.
+    const shape = url.searchParams.get("calls");
+    if (shape !== null && shape !== "whole") throw new ApiError("bad_request", "calls is whole, or absent");
+    const calls = shape === "whole";
     // The run's page from the store (runTimelines): run_id/status/state/reset/rows/drop/next_after/unchanged/has_more/final/
     // cost, byte-identical to the old live page. TODO(learning-row freshness): a learning row approved or retired since the
     // journal wrote it reads its journal state here (store-view owns the fresh learning view); folded in with learning-1.
     if (!String(req.headers.accept ?? "").includes("text/event-stream")) {
-      const page = await timelines.page(store, runId, after, waitMs, limit);
+      const page = await timelines.page(store, runId, after, waitMs, limit, calls);
       return send(res, 200, { ...page, poll_after_ms: page.final || page.has_more ? 0 : 1000 });
     }
     const last = req.headers["last-event-id"];
@@ -2473,7 +2477,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
     try {
       for (let first = true; open; first = false) {
-        const page = await timelines.page(store, runId, cursor, 0, limit);
+        const page = await timelines.page(store, runId, cursor, 0, limit, calls);
         if (!open) break;
         if (first || !page.unchanged || page.final) res.write(`event: rows\nid: ${page.next_after}\ndata: ${JSON.stringify(page)}\n\n`);
         cursor = page.next_after;
