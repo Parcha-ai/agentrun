@@ -1751,6 +1751,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
     return entry;
   }
+  /** The agent `id` (needAgent), refused when it is archived (409 agent_not_runnable): every route that starts its runs,
+   *  a person's start (createRun) and a replay's (startLearnedWorkflowReplay), asks this before it reserves or writes anything. */
+  async function needRunnableAgent(id: string): Promise<AgentEntry> {
+    const entry = await needAgent(id);
+    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
+    return entry;
+  }
   /** An agent view's extra fields (agents-store agentView): its saved sign-ins, its learning count, and its run counts.
    *  The run counts read the store's runs (store-reads/runs.ts listRuns): `count` is every run the agent has, `live` those
    *  still running (runReadState 'running': queued, running or parked), the same numbers the file-backed view showed. */
@@ -2273,8 +2280,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
-    const entry = await needAgent(agentId);
-    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
+    const entry = await needRunnableAgent(agentId);
     const { body, sealer } = handedMcpAuth(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
@@ -3649,7 +3655,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "startLearnedWorkflowReplay": {
         const body = await bodyOf(req);
-        const entry = await needAgent(id);
+        // An archived agent starts no run: refused before the replay is reserved, as a person's start is.
+        const entry = await needRunnableAgent(id);
         const extra = unknownFields(body, ["inputs"]);
         if (extra.length) throw invalid(extra);
         const inputs = body.inputs === undefined ? "held" : body.inputs;

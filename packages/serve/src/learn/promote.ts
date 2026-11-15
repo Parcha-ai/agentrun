@@ -93,6 +93,12 @@ export interface PromotionRecord {
   /** The replay's id, minted when it was reserved (a claim's, or a person's POST .../replays) and kept on the record that
    *  decides it: what GET .../replays/{replay_id} reads. */
   readonly replay_id?: string;
+  /** A replaying record's launch, chosen once when it was reserved (runner/promotion.ts reserve): every replay run of it,
+   *  whoever creates it (the reserving claim or person, or a later claim finishing an interrupted launch), runs at
+   *  `revision` from `body` (a run launch body; each run sets its own input, title and replay), handed the per_run MCP
+   *  credentials run `handed_from` was handed (a claim's claimed run), else none (an owner's replay). One replay runs on
+   *  one set of settings. Never in the promotions read (promotionsShown). */
+  readonly launch?: ReplayLaunch;
   readonly refit?:{ readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
   /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
@@ -101,6 +107,13 @@ export interface PromotionRecord {
    *  recorded it, or a refit's own commit. What the digest serves from as the champion (championOf) once a newer revision
    *  is on the folder's main. */
   readonly commit?: string;
+}
+
+/** What a replay's runs are launched with (PromotionRecord.launch). */
+export interface ReplayLaunch {
+  readonly revision: string;
+  readonly body: unknown;
+  readonly handed_from?: string;
 }
 
 /** A tool that stopped a replay's inputs (each a skipped_write row): its catalog name, how many inputs it stopped, and
@@ -237,14 +250,15 @@ export function servingOf(records: readonly PromotionRecord[]): { workflow: stri
 /** The promotions list as it leaves (GET /agents/{id}/learning/promotions): the records and what serves (servingOf), every
  *  text in them cut by `shown` (learning.ts secretsShown, as the other learning reads cut theirs), at any depth and under
  *  any field, so a field added later is cut too: a workflow's name whole (`shown.name`), any other text of its part
- *  (`shown.text`: a reason, a refit guard's label, a digest, a run id). Numbers and the rest as they are. */
+ *  (`shown.text`: a reason, a refit guard's label, a digest, a run id). Numbers and the rest as they are. A replaying
+ *  record's `launch` (a run launch: its notes, model and plane) never leaves: aggregates only. */
 export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
   const cut = (value: unknown, key?: string): unknown =>
     typeof value === "string" ? (key === "workflow" ? shown.name(value) : shown.text(value))
     : Array.isArray(value) ? value.map((one) => cut(one))
     : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([field, one]) => [field, cut(one, field)]))
     : value;
-  return { promotions: records.map((one) => cut(one) as PromotionRecord), serving: servingOf(records).map((one) => cut(one) as ReturnType<typeof servingOf>[number]) };
+  return { promotions: records.map(({ launch: _, ...one }) => cut(one) as PromotionRecord), serving: servingOf(records).map((one) => cut(one) as ReturnType<typeof servingOf>[number]) };
 }
 
 /** What a guarded promotion write did:`won`, whether this write kept its record (else `still` did not hold when it
