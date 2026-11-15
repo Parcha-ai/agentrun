@@ -48,11 +48,13 @@ const until = async (done, what, ms = 60_000) => {
 };
 
 /** Docker's stand-in: each claim's sandbox made over the run's folder it binds, and deleted at its release; it lists only
- *  the sandboxes it holds now, so a claim after a release finds none to let go of. */
+ *  the sandboxes it holds now, so a claim after a release finds none to let go of. `beforeRelease` is awaited at each
+ *  release before the sandbox goes: a test holds a release with it. */
 function sandboxes() {
   const held = new Map();
   const made = [];
-  const provider = {
+  const docker = { held, made, beforeRelease: async () => {} };
+  docker.provider = {
     id: "fake",
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
@@ -86,11 +88,12 @@ function sandboxes() {
       return { ok: true, value: { ...ref, spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
     },
     async release(ref) {
+      await docker.beforeRelease();
       held.delete(ref.id);
       return { ok: true, value: undefined };
     },
   };
-  return { provider, made, held };
+  return docker;
 }
 
 async function opened(t, body = {}) {
@@ -118,14 +121,20 @@ async function opened(t, body = {}) {
     stores.push(store);
     const route = { model: "claude-sonnet-5.5", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch };
     const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
-    const runner = startRunner({ store, name, ...TIMING, createLoop: createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim)) });
+    const onEvent = (event) => event.type === "released" && ends.push(event.end);
+    const runner = startRunner({ store, name, ...TIMING, onEvent, createLoop: createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim)) });
     runners.push(runner);
     return runner;
   };
-  const settled = (states) => until(async () => {
+  /** Each claim's end, as its runner said it released the run: said once the loop has closed, its computer let go. */
+  const ends = [];
+  // The end's commit releases the run's row (the store's rule) before the claim lets go of its sandbox, at the loop's
+  // close: the run is settled when its row reads released and its runner has said so too.
+  const isSettled = async (states) => {
     const now = await server.runs.get(RUN);
-    return states.includes(now.state) && now.runner === null && now;
-  }, `the run is released ${states.join(" or ")}`);
+    return states.includes(now.state) && now.runner === null && states.includes(ends.at(-1)) && now;
+  };
+  const settled = (states) => until(() => isSettled(states), `the run is released ${states.join(" or ")}`);
   const summaries = async () => (await runTimeline(server, RUN, ctx)).map((row) => row.summary);
   const made = async () => {
     const row = await server.runs.get(RUN);
@@ -138,7 +147,7 @@ async function opened(t, body = {}) {
     const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
     return records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data).at(-1);
   };
-  return { server, docker, clock, start, settled, summaries, made, ask };
+  return { server, docker, clock, start, isSettled, settled, summaries, made, ask };
 }
 
 const reminders = (body) => JSON.stringify(body).match(NOTES) ?? [];
@@ -210,7 +219,19 @@ test("a sandbox run parked on bash's ask and approved within 10 minutes goes on 
   assert.deepEqual([...run.docker.held.keys()], ["c1"], "the park kept the sandbox");
   run.docker.held.get("c1").tmp.set("outside-1", "left before the park");
   run.clock.offset = 60_000;
+  // The end's commit releases the run's row, and the claim lets go of its sandbox after it, at the loop's close: the
+  // sandbox held here while the row reads released, the run is not settled until its runner says it let go too.
+  let letGo;
+  const going = new Promise((resolve) => (letGo = resolve));
+  run.docker.beforeRelease = () => going;
   await run.server.command(RUN, { kind: "approve", body: { approval: ask.callId } });
+  await until(async () => {
+    const row = await run.server.runs.get(RUN);
+    return row.state === "ended" && row.runner === null;
+  }, "the run's row reads released");
+  assert.equal(run.docker.held.size, 1, "the row reads released with the sandbox still held");
+  assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
+  letGo();
   await run.settled(["ended"]);
   assert.deepEqual(run.docker.made, ["c1"], "no create at the resume");
   assert.match(JSON.stringify(requests.at(-1)), /left before the park/, "the approved bash read the file on the same sandbox");
