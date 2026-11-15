@@ -25,7 +25,8 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { gradesOf, markGradeRound, putGrade } = await import("../dist/learn/promote.js");
-const { keepGrade, feedbackEnded, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
+const { keepGrade, feedbackStatus, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
+const { McpClaimRefused } = await import("../dist/runner/mcp-claim.js");
 const { runLearningOverStore } = await import("../dist/store-reads/learning.js");
 const { runEntries } = await import("../dist/store-reads/journal.js");
 const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
@@ -79,8 +80,9 @@ const until = async (done, what, ms = 60_000) => {
 
 /** An agent that learned `answer`, a runner claiming every run from its stored launch. The node answers 41 to the
  *  questions in `wrong`, else 42, sure either way; the agent answers AGENT_SAYS, after calling learned_workflow `answer`
- *  itself first on the questions in `calls`. */
-async function world(t, { wrong = new Set(), calls = new Set(), outputSchema } = {}) {
+ *  itself first on the questions in `calls`. A claim of a run in `refuse` is refused as its MCP step refuses one (nothing
+ *  sent, the run ends failed). */
+async function world(t, { wrong = new Set(), calls = new Set(), outputSchema, refuse = new Set() } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-feedback-rounds-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -106,7 +108,11 @@ async function world(t, { wrong = new Set(), calls = new Set(), outputSchema } =
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: () => {} };
-  const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
+  const specOf = async (claim, run) => {
+    if (refuse.has(claim.runId)) throw new McpClaimRefused("The MCP server test can't be used. Nothing was sent.");
+    return specFromLaunch(claim, run);
+  };
+  const specFromLaunch = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const ended = (id, after = 0) => until(async () => {
     const row = await server.runs.get(id);
@@ -370,7 +376,7 @@ test("a grade names its round only once the round opened: a failed reopen leaves
   assert.deepEqual([failed?.run, failed?.feedback], ["run-reopen", null], `the grade is kept, naming no round: ${JSON.stringify(failed)}`);
   assert.equal((await server.runs.get("run-reopen")).endedAt, first.endedAt, "the run was never opened again");
   const none = (await runLearningOverStore(server, "run-reopen", secretsShown([]), []))?.graded;
-  assert.deepEqual([none?.feedback, none?.feedback_ended], [null, false], `the read says no round: ${JSON.stringify(none)}`);
+  assert.deepEqual([none?.feedback, none?.feedback_status], [null, null], `the read says no round: ${JSON.stringify(none)}`);
 
   const { round, kept } = await grade(first, false, LABEL(1));
   assert.equal(round, "look_back");
@@ -391,15 +397,37 @@ test("a grade's round reads ended from its run's journal, never a clock: a grade
   assert.equal(round, "look_back");
   assert.ok(row.endedAt < Date.parse(kept.at), `the runner's end is dated before the grade: ${row.endedAt} vs ${kept.at}`);
   const read = (await runLearningOverStore(server, first.id, secretsShown([]), []))?.graded;
-  assert.deepEqual([read?.feedback, read?.feedback_ended], ["look_back", true], `the round ended: ${JSON.stringify(read)}`);
+  assert.deepEqual([read?.feedback, read?.feedback_status], ["look_back", "ended"], `the round ended: ${JSON.stringify(read)}`);
 
   const [marked] = await gradesOf(server.settings, "agent-1");
   assert.equal(typeof marked.feedbackCommand, "number", `the grade keeps its round's steer: ${JSON.stringify(marked)}`);
   const entries = await runEntries(server, first.id, BACKGROUND_CONTEXT);
-  assert.equal(feedbackEnded(entries, marked.feedbackCommand), true);
+  const taken = { id: marked.feedbackCommand, refused: null };
+  assert.equal(feedbackStatus(entries, taken), "ended");
   const end = entries.findLastIndex((entry) => entry.kind === "agentrun.end");
-  assert.equal(feedbackEnded(entries.slice(0, end), marked.feedbackCommand), false, "no end after its words yet: running");
-  assert.equal(feedbackEnded(entries, marked.feedbackCommand + 1), false, "a newer round whose steer no runner took yet: running");
+  assert.equal(feedbackStatus(entries.slice(0, end), taken), "running", "no end after its words yet: running");
+  assert.equal(feedbackStatus(entries, { id: marked.feedbackCommand + 1, refused: null }), "running", "a newer round whose steer no runner took yet: running");
+  assert.equal(feedbackStatus(entries, undefined), "running", "a steer row that can't be read, with no FEEDBACK naming it: running");
+});
+
+// Review on #2858 (round 3): a reopened run can end before its runner takes the round's steer (its claim refused while
+// its MCP credentials were made fresh: an end with nothing sent). The runner writes no FEEDBACK entry then; the end's
+// own commit refuses the steer row (refuseLeftovers). The read says the round settled without running (`not_run`),
+// never "running" for good; the store's refusal is written in the end's transaction, so no clock is compared here either.
+test("a reopened run that ends before it takes the round's words reads not_run, settled", { timeout: 120_000 }, async (t) => {
+  const refuse = new Set();
+  const { server, start, grade } = await world(t, { refuse });
+  const first = await start("run-refused", 1, { byHand: true });
+  refuse.add(first.id);
+  const { round, kept, row } = await grade(first, false, LABEL(1));
+  assert.equal(round, "look_back");
+  assert.equal(row.state, "failed", `the reopened claim was refused: ${JSON.stringify(row)}`);
+  const entries = await runEntries(server, first.id, BACKGROUND_CONTEXT);
+  assert.ok(!entries.some((entry) => entry.kind === "agentrun.feedback"), "no FEEDBACK entry: the round never ran");
+  const [steer] = await server.commands(first.id, kept.feedbackCommand - 1);
+  assert.deepEqual([steer?.id, typeof steer?.refused], [kept.feedbackCommand, "string"], `the end refused the round's steer: ${JSON.stringify(steer)}`);
+  const read = (await runLearningOverStore(server, first.id, secretsShown([]), []))?.graded;
+  assert.deepEqual([read?.feedback, read?.feedback_status], ["look_back", "not_run"], `the round settled, not run: ${JSON.stringify(read)}`);
 });
 
 // Two grades of one run can share their `at` (a millisecond): the second replaces the first, then the first's round

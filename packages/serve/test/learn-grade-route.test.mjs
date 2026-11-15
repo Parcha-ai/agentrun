@@ -43,7 +43,7 @@ test("a person grades an ended run; the agent's promotions read empty until a le
 // The console's Grade control reads a run's grade back from GET /runs/{id}/learning (`graded`): absent before one, then
 // the newest, a later grade replacing it, in the PUT's answer's shape without `expected`. A wrong grade with words on a
 // run the agent finished opens a look-back, and the read keeps which (`feedback`), so a page read again still says it,
-// and whether that round ended (`feedback_ended`).
+// and how that round stands (`feedback_status`).
 test("a run's learning read says its grade and the round it opened: none before one, then the newest, never its expected", async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
@@ -60,7 +60,7 @@ test("a run's learning read says its grade and the round it opened: none before 
   assert.deepEqual([right.status, right.body.feedback], [200, null], "a right grade with no words asks nothing more");
   const read = (await api("GET", `/runs/${run}/learning`)).body;
   const { expected: _, ...rightShown } = right.body;
-  assert.deepEqual(read.graded, { ...rightShown, feedback_ended: false }, "the PUT's answer, without expected");
+  assert.deepEqual(read.graded, { ...rightShown, feedback_status: null }, "the PUT's answer, without expected");
   assert.deepEqual([read.graded.feedback, "expected" in read.graded], [null, false], "a right grade opened no round");
   meets(read);
 
@@ -68,7 +68,7 @@ test("a run's learning read says its grade and the round it opened: none before 
   assert.deepEqual([wrong.status, wrong.body.feedback], [200, "look_back"], JSON.stringify(wrong.body));
   await ended(api, run);
   const again = (await api("GET", `/runs/${run}/learning`)).body;
-  assert.deepEqual(again.graded, { ...wrong.body, feedback_ended: true }, "the newer grade replaces the older, its round read ended");
+  assert.deepEqual(again.graded, { ...wrong.body, feedback_status: "ended" }, "the newer grade replaces the older, its round read ended");
   assert.equal(again.graded.feedback, "look_back", "after the round ended, the read still says the grade opened a look-back");
   assert.ok(again.learned?.some((note) => note.file === "reviewed.md"), `the look-back kept the reviewer's words: ${JSON.stringify(again)}`);
   meets(again);
