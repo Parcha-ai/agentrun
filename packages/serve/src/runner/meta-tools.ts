@@ -18,7 +18,6 @@ import { withoutImageData } from "@parcha/agentrun-computer/surface";
 import type { HostTool, JsonValue, NestedCalls, NestedResult, ToolImage } from "@parcha/agentrun-kernel";
 
 import { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "../meta-tool-names.js";
-import { typeofTools } from "./codemode-typeof.js";
 
 export { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH };
 
@@ -206,6 +205,18 @@ function withImageData(value: unknown, images: readonly ToolImage[]): unknown {
 }
 
 /**
+ * What the sandbox runs for `script`: the script as the body of a function whose `tools` answers `undefined` for a name the
+ * run has no tool by (pi-codemode's own `tools` throws on it), so `typeof tools.<name>` and `"<name>" in tools` work. Each
+ * such name the script reads is kept, and when the script then fails with a TypeError, or an error naming one, the error
+ * gets one line saying so and listing the run's tools. The script is never read: it stays line 1 on, and its declarations
+ * can't reach the names around it.
+ */
+function scriptBody(script: string, toolNames: readonly string[]): string {
+  const known = JSON.stringify(` Its tools are: ${toolNames.join(", ")}.`);
+  return `const read = new Set(), get = Reflect.get, proto = Object.prototype; try { return await (async (tools, console) => {${script}\n})(new Proxy(tools, { get(target, key, receiver) { if (typeof key !== "string" || key in target || key in proto || key === "then" || key === "toJSON") return get(target, key, receiver); read.add(key); } }), console); } catch (error) { const names = [...read]; if (names.length && error !== null && typeof error === "object" && (error.name === "TypeError" || names.some((name) => String(error.message).includes(name)))) error.message += "\\nThe script read " + names.map((name) => "tools." + name).join(", ") + ", which this run doesn't have." + ${known}; throw error; }`;
+}
+
+/**
  * Run `script` deterministically (pi-codemode's `start`: its clock, its randomness and its tools fixed by the call's first
  * run, memoized), each of its tool calls a nested call, answered one at a time in the order the script made them. A rerun
  * of the call (after a park or a crash) makes the same calls: the recorded ones are answered from their records, and the
@@ -225,12 +236,12 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
   let failed: unknown;
   let wake: () => void = () => {};
   try {
-    // `typeof tools.<name>` answers "undefined" for a name the run has no tool by, never the read's error.
-    const run = sandbox.start(typeofTools(script), {
+    // The tools the first run declared, by the names it gave them, that this run still has.
+    const kept = start.tools.filter(([name]) => declared.has(name)).map(([name, jsName]) => ({ name, jsName, description: declared.get(name)!.description }));
+    const run = sandbox.start(scriptBody(script, kept.map((tool) => tool.jsName)), {
       startedAt: start.startedAt,
       seed: start.seed,
-      // The tools the first run declared, by the names it gave them, that this run still has.
-      tools: start.tools.filter(([name]) => declared.has(name)).map(([name, jsName]) => ({ name, jsName, description: declared.get(name)!.description })),
+      tools: kept,
       signal: AbortSignal.any([signal, stop.signal]),
       timeoutMs: CODEMODE_MS,
       onCall: (call) => {
