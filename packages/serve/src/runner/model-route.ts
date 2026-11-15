@@ -16,7 +16,7 @@
 import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
-import { rateLimitOf } from "@parcha/agentrun-kernel/host";
+import { streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
@@ -135,12 +135,12 @@ export const usageCostOn = (origin: string): { usageCost?: true } => (onOpenRout
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
 const piOnOpenRouter = (target: PiModel): boolean => target.provider === "openrouter" || onOpenRouter(target.baseUrl ?? "");
 
-/** How much of an answer's text the rate-limit tap keeps: its end, where a stream's error event is. */
+/** How much of an answer's text the error tap keeps: its end, where a stream's error event is. */
 const TAP_WINDOW = 64 * 1024;
 
 /** `upstream` (the network when absent) with the end of each answer's body kept (`kept()`), as it streams by: what the
- *  provider said when pi-ai reports a failure, read for a rate limit by its fields (rateLimitOf), which pi-ai's client
- *  drops (it keeps the words alone). The body reaches pi-ai as it came. */
+ *  provider said when pi-ai reports a failure, read for the provider's own error event by its fields (streamErrorOf),
+ *  which pi-ai's client drops (it keeps the words alone). The body reaches pi-ai as it came. */
 function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept: () => string } {
   let kept = "";
   const send = upstream ?? globalThis.fetch;
@@ -191,19 +191,26 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         // error event's data as the request's error, so the caller reads the model's own error as main's in-process pi
         // reports it ("500 {...}"), never this route's envelope around it.
         const sendWords = (words: string) => controller.enqueue(encoder.encode(`event: error\n${words.split(/\r?\n/).map((line) => `data: ${line}`).join("\n")}\n\n`));
-        // A rate limit the provider wrote inside its 200 stream (the tap's kept end, read by its fields: rateLimitOf) goes
-        // as Messages writes one, `rate_limit_error`, so the proxy books it refused at nothing (a refusal is never run);
-        // its top-level `message` is the same words, which pi-ai's Messages client reads as the request's error.
-        const sendError = (words: string) => {
-          const limited = tap ? rateLimitOf(tap.kept()) : undefined;
-          if (limited === undefined) return sendWords(words);
-          send({ type: "error", message: words, error: { type: "rate_limit_error", message: words } });
-        };
         // What the provider said the answer cost (pi-ai reads OpenRouter's usage.cost: totalFromProvider), in the
         // message's usage as `cost`, for the proxy to book (usageCostOf). Never pi-ai's own pricing of it.
         const reportedOf = (used: RouteUsage | undefined): number | undefined => {
           const cost = (used as { cost?: { total?: unknown; totalFromProvider?: unknown } } | undefined)?.cost;
           return cost?.totalFromProvider === true && typeof cost.total === "number" && Number.isFinite(cost.total) && cost.total > 0 ? cost.total : undefined;
+        };
+        // The provider's own error inside its 200 stream (the tap's kept end, read by its fields: streamErrorOf) goes as
+        // Messages writes one (`rate_limit_error` for a rate limit, else `api_error`), after the usage the provider reported
+        // before it (`used`, its stated `cost` too) as the message's, so the proxy books it by its one rule for an error in a
+        // stream: those tokens at list (or that cost), else refused at nothing. Its top-level `message` is the same words,
+        // which pi-ai's Messages client reads as the request's error. A failure with no such event (a transport error, a
+        // status) goes as its words alone: the proxy books that as an answer cut short, at an unknown cost.
+        const sendError = (words: string, used?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }, cost?: number) => {
+          const failed = tap ? streamErrorOf(tap.kept()) : undefined;
+          if (failed === undefined) return sendWords(words);
+          const tokens = used ? { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead ?? 0, cache_creation_input_tokens: used.cacheWrite ?? 0 } : undefined;
+          if ((tokens && tokens.input_tokens + tokens.output_tokens + tokens.cache_read_input_tokens + tokens.cache_creation_input_tokens > 0) || cost !== undefined) {
+            send({ type: "message_delta", delta: { stop_reason: null, stop_sequence: null }, usage: { ...(tokens ?? { input_tokens: 0, output_tokens: 0 }), ...(cost === undefined ? {} : { cost }) } });
+          }
+          send({ type: "error", message: words, error: { type: failed.rateLimit ? "rate_limit_error" : "api_error", message: words } });
         };
         send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
         // Messages blocks are numbered as sent. A thinking block is sent too, so the model's reasoning reaches the run's
@@ -259,7 +266,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             else if (event.type === "done" || event.type === "error") {
               const message = (event.type === "done" ? event.message : event.error) ?? {};
               if (event.type === "error") {
-                sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
+                sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"), message.usage, reportedOf(message.usage));
                 break;
               }
               const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -288,7 +295,14 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                 if (event.type !== "done" && event.type !== "error") continue;
                 const message = (event.type === "done" ? event.message : event.error) ?? {};
                 if (event.type === "error") {
-                  sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
+                  // The tries so far were paid, and this one's usage too: their sum, with their stated cost while each
+                  // try that reported tokens stated one.
+                  const given = message.usage;
+                  const tokens = { input: used.input + (given?.input ?? 0), output: used.output + (given?.output ?? 0), cacheRead: used.cacheRead + (given?.cacheRead ?? 0), cacheWrite: used.cacheWrite + (given?.cacheWrite ?? 0) };
+                  const own = reportedOf(given);
+                  const said = given && given.input + given.output + (given.cacheRead ?? 0) + (given.cacheWrite ?? 0) > 0;
+                  const cost = reported === undefined || (said && own === undefined) ? undefined : reported + (own ?? 0);
+                  sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"), tokens, cost !== undefined && cost > 0 ? cost : undefined);
                   break;
                 }
                 const given = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };

@@ -3,8 +3,9 @@
 // $0.0147 at list, $0.0030 billed), and states what it charged in each answer's usage (`cost`, USD). A proxy told its
 // upstream does so (`usageCost`) books that figure, the table's beside it. The cap still held the request at list before
 // it left; a reported figure above that hold is not believed and the table's stands.
-// OpenRouter answers 200 before the model's first token, so a rate limit after that comes as an error event inside the
-// 200 stream: the request was refused and nothing was billed, so it is booked at $0, in the provider's words.
+// OpenRouter (and Anthropic) answer 200 before the model's first token, so a rate limit, an overload or a failure after
+// that comes as an error event inside the 200 stream. With no token reported before it, the request was refused and
+// nothing was billed: $0, in the provider's words. With tokens reported, those tokens at list: a known figure.
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
@@ -147,11 +148,70 @@ for (const [skin, body] of Object.entries(RATE_LIMITS)) {
   });
 }
 
-test("any other error inside a 200 stream is booked as before: no figure, the cap's hold", async (t) => {
-  const { p, after } = await proxy(t, { fetch: answering(stream(`data: ${JSON.stringify({ error: { code: 502, message: 'Provider disconnected' }, choices: [{ finish_reason: 'error' }] })}`)) });
+// Any other error a provider writes inside its 200 stream (an overload, a failure) follows the one rule: what the stream
+// reported before it is booked at list (or at the cost it stated); with nothing reported, refused at $0 in its words.
+const FAILED = { error: { code: 502, message: `Provider disconnected: ${SECRET}` }, choices: [{ index: 0, delta: { content: '' }, finish_reason: 'error' }] };
+const OVERLOADED = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } })}`;
+
+test("any other error inside a 200 stream with nothing reported before it is refused at $0 too, in its words", async (t) => {
+  for (const [body, reason] of [[stream(`data: ${JSON.stringify(FAILED)}`, 'data: [DONE]'), 'Provider disconnected: [redacted]'], [stream(OVERLOADED), 'Overloaded']]) {
+    const { p, after } = await proxy(t, { fetch: answering(body) });
+    await send(p.url);
+    await until(() => after.length === 1, 'the booking');
+    assert.deepEqual(after[0].usage, { input: 0, output: 0, cacheRead: 0, usd: 0 });
+    assert.deepEqual(after[0].ended, { end: 'nothing', label: 'refused', reason });
+  }
+});
+
+test("an error inside a 200 stream after the provider reported tokens books those tokens at list, a known figure with its words; never the hold", async (t) => {
+  for (const failed of [`data: ${JSON.stringify(FAILED)}`, OVERLOADED]) {
+    const { p, after } = await proxy(t, { fetch: answering(stream(usageEvent({ in: 90_000, out: 2_000 }), failed)) });
+    await send(p.url);
+    await until(() => after.length === 1, 'the booking');
+    assert.deepEqual(after[0].usage, { input: 90_000, output: 2_000, cacheRead: 0, usd: LIST_USD, estimated: true });
+    assert.equal(after[0].ended.end, 'answered');
+    assert.equal(after[0].ended.label, 'error');
+    assert.equal(after[0].ended.usd, LIST_USD);
+    assert.match(after[0].ended.reason, /^(Provider disconnected: \[redacted\]|Overloaded)$/);
+    assert.deepEqual(bookRequest(after[0].ended, { hold: 0.05 }), { usd: LIST_USD, rule: 'answered:error' });
+  }
+});
+
+test("an error inside a 200 stream whose usage states what it cost books that figure (OpenRouter's), the list's beside it", async (t) => {
+  const { p, after } = await proxy(t, { fetch: answering(stream(usageEvent({ in: 90_000, out: 2_000, cost: 0.003 }), `data: ${JSON.stringify(FAILED)}`)) });
+  await send(p.url);
+  await until(() => after.length === 1, 'the booking');
+  assert.deepEqual(after[0].usage, { input: 90_000, output: 2_000, cacheRead: 0, usd: 0.003, tableUsd: LIST_USD });
+  assert.deepEqual(after[0].ended, { end: 'answered', usd: 0.003, label: 'error', reason: 'Provider disconnected: [redacted]', tableUsd: LIST_USD });
+});
+
+test("usage whose every count is 0 (a translation's start) is no report: an error after it is refused at $0", async (t) => {
+  const { p, after } = await proxy(t, { fetch: answering(stream(usageEvent({ in: 0, out: 0 }), OVERLOADED)) });
+  await send(p.url);
+  await until(() => after.length === 1, 'the booking');
+  assert.deepEqual(after[0].ended, { end: 'nothing', label: 'refused', reason: 'Overloaded' });
+});
+
+test("an error whose data is words, not JSON (a failure a translation reports with no provider event), is booked as before: unknown", async (t) => {
+  const { p, after } = await proxy(t, { fetch: answering(stream('event: error\ndata: 500 the upstream failed')) });
   await send(p.url);
   await until(() => after.length === 1, 'the booking');
   assert.deepEqual(after[0].ended, { end: 'answered', usd: null });
+});
+
+test("an error once the model's content streamed with no usage reported is not refused: an unknown cost, the hold, with its words", async (t) => {
+  const contentPolicy = { ...policy, contentBytesOf: (event) => (/"content":"([^"]+)"/.exec(event)?.[1].length ?? 0) };
+  const after = [];
+  const p = await startModelProxy({
+    policy: contentPolicy, model: 'session-model', origin: 'https://provider.invalid', credential: () => SECRET,
+    hooks: { beforeRequest: async () => ({ turn: 1 }), afterRequest: async (usage, _ticket, ended) => void after.push({ usage, ended }) },
+    price: () => LIST_USD, fetch: answering(stream('data: {"choices":[{"delta":{"content":"Hello"}}]}', `data: ${JSON.stringify(FAILED)}`)),
+  }, KEY);
+  t.after(() => p.close());
+  await send(p.url);
+  await until(() => after.length === 1, 'the booking');
+  assert.deepEqual(after[0].ended, { end: 'answered', usd: null, label: 'error', reason: 'Provider disconnected: [redacted]' });
+  assert.deepEqual(bookRequest(after[0].ended, { hold: 0.05 }), { usd: 0.05, rule: 'answered:error' });
 });
 
 test("the run's books keep both: the reported figure with the table's beside it, and a refusal at $0 with its words", async (t) => {

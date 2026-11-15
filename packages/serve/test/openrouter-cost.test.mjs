@@ -118,6 +118,32 @@ test("a router with no cap is booked at what OpenRouter said it cost, else unkno
   assert.equal(silent.ended.usd, null);
 });
 
+// Any other error OpenRouter writes inside its 200 stream (a provider gone part way) follows the same one rule: the usage
+// it reported before the error at list (or at the cost it stated), else refused at $0.
+const FAILED_WORDS = "Provider disconnected";
+const failedChunk = () => chunk({ error: { code: 502, message: FAILED_WORDS }, choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }] });
+const contentChunk = () => chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "Hel" }, finish_reason: null }] });
+
+test("any other error inside OpenRouter's 200 stream with nothing reported before it is refused at $0, in its words", async (t) => {
+  const { usage, ended, text } = await bookedOn(t, await routeOf(MODEL, OR_ALONE, "default", undefined, upstream(failedChunk() + "data: [DONE]\n\n").fetch));
+  assert.equal(usage.usd, 0);
+  assert.equal(ended.end, "nothing");
+  assert.equal(ended.label, "refused");
+  assert.match(ended.reason, /Provider disconnected/);
+  assert.match(text, /api_error/, "the client reads the provider's error, as Messages writes one");
+});
+
+test("an error inside OpenRouter's 200 stream after its usage is booked at those tokens at list, or at the cost it stated", async (t) => {
+  const listed = await bookedOn(t, await routeOf(MODEL, OR_ALONE, "default", undefined, upstream(contentChunk() + chunk({ choices: [], usage: USAGE }) + failedChunk()).fetch));
+  assert.ok(Math.abs(listed.usage.usd - LIST_USD) < 1e-12, `the list price of what it reported: ${JSON.stringify(listed.usage)}`);
+  assert.equal(listed.ended.label, "error");
+  assert.match(listed.ended.reason, /Provider disconnected/);
+  const charged = await bookedOn(t, await routeOf(MODEL, OR_ALONE, "default", undefined, upstream(contentChunk() + chunk({ choices: [], usage: { ...USAGE, cost: CHARGED_USD, is_byok: false } }) + failedChunk()).fetch));
+  assert.equal(charged.usage.usd, CHARGED_USD, "OpenRouter's figure");
+  assert.ok(Math.abs(charged.usage.tableUsd - LIST_USD) < 1e-12, "the list's beside it");
+  assert.equal(charged.ended.label, "error");
+});
+
 test("a rate limit inside OpenRouter's 200 stream is booked as refused at $0, in the provider's words", async (t) => {
   const { usage, ended, text } = await bookedOn(t, await routeOf(MODEL, OR_ALONE, "default", undefined, upstream(limited()).fetch));
   assert.equal(usage.usd, 0);

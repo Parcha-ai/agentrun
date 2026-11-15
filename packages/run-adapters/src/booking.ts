@@ -5,9 +5,11 @@
  *
  * A path says how its request ended (`Ended`), and `bookRequest` gives its figure:
  * - `answered`: a whole answer, at the cost its usage (or its gateway) says, else the hold. A figure the provider reported
- *   above the hold (the request's worst case at list) is not believed: the table's figure beside it, else the hold;
+ *   above the hold (the request's worst case at list) is not believed: the table's figure beside it, else the hold. A
+ *   200 stream the provider ended in its error event after it reported tokens is one too (`error`): those tokens at list;
  * - `nothing`: the provider answered a status before any event (not a gateway's timeout), the request provably never
- *   left (`isConnectCode`), or the provider refused it inside its answer (a rate limit in a 200 stream): 0;
+ *   left (`isConnectCode`), or the provider refused it inside its answer (its error event in a 200 stream, an overload or
+ *   a rate limit, before it reported any token): 0;
  * - `lost`: anything that can have been billed and says no cost (a transport error once it left, a cut answer, a
  *   gateway's 504 or 524, an answer after an attempt that was lost, which can have been billed twice, a crash): the hold;
  * - `stopped`: our abort, its client gone part way: what streamed (its content, and the part of a hidden reasoning
@@ -18,10 +20,11 @@
 
 /** How a request ended, as its path saw it. `label` names the case for the record (`rule`); it changes no figure but
  *  `answered`'s `filtered` (a content-filter end: its reported usage, else the hold, as any answer). An answer's
- *  `tableUsd`: beside a figure the provider reported (`usd`), the price table's for the same usage. A refusal's `reason`:
- *  the provider's own words, the credential cut. */
+ *  `tableUsd`: beside a figure the provider reported (`usd`), the price table's for the same usage. A refusal's or an
+ *  error's `reason`: the provider's own words, the credential cut. */
 export type Ended =
   | { end: "answered"; usd: number | null; label?: "filtered"; tableUsd?: number | null }
+  | { end: "answered"; usd: number | null; label: "error"; reason?: string; tableUsd?: number | null }
   | { end: "nothing"; label: "status" | "never_left" }
   | { end: "nothing"; label: "refused"; reason?: string }
   | { end: "lost"; label: "error_before" | "error_after" | "gateway_timeout" | "retried" | "cut"; began?: boolean }

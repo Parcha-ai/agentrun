@@ -745,34 +745,39 @@ export function usageCostOf(text: string): number | undefined {
   return upstream === undefined ? undefined : usageFigure(cost + upstream);
 }
 
-/** Whether a parsed event's error is a rate limit, read from its fields alone, never its words, as OpenRouter writes one
- *  inside a stream on each API it serves (https://openrouter.ai/docs/api-reference/errors, "Mid-stream errors" and
- *  "Skin-specific error formats"), and as Anthropic and OpenAI write their own: Chat Completions' `error.code` 429 (its
- *  `metadata.error_type` "rate_limit_exceeded"), Messages' `error.type` "rate_limit_error", Responses'
- *  `response.error.code` (or an `error` event's `code`) "rate_limit_exceeded". Its words when it is one. */
-function rateLimitWords(event: Record<string, unknown>): string | undefined {
+/** A provider's error inside a stream it began with a 200: its words, and whether it is a rate limit. */
+export type StreamError = { words: string; rateLimit: boolean };
+
+/** A parsed event's error, read from its fields alone, never its words, as each API writes one inside a stream and as
+ *  OpenRouter writes one on each API it serves (https://openrouter.ai/docs/api-reference/errors, "Mid-stream errors" and
+ *  "Skin-specific error formats"): Messages' `error` event (`error.type` `overloaded_error`, `api_error`,
+ *  `rate_limit_error`, ...), Chat Completions' chunk with an `error` object (`code` 429 for a rate limit, its
+ *  `metadata.error_type` "rate_limit_exceeded"), Responses' `response.failed` (its `response.error`) or `error` event (its
+ *  `code`). A rate limit is told by its fields too. Undefined for an event that is no error. */
+function streamErrorIn(event: Record<string, unknown>): StreamError | undefined {
   const response = event.response as { error?: unknown; error_type?: unknown } | undefined;
   const error = (typeof response === "object" && response !== null && typeof response.error === "object" && response.error !== null ? response.error : typeof event.error === "object" && event.error !== null ? event.error : event.type === "error" ? event : undefined) as Record<string, unknown> | undefined;
   if (!error) return undefined;
   const metadata = error.metadata as { error_type?: unknown } | undefined;
-  const limited = error.code === 429 || error.code === "rate_limit_exceeded" || error.type === "rate_limit_error" || error.error_type === "rate_limit_exceeded"
+  const rateLimit = error.code === 429 || error.code === "rate_limit_exceeded" || error.type === "rate_limit_error" || error.error_type === "rate_limit_exceeded"
     || metadata?.error_type === "rate_limit_exceeded" || event.error_type === "rate_limit_exceeded" || response?.error_type === "rate_limit_exceeded";
-  if (!limited) return undefined;
-  return typeof error.message === "string" && error.message ? error.message : "rate limited";
+  const words = typeof error.message === "string" && error.message ? error.message : rateLimit ? "rate limited" : "the provider ended its answer in an error";
+  return { words, rateLimit };
 }
 
-/** The provider's words when its answer, a stream it began with a 200, ends in a rate limit's error event: the request
- *  was refused before it ran, and the status could not say so (OpenRouter answers 200 once a provider takes the request,
- *  before the model's first token, so a limit met after that comes inside the stream). Read from the stream's last event
- *  that carries data (`[DONE]` read past), and only that one. Undefined for any other answer. */
-export function rateLimitOf(text: string): string | undefined {
+/** The provider's error its answer, a stream it began with a 200, ends in: a provider answers 200 once it takes the
+ *  request, before the model's first token (OpenRouter; Anthropic's stream too), so an overload, a rate limit or a failure
+ *  met after that comes inside the stream, and the status could not say so. Read from the stream's last event that carries
+ *  data (`[DONE]` read past), and only that one, parsed: an event whose data is not JSON (words a translation wrote) is
+ *  none. Undefined for any other answer, a whole JSON body's included. */
+export function streamErrorOf(text: string): StreamError | undefined {
   const events = text.replace(/\r\n|\r/g, "\n").split("\n\n");
   for (let at = events.length - 1; at >= 0; at--) {
     const data = events[at]!.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
     if (!data.trim() || data.trim() === "[DONE]") continue;
     try {
       const event = JSON.parse(data) as unknown;
-      return typeof event === "object" && event !== null && !Array.isArray(event) ? rateLimitWords(event as Record<string, unknown>) : undefined;
+      return typeof event === "object" && event !== null && !Array.isArray(event) ? streamErrorIn(event as Record<string, unknown>) : undefined;
     } catch {
       return undefined;
     }
@@ -1598,8 +1603,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // Whether `usd` is a figure the provider gave (an error answer's nothing included), not one this proxy made up.
     let own = false;
     let tableUsd: number | null | undefined;
-    /** The provider's words when it refused the request inside a successful answer (rateLimitOf): booked at nothing. */
+    /** The provider's words when it refused the request inside a successful answer (streamErrorOf, no tokens reported):
+     *  booked at nothing. */
     let refusedIn: string | undefined;
+    /** The provider's words when its successful answer ended in its error after it reported tokens (or a cost, or after
+     *  the model's content streamed): booked at what it reported, as an answer. */
+    let erredIn: string | undefined;
     // A client may leave once it has read the response's usage (Codex does, at the completion event) while the provider
     // still holds the stream open: what was read of a successful answer is read for its usage as a whole one is. With none
     // in it, the cost is unknown, as for any answer cut short.
@@ -1630,19 +1639,34 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         usage = { input: 0, output: 0, cacheRead: 0 };
         unread = true;
       }
+      // A stream the provider ended in its error event (an overload, a rate limit, a failure, at any point): what it reported
+      // before the error is booked at the table's price (or at the cost it stated), a known figure, never the hold. Usage
+      // whose every count is 0 (a translation's start, written before the provider said any) reports no tokens.
+      const failed = streamErrorOf(kept);
+      if (failed !== undefined && usage && usage.input + usage.output + usage.cacheRead + (usage.cacheWrite ?? 0) === 0) usage = undefined;
+      // What the answer's own usage says it cost (OpenRouter's), when no header said: what was paid, as a gateway's header.
+      if (reported === undefined && options.usageCost) reported = usageCostOf(kept);
+      // In the provider's words, the credential and the host's header values cut, then the host's redactor, as its client
+      // was sent them.
+      const wordsOf = (said: string) => {
+        const words = errorCut("error", echoForms([credential, ...Object.values(hostHeaders)]), options.redact, (message) => say(`model proxy (${policy.id}): ${message}`));
+        return `${words.push(said)}${words.end()}`.slice(0, 300);
+      };
       if (!usage) {
         usage = { input: 0, output: 0, cacheRead: 0 };
         unread = true;
-        // An answer with no usage whose stream ends in a rate limit (a 200 the provider sent before the model's first
-        // token, then its limit as an error event): refused, never run, so it cost nothing. In its words, the credential
-        // and the host's header values cut, then the host's redactor, as its client was sent them. Never once the model's
-        // content streamed: that was run, and is booked at an unknown cost as any answer cut short.
-        const limited = policy.contentBytesOf && sentOf.bytes("content") > 0 ? undefined : rateLimitOf(kept);
-        if (limited !== undefined) {
-          const words = errorCut("error", echoForms([credential, ...Object.values(hostHeaders)]), options.redact, (message) => say(`model proxy (${policy.id}): ${message}`));
-          refusedIn = `${words.push(limited)}${words.end()}`.slice(0, 300);
-          say(`model proxy (${policy.id}): the provider refused the request inside its answer (a rate limit); booked at nothing`);
+        // A stream that ends in the provider's error with no tokens and no cost reported (a 200 the provider sent before
+        // the model's first token, then a rate limit or an overload as an error event): refused, never run, so it cost
+        // nothing. Never once the model's content streamed with no usage said: that was run, and is booked at an unknown
+        // cost as any answer cut short.
+        if (failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0)) {
+          refusedIn = wordsOf(failed.words);
+          say(`model proxy (${policy.id}): the provider refused the request inside its answer (${failed.rateLimit ? "a rate limit" : "an error"}); booked at nothing`);
         }
+      }
+      if (failed !== undefined && refusedIn === undefined) {
+        erredIn = wordsOf(failed.words);
+        say(`model proxy (${policy.id}): the provider ended its answer in an error; booked at what it reported${unread && reported === undefined ? " (none: an unknown cost)" : ""}`);
       }
       try {
         usd = refusedIn !== undefined ? 0 : unread ? null : options.price?.(asked, usage) ?? null;
@@ -1651,8 +1675,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         say(`model proxy (${policy.id}): the price could not be computed; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         usd = null;
       }
-      // What the answer's own usage says it cost (OpenRouter's), when no header said: what was paid, as a gateway's header.
-      if (reported === undefined && refusedIn === undefined && options.usageCost) reported = usageCostOf(kept);
       // What the gateway says it cost is what was paid; the table's figure stays beside it, to audit the table.
       if (reported !== undefined && refusedIn === undefined) {
         tableUsd = usd;
@@ -1673,7 +1695,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         : !seen ? (isConnectCode(failedCode) ? { end: "nothing", label: "never_left" } : { end: "lost", label: "error_before" })
         : !seen.ok ? (isGatewayTimeout(began?.status ?? 0) ? { end: "lost", label: "gateway_timeout" } : { end: "nothing", label: "status" })
         : !answered && usd === null ? { end: "lost", label: "error_after", began: true }
-        : { end: "answered", usd, ...(filteredTold ? { label: "filtered" as const } : {}), ...(tableUsd === undefined ? {} : { tableUsd }) };
+        : { end: "answered", usd, ...(erredIn !== undefined ? { label: "error" as const, reason: erredIn } : filteredTold ? { label: "filtered" as const } : {}), ...(tableUsd === undefined ? {} : { tableUsd }) };
       await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}), ...stopped }, ticket, ended);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
