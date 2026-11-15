@@ -37,7 +37,7 @@ after(async () => {
 /** A loopback desktop with the screen and raw input (and with `ui`, ui.observe and ui.act on one TextEdit window): its
  *  screen.shot answers a 1280-wide PNG; every call is recorded. Its client is the run's as the claim wraps it
  *  (recordedClient), and its tools are the run's as runTools binds them. */
-async function desktop({ ui = false, apps = false } = {}) {
+async function desktop({ ui = false, apps = false, surface } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-"));
   dirs.push(dir);
   const computer = fakeComputer(dir);
@@ -56,8 +56,9 @@ async function desktop({ ui = false, apps = false } = {}) {
   computer.overrides["apps.list"] = () => ({ apps: [{ id: "xfce4-terminal", name: "Terminal" }], foreground: "xfce4-terminal" });
   computer.overrides["apps.launch"] = () => ({});
   const groups = [...GROUPS, ...(ui ? ["ui"] : []), ...(apps ? ["apps"] : [])];
-  const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: recordedClient(computer.client) }, hello: { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups } }, { mode: 1, context: ctx });
-  return { computer, tools: run.hostTools(COMPUTER) };
+  const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: recordedClient(computer.client) }, hello: { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups }, ...(surface ? { surface } : {}) }, { mode: 1, context: ctx });
+  // With a surface, every tool the computer brings as the run's spec binds them (RunTools.kindTools); else its step tools.
+  return { computer, tools: run.hostTools(surface ? run.kindTools : COMPUTER) };
 }
 
 /** A pi run of `script` over the suite's tools and `computerTools`, its gate `gate(call)`: the request bodies the provider
@@ -216,6 +217,31 @@ test("a script's computer call is held to the kind's setting: a deny on desktop 
   assert.match(result.text, /1\. computer_screenshot completed/, result.text);
   assert.doesNotMatch(result.text, /clicked/);
   assert.deepEqual(computer.calls.map(([method]) => method).filter((method) => method !== "hello"), ["screen.shot"], "the click never reached the computer");
+});
+
+test("on a desktop whose surface is code, the model is offered codemode and the hand-over, no step tool and no computer_script; a script that acts twice and is cut by the runner's end mid-script reruns with each act reaching the computer once", async (t) => {
+  const { computer, tools } = await desktop({ surface: "code" });
+  // The screenshot after the two clicks never answers on the first runner: it ends with the script waiting on it.
+  let stuck;
+  let bound;
+  // A script that never reaches the screenshot fails here, never hangs.
+  const reached = Promise.race([new Promise((resolve) => (stuck = resolve)), new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the script never reached its screenshot within 30 s")), 30_000)))]).finally(() => clearTimeout(bound));
+  let shots = 0;
+  computer.overrides["screen.shot"] = () => {
+    shots += 1;
+    if (shots === 1) stuck();
+    return new Promise(() => {});
+  };
+  const script = "await tools.computer_act({ steps: [{ click: [10, 10] }] });\nawait tools.computer_act({ steps: [{ click: [20, 20] }] });\nreturn (await tools.computer_screenshot({})).width;";
+  const { requests, server } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, () => "allow", reached);
+  const offered = offeredTools(requests[0]);
+  assert.ok(offered.includes(CODEMODE) && offered.includes("computer_request_handoff"), `codemode and the hand-over are offered: ${JSON.stringify(offered)}`);
+  for (const name of [...COMPUTER, "computer_script"]) assert.ok(!offered.includes(name), `${name} is not offered: ${JSON.stringify(offered)}`);
+  const result = lastResult(requests);
+  assert.match(result.text, /1\. computer_act completed[^\n]*\n2\. computer_act completed[^\n]*\n3\. computer_screenshot was started and did not report a result/, result.text);
+  assert.deepEqual(computer.calls.map(([method]) => method).filter((method) => method !== "hello"), ["input.actions", "input.actions", "screen.shot"], "each act reached the computer once: the rerun answered both from their records, and never shot the screen again");
+  const nested = nestedRows(await runTimeline(server, "run-1", ctx));
+  assert.deepEqual(nested.filter((row) => row.kind === "tool_use").map((row) => row.tool_name), ["computer_act", "computer_act", "computer_screenshot"], "each call on the timeline once, under the script");
 });
 
 test("a script run again after a restart: a computer call it made is answered from its record, never made again, and a click the shutdown cut is told interrupted, never sent twice", async (t) => {
