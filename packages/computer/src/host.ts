@@ -207,4 +207,10 @@ export interface HostFacts {
 	 * Absent: no bound.
 	 */
 	labels?: { count?: number; bytes?: number };
+	/**
+	 * Paths of the vendor's image that root runs or reads and that its template build leaves writable by other users:
+	 * create takes write off every user but root on each, and on everything under a directory, before the daemon's
+	 * upload, so the computer's user can change nothing root runs. Default none.
+	 */
+	rootOnly?: readonly string[];
 }

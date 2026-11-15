@@ -623,6 +623,7 @@ export class HostedProvider implements ComputerProvider {
 			nonce: randomBytes(16).toString("hex"),
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
+			rootOnly: this.host.facts.rootOnly ?? [],
 		});
 		const request: MachineRequest = {
 			name,
@@ -754,6 +755,13 @@ export class HostedProvider implements ComputerProvider {
 		if (!running.ok) return running;
 		const drift = this.#machineDrift(running.value, labels);
 		if (drift.length > 0) return this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		// Before anything of this create's is in the machine: what root runs is root's alone (the Archil helper's sha256,
+		// read at the mount's preflight, is read after this).
+		if ((this.host.facts.rootOnly ?? []).length > 0) {
+			const closed = await runToExit(this.host, ref.id, commands.rootOnly, { ms: execMs, ...(signal ? { signal } : {}), what: `taking others' write off system paths in ${ref.name}` });
+			if (!closed.ok) return closed;
+			if (closed.value.exitCode !== 0) return this.#fail("refused", `taking others' write off system paths failed (exit ${closed.value.exitCode}): ${`${closed.value.stdout} ${closed.value.stderr}`.trim().slice(0, 300)}`);
+		}
 		const staging = commands.install[4] as string;
 		const bytes = new Uint8Array(daemon.buffer, daemon.byteOffset, daemon.byteLength);
 		const upload = this.host.upload?.bind(this.host);

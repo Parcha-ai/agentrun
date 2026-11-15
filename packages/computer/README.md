@@ -1744,7 +1744,11 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    The listing shows a new sandbox a moment late, so the name is listed again until it shows or `listedMs` (15 s)
    passes, and the sandbox found is killed and read back gone, as release waits for one.
 2. `getInfo` reads the sandbox's state until it runs.
-3. `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
+3. A command as root takes write by every user but root off the system paths whose permissions E2B's template build
+   sets wider than root's (`HostFacts.rootOnly`, `ROOT_ONLY` in `src/e2b.ts`), on everything under a directory, and
+   fails create if any of them is still writable by another user. It runs before anything of create's is in the
+   sandbox, so the daemon's install and the Archil helper's sha256 check read what only root can change. Then
+   `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
    same install command as Daytona's (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and
    prints its sha256, which must be the uploaded one's, and who installed it (a create note).
 4. The adapter's start command, a background command as root, starts `computerd init --deadline <time> --user
@@ -1752,7 +1756,8 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    detached: in a session of its own (`setsid`), its output to `/run/agentrun-init.log`, so the command ends at once
    and a daemon that never answers is reported with init's own words. Every command goes through envd's
    `Process.Start` stream, called on the SDK's own Connect client (`commands.rpc`, `index.mjs:4972-4985`) as
-   `commands.run` calls it (`index.mjs:5123-5146`): `/bin/bash -l -c` and the argv quoted, root by the Basic header
+   `commands.run` calls it (`index.mjs:5123-5146`), without its login shell: `/bin/sh` by its path runs the argv as its
+   own words (`-c 'exec "$@"' sh <argv>`), with `PATH` the system's directories alone, root by the Basic header
    (`index.mjs:1896-1900`), envd's keepalive every 50 s, and no deadline on the stream (timeout 0, which the Connect
    transport reads as none), because envd kills a command whose timeout passes (envd `process/start.go:39-44`); the
    SDK's default would end it after 60 s (`index.mjs:4978`). Only the start is bounded.
@@ -2575,6 +2580,10 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   DNS name): every target must read `refused`, and the probe's `interfaces` must be `["lo"]`. So it proves, per
   provider, that a tool reaches neither the vendor's agent nor any address. A provider that declares nothing (Docker:
   no agent inside) skips it in words.
+- **What root runs** (`isolation.root-runs`, Core wherever exec runs): through `exec.run`, as the computer's user, the
+  case reads `test -w` on root's `PATH` directories, the daemon, the Archil helper and client where they are, and every
+  directory above each (`ROOT_RUNS`), and fails on any it may write. It checks write access alone and changes nothing.
+  `mount.archil-isolated-durable` runs the same check on its Archil computer.
 - **Core by kind.** `coreGroups(kind, daemon)` is what a computer of its kind must declare (the table in
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
