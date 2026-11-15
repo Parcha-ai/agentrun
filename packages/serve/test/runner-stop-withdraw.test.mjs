@@ -137,15 +137,14 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
   probe = async () => {
     const row = await opened.server.runs.get("run-1");
     const commands = await opened.server.commands("run-1", 0);
-    const held = await Promise.all(names.map(async (name) => [name, (await opened.runners[0].claimsOf(name)).map((claim) => `${claim.runId}@${claim.epoch}`)]));
     return JSON.stringify({
+      runnersSpawned: names,
       storeNow: now(),
       skewMs: opened.clock.skewMs,
       row,
       leaseLeftMs: typeof row.leaseUntil === "number" ? row.leaseUntil - now() : "no leaseUntil on the row",
       backoffLeftMs: row.backoffUntil === null ? null : row.backoffUntil - now(),
       commands,
-      claimsHeld: held,
       beats: beats.count,
       lastBeatAgoMs: Date.now() - lastBeatAt,
       starts,
