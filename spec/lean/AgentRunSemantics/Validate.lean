@@ -60,6 +60,8 @@ def predErrors : Pred → List String
   | .fieldType p ty => (if p.isEmpty then ["field_type needs a path"] else []) ++
       (if ["number", "string", "boolean", "array", "object", "null"].contains ty then []
         else ["field_type needs a type of number|string|boolean|array|object|null"])
+  | .quoteMissing p _ pages => (if p.isEmpty then ["quote_missing needs a path"] else []) ++
+      (if pages.isEmpty then ["quote_missing needs pages"] else [])
   | .not (.ask ..) => ["not takes only a mechanical predicate"]
   | .not q => predErrors q
   | _ => []

@@ -1,0 +1,96 @@
+{
+  "description": "An escalate guarded by quote_missing stops the run when one quote of the answer is in no page the run fetched; a short quote is not checked, and a quote that differs only in case, spacing or punctuation is found.",
+  "workflow": {
+    "v": 2,
+    "name": "quote-missing-fires",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "answer"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "call",
+          "label": "fetch",
+          "via": "tool",
+          "tool": "browse",
+          "args": {
+            "url": "{url}"
+          },
+          "out": "Any",
+          "as": "page",
+          "deadline_s": 10
+        },
+        {
+          "node": "escalate",
+          "label": "quotes",
+          "when": {
+            "predicate": "quote_missing",
+            "path": "answer.evidence",
+            "field": "quote",
+            "pages": ["page"]
+          },
+          "kind": "quote_missing",
+          "stage": "answer",
+          "summary": "a quote is in no fetched page"
+        }
+      ]
+    }
+  },
+  "input": {
+    "url": "https://shop.example",
+    "answer": {
+      "evidence": [
+        { "quote": "Hand made wallets, and belts" },
+        { "quote": "short" },
+        { "quote": "Our workshop opened in Porto" }
+      ]
+    }
+  },
+  "script": {
+    "effect": {
+      "/root/steps/0": {
+        "result": {
+          "text": "Hand-made wallets and belts.\n  Our workshop has been in Lisbon since 1987."
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "escalated",
+    "state": {
+      "url": "https://shop.example",
+      "answer": {
+        "evidence": [
+          { "quote": "Hand made wallets, and belts" },
+          { "quote": "short" },
+          { "quote": "Our workshop opened in Porto" }
+        ]
+      },
+      "page": {
+        "text": "Hand-made wallets and belts.\n  Our workshop has been in Lisbon since 1987."
+      }
+    },
+    "escalation": {
+      "kind": "quote_missing",
+      "stage": "answer",
+      "label": "quotes"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:fetch",
+        "node.end:fetch:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:quotes:true"
+      ]
+    }
+  }
+}

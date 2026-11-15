@@ -11,6 +11,7 @@ import {
   GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, GUARD_SIGNALS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type WorkflowNodeKind,
 } from "./vocabulary.js";
 import { GUARD_QUESTION_MAX } from "./workflow.js";
+import { QUOTE_MIN_CHARS } from "./predicates.js";
 
 /** What a host adds to the author contract. It names the host's own vocabulary and rules and never
  *  restates or changes the language: the package renders it once, after the language section. */
@@ -46,6 +47,7 @@ const PREDICATE_SHAPES: { readonly [Name in typeof WORKFLOW_PREDICATES[number]]:
   empty: "holds when the value at `path` is an empty array, an empty string, null or absent",
   no_new_items: "takes `key`, not `path`; holds when that state key is an empty array or falsy",
   field_type: `holds when the value at \`path\` is of \`type\`, one of ${FIELD_TYPES.join(", ")}; a number only when finite, and an absent value is of no type`,
+  quote_missing: `the quote check, in code: holds when a quote at \`path\` (a string, or a list of them; with \`field\`, a list of records each holding its quote at \`field\`) is in none of the pages at \`pages\` (state paths holding what this run's call steps fetched; every string under each is page text). Both sides are compared lowercased, with curly quotes straight, dashes as "-" and whitespace runs as one space, then once more as their letters and digits alone; a quote under ${QUOTE_MIN_CHARS} characters is not checked. \`{"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}\` on an escalate hands back an answer quoting text no fetched page holds. Check quotes with it, never with a judge or an \`ask\``,
   not: "holds when `of`, one mechanical predicate (never `ask`), does not; `{\"predicate\": \"not\", \"of\": {\"predicate\": \"field_type\", \"path\": \"score\", \"type\": \"number\"}}` holds when score is absent or not a finite number",
   ask: "a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)",
 };

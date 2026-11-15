@@ -112,18 +112,18 @@ async function landNotes(data, agentId, notes) {
   }
 }
 
-/** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
- *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
+/** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back),
+ *  or `submitted` when given; the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   // `agentCall`: the agent's first answer is this tool call (its next, once a tool result is in, its text). `agentText`:
   // the agent's text for a request, by its body (undefined: AGENT_SAYS).
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
+    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: submitted ?? { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : (agentText?.(body) ?? AGENT_SAYS)),
   });
   let runner;
@@ -321,6 +321,38 @@ test("handed back: the guard holds, the same run goes on to the agent with the w
   assert.equal(row.metrics?.workflow_digest, DIGEST, "the digest is the workflow text's");
   assert.ok(requests.some((request) => request.host === LEARNED_WORKFLOW_TOOL) && requests.some((request) => request.host === undefined), `node and agent requests both booked: ${JSON.stringify(requests)}`);
   assert.ok((row.costUsd ?? 0) > 0, `the run's cost: ${row.costUsd}`);
+});
+
+// The quote check is code (the DSL's quote_missing): an answer quoting text the run's page does not hold hands the job
+// back to the agent, as any escalate does; the trace says how many quotes were checked and missed, never their text.
+// The page is the run's own input here; on a compiled workflow it is what its call steps fetched.
+const PAGE = "Acme Leather: hand-made wallets and belts, shipped worldwide. Our workshop has been in Lisbon since 1987.";
+const citedFlow = {
+  v: 2, name: "answer",
+  schemas: {
+    In: { type: "object", required: ["question", "page"], properties: { question: { type: "string" }, page: { type: "string" } } },
+    Answer: { type: "object", required: ["answer", "evidence"], properties: { answer: { type: "string" }, evidence: { type: "array", items: { type: "object", required: ["quote"], properties: { quote: { type: "string" } } } } } },
+  },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [
+    { node: "extract", label: "answer", instructions: "Answer the question from {page}, quoting it.", out: "Answer", as: "answer" },
+    { node: "escalate", label: "quotes", when: { predicate: "quote_missing", path: "answer.evidence", field: "quote", pages: ["page"] }, kind: "quote_missing", stage: "answer", summary: "a quote of {answer.answer} is in no page" },
+  ] },
+};
+const cited = (quote) => ({ input: { content: "Where is the workshop?", question: "Where is the workshop?", page: PAGE }, flows: [{ name: "answer", description: "Answers from a page, quoting it", workflow: citedFlow }], submitted: { answer: "Lisbon", evidence: [{ quote }] } });
+
+test("a quote in no page: the workflow's quote_missing escalate hands the run back to the agent, whose answer ends it; a quote the page holds answers alone", async (t) => {
+  const { row, entries, gateway, timeline } = await piRun(t, cited("Our workshop opened in Porto in 1990"));
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  const firstAgent = gateway.requests.findIndex((request) => !isNode(request));
+  assert.ok(firstAgent > 0, "the agent took the run after the node");
+  assert.match(textOf(gateway.requests[firstAgent].body), /handed the job back at its step "quotes": a quote of Lisbon is in no page/);
+  assert.equal(timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text, AGENT_SAYS);
+  assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
+  const alone = await piRun(t, cited("has been in Lisbon since 1987"));
+  assert.deepEqual(alone.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.equal(alone.row.metrics?.path, "workflow", JSON.stringify(alone.row.metrics));
 });
 
 test("handed back: the compile turn asks for the workflow's next revision by its name, with the workflow as it is", async (t) => {
