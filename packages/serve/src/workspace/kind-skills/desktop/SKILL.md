@@ -66,8 +66,9 @@ return { saved: saved.expect, state: saved.state };
 ```
 
 **In a `codemode` script.** The desktop's tools are among its `tools`, each call one of its own: `computer_observe`
-answers the window as a value, and `computer_act` acts on the state last observed. `tools.computer_script` runs the code
-above. Codex's `exec` answers each as JSON text: parse it there.
+answers the window as a value, and `computer_act` acts on the state last observed. A screenshot comes with its pixels:
+`image(shot)` shows it to you, as returning it does. `tools.computer_script` runs the code above. Codex's `exec`
+answers each as JSON text: parse it there.
 
 ```js
 const notes = await tools.computer_observe({ app: "com.apple.Notes" });

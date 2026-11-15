@@ -1100,7 +1100,9 @@ them. None of them goes around the run's tool settings:
   `await tools.<name>(args)` calls are each the tool's own call, under `<callId>/s<n>`, answered one at a time. A tool is
   named as `ALL_TOOLS` gives it; the description shows the first three (`tools.<name>`) and says to leave off the prefix
   a harness shows in the model's own tool list (`hands_`, `mcp__hands__`). The
-  sandbox has the tools and nothing else of the run: no environment, key, file, network or timer. A script runs at most
+  sandbox has the tools and nothing else of the run: no environment, key, file, network or timer. A tool's image (a
+  screenshot) reaches the script with its pixels: `image(shot)` shows it to the model, and a returned one is the
+  answer's image, its data never in the answer's text. A script runs at most
   10 minutes in 256 MiB. A call that needs approval parks the run, and the script follows Codex's rule. Once a person
   answers, the script runs again from its start, and the calls it already made answer from their records. The parked
   call runs once (or is refused), its outcome is the script's answer, and the rest of the script does not run. The
