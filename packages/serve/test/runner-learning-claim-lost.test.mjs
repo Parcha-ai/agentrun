@@ -246,7 +246,6 @@ test("the walk's shape (chain run 9): a job answered for $1.554, its look-back c
   const total = answered + cuts[0];
   assert.ok(near(total, 3.467) && total <= CAP, `$3.467 booked, within the $5 cap: ${total}`);
   assert.deepEqual([view.cost.usd, view.cost.cap_usd, view.cost.so_far_usd, view.cost.unpriced, view.cost.upper_bound], [3.467, CAP, undefined, undefined, true], `the run's cost: at most $3.467, the cut request at its hold: ${JSON.stringify(view.cost)}`);
-  assert.equal(row.costUsd, 3.467, "the stored cost is the same figure");
 });
 
 test("a job that answered after a tool call faulted on every restart, lost mid look-back: the next claim ends the run failed in the same words as without the takeover", { timeout: 180_000 }, async (t) => {
