@@ -1,10 +1,9 @@
-// The server's one email account (the email account setting, /v2/settings/email): where its mail is read (IMAP) and
-// sent (SMTP), the address it sends as, and who signs in. Kept in two parts: what is no secret (the address, the user and
-// the servers) in one store.settings row, and the password sealed in the one store's sealed keys (server-keys.ts, beside
-// the tool keys), opened only with the seal key: by the server for the email trigger's polls and the connection test,
-// and by a runner for a run whose revision names an email tool (email/tools.ts, under its claim). No answer, event, log
-// line or run input holds the password; the runner's one redactor holds it as it holds every sealed key
-// (runner/store-secrets.ts).
+// The server's one email account (Settings → Email): where its mail is read (IMAP) and sent (SMTP), the address it sends
+// as, and who signs in. Kept in two parts: what is no secret (the address, the user and the servers) in one store.settings
+// row, and the password sealed in the one store's sealed keys (server-keys.ts, beside the tool keys), opened only with the
+// seal key: by the server for the email trigger's polls and the connection test, and by a runner for a run whose revision
+// names an email tool (email/tools.ts, under its claim). No answer, event, log line or run input holds the password; the
+// runner's one redactor holds it as it holds every sealed key (runner/store-secrets.ts).
 // One account for now, named "default": the trigger and the tools take an `account` name from day one, and only "default"
 // is accepted.
 import { ApiError, type InputIssue, invalid } from "../errors.js";
@@ -135,5 +134,5 @@ export async function removeAccount(store: AccountStore): Promise<void> {
 }
 
 /** The refusal for a tool or a trigger when no account is kept. */
-export const NO_ACCOUNT = "This server has no email account: save one with PUT /v2/settings/email.";
+export const NO_ACCOUNT = "This server has no email account: save one in Settings → Email.";
 export const noAccount = () => new ApiError("input_invalid", NO_ACCOUNT, { fields: [{ field: "source.account", reason: "not_set", message: NO_ACCOUNT }] });
