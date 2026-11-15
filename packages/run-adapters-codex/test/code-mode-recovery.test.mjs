@@ -270,7 +270,8 @@ async function yieldedExecEnd(gate, resume = true) {
   await assert.rejects(held, /was parked/);
   const ties = [{ callId: 'exec-1', exec: EXEC, since, tool: 'mcp_fake__add', args: { a: 2, b: 3 } }];
   const next = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
-  const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties : []).map((data) => ({ data })) };
+  const kept = [];
+  const journal = { append: (stream, data) => kept.push([stream, data]), flush: async () => {}, read: async (stream) => [...(stream === NESTED_STREAM ? ties : []), ...kept.filter(([s]) => s === stream).map(([, data]) => data)].map((data) => ({ data })) };
   const bridge = toolBridge(next, [codexTool(host)], { live: false, gate });
   let listen;
   const ends = [];

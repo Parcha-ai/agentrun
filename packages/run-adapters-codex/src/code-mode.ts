@@ -29,6 +29,10 @@ export const RESUMED_STREAM = "codex.nested-resumed";
 /** The nested calls whose outcome a resume's recovered script output tells (recoverItems): `{ since, callIds }`, written before
  *  that output is injected, so the turn's recovery note says the outcome is there, after a crash between the two as well. */
 export const SHOWN_STREAM = "codex.nested-shown";
+/** Each `exec` a recovery answered (recoverItems), directly or through the `wait` on its cell, and whether that answer tells a
+ *  script that failed (recoveredFailed): `{ exec, failed }`, written before the answer is injected. That answer carries no status
+ *  header for its rollout line to be read by, so the exec's end on the host's record, live or replayed after a later crash, reads this. */
+export const RECOVERED_END_STREAM = "codex.exec-recovered-end";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -188,15 +192,16 @@ export function codeMode(deps: CodeModeDeps) {
   const recovered = new Map<string, { tool: string; text: string; sent?: string }[]>();
   /** Each `exec` whose row this drive opened on the host's record (SessionIO.ownCalls): its end waits for that write. */
   const rows = new Map<string, Promise<void>>();
-  /** Each cut-off `exec` a recovery answered (recoverItems), directly or through the `wait` on its cell, and whether that
-   *  answer tells a script that failed (recoveredFailed): its output carries no status header for the rollout's line to be read by. */
-  const cutEnds = new Map<string, boolean>();
-  /** The host's record of `exec`'s end, once its row is written: `output`, failed as `failed` says. A crash leaves an exec
-   *  open on the record (its start is marked as one its harness answers), so its end is always one of these. */
+  /** The host's record of `exec`'s end, once its row is written: `output`, failed as a recovery recorded it (RECOVERED_END_STREAM)
+   *  or else as its status header says (`failed`). A crash leaves an exec open on the record (its start is marked as one its
+   *  harness answers), so its end is always one of these. */
   const endRow = (exec: string, output: string, failed: boolean): void => {
     const own = deps.ownCalls;
     if (!own) return;
-    void (rows.get(exec) ?? Promise.resolve()).then(() => own.ended(exec, output, failed)).catch((error) => deps.log("codex: an exec's end was not written", { exec, error: String(error) }));
+    void (rows.get(exec) ?? Promise.resolve())
+      .then(() => journal.read<{ exec: string; failed: boolean }>(RECOVERED_END_STREAM))
+      .then((kept) => own.ended(exec, output, kept.findLast((r) => r.data.exec === exec)?.data.failed ?? failed))
+      .catch((error) => deps.log("codex: an exec's end was not written", { exec, error: String(error) }));
   };
   // An `exec` of the log restored that Codex finished before the session stopped: its end, which a crash may have kept off
   // the host's record (a call ended there already says nothing).
@@ -215,16 +220,12 @@ export function codeMode(deps: CodeModeDeps) {
   };
   // The lines read live open an `exec`'s row and end it. An `exec` of the log restored is on the host's record already; a
   // cut-off one ends here too, when its recovered output (recoverItems) reaches the rollout: after the rows of the calls the
-  // recovery ran or found cut off, failed as recoveredFailed says.
+  // recovery ran or found cut off, failed as the recovery recorded (RECOVERED_END_STREAM).
   machine.onRolloutLine?.((line) => {
     const said = scripts.note(line);
     if (!said || !deps.ownCalls) return;
     if (said.kind === "opened") void openRow(said.exec, said.input).catch((error) => deps.log("codex: an exec's row was not written", { exec: said.exec, error: String(error) }));
-    else {
-      const cut = cutEnds.get(said.exec);
-      cutEnds.delete(said.exec);
-      endRow(said.exec, said.output, cut ?? said.failed);
-    }
+    else endRow(said.exec, said.output, said.failed);
   });
 
   /** The script a nested call is tied to now, as the log and the proxy's latest answer have it. */
@@ -420,7 +421,7 @@ export function codeMode(deps: CodeModeDeps) {
           }
           // This output finishes the cell's exec, and it carries no status header: that exec ends as its last call says.
           const exec = cell === undefined ? undefined : yielders.execOn(cell);
-          if (exec !== undefined) cutEnds.set(exec, recoveredFailed(ties.filter((tie) => tie.exec === exec).map(fact)));
+          if (exec !== undefined) journal.append(RECOVERED_END_STREAM, { exec, failed: recoveredFailed(ties.filter((tie) => tie.exec === exec).map(fact)) });
           items[i] = withOutputKind(waited !== undefined ? { ...item, output: waited } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
@@ -428,17 +429,16 @@ export function codeMode(deps: CodeModeDeps) {
         // Only the calls the output still tells after its bound: a call cut from it is not said to be above.
         const recovered = execRecovery(own, loose);
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: recovered.output };
-        cutEnds.set(c.callId, recoveredFailed(own));
+        journal.append(RECOVERED_END_STREAM, { exec: c.callId, failed: recoveredFailed(own) });
         built.add(i);
         shown.push(...recovered.shown);
       });
       items.forEach((item, i) => {
         if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output).text;
       });
-      if (resume && shown.length > 0) {
-        journal.append(SHOWN_STREAM, { since, callIds: shown });
-        await journal.flush();
-      }
+      if (resume && shown.length > 0) journal.append(SHOWN_STREAM, { since, callIds: shown });
+      // Every record above is in the log before the outputs are injected.
+      await journal.flush();
     },
 
     /** With no recovery note, the calls the rollout has no output for get theirs from the log before any turn is sent: a turn that ended without
