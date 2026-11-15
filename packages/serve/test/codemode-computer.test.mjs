@@ -25,6 +25,8 @@ const { recordedClient } = await import("../dist/computer-calls.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
+const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const GROUPS = ["screen", "input.pointer", "input.keys"];
@@ -340,6 +342,30 @@ test("on a vendor's desktop whose agent's bash is set to ask, a script's compute
   assert.equal(ask?.tool, "bash", `asked about as bash: ${JSON.stringify(ask)}`);
   assert.match(JSON.stringify(ask?.args), /echo hi/, "the card shows the command");
   assert.deepEqual(methodsOf(computer).filter((method) => method === "exec.run"), [], "nothing ran on the computer");
+});
+
+test("a script's computer.shell.run a person allowed carries its computer calls on one row, the call's own result row, as a call that never waited does: never on its approval row or its outcome row too", async (t) => {
+  const { computer, run, tools } = await desktop({ more: VENDOR });
+  const { runners } = await stores({ runners: 1 });
+  const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-gate-"));
+  dirs.push(folder);
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none");
+  const script = "await computer.shell.run('echo hi');\nreturn 'ran';";
+  const { server } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, gate, undefined, { computer: run.computer, settled: "parked" });
+  const ask = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data;
+  assert.equal(ask?.tool, "bash", JSON.stringify(ask));
+  await sendCommand(server, "run-1", { kind: "approve", body: { approval: ask.callId } });
+  await until(async () => {
+    const now = await server.runs.get("run-1");
+    return now.state === "ended" && now.runner === null && now;
+  }, "the run ended once allowed", 30_000);
+  assert.equal(methodsOf(computer).filter((method) => method === "exec.run").length, 1, "the allowed command ran once");
+  const rows = await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, server, "run-1", ctx);
+  const carrying = rows.filter((row) => row.computer_calls?.some((call) => call.method === "exec.run"));
+  assert.deepEqual(carrying.map((row) => [row.kind, row.tool_use_id]), [["tool_result", ask.callId]], `the command's computer calls on its own result row alone: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_use_id, row.summary, row.computer_calls?.length]))}`);
+  // Its approval and what came of it still read as before.
+  assert.ok(rows.some((row) => row.kind === "tool_approval_requested" && row.tool_use_id === ask.callId), "the approval row is there");
+  assert.ok(rows.some((row) => row.kind === "phase" && /^AgentRun: bash ran once you allowed it/.test(row.summary ?? "")), "the outcome row is there");
 });
 
 test("on a vendor's desktop whose agent's write is set to deny, a script's computer.files.write is refused in the gate's words and ends the script; nothing is written", async (t) => {
