@@ -2280,6 +2280,7 @@ class _RunSummaryPending3Required(TypedDict):
 
 class RunSummaryPending3(_RunSummaryPending3Required, total=False):
     spent_usd: float
+    held_usd: float
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
@@ -4738,6 +4739,7 @@ class _RunPending3Required(TypedDict):
 
 class RunPending3(_RunPending3Required, total=False):
     spent_usd: float
+    held_usd: float
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float

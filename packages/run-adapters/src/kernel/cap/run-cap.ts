@@ -8,7 +8,8 @@
 import { runBooking, type RunSessions } from "../../run-booking.js";
 import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from "../../runner.js";
 import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
-import { overCapEnd, SPEND_CAP_REACHED } from "./words.js";
+import type { Refusal } from "../../runner.js";
+import { aloneRefusal, overCapEnd, SPEND_CAP_REACHED } from "./words.js";
 import { freeCeilingEnd, freeRequest } from "./free.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
@@ -40,6 +41,13 @@ export interface RunCapOptions {
    *  refused for good, in freeCeilingEnd's words. Its paid tool calls, its decisions and ChatGPT-plan requests never
    *  count. Undefined: no such limit. */
   freeRequests?: number;
+  /** Whether the run has parked (its host's pause): a model request waiting for room (runBooking) leaves the line then,
+   *  refused in its own words, so nothing more is sent until a raise. */
+  parked?(): boolean;
+  /** How long a request waits for room with nothing it waits on settling (runBooking's WAIT_STALL_MS by default). */
+  waitStallMs?: number;
+  /** The run's stop: a step waiting for room (a paid call's or a decision's as a model request's) leaves at it, unsent. */
+  stopped?: AbortSignal;
 }
 
 /** A run's decisions on its one cap: each admitted before it is sent and settled once it answered. */
@@ -122,15 +130,31 @@ export function runCap(options: RunCapOptions): RunCap {
     const counted = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
     if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
-    if (answer && "refuse" in answer) return answer;
+    if (answer && "refuse" in answer) return await roomOf(request, answer);
     if (!free) return answer;
     return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), free: true as const };
   };
+  // A step (a model request, a decision, a paid tool call) refused for room while steps in flight hold some of it: judged
+  // again by the same rule as if none of the steps that settle on their own were out (a hold-only step, or one the booking
+  // no longer waits on, still counts). Fits so: it `waits` (runBooking asks again once they settle, and never passes the
+  // cap: every admission is the rule's over the holds as they are then). Refused even so: refused now, its figures that
+  // refusal's (the least cap that sends it once they settle), its words saying what is spent and what is held apart
+  // (aloneRefusal), never holds as spent.
+  const roomOf = async (request: Parameters<BeforeRequest>[0], refused: Refusal): Promise<Refusal> => {
+    if (refused.forGood !== false || !refused.figures || !request.inFlight.some((flight) => !flight.stays)) return refused;
+    const alone = await rule({ ...request, inFlight: request.inFlight.filter((flight) => flight.stays) });
+    if (!(alone && "refuse" in alone)) return { ...refused, waits: true };
+    const capUsd = options.capUsd();
+    if (alone.forGood !== false || !alone.figures || capUsd === undefined) return alone;
+    const figures = { ...alone.figures, heldUsd: refused.figures.heldUsd ?? 0 };
+    return { ...alone, refuse: aloneRefusal(capUsd, figures), figures };
+  };
   const before = runBooking(options.sessions, options.judged ? async (request) => {
     const answer = await judge(request);
-    options.judged!(request, answer);
+    // An observer sees each verdict the run goes by: a refusal that waits is asked again, its verdict told then.
+    if (!(answer && "refuse" in answer && answer.waits)) options.judged!(request, answer);
     return answer;
-  } : judge);
+  } : judge, { ...(options.parked ? { parked: options.parked } : {}), ...(options.waitStallMs === undefined ? {} : { stallMs: options.waitStallMs }), ...(options.stopped ? { stopped: options.stopped } : {}) });
 
   const forget = (key: string) => void deciding.delete(key);
   return {
@@ -192,13 +216,20 @@ export async function paidCalls(writer: SessionWriter, before: BeforeRequest, op
  *  each a runner.request before it is sent (flushed when `flush` is given) and a runner.turn once settled. */
 async function stepsOn(writer: SessionWriter, before: BeforeRequest, flush: (() => Promise<void>) | undefined, what: string, forget: (key: string) => void) {
   {
-    /** The verdict of the step being admitted (admissions run one at a time on the booking), for its refusal. */
+    /** The verdict of the step being admitted (admissions run one at a time on the booking), for its hold or refusal: set
+     *  as its check begins and ends, and taken by its book once its admission ends, before the next one's check begins. A
+     *  step booked while another waits for room sets nothing, so it never wipes the verdict of the one before it. */
     let verdict: Verdict | undefined;
-    const lastVerdict = (): Verdict | undefined => verdict;
+    const takeVerdict = (): Verdict | undefined => {
+      const taken = verdict;
+      verdict = undefined;
+      return taken;
+    };
     const booking = await modelPortFor(writer, {
       key: writer.key,
       label: writer.key,
       beforeRequest: async (request) => {
+        verdict = undefined;
         const answer = await before(request);
         verdict = (answer ?? undefined) as Verdict | undefined;
         return answer;
@@ -213,18 +244,17 @@ async function stepsOn(writer: SessionWriter, before: BeforeRequest, flush: (() 
       /** Books step `id`, asked as `asked` (its model key a decision's priced model, or a paid call's name). */
       async book(id: string, asked: ModelRequest): Promise<Admission> {
         const key = asked.model;
-        verdict = undefined;
         let ticket: ModelTicket | void;
         try {
           ticket = await booking.models.beforeRequest(asked);
         } catch (error) {
           forget(key);
-          const refused = lastVerdict();
+          const refused = takeVerdict();
           if (refused?.refuse !== undefined) throw new CapRefused(refused.refuse, { forGood: refused.forGood ?? true, spentUsd: refused.figures?.spentUsd ?? null, ...(refused.figures ? { figures: refused.figures } : {}) });
           throw error;
         }
         if (!ticket) throw new Error(`${what} ${id}: its booking gave it no ticket`);
-        const admitted = lastVerdict();
+        const admitted = takeVerdict();
         const held = typeof admitted?.holdUsd === "number" ? admitted.holdUsd : 0;
         open.set(id, { ticket, key, heldUsd: held });
         return { id, heldUsd: held, stoppedUsd: () => held };

@@ -216,6 +216,9 @@ export interface ModelRequest {
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
   route?: string;
+  /** Aborted when the request's client goes (a stop, a cancel, a lost claim): a request still waiting for room under the
+   *  run's cap (runBooking) leaves its line then, admitted for nothing and holding nothing. */
+  signal?: AbortSignal;
 }
 
 /** What a paid request cost, once it completed. */

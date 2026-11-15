@@ -85,19 +85,29 @@ export type BeforeRequest = (request: {
   /** The run's requests on free models so far (runBooking, over every session of the run): each whose runner.request says
    *  so (`freeRequest`), answered, in flight or cut, and each admitted that no record shows yet. Absent: not counted here. */
   freeRequestsMade?: number;
+  /** The request's client's signal (ModelRequest.signal): a host that makes it wait for room lets it go when it aborts. */
+  signal?: AbortSignal;
+  /** The booking's own stop or pause, now (its `stopped`, `draining`, or a cost it could not record): a request waiting
+   *  for room leaves with this error once there is one, nothing written for it. */
+  halted?: () => Error | undefined;
 }) => void | Refusal | Admitted | Promise<void | Refusal | Admitted>;
 
 /** A host's refusal of a request: its words, and, from a spend cap, whether no raise could send it (`forGood`) and, for
- *  one a raise could, its figures (what the cap counted as taken, what the request needs at the least, the least cap that
- *  sends it): what the run's end is decided from (the kernel cap's parkOf). */
-export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd: number; needsUsd: number; leastCapUsd: number; step?: { name: string; holdUsd: number; basis: string } };
+ *  one a raise could, its figures (what the run had spent, never a hold; what its steps in flight held; what the request
+ *  needs at the least; the least cap that sends it): what the run's end is decided from (the kernel cap's parkOf).
+ *  `waits`: refused only because steps still in flight hold the room it needs, steps that settle on their own (it fits
+ *  beside the run's spend with none of them out): a booking that can wait (runBooking) asks again once they settle, and
+ *  any other reads it as the refusal it is. */
+export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd: number; heldUsd?: number; needsUsd: number; leastCapUsd: number; step?: { name: string; holdUsd: number; basis: string } };
   /** The refusal's code, from a host that gives one (a spend cap's: `spend_cap_reached`): carried on the error that ends
    *  the node (HarnessRunError.refusal), so a reader knows the refusal by it, never by its words. */
-  code?: string };
+  code?: string;
+  waits?: true };
 
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
- *  one. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string; freeRequest?: true };
+ *  one. `stays`: a hold-only step (ModelRequest.paid.hold, a browser session's reserve), let go only when its holder says,
+ *  never by settling on its own: no request waits for it. */
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string; freeRequest?: true; stays?: true };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
@@ -383,14 +393,16 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string): Error =>
     options.stop ? options.stop(reason, message, code) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }), ...(code === undefined ? {} : { refusal: code }) });
-  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, feeUsd, paid, side, unanswered, noted, inputTokensMaxWithoutNote, host, route }: ModelRequest): Promise<ModelTicket> => {
+  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, feeUsd, paid, side, unanswered, noted, inputTokensMaxWithoutNote, host, route, signal }: ModelRequest): Promise<ModelTicket> => {
     let inputTokensMax = measured;
     const stopped = options.stopped?.(host === undefined ? {} : { host }) ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
-    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
+    // A host that makes the request wait for room (runBooking) lets it go at its client's abort or the booking's own stop.
+    const halted = () => options.stopped?.(host === undefined ? {} : { host }) ?? failed ?? options.draining?.();
+    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax, ...(signal ? { signal } : {}), halted,
       ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(feeUsd === undefined ? {} : { feeUsd }), ...(paid ? { paid } : {}), ...(side ? { side } : {}), ...(unanswered ? { unanswered } : {}), ...(noted ? { noted,...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse, typeof verdict.code === "string" ? verdict.code : undefined);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
@@ -447,7 +459,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }), ended: { end: "nothing", label: "never_left" } });
       throw stoppedLate;
     }
-    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
+    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }), ...(paid?.hold ? { stays: true as const } : {}) });
     fly(turn);
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
