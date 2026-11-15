@@ -83,7 +83,7 @@ export function ReplayRevision({ v2, agentId, workflow, digest, offered, resume 
   if (!offered && state.at === "idle") return null;
   return (
     <div className="mt-2 space-y-1" data-testid="replay-revision">
-      {(state.at === "idle" || state.at === "starting" || state.at === "refused" || state.at === "decided") && (
+      {(state.at === "idle" || state.at === "starting" || ((state.at === "refused" || state.at === "decided") && offered)) && (
         <Button size="sm" onClick={start} disabled={busy} aria-label={`Replay revision ${digest.slice(0, 7)} on graded inputs`}>{state.at === "starting" ? "Starting…" : state.at === "idle" ? "Replay" : "Replay again"}</Button>
       )}
       {state.at === "running" && (

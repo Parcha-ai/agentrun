@@ -135,6 +135,7 @@ describe("Replay on a revision", () => {
     await flush();
     act(() => root!.render(createElement(ReplayRevision, { v2, agentId: "a", workflow: "sorter", digest: DIGEST, offered: false })));
     expect(text(host, "replay-decision")).toContain("Promoted");
+    expect(button(host)).toBeUndefined();
   });
 });
 
