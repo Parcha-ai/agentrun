@@ -2043,16 +2043,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           },
         });
-        // A tool the spec binds for a script's nested calls alone (deferred: a desktop's step tools under its surface "code")
-        // stays listed on a harness that runs scripts in its own code mode, which reaches only the tools it is handed
-        // (Codex's exec).
         const facts = builtinHarness(spec.adapter.id)?.facts;
-        const listedFor = ({ deferred: _, ...tool }: HostTool): HostTool => tool;
-        const own: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map((tool) => (facts?.ownCodemode && tool.deferred ? listedFor(tool) : tool)).map(hosted);
         // tools_search, tools_call and codemode over the session's tools (meta-tools.ts), on every harness (codemode on
         // each but one that runs scripts of its own): what they call is called nested, each call asked about and recorded
         // as its own tool's. A search finds a tool whose setting is not deny; an MCP tool's setting is its catalog name's.
         const settingOf = spec.gate?.permission;
+        // A meta tool whose setting is deny is not offered at all, rather than offered and refused.
+        const allowed = async (name: string) => !settingOf || (await settingOf(name).catch(() => "deny" as const)) !== "deny";
+        const hostCodemode = facts?.ownCodemode !== true && (await allowed(CODEMODE));
+        // A tool the spec binds for a script's nested calls alone (deferred: a desktop's computer_op, and its step tools
+        // under its surface "code") is listed wherever the host offers no codemode to call it: on a harness that runs
+        // scripts in its own code mode, which reaches only the tools it is handed (Codex's exec), and on a run whose
+        // codemode is set to deny, so the computer is never out of the model's reach.
+        const listedFor = ({ deferred: _, ...tool }: HostTool): HostTool => tool;
+        const own: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map((tool) => (!hostCodemode && tool.deferred ? listedFor(tool) : tool)).map(hosted);
         // The harness's own tools beside them (pi's subagent, its browser's): found and called by name as the host's are,
         // run by the harness as its own nested calls. Never called here: a nested call reaches them through the harness.
         const native: HostTool[] = (spec.adapter.ownTools ?? []).filter((one) => !own.some((tool) => tool.name === one.name)).map((one) => ({
@@ -2066,8 +2070,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // model finds them with tools_search and runs them with tools_call (still the tool's own call at the gate). Claude
         // Code defers them itself (its ToolSearch, on under the same test), so it is offered neither. Under the threshold
         // every tool is listed and there is no search or call. codemode is offered as it always was.
-        // A meta tool whose setting is deny is not offered at all, rather than offered and refused.
-        const allowed = async (name: string) => !settingOf || (await settingOf(name).catch(() => "deny" as const)) !== "deny";
         // Deferred only when the model can both find and run what it hid: with either helper denied every tool stays listed,
         // so denying a helper never takes an otherwise allowed tool out of reach.
         // The one verdict for every harness: one with a tool search of its own (Claude Code's) follows it too, handed it as
@@ -2077,7 +2079,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const metas = metaTools({
           tools: () => [...own, ...native],
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
-          codemode: facts?.ownCodemode !== true && (await allowed(CODEMODE)),
+          codemode: hostCodemode,
           discovery: { search: offered, call: offered },
           ...(facts?.hostName ? { hostName: facts.hostName } : {}),
           ...(spec.scriptComputer ? { computer: spec.scriptComputer } : {}),

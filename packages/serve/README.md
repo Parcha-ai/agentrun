@@ -648,7 +648,7 @@ command (`shell.run`) is held to the agent's `bash` setting, a started process t
 `write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A script's call
 of a computer tool answers the tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
-JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is

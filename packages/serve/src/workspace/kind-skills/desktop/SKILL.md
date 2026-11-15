@@ -69,8 +69,12 @@ return { saved: saved.expect, state: saved.state };
 ```
 
 The tools are there too, as `tools.computer_observe(...)` and `tools.computer_act(...)`. A screenshot comes with its
-pixels: `image(shot)` shows it to you, as returning it does. Codex runs scripts in its own code mode, where each call
-answers JSON text: parse it there.
+pixels: `image(shot)` shows it to you, as returning it does.
+
+**On Codex** there is no `codemode` and no `computer`: Codex runs scripts in its own code mode, which calls the tools in
+your list, and each call answers JSON text to parse. The desktop's apps, shell and files are `computer_op` there, one
+call per op with its arguments, named as `computer`'s methods are: `computer_op({op: "shell.run", args: {command:
+"hostname"}})`, `computer_op({op: "apps.open", args: {id: "firefox-esr", url: "https://example.com/"}})`.
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
 screenshot pixels (`computer.screen.shot()`), for what one app's window can't reach: a drag from one app to another (a
