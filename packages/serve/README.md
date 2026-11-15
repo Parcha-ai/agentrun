@@ -976,8 +976,11 @@ The sign-in is the owner's alone, over the owner's signed-in session (the API to
   `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
 - `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
   (with `email`, `plan` and the plan's `models`) or `expired`.
-- `DELETE /v2/settings/chatgpt` cancels a waiting sign-in, or signs out: it revokes the session at OpenAI and
-  removes it.
+- `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
+  `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
+  When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
+  the revocation: remove AgentRun in your ChatGPT settings."}`. Signing in again revokes the sign-in it replaces, and a
+  renewal that finishes after a sign-out revokes the tokens it got.
 
 A curl call with the owner's session (the console's cookie: `__Host-agentrun-session` on https) sends this server's own
 `origin` and `content-type: application/json` on every write, a `DELETE` with no body too: without them the cookie
@@ -988,10 +991,12 @@ S=(-H "cookie: __Host-agentrun-session=$SESSION" -H "origin: $BASE" -H 'content-
 curl -X POST "$BASE/v2/settings/chatgpt/sign-in" "${S[@]}"
 curl -X POST "$BASE/v2/settings/chatgpt/sign-in/finish" "${S[@]}" -d '{"redirect_url":"<the address the sign-in tab ended on>"}'
 curl "$BASE/v2/settings/chatgpt" "${S[@]}"
-curl -X DELETE "$BASE/v2/settings/chatgpt" "${S[@]}"
+curl -X DELETE "$BASE/v2/settings/chatgpt" "${S[@]}"   # 200 {"revoked": true}, or {"revoked": false, "message": "..."}
 ```
 
-The sign-in is sealed in the store under the seal key, like a saved key. Signed in, with no provider's key, capabilities
+The sign-in is sealed in the store under the seal key, like a saved key. Any process that holds the store and the seal
+key (the server, each runner) renews the sign-in, so it is as trusted as the server; the seal key already opens every
+sealed key. Signed in, with no provider's key, capabilities
 say `models.source: "chatgpt"` and a revision that names no model runs on `chatgpt/gpt-6.1-sol` where the plan lists it.
 A run on the plan books its tokens and no dollars (`cost.plan`). Eligible usage in this app uses your ChatGPT plan.
 Manage usage in your ChatGPT settings. A sign-in is for the person who runs this server: don't share it or let others
