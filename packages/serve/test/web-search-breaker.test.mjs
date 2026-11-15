@@ -262,6 +262,72 @@ test("two calls in flight rate-limited at nearly the same time: a shorter wait n
   assert.equal(breaker.held()?.error, UNAVAILABLE);
 });
 
+// Keyless Exa answers its daily count running out as the same RATE_LIMITED, naming no wait. A second one after a wait
+// has passed, in the same run, is that count: search is off for the rest of the run. Its limit says so (repeatIsQuota,
+// the server's mark, set on keyless Exa's alone).
+const EXA_RATE = (retryAfter) => ({ kind: "rate", repeatIsQuota: true, ...(retryAfter !== undefined ? { retryAfter } : {}) });
+
+test("keyless Exa's daily cap: busy for 60 s after its first RATE_LIMITED, the call past the wait asks Exa again, and a second RATE_LIMITED then turns search off for the run", () => {
+  let now = Date.parse("2026-11-15T19:00:00Z");
+  const fail = { error: "the provider's search failed" };
+  const breaker = webSearch.searchBreaker(() => now);
+  breaker.read({ answer: fail, limit: EXA_RATE() });
+  assert.equal(breaker.held()?.error, "search is busy; try again in 60 s, or answer from what you have");
+  now += 61_000;
+  assert.equal(breaker.held(), undefined, "61 s on, the next call reaches Exa");
+  breaker.read({ answer: fail, limit: EXA_RATE() });
+  assert.equal(breaker.held()?.error, UNAVAILABLE, "a second RATE_LIMITED after the wait: off for the run, unsent");
+  now += 200_000;
+  assert.equal(breaker.held()?.error, UNAVAILABLE, "200 s on, still off");
+});
+
+test("keyless Exa: two RATE_LIMITED answers within one open wait (in flight together) only hold it; a success between two waits does not reset the count", () => {
+  let now = Date.parse("2026-11-15T19:00:00Z");
+  const fail = { error: "the provider's search failed" };
+  const found = { provider: "exa-keyless", query: "q", results: [] };
+  const flight = webSearch.searchBreaker(() => now);
+  flight.read({ answer: fail, limit: EXA_RATE() });
+  now += 200;
+  flight.read({ answer: fail, limit: EXA_RATE() });
+  assert.match(flight.held()?.error ?? "", BUSY, "two in flight: busy, never off");
+  now += 61_000;
+  assert.equal(flight.held(), undefined, "past the wait, the next call reaches Exa");
+  // A daily count: a success after the first wait does not reset it.
+  const daily = webSearch.searchBreaker(() => now);
+  daily.read({ answer: fail, limit: EXA_RATE(30) });
+  now += 31_000;
+  assert.equal(daily.held(), undefined);
+  daily.read({ answer: found });
+  assert.equal(daily.held(), undefined, "a success leaves it closed");
+  daily.read({ answer: fail, limit: EXA_RATE(30) });
+  assert.equal(daily.held()?.error, UNAVAILABLE, "the next RATE_LIMITED after a completed wait turns it off");
+});
+
+test("a rate limit not keyless Exa's (Parallel's 429, a hosted search's) that repeats after its wait still just waits again", () => {
+  let now = Date.parse("2026-11-15T19:00:00Z");
+  const fail = { error: "the provider's search failed" };
+  const breaker = webSearch.searchBreaker(() => now);
+  for (let round = 0; round < 3; round++) {
+    breaker.read({ answer: fail, limit: { kind: "rate" } });
+    assert.equal(breaker.held()?.error, "search is busy; try again in 60 s, or answer from what you have", `round ${round}`);
+    now += 61_000;
+    assert.equal(breaker.held(), undefined, `round ${round}: past the wait, the next call asks`);
+  }
+});
+
+test("keyless Exa through the tool: RATE_LIMITED (Retry-After 1), then past the wait RATE_LIMITED again, and every later call answers search is unavailable, unsent", async (t) => {
+  const { env, searches } = await exa(t, "429:1");
+  const search = await bindRun(env);
+  assert.deepEqual(said(await search("widgets")), { error: RATE_LIMITED });
+  const asked = await searches();
+  await pause(1_200);
+  assert.deepEqual(said(await search("widgets")), { error: RATE_LIMITED }, "past the wait, Exa is asked again");
+  const again = await searches();
+  assert.ok(again > asked, "the call past the wait reached Exa");
+  for (const query of ["widgets", "gadgets"]) assert.deepEqual(said(await search(query)), { error: UNAVAILABLE });
+  assert.equal(await searches(), again, "Exa is not asked again");
+});
+
 test("a search that succeeds, then one the provider rate-limits, then more: the provider is asked twice in all, and every call within the wait is busy", async (t) => {
   const { env, searches } = await exa(t, "ok,429");
   const search = await bindRun(env);
