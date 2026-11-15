@@ -67,7 +67,7 @@ describe("Replay on a revision", () => {
     expect(button(host)).toBeUndefined();
     expect(onDecided).not.toHaveBeenCalled();
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(text(host, "replay-decision")).toContain("Promoted: it serves first now. within 2 points of the agent on its graded inputs");
+    expect(text(host, "replay-decision")).toContain("Promoted: it serves first now. Within 2 points of the agent on its graded inputs");
     expect(text(host, "replay-score")).toBe("Workflow 80% vs agent 80% on 5 graded inputs (+0 pts), 1 handed back");
     expect(onDecided).toHaveBeenCalledTimes(1);
     expect(v2.learnedWorkflowReplay).toHaveBeenCalledTimes(2);
@@ -80,7 +80,7 @@ describe("Replay on a revision", () => {
     const host = mountOne(v2);
     act(() => button(host)!.click());
     await flush();
-    expect(text(host, "replay-decision")).toContain("Still held. the workflow 60.0% against the agent 80.0%");
+    expect(text(host, "replay-decision")).toContain("Still held. The workflow 60.0% against the agent 80.0%");
     expect(text(host, "replay-score")).toBe("Workflow 60% vs agent 80% on 5 graded inputs (-20 pts), 0 handed back");
     expect(button(host)!.textContent).toBe("Replay again");
   });
@@ -88,7 +88,7 @@ describe("Replay on a revision", () => {
     const failed = mountOne(fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ status: "failed", reason: "none of its runs started by its deadline: start it again" })]));
     act(() => button(failed)!.click());
     await flush();
-    expect(text(failed, "replay-decision")).toBe("The replay did not finish. none of its runs started by its deadline: start it again");
+    expect(text(failed, "replay-decision")).toBe("The replay did not finish. None of its runs started by its deadline: start it again");
     expect(failed.querySelector('[data-testid="replay-score"]')).toBeNull();
   });
   it("shows the server's words on a 409 and offers it again", async () => {
@@ -114,7 +114,7 @@ describe("Replay on a revision", () => {
     fail = false;
     act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "Check again")!.click());
     await flush();
-    expect(text(host, "replay-decision")).toContain("Still held. worse");
+    expect(text(host, "replay-decision")).toContain("Still held. Worse");
   });
   it("another revision's card starts clean", async () => {
     const v2 = fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ status: "done", decided: "hold", reason: "worse" })]);
