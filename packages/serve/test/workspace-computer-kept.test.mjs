@@ -103,6 +103,7 @@ function vendor(root, groups, machine = "linux") {
     },
     async release(ref, how) {
       calls.push(["release", ref.id, how]);
+      if (!computers.has(ref.id)) return { ok: false, error: { code: "not_found", message: `no computer ${ref.id}` } };
       if (how === "delete") computers.delete(ref.id);
       return { ok: true, value: undefined };
     },
@@ -249,6 +250,15 @@ test("a kept desktop whose run ended while parked (a stop, a cancel) is ended at
   assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] });
   assert.deepEqual(deletes(one.account), ["c1"]);
   assert.equal(one.store.settings.rows.has(keptKeyOf("run-1")), false);
+});
+
+test("a kept desktop the run's end already let go (run-end-computers.ts) has its row removed by the janitor's next pass, with nothing failed", async () => {
+  const one = await server();
+  await (await one.claim(3)).park();
+  one.account.computers.delete("c1");
+  one.store.runs.set("run-1", "stopped");
+  assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] });
+  assert.equal(one.store.settings.rows.size, 0);
 });
 
 test("the keep's end and a resume never both have it: a row the resume took is not ended, and one ended is not attached", async () => {

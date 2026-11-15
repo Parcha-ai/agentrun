@@ -39,7 +39,7 @@ import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgent
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
-import { endKept, KEEP_MS, type Kept, readKept, takeKept, writeKept } from "./computer-kept.js";
+import { deleteKept, endKept, KEEP_MS, type Kept, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
@@ -849,8 +849,7 @@ export async function computerForClaim(
       // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it.
       const timer = setTimeout(() => {
         void endKept(settings, launch.runId, row, async () => {
-          const deleted = await keeps.provider.release(ref, "delete");
-          if (!deleted.ok) throw new Error(deleted.error.message);
+          await deleteKept(keeps.provider, ref);
           await revoke().catch(() => undefined);
         }).catch(() => undefined);
       }, Math.max(0, row.until - now()));

@@ -131,10 +131,7 @@ export async function sweepKept(deps: {
         failed.push(`${kept.name} of run ${runId}: this server can't reach ${kept.provider} to end it`);
         continue;
       }
-      const deleted = await endKept(deps.settings, runId, kept, async () => {
-        const released = await provider.release({ id: kept.id, name: kept.name }, "delete");
-        if (!released.ok) throw new Error(released.error.message);
-      });
+      const deleted = await endKept(deps.settings, runId, kept, () => deleteKept(provider, kept));
       if (deleted) ended.push(kept.name);
       if (deleted && over) await deps.settings.removeIf(row.key, { ...kept, ended: true });
     } catch (error) {
@@ -142,6 +139,13 @@ export async function sweepKept(deps: {
     }
   }
   return { ended, failed, ...(next === undefined ? {} : { next }) };
+}
+
+/** Deletes the kept computer through its provider; one already gone (its run's end let it go, run-end-computers.ts, or
+ *  its vendor ended it) is as good as deleted. Throws the provider's words on any other failure. */
+export async function deleteKept(provider: Pick<ComputerProvider, "release">, kept: Pick<Kept, "id" | "name">): Promise<void> {
+  const released = await provider.release({ id: kept.id, name: kept.name }, "delete");
+  if (!released.ok && released.error.code !== "not_found" && released.error.code !== "gone") throw new Error(released.error.message);
 }
 
 const words = (error: unknown): string => (error instanceof Error ? error.message : String(error));
