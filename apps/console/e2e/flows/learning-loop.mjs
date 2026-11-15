@@ -29,7 +29,7 @@ const REVISIONS = [
   { commit: "2".repeat(40), at: later(17, -5), by: { run: runAt(17).run_id }, reason: "Revised after its replay was held: a total check added.", text: JSON.stringify(flow(0.7)), digest: D1 },
   { commit: "3".repeat(40), at: later(51, 10), by: { user: true }, reason: "Thresholds refit on 40 graded runs.", text: JSON.stringify(flow(0.78, true)), digest: D2 },
 ];
-const REPLAY = (n, wf, agent, back) => ({ of: [], n, agree: Math.round(n * 0.9), agent_acc: agent, wf_acc: wf, delta: Math.round((wf - agent) * 1000) / 1000, handed_back: back });
+const REPLAY = (n, wf, agent, back) => ({ of: SAMPLE.runs.slice(0, n).map((run) => run.run_id), n, agree: Math.round(n * 0.9), agent_acc: agent, wf_acc: wf, delta: Math.round((wf - agent) * 1000) / 1000, handed_back: back });
 const PROMOTIONS = [
   { workflow: WF, digest: D0, at: later(12, 10), decided: "replaying", source: "replay", reason: "A new revision replays on the last 20 graded inputs.", runs: [] },
   { workflow: WF, digest: D0, at: later(14, 10), decided: "hold", source: "replay", reason: "Held: it did worse than the agent on its graded inputs.", replay: REPLAY(20, 0.85, 0.94, 3) },

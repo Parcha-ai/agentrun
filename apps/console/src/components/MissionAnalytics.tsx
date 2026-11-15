@@ -27,7 +27,7 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
   const rate = successRate(t);
   const spent = groupCost(t, basis);
   const tiles: { label: string; value: string; notes: (string | undefined)[] }[] = [
-    { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.unmetered ? `${plural(t.unmetered, "request")} with no token count` : undefined] },
+    { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.requests === null || t.unmetered === null ? "Model request counts unavailable" : t.unmetered ? `${plural(t.unmetered, "request")} with no token count` : undefined] },
     { label: "Run time", value: duration(a.time.wall_ms), notes: [`wall time of ${plural(a.time.ended_runs, "ended run")}`, a.time.active_runs ? `${duration(a.time.active_ms)} active, over ${plural(a.time.active_runs, "run")}` : undefined] },
     { label: "Success rate", value: percent(rate), notes: [t.completed + t.failed ? outcomes(t) : "No run completed or failed yet"] },
     { label: "Cost", value: spent.total, notes: [spent.note] },
@@ -134,7 +134,7 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
   const any = days.some((d) => d.runs > 0);
   if (!any) return <Section title="Per day"><p className="px-4 py-6 text-center font-mono text-body text-muted-foreground">No runs started in this range{days.length ? " in the last 30 days" : ""}.</p></Section>;
   const runsTop = niceTop(Math.max(...days.map((d) => d.runs)));
-  const tokensTop = niceTop(Math.max(...days.map((d) => d.tokens)));
+  const tokensTop = niceTop(Math.max(...days.flatMap((d) => d.tokens === null ? [] : [d.tokens]), 0));
   const SEGMENTS = [
     { key: "completed", label: "Completed", className: "bg-muted-foreground", of: (d: AnalyticsGroup) => d.completed },
     { key: "failed", label: "Failed", className: "bg-destructive", of: (d: AnalyticsGroup) => d.failed },
@@ -153,7 +153,7 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
             readout={(d) => [`${d.runs} ${d.runs === 1 ? "run" : "runs"}`, `${d.completed} completed · ${d.failed} failed · ${otherOf(d)} other`]} />
         </figure>
         <figure>
-          <figcaption className="mb-2 text-small font-semibold">Tokens</figcaption>
+          <figcaption className="mb-2 text-small font-semibold">Tokens{days.some((day) => day.tokens === null) && <span className="ml-2 font-normal text-muted-foreground">? means unavailable</span>}</figcaption>
           <Bars days={days} top={tokensTop} label="Tokens per day" format={compact}
             stack={(d) => [{ className: "bg-primary", value: d.tokens }]}
             readout={(d) => [`${compact(d.tokens)} tokens`, coverage(d) ?? `${d.runs} ${d.runs === 1 ? "run" : "runs"}`]} />
@@ -163,7 +163,7 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
         <summary className="caps cursor-pointer text-label text-muted-foreground">Table</summary>
         <div className="overflow-x-auto"><table className="mt-2 w-full border-collapse font-mono text-small">
           <thead><tr className="caps text-label text-muted-foreground">{["Day", "Runs", "Completed", "Failed", "Other", "Tokens"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
-          <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
+          <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens === null ? "Unknown" : d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
         </table></div>
       </details>
     </Section>
@@ -174,7 +174,7 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
  *  a hairline grid at the axis' top and middle. Each column is a focus target whose readout shows on hover and focus. */
 function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLocaleString("en-US") }: {
   days: Analytics["by_day"]; top: number; label: string; format?: (n: number) => string;
-  stack: (d: AnalyticsGroup) => { className: string; value: number }[]; readout: (d: AnalyticsGroup & { day: string }) => string[];
+  stack: (d: AnalyticsGroup) => { className: string; value: number | null }[]; readout: (d: AnalyticsGroup & { day: string }) => string[];
 }) {
   const H = 140;
   return (
@@ -187,10 +187,13 @@ function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLo
           <div className="pointer-events-none absolute inset-x-0 top-0 border-t border-border" aria-hidden />
           <div className="pointer-events-none absolute inset-x-0 top-1/2 border-t border-border" aria-hidden />
           {days.map((d) => {
-            const parts = stack(d).filter((p) => p.value > 0);
+            const values = stack(d);
+            const unknown = values.some((part) => part.value === null);
+            const parts = values.filter((part): part is { className: string; value: number } => part.value !== null && part.value > 0);
             return (
               <div key={d.day} role="listitem" tabIndex={0} aria-label={`${d.day}: ${readout(d).join(", ")}`}
                 className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end outline-none hover:bg-accent/60 focus-visible:bg-accent/60">
+                {unknown && <span aria-hidden className="font-mono text-small text-muted-foreground">?</span>}
                 <div className="flex w-full max-w-[24px] flex-col-reverse gap-[2px]">
                   {parts.map((p, i) => (
                     <div key={i} className={cn(p.className, i === parts.length - 1 && "")} style={{ height: Math.max(1, Math.round((p.value / top) * (H - 2 * (parts.length - 1)))) }} />

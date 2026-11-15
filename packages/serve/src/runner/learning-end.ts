@@ -27,7 +27,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
-import { bookedCapSpend } from "./metrics.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
 import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type GradedAsk, type HeldAsk, heldNamesOf } from "../learn/compile.js";
@@ -49,6 +48,7 @@ import { getMcpServer } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline, withFeedback, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
+import { bookedCapSpend, bookedSpend } from "./metrics.js";
 import { fits, reviseOf, servedAnswerOf, servedOf, workflowDigest } from "./workflow-first.js";
 import { pendingFeedbackOf } from "./feedback-round.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
@@ -104,9 +104,15 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // rounds' grades took beside it counts toward that cap as its own spend does (Learning.spentBeside, the figure its
     // gates read). Either unknown: the spend is unknown, said so, never read as the whole cap.
     facts: async (runId) => {
-      const costUsd = costOf(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }));
+      const [rows, entries] = await Promise.all([
+        runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }),
+        runEntries(deps.store, runId, BACKGROUND_CONTEXT),
+      ]);
+      // A pi retry's Timeline carries the answered requests alone. Its earlier cut request is still an unknown charge
+      // in the booking: keep it unknown in the task snapshot too, as the run's end does, never just the retry's subtotal.
+      const unknown = (["model", "paid", "decisions"] as const).some((kind) => bookedSpend(entries, kind).usd === null);
+      const costUsd = unknown ? null : costOf(rows);
       if (launch.maxCostUsd === undefined) return { learns: true, costUsd };
-      const entries = await runEntries(deps.store, runId, BACKGROUND_CONTEXT);
       const capUsd = capNowOf(launch.maxCostUsd, entries)!;
       const spentUsd = await capSpendOf(deps.store, runId, entries);
       return { learns: true, costUsd, capUsd, spentUsd, capReached: spentUsd !== null && spentUsd >= capUsd };
