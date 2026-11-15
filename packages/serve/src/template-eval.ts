@@ -23,6 +23,7 @@ import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
 import type { MonidFake } from "./runner/monid-run.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
+import { webShownOf } from "./timeline/index.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
@@ -61,7 +62,7 @@ const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", 
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
-  tool_used: ["type", "tool", "tools", "expect", "count", "args"],
+  tool_used: ["type", "tool", "tools", "expect", "count", "at_least", "args"],
   file_exists: ["type", "path"],
 };
 /** A target: a field of the answer's JSON, dotted for a nested one. */
@@ -78,7 +79,7 @@ export const runInput = (content: string, fields?: Json): Json => ({ ...(content
 export type Grader =
   | { file: string; type: "llm"; rubric: string; target?: string }
   | { file: string; type: "regex"; pattern: string; flags: string; expect: "match" | "no_match"; target?: string }
-  | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; args?: Json }
+  | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; args?: Json }
   | { file: string; type: "file_exists"; path: string };
 /** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
  *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
@@ -232,10 +233,15 @@ function graderOf(p: Package, file: string, text: string, bad: (message: string)
       const count = data.count;
       if (count !== undefined && !(Number.isSafeInteger(count) && (count as number) >= 0)) return bad(`${file}: count is a whole number of calls, 0 or more`), undefined;
       if (count !== undefined && ((data.expect === "called" && count === 0) || (expect === "not_called" && (count as number) > 0))) bad(`${file}: expect ${expect as string} and count ${count as number} say different things`);
+      // at_least: that many matching calls or more (a run that searched once more than the case needs still passes).
+      const atLeast = data.at_least;
+      if (atLeast !== undefined && !(Number.isSafeInteger(atLeast) && (atLeast as number) >= 1)) return bad(`${file}: at_least is a whole number of calls, 1 or more`), undefined;
+      if (atLeast !== undefined && count !== undefined) return bad(`${file}: count is an exact number of calls and at_least a least one: give one, not both`), undefined;
+      if (atLeast !== undefined && expect === "not_called") bad(`${file}: expect not_called and at_least ${atLeast as number} say different things`);
       // Any call's arguments are known: a faked MCP tool's from its fake's log, any other's from the run's timeline read
       // with calls=whole (each string through the run's redaction and cut at CAPS.text).
       if (data.args !== undefined && !isObject(data.args)) bad(`${file}: args is a mapping of the arguments a call must carry`);
-      return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}) };
+      return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(atLeast !== undefined ? { atLeast: atLeast as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}) };
     }
     case "file_exists":
       if (typeof data.path !== "string" || !data.path.trim() || data.path.startsWith("/") || data.path.split("/").includes("..")) return bad(`${file}: a file_exists grader names a path in the run's work folder`), undefined;
@@ -504,6 +510,7 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
       const what = `${grader.tools.join(" or ")}${grader.args ? ` with ${JSON.stringify(grader.args)}` : ""}`;
       const said = `${calls.length} call${calls.length === 1 ? "" : "s"} of ${what}`;
       if (grader.count !== undefined) return { pass: calls.length === grader.count, reason: `${said}; the grader expects exactly ${grader.count}` };
+      if (grader.atLeast !== undefined) return { pass: calls.length >= grader.atLeast, reason: `${said}; the grader expects at least ${grader.atLeast}` };
       const pass = grader.expect === "called" ? calls.length > 0 : calls.length === 0;
       return { pass, reason: `${said}; the grader expects ${grader.expect === "called" ? "at least one" : "none"}` };
     }
@@ -537,6 +544,7 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const lines = run.calls.map((call, i) => ({
     head: `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`,
     result: call.result ?? "",
+    tool: call.name ?? call.tool,
   }));
   // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
@@ -553,10 +561,12 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
  *  each result past a length L keeps its first two thirds and last third of L with its middle cut and marked, L the
- *  longest that fits; else, every result cut to nothing, the middle calls dropped and marked. A cut says so on the
- *  list's first line, so the grader knows what it does not see; `what` names what follows each head there (a fake MCP
- *  server's list cuts a call's arguments). */
-export function fitCalls(lines: readonly { head: string; result: string }[], room: number, what = "result"): string {
+ *  longest that fits, a web call's (`tool`, web-calls.ts) every url whole and each of its snippets or its page's text cut
+ *  to L; else, when the web calls' url lists alone pass the room, every other result cut to nothing and each url list
+ *  keeping its head and tail as a result does; else, every result cut to nothing, the middle calls dropped and marked. A
+ *  cut says so on the list's first line, so the grader knows what it does not see; `what` names what follows each head
+ *  there (a fake MCP server's list cuts a call's arguments). */
+export function fitCalls(lines: readonly { head: string; result: string; tool?: string }[], room: number, what = "result"): string {
   const line = (head: string, result: string) => (result ? `${head}: ${result}` : head);
   const whole = lines.map((one) => line(one.head, one.result)).join("\n");
   if (whole.length <= room) return whole;
@@ -567,18 +577,36 @@ export function fitCalls(lines: readonly { head: string; result: string }[], roo
     const tail = Math.floor(keep / 3);
     return `${text.slice(0, keep - tail)}${marker}${text.slice(text.length - tail)}`;
   };
-  const LONG = said(`each long ${what} keeps its head and tail, its middle cut where marked`);
-  const NOTE = LONG.length + 1;
-  // The marker a cut adds is at most 40 characters: counted on every result L cuts.
-  const size = (keep: number) => NOTE + lines.reduce((sum, one) => sum + line(one.head, one.result.length > keep ? "x".repeat(keep + 40) : one.result).length + 1, 0);
-  if (size(0) <= room) {
-    let [low, high] = [0, Math.max(...lines.map((one) => one.result.length))];
-    while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
+  const webs = lines.map((one) => (one.tool ? webShownOf(one.tool, one.result) : undefined));
+  const LONG = said(`each long ${what} keeps its head and tail, its middle cut where marked${webs.some(Boolean) ? "; a web_search keeps every result's url, title and date, and a web_fetch its url and title, their snippets and page text cut" : ""}`);
+  // What a result cut to `keep` adds to its line, ": " included: the marker a cut adds is at most 40 characters, counted
+  // on every result `keep` cuts.
+  const cutTo = (text: string, keep: number) => (text.length > keep ? keep + 42 : text ? text.length + 2 : 0);
+  const high = Math.max(...lines.map((one) => one.result.length));
+  const longest = (size: (keep: number) => number) => {
+    let [low, top] = [0, high];
+    while (low < top) {
+      const mid = Math.ceil((low + top) / 2);
       if (size(mid) <= room) low = mid;
-      else high = mid - 1;
+      else top = mid - 1;
     }
-    return [LONG, ...lines.map((one) => line(one.head, middle(one.result, low)))].join("\n");
+    return low;
+  };
+  // A web call's line is measured as it is shown.
+  const size = (keep: number) => LONG.length + 1 + lines.reduce((sum, one, i) => sum + (webs[i] ? line(one.head, webs[i](keep)).length : one.head.length + cutTo(one.result, keep)) + 1, 0);
+  if (size(0) <= room) {
+    const keep = longest(size);
+    return [LONG, ...lines.map((one, i) => line(one.head, webs[i] ? webs[i](keep) : middle(one.result, keep)))].join("\n");
+  }
+  // The web calls' url lists alone pass the room: every other result is left out, and each list keeps its head and tail.
+  if (webs.some(Boolean)) {
+    const OVER = said(`the web calls' url lists alone pass it, so every other ${what} is left out, and each url list keeps its head and tail, its middle cut where marked`);
+    const lists = webs.map((web) => web?.(0) ?? "");
+    const over = (keep: number) => OVER.length + 1 + lines.reduce((sum, one, i) => sum + one.head.length + cutTo(lists[i]!, keep) + 1, 0);
+    if (over(0) <= room) {
+      const keep = longest(over);
+      return [OVER, ...lines.map((one, i) => line(one.head, lists[i] ? middle(lists[i]!, keep) : ""))].join("\n");
+    }
   }
   // Not even every call's head fits: the first and last calls, as many as fit, with no result, the middle ones dropped.
   const heads = lines.map((one) => one.head);

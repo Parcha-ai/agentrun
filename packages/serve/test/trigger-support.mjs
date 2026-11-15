@@ -49,6 +49,16 @@ export async function made(api, id, extra) {
   assert.equal((await api("POST", "/agents", agent(id, extra))).status, 201);
 }
 
+/** `check`'s answer once it is truthy, read every 10 ms for up to `ms`; its last answer when the time runs out. For what the
+ *  server does after the change a test can await (a sender told of a pause that follows it), so the assert after it reads
+ *  the outcome, not the timing. */
+export async function until(check, ms = 5_000) {
+  for (const end = Date.now() + ms; ; await sleep(10)) {
+    const answer = await check();
+    if (answer || Date.now() >= end) return answer;
+  }
+}
+
 /** The store's refusal of a firing's run (its run row is not there), on a firing still due or one that failed of it. */
 const runRowMissing = (f) => /FOREIGN KEY constraint failed/.test(`${f.reason ?? ""} ${f.error?.message ?? ""}`);
 
