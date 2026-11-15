@@ -227,6 +227,11 @@ test("capabilities say codex installs on first use until it is installed, and th
   const before = await offer();
   assert.equal(before.installs, "on_first_use", JSON.stringify(before));
   assert.equal(before.available, true, JSON.stringify(before));
+  // The agent's save starts the install without waiting for it (`void install.ensure()`), so its mark, which a run's claim
+  // reads, may come after a run started at once. The stand-in's claim starts no install of its own: one that finds no mark
+  // runs on and never says it installs. npm asking the held registry for Codex's tarball is the install in flight, its mark
+  // written long before: start the run after that.
+  await until("npm asks the registry for Codex's tarball (the install is in flight)", () => registry.tarballs(CODEX).length > 0, 60_000);
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   await until("the run reads that it installs Codex", async () => (await api("GET", `/runs/${run.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
   registry.release(CODEX);
