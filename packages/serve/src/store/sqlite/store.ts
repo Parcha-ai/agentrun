@@ -1300,6 +1300,10 @@ class SqliteStore implements Store {
       put: async (name, sealed) => {
         await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [name, sealed, now()] }]);
       },
+      replaceIf: async (name, was, sealed) => {
+        const [result] = await db.write([{ sql: "UPDATE sealed_keys SET sealed = ?, updated_at = ? WHERE name = ? AND sealed = ?", params: [sealed, now(), name, was] }]);
+        return result!.changes === 1;
+      },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ?", params: [name] }]);
       },

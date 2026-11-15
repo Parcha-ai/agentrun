@@ -89,6 +89,10 @@ export interface WorkflowProvider {
   readonly capModel: CapModel;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** A ChatGPT plan's route: its policy keeps the plan's rules (pi.ts policyFor). */
+  readonly plan?: boolean;
+  /** Told the credential an upstream 401 refused, so the next one is renewed (a ChatGPT plan's route). */
+  readonly refused?: (credential: string) => Promise<void>;
 }
 
 /** A tier's provider from the runner's model route (model-route.ts routeOf), the one way the runner resolves a model
@@ -116,6 +120,8 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     price: (route.price ?? (() => null)) as (model: string, usage: ProxyUsage) => number | null,
     capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null },
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(route.provider.plan ? { plan: true } : {}),
+    ...(route.provider.refused ? { refused: route.provider.refused } : {}),
   };
 }
 
@@ -261,7 +267,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const offered = nodeOffer(claimed.workflow);
     for (const [tier, provider] of providers) {
       const proxy = await startModelProxy({
-        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}) }, provider.modelId, offered),
+        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}), ...(provider.plan ? { plan: true } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
         origin: provider.origin,
@@ -269,6 +275,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         price: provider.price as never,
         ...(provider.headers ? { headers: provider.headers } : {}),
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
+        ...(provider.refused ? { credentialRefused: provider.refused } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
       // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.

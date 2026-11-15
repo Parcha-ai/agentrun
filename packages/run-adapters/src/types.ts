@@ -219,6 +219,8 @@ export interface ModelUsage {
   estimated?: boolean;
   /** Beside the provider's own figure, what the host's price table makes of the same usage: kept to audit the table. */
   tableUsd?: number | null;
+  /** `plan`: billed to a person's subscription plan (a ChatGPT plan's token), not by the token: `usd` is null. */
+  billing?: "plan";
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
