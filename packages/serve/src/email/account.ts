@@ -102,6 +102,15 @@ function keptOf(value: unknown): EmailAccount | undefined {
   return { preset: value.preset, address: value.address, user: value.user, imap, smtp };
 }
 
+/** Whether the saved account is Gmail's, by its preset or its IMAP host: what a tool's description says before any
+ *  connection (a call itself goes by the server's X-GM-EXT-1). */
+export const isGmailAccount = (account: Pick<EmailAccount, "preset" | "imap">): boolean => account.preset === "gmail" || /(^|\.)gmail\.com$/i.test(account.imap.host);
+
+/** The account's public part as kept now, never its password; undefined when none is kept. */
+export async function keptAccount(store: AccountStore, account = DEFAULT_ACCOUNT): Promise<EmailAccount | undefined> {
+  return account === DEFAULT_ACCOUNT ? keptOf(await store.settings.get(EMAIL_ACCOUNT_SETTING)) : undefined;
+}
+
 /** The account kept now, its password opened with `sealKey`; undefined when none is kept, or its password does not open
  *  (sealed under another key). */
 export async function openAccount(store: AccountStore, sealKey: Buffer, account = DEFAULT_ACCOUNT): Promise<OpenedAccount | undefined> {
