@@ -1328,6 +1328,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       void probe(`${entry.id}_installed`).catch(() => undefined);
     })];
   }));
+  // Each harness found installed as this server starts has what earlier installs left beside it swept (HarnessInstall
+  // needed): the point sure to come after an install that could not remove one (a crashed server's npm still writing in
+  // it), since no install runs again until the pin changes. Not waited for; the close waits for it (install.stop).
+  for (const install of Object.values(installs)) void install.needed().catch(() => undefined);
   // A capped start prices each OpenRouter Decisions model a workflow pins (runnable.ts) from OpenRouter's public catalog,
   // read once for this server (and again after a read that failed), through the faux one under --faux.
   let pricing: Promise<{ priceOf(model: string): Promise<unknown> }> | undefined;
