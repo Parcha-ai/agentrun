@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import { CANARY } from "./fixtures/faux-jev.mjs";
-import { baseOf, added, note } from "./learn-format-support.mjs";
+import { baseOf, added, DRAFT_PATH, note, README_PATH, readme, richWorkflow } from "./learn-format-support.mjs";
 import { scratch, withEnv } from "./support.mjs";
 import { git, repoOf } from "./learn-support.mjs";
 
@@ -496,6 +496,30 @@ test("guardProblems walks steps alone: a call's args or a step's state holding a
   // The steps under a parallel, a loop and a route are steps.
   const deep = { root: { node: "parallel", branches: [{ node: "loop", body: { node: "agent", label: "a" } }, { node: "route", branches: { x: { body: { node: "decide", label: "d" } } } }] } };
   assert.deepEqual(compile.guardProblems(deep, { jev: false }).map((line) => line.split(" has ")[0]), ['the agent step "a"', 'the decide step "d"']);
+});
+
+// Track A, A1 (H1, 300 merchants out of sample): the workflow that held the agent's accuracy at 11% of its cost does its
+// legwork on the fast model and answers on the agent's own; the same answering step on the fast model scored 8.5-9.6
+// points lower. The checks refuse a draft whose answering step (the model node writing the state key its output.path
+// reads) names tier "fast", in words the compile retry acts on; a legwork step on fast, or the answer on strong, passes.
+test("the answering step runs on the agent's model: a draft whose answering node names tier fast is refused in words the retry acts on; legwork on fast passes; the worked example answers with no tier", () => {
+  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl });
+  const legwork = JSON.parse(richWorkflow());
+  legwork.root.steps[0].tier = "fast";
+  assert.deepEqual(checked(legwork).problems, [], "a legwork step on fast passes");
+  const strong = structuredClone(legwork);
+  strong.root.steps[2].tier = "strong";
+  assert.deepEqual(checked(strong).problems, [], "the answer on strong passes: only fast is refused");
+  const fast = structuredClone(legwork);
+  fast.root.steps[2].tier = "fast";
+  assert.deepEqual(checked(fast).problems, [{ rule: "workflow", path: DRAFT_PATH, detail: 'the extract step "refund" writes the answer (output.path "verdict") on tier "fast": the answering node runs on the agent\'s model: drop its tier' }]);
+  for (const judges of [false, true]) for (const jev of [false, true]) {
+    const doc = compile.compileExample(judges, jev);
+    const answer = doc.root.steps.find((step) => step.as === doc.output.path);
+    assert.equal(answer?.node, "decide", "the example's answering step is its decide step");
+    assert.equal("tier" in answer, false, `judges ${judges}, jev ${jev}: the example's answer names no tier`);
+    assert.equal(doc.root.steps.find((step) => step.label === "facts").tier, "fast", "its legwork stays on fast");
+  }
 });
 
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
