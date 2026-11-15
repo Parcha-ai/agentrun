@@ -96,6 +96,10 @@ test("a script tests for a tool with typeof: a name the run has no tool by reads
     assert.match(refused.text, /tools\.missing does not exist\. Available: write_file, web_search, send_email, read_file\./, `${called}: today's words, naming the run's tools`);
   }
   assert.deepEqual(calls, [], "nothing was called");
+  // The check names nothing a script can shadow: its own `Object` or `undefined` change no answer.
+  const shadowed = await codemode.call({ script: "const Object = {};\nlet undefined = 'set';\nreturn [typeof tools.write_file, typeof tools.missing];" }, { signal: new AbortController().signal, nested });
+  assert.equal(shadowed.isError, undefined, shadowed.text);
+  assert.deepEqual(shadowed.structured, ["function", "undefined"], shadowed.text);
 });
 
 test("a script reads a nested call's value: its structured value, else its one text part parsed when that is a JSON object or array, else its text", async () => {
