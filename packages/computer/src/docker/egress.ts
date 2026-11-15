@@ -246,7 +246,8 @@ export interface EgressOwner {
 export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressOwner, code?: EgressCode, local: readonly string[] = []): "open" | { allow: string[] } | { other: string } {
 	const named = egressNameOf(owner.name);
 	const cmd = Array.isArray(proxy?.Config?.Cmd) ? proxy.Config.Cmd : [];
-	const form = cmd.includes("--open") ? "open" : "allow";
+	// The form by the flag names alone (argv[1], [3], ...): a value such as a hint of "--open" never makes it open.
+	const form = cmd.some((arg, at) => at % 2 === 1 && arg === "--open") ? "open" : "allow";
 	const other = (what: string) => ({ other: `network ${form}, but its egress proxy ${named} ${what}` });
 	if (proxy === undefined || proxy === null) return other("is gone: the computer reaches nothing");
 	const config = proxy.Config ?? {};

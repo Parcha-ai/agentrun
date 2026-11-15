@@ -155,6 +155,14 @@ test("create() with open runs the computer on no network of Docker's, through an
 	assert.equal(attached.value.spec.network, "open");
 });
 
+test("a hint that reads \"--open\" is a hint: an allowlist whose proxy carries it is made and reads back as its list, never open", async () => {
+	const { provider, calls } = fakeDocker({ egressOptions: { hint: "--open" } });
+	const made = await provider.create(SPEC, req());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(valuesOf(proxyRunOf(calls()), "--hint"), ["--open"]);
+	assert.deepEqual(await provider.network(made.value), { ok: true, value: { allow: ALLOW } });
+});
+
 test("a computer on a network of Docker's (the bridge) reads back as one this provider never makes: open is only through the egress proxy", async () => {
 	const { provider } = fakeDocker({ containers: [container({ name: A, network: "bridge" })] });
 	const read = await provider.network(ref(A));

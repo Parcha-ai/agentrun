@@ -424,14 +424,16 @@ test("Local Chrome at the claim: an operator's list is its allowlist, the defaul
 
 // The computer's spec by kind (computerSpecOf): box_allow is the computer's egress list, so a sandbox with none (or
 // "none") has no network; a browser, a desktop or a phone whose launch names none reaches what this server allows now
-// (AGENTRUN_BOX_ALLOW, the default list when unset), never "open" for it; an explicit list applies to any kind. Each provider's image for a
+// (AGENTRUN_BOX_ALLOW, the default list when unset); an explicit list applies to any kind. These specs carry no
+// provider networks (run.networks): a desktop whose provider makes "open" is "open" under the default list, in the
+// desktop-rule test above. Each provider's image for a
 // kind is its registry entry's (the computer package's PROVIDERS[].defaultImage); Docker's sandbox is the package's
 // recipe, and a Docker desktop has none, so with no image the owner named it is refused in words, never made from the
 // sandbox recipe, which has no X server. Any other kind with no default image is refused, naming the provider.
 const entryOf = (id) => PROVIDERS.find((one) => one.id === id);
 const DOCKER_DESKTOP_WORDS = "A Docker desktop needs an image with an X server; set one for desktops.";
 
-test("box_allow is the computer's egress list: a sandbox with none has no network, any other kind with none reaches the server's own list, never open, and an explicit list applies to a Docker desktop", () => {
+test("box_allow is the computer's egress list: a sandbox with none has no network, any other kind with none reaches the server's own list when its provider's networks are not known, and an explicit list applies to a Docker desktop", () => {
   const named = "example.org/desktop@sha256:" + "a".repeat(64);
   const spec = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named });
   assert.equal(spec(entryOf("docker"), "sandbox", {}).network, "none", "a sandbox with no box_allow");
@@ -441,8 +443,10 @@ test("box_allow is the computer's egress list: a sandbox with none has no networ
   assert.deepEqual(spec(entryOf("docker"), "sandbox", { boxAllow: ["api.example.com"] }).network, { allow: ["api.example.com"] }, "a sandbox's allow-list");
   assert.equal(spec(entryOf("docker"), "sandbox", { boxAllow: "none" }).network, "none");
   // A launch that names no box_allow (a row from before every launch carried one): this server's own setting now, the
-  // default list when AGENTRUN_BOX_ALLOW is unset, the operator's list or none when set; never "open" for it.
-  assert.deepEqual(spec(entryOf("docker"), "desktop", {}).network, { allow: [...DEFAULT_BOX_ALLOW] }, "a Docker desktop with no box_allow: the server's default list");
+  // default list when AGENTRUN_BOX_ALLOW is unset, the operator's list or none when set. With its provider's networks
+  // given, a Docker desktop under the default list is "open" (the desktop-rule test above).
+  assert.deepEqual(spec(entryOf("docker"), "desktop", {}).network, { allow: [...DEFAULT_BOX_ALLOW] }, "a Docker desktop with no box_allow and no provider networks: the server's default list");
+  assert.equal(spec(entryOf("docker"), "desktop", { networks: ["none", "open", "allow"] }).network, "open", "with Docker's networks: open, through its egress proxy");
   // A Docker desktop needs an image the owner named (the recipe has no X server): the same named image here.
   assert.deepEqual(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named, AGENTRUN_BOX_ALLOW: "pypi.org" })(entryOf("docker"), "desktop", {}).network, { allow: ["pypi.org"] }, "the operator's list");
   assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named, AGENTRUN_BOX_ALLOW: "none" })(entryOf("docker"), "desktop", {}).network, "none", "the operator's none");
