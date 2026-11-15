@@ -488,7 +488,8 @@ async function runTurn(turnId, clientId, text) {
     last = 'Recovered from the log. I will check the actual state before repeating anything.';
     await say(turnId, last);
   } else {
-    const call = /^(call|twice)\s+(\w+)\s*([\s\S]*)$/.exec(trimmed);
+    // A tool's name as a model API takes it: letters, digits, `_` and `-` (a long MCP tool's hashed wire name has a `-`).
+    const call = /^(call|twice)\s+([\w-]+)\s*([\s\S]*)$/.exec(trimmed);
     if (call) {
       const [, verb, tool, rawArgs] = call;
       let args = {};

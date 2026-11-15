@@ -19,7 +19,7 @@ import { journalEntries, journalRecords, recordOf } from "../runner/journal-read
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
-import { mcpToolName } from "../tool-names.js";
+import { mcpNameOf, mcpToolName } from "../tool-names.js";
 import { Turns } from "../turns.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -224,22 +224,35 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
   // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback), marked as no
   // message of the job's (feedbackMarked).
-  const rendered = feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), read), entries);
+  const render = (catalog?: ReadonlyMap<string, string>) => feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), catalog ? { ...read, catalog } : read), entries);
+  const first = render();
+  const catalog = await runCatalog(store, runId, first);
+  // An MCP tool whose `mcp__<server>__<tool>` is too long is called by its hashed wire name, which reads as no tool's own:
+  // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
+  const hashed = new Map([...(catalog ?? [])].filter(([wire, name]) => {
+    const mcp = mcpNameOf(name);
+    return mcp !== undefined && wire !== `mcp__${mcp.server}__${mcp.tool}`;
+  }));
+  const rendered = hashed.size ? render(hashed) : first;
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
-  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, await catalogNamed(store, runId, rows)), entries, options.redact), entries, options.redact));
+  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
 }
 
-/** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
- *  name (`mcp:<server>/<tool>`), never the wire name the harness called it by: read from the run's pins by lookup (catalog.ts
- *  wireName of each pinned tool), so one call reads one way. A row of any other tool is as it was. */
-async function catalogNamed(store: Store, runId: string, rows: TimelineEvent[]): Promise<TimelineEvent[]> {
-  if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return rows;
+/** The run's MCP tools and monid endpoints by the wire name its harness called each (catalog.ts wireName of each pinned
+ *  tool), read from the run's pins by lookup, never parsed back; undefined when no row names one by a wire name. */
+async function runCatalog(store: Store, runId: string, rows: readonly TimelineEvent[]): Promise<ReadonlyMap<string, string> | undefined> {
+  if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return undefined;
   const run = await store.runs.get(runId);
   const pinned = Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
   const monid = Object.keys((run && (await store.agents.revision(run.revisionId)))?.monidPin ?? {});
-  const catalog = new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
-  return rows.map((row) => (row.tool_name !== null && catalog.has(row.tool_name) ? { ...row, tool_name: catalog.get(row.tool_name)! } : row));
+  return new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
 }
+
+/** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
+ *  name (`mcp:<server>/<tool>`, from the run's `catalog`), never the wire name the harness called it by, so one call reads
+ *  one way. A row of any other tool is as it was. */
+const catalogNamed = (rows: TimelineEvent[], catalog: ReadonlyMap<string, string> | undefined): TimelineEvent[] =>
+  catalog ? rows.map((row) => (row.tool_name !== null && catalog.has(row.tool_name) ? { ...row, tool_name: catalog.get(row.tool_name)! } : row)) : rows;
 
 /** Whether the run's newest turn is over, cut (turns.ts: no message of the run's open, the newest one's end interrupted),
  *  its end-of-run turn's entries apart, as the run's view reads its status. */
