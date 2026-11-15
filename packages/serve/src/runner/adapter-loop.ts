@@ -64,7 +64,7 @@ import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../comp
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, freeModel, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -1739,6 +1739,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           .filter((entry) => entry.kind === CAP_WRAPUP)
           .map((entry) => (entry.data as { capUsd?: unknown } | undefined)?.capUsd)
           .filter((capUsd): capUsd is number => typeof capUsd === "number");
+        // The free limits it was told under (a CAP_WRAPUP row naming `freeLimit`), read at each claim, so a restart never tells
+        // one twice.
+        const toldFreeLimits = new Set<number>(
+          (await entriesOf(gate.journal, wrapUpRoot.id, context))
+            .filter((entry) => entry.kind === CAP_WRAPUP)
+            .map((entry) => (entry.data as { freeLimit?: unknown } | undefined)?.freeLimit)
+            .filter((limit): limit is number => typeof limit === "number"),
+        );
         const toldAt = (capUsd: number | undefined): boolean => capUsd !== undefined && toldCaps.some((told) => Math.abs(told - capUsd) <= 1e-9);
         // What the run spent on its sessions other than this claim's model session, its decisions' and its paid calls' (an
         // earlier session's, a grade's), summed as overCap sums them; null while any is unknown. Read at the claim and again
@@ -1768,7 +1776,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
           if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
         }
-        const capNote: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; at: number }; live?: true; lastFigures?: RequestFigures } = {
+        /** The run's requests counted toward the free limit so far, in every session (free.ts freeRequestsIn), as of the last
+         *  admission: read at the claim and after each request is admitted, as the rest is. */
+        const freeMadeOf = async (): Promise<number> => {
+          let made = 0;
+          for (const key of await sessions.keys()) made += freeRequestsIn(await sessions.read(key));
+          return made;
+        };
+        const capNote: { costs: number[]; restUsd: number | null; freeMade: number; offered?: { words: string; leftUsd: number; capUsd: number; freeLimit?: number; at: number }; live?: true; lastFigures?: RequestFigures } = {
+          freeMade: await freeMadeOf(),
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
@@ -1830,7 +1846,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // refused) gives it back as it goes (noteReturned), so the next request takes it at once. WRAP_UP_OFFER_MS is
           // only the backstop for a path that never gives it back: past it, a later request is offered it.
           if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
-          if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
+          if (!config || !capModel) return undefined;
+          // The free-model limit's wrap-up (free.ts): the same note and offer, one per run and limit, on a request of a free
+          // model. The dollar cap's note, when it is due on this request, goes first: one note per request, and it is told
+          // once, so the free one waits for the next request (or never comes, the run having answered).
+          const freeNote = (): string | undefined => {
+            const limit = config.freeRequests;
+            if (limit === undefined || toldFreeLimits.has(limit) || !freeModel(capModel)) return undefined;
+            const due = freeWrapUpDue(limit, capNote.freeMade);
+            if (!due) return undefined;
+            const words = freeWrapUpWords(due.left);
+            capNote.offered = { words, leftUsd: 0, capUsd: 0, freeLimit: limit, at: Date.now() };
+            return words;
+          };
+          if (capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return freeNote();
           const spentUsd = sessionSpent + decided + paidSpent + rest;
           // The tools' gate counts a request in flight at its hold (sessionSpendOf), so the note counts it the same: it never
           // comes later than the gate's first refusal.
@@ -1845,8 +1874,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const atLine = wrappingUp(capUsd, spentUsd + heldUsd, reserveOf(figuresOf(model, asked)));
           const leftUsd = capUsd - spentUsd - heldUsd;
           const note = due ?? (atLine ? { words: wrapUpWords(leftUsd, capNote.costs.length === 0), leftUsd } : undefined);
-          capNote.offered = note ? { ...note, capUsd, at: Date.now() } : undefined;
-          return note?.words;
+          if (!note) return freeNote();
+          capNote.offered = { ...note, capUsd, at: Date.now() };
+          return note.words;
         };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
         // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
@@ -2120,7 +2150,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
             // Told once a request carrying it is admitted with it (never one that went without the note's bytes): the server's
             // row, once per cap, made durable before the request leaves, so a machine lost after it never tells that cap twice.
-            if (offer && ticket && !(ticket as { noteDropped?: true }).noteDropped && !toldAt(offer.capUsd)) {
+            try {
+              capNote.freeMade = await freeMadeOf();
+            } catch (error) {
+              console.warn(`[runner] the run's free requests were not counted; no free-limit wrap-up until they are: ${said(error)}`);
+            }
+            if (offer?.freeLimit !== undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped && !toldFreeLimits.has(offer.freeLimit)) {
+              const { words, freeLimit } = offer;
+              toldFreeLimits.add(freeLimit);
+              try {
+                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words, freeLimit } as unknown as JsonValue }), context);
+                await deps.flush();
+              } catch (error) {
+                console.warn(`[runner] the free-limit wrap-up's row was not written (the note went with the request): ${said(error)}`);
+              }
+            } else if (offer && offer.freeLimit === undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped && !toldAt(offer.capUsd)) {
               const { words, leftUsd, capUsd } = offer;
               toldCaps.push(capUsd);
               try {

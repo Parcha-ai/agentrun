@@ -14,6 +14,7 @@
 // Admissions run one at a time across the run's sessions. The priced tools' charges and holds are not here: they are the
 // host's spentUsd and heldUsd hooks (beforeRequestOf), read beside these.
 import { type BeforeRequest, type InFlight, RUNNER_RECORDS, sessionSpendOf } from "./runner.js";
+import { freeRequestsIn } from "./kernel/cap/free.js";
 import type { SessionRecord } from "./types.js";
 
 /** The run's sessions: every key it has, and each one's records. */
@@ -43,7 +44,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest): Before
       for (const key of await sessions.keys()) {
         const records = await sessions.read(key);
         const spend = sessionSpendOf(records);
-        for (const r of records) if (r.kind === RUNNER_RECORDS.request && (r.data as { freeRequest?: unknown } | undefined)?.freeRequest === true) freeRequestsMade += 1;
+        freeRequestsMade += freeRequestsIn(records);
         spentUsd = spentUsd === null || spend.spentUsd === null ? null : spentUsd + spend.spentUsd;
         // A hold-only step still open is no spend in its records: this booking keeps counting the one it admitted, in
         // flight at its hold, until it is answered (a lost claim's, admitted by no booking here, counts nothing).
