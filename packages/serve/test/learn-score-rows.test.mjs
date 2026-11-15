@@ -91,5 +91,6 @@ test("a soft escalate switched off: the refit's score is the one scorer's at its
   const refit = refitGuards(text, refitRowsOf(rows), NOW);
   assert.deepEqual(refit.guards, [{ node: "unsupported", was: null, threshold: null, escalate: true }]);
   assert.deepEqual(scoreOf(refit), score(rows, chosen(text, refit)));
-  assert.deepEqual(scoreOf(refit), { n: 10, agree: 9, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 0 });
+  // n2's draft (41) is not the answer graded wrong (42), with nothing expected: right by the grade.
+  assert.deepEqual(scoreOf(refit), { n: 10, agree: 9, agent_acc: 0.9, wf_acc: 1, delta: 0.1, handed_back: 0 });
 });
