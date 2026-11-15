@@ -229,10 +229,7 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const catalog = await runCatalog(store, runId, first);
   // An MCP tool whose `mcp__<server>__<tool>` is too long is called by its hashed wire name, which reads as no tool's own:
   // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
-  const hashed = new Map([...(catalog ?? [])].filter(([wire, name]) => {
-    const mcp = mcpNameOf(name);
-    return mcp !== undefined && wire !== `mcp__${mcp.server}__${mcp.tool}`;
-  }));
+  const hashed = hashedMcp(catalog?.values() ?? []);
   const rendered = hashed.size ? render(hashed) : first;
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
@@ -243,10 +240,26 @@ export async function runTimeline(store: Store, runId: string, context: Context,
 async function runCatalog(store: Store, runId: string, rows: readonly TimelineEvent[]): Promise<ReadonlyMap<string, string> | undefined> {
   if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return undefined;
   const run = await store.runs.get(runId);
-  const pinned = Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+  const pinned = await pinnedMcp(store, runId);
   const monid = Object.keys((run && (await store.agents.revision(run.revisionId)))?.monidPin ?? {});
   return new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
 }
+
+/** The catalog names (`mcp:<server>/<tool>`) of the MCP tools the run pinned, from its pin. */
+const pinnedMcp = async (store: Store, runId: string): Promise<string[]> =>
+  Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+
+/** Of `names` (catalog names), each MCP tool whose `mcp__<server>__<tool>` is too long, by the hashed wire name its harness
+ *  calls it (catalog.ts wireName): a name that reads as no tool of its own, so a reader names its calls by the catalog name. */
+const hashedMcp = (names: Iterable<string>): Map<string, string> =>
+  new Map([...names].flatMap((name): [string, string][] => {
+    const mcp = mcpNameOf(name);
+    return mcp !== undefined && wireName(name) !== `mcp__${mcp.server}__${mcp.tool}` ? [[wireName(name), name]] : [];
+  }));
+
+/** The run's MCP tools called by a hashed wire name, by that name (hashedMcp over its pin): what its end's metrics count
+ *  each one's calls under its catalog name by (runner/metrics.ts runMetrics's `catalog`), as its timeline names them. */
+export const hashedMcpOf = async (store: Store, runId: string): Promise<ReadonlyMap<string, string>> => hashedMcp(await pinnedMcp(store, runId));
 
 /** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
  *  name (`mcp:<server>/<tool>`, from the run's `catalog`), never the wire name the harness called it by, so one call reads
@@ -300,14 +313,19 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
   return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
 }
 
+/** A usage row's cost when every model request went to a free model (its known price $0 for every token): $0, and why. */
+export const FREE_COST = "$0 · free model";
+
 /** A pi run's `rows` with its side calls in its usage row: the requests its session booked that no answer of pi's carries
  *  (a learned workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), at what they were
  *  booked at, unknown when one's price is, beside the answers the renderer counted. Their requests join its count; its
- *  words are the renderer's, figures changed. A run with none is as rendered. */
+ *  words are the renderer's, figures changed. A run whose every request its booking marked free (bookedSpend's `free`)
+ *  and that cost $0 says why (FREE_COST). A run with neither is as rendered. */
 function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
   const side = bookedSpend(entries, "side");
+  const free = bookedSpend(entries, "model").free === true;
   const at = rows.findLastIndex((row) => row.kind === "usage");
-  if (!side.requests || at < 0) return [...rows];
+  if ((!side.requests && !free) || at < 0) return [...rows];
   const row = rows[at]!;
   const own = row.usage ?? { usd: 0, requests: 0 };
   const known = (own.usd ?? own.so_far_usd ?? 0) + side.known;
@@ -315,9 +333,9 @@ function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLi
   const usd = unpriced ? null : Math.round(known * 1e6) / 1e6;
   const requests = own.requests === null ? null : own.requests + side.requests;
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
-  const spent = usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
+  const spent = usd === 0 && free ? FREE_COST : usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
   const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests === null ? "an unknown number of" : requests} model request${requests === 1 ? "" : "s"}`);
-  const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}) };
+  const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}), ...(usd === 0 && free ? { free: true as const } : {}) };
   return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
 }
 
@@ -344,8 +362,10 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   }
   const usd = unbooked || model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
   const unpriced = model.unpriced + paid.unpriced + (unbooked ? 1 : 0);
+  // Every model request on a free model, booked so, and nothing else charged: its $0 says why.
+  const free = usd === 0 && model.free === true;
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
-  const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
+  const spent = free ? FREE_COST : usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
   // Its tool calls with no price as the renderer counted them from the journal (TOOL_UNMETERED), as on a pi run's row.
   const notMetered = at >= 0 ? (rows[at]!.usage?.not_metered ?? 0) : 0;
   const calls = toolCallWords(paid.requests, notMetered);
@@ -354,7 +374,7 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
     : unbooked
     ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
     : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
-  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}) };
+  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}), ...(free ? { free: true as const } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

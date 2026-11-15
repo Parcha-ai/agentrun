@@ -60,8 +60,9 @@ export type TimelineEvent = {
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage
    *  row. `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
-   *  charged an unknown amount or cut). Absent when `usd` is known. */
-  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number };
+   *  charged an unknown amount or cut). Absent when `usd` is known. `free`, on the usage row: its $0 is because every
+   *  model request went to a free model (one whose known price is $0 for every token), each booked so; absent otherwise. */
+  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
@@ -119,19 +120,30 @@ export const CALL_REFUSED = "agentrun.refused";
  *  `error`, or the Messages client's "<api> API error (400): {...}" with them at the top (the runner's pi route speaks
  *  Messages to the session's proxy). */
 function proxyCapRefusal(errorMessage: unknown): boolean {
-  if (typeof errorMessage !== "string") return false;
+  return proxyAnswerOf(errorMessage)?.code === "spend_cap_reached";
+}
+
+/** The code of the model proxy's answer once a ChatGPT plan's limit is reached (the kernel's PLAN_LIMIT_CODE): its words
+ *  are the run's error as they are. */
+const PLAN_LIMIT_CODE = "plan_limit_reached";
+
+/** The model proxy's own answer in pi's error for a request (`type` "agentrun_proxy"), its code and words, read by its
+ *  fields after the HTTP status pi-ai puts first (proxyCapRefusal says the two forms); undefined for any other error. */
+function proxyAnswerOf(errorMessage: unknown): { code?: string; message?: string } | undefined {
+  if (typeof errorMessage !== "string") return undefined;
   const at = errorMessage.indexOf("{");
-  if (at < 0) return false;
+  if (at < 0) return undefined;
   const head = errorMessage.slice(0, at);
   // The provider's name is any word with no space (agentrun-session today; a route's own, such as openrouter/anthropic):
   // the body's fields, never the name, say whose refusal it is.
-  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return false;
+  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return undefined;
   try {
-    const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; error?: { type?: unknown; code?: unknown } } | null;
+    const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; message?: unknown; error?: { type?: unknown; code?: unknown; message?: unknown } } | null;
     const error = body?.error ?? body;
-    return error?.type === "agentrun_proxy" && error.code === "spend_cap_reached";
+    if (error?.type !== "agentrun_proxy") return undefined;
+    return { ...(typeof error.code === "string" ? { code: error.code } : {}), ...(typeof error.message === "string" ? { message: error.message } : {}) };
   } catch {
-    return false;
+    return undefined;
   }
 }
 /** Written right after an answer whose cost was not in when it was written (a harness's proxy books a response after
@@ -342,6 +354,13 @@ function createMeter() {
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
   // answer). Earlier answers are a run's from before requests were marked.
   let answered = 0;
+  // Marked requests that ended with no answer on a free model (their end mark's `free`: booked a known $0), never a cost
+  // unknown: one counted once the next request leaves with no answer between (pi tried it again), and whether the latest
+  // end was one (its answer, an error's entry, may still come).
+  let freeUnanswered = 0;
+  let freeEnded = false;
+  // Whether the latest answer's cost was counted unknown (a cut answer's): a free end mark written after it makes it $0.
+  let lastUnknown = false;
   // Side requests (compactions, a tool's own requests), apart: one may run beside a generation. Each closes with its
   // cost, or with an end when aborted.
   let compactions = 0;
@@ -403,6 +422,7 @@ function createMeter() {
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
+      lastUnknown = false;
     } else if (entry.kind === REQUEST_COST_LATE) {
       // The answer it prices was written before its usage came in: its usage, when it has one, is that answer's tokens.
       const late = tokensOf(data?.usage);
@@ -422,15 +442,24 @@ function createMeter() {
       refusedAny = true;
     } else if (entry.kind === REQUEST_STARTED) {
       capRefusals = 0;
+      if (freeEnded) freeUnanswered += 1;
+      freeEnded = false;
+      lastUnknown = false;
       marked += 1;
       inFlight = true;
       lastClamp = clampOf(data?.clamp);
     } else if (entry.kind === REQUEST_ENDED) {
       if (unsent(entry)) marked -= 1;
       inFlight = false;
+      // For a request still unanswered; one written after pi's entry for it (a cut answer's) makes that answer's cost $0.
+      freeEnded = data?.free === true && marked - answered - freeUnanswered > 0;
+      if (data?.free === true && !freeEnded && lastUnknown) (unknown -= 1), (lastUnknown = false);
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
       if (marked > 0) answered += 1;
+      // Its request's free end mark came first: whatever it answered costs nothing.
+      const free = freeEnded;
+      freeEnded = false;
       const name = str(message.model);
       if (name) {
         const key = metricName(str(message.provider) ? `${str(message.provider)}/${name}` : name);
@@ -439,7 +468,9 @@ function createMeter() {
       // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
       // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
       const aborted = message.stopReason === "aborted";
-      addCost(aborted ? undefined : obj(obj(message.usage)?.cost)?.total);
+      const before = unknown;
+      addCost(free ? 0 : aborted ? undefined : obj(obj(message.usage)?.cost)?.total);
+      lastUnknown = marked > 0 && unknown > before;
       const counted = aborted ? undefined : tokensOf(message.usage, message.stopReason === "error");
       lastUnmetered = !counted;
       addTokens(counted);
@@ -458,14 +489,16 @@ function createMeter() {
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
-    const cut = marked - open(inFlight) > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
+    // Those on a free model ended at a known $0: counted, never cut.
+    const free = freeUnanswered + (freeEnded ? 1 : 0);
+    const cut = marked - open(inFlight) - free > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     const unmetered = notMetered ? { not_metered: notMetered } : {};
-    if (!requests && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
+    if (!requests && !free && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
-    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
+    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - free - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
     return { usd, requests: count, charges: paidCalls.size + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
   }
 
@@ -808,7 +841,9 @@ function createProjector(options: TimelineOptions) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered !== "continued") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
-        const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
+        // A ChatGPT plan's limit reached (the model proxy's own answer, by its code) reads in its own words alone.
+        const proxied = proxyAnswerOf(message.errorMessage);
+        const why = redactedWhy(proxied?.code === PLAN_LIMIT_CODE && proxied.message ? proxied.message : (str(message.errorMessage) ?? "unknown error"));
         // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
         // still bill it (run-adapters answeredUnpriced). Its row says so, as the usage row counts it "not priced".
         const priced = Number.isFinite(obj(obj(message.usage)?.cost)?.total);

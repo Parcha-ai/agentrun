@@ -431,7 +431,7 @@ in the kernel's tool registry, keyed by these groups.
   | docker | none |
   | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
   | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
-  | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
+  | e2b | none: `prepareImage()` answers the box template (`boxE2bTemplate()`), for a sandbox and a desktop alike |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
   | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
@@ -1706,11 +1706,16 @@ E2B's own. `create` takes the caller's request id (`{ requestId }`, serve's is t
 `computer-` and the first 12 hex digits of its sha256, and a retry of the same request finds the computer the first
 made instead of making a second.
 
-An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2B Desktop's (Ubuntu 22.04 with Xvfb,
-Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
-server itself, as on a Docker desktop, and its X11 shim drives it. With `kind: "linux"` it is kind `linux`
-on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
-offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
+An E2B computer is a sandbox made from an E2B template. The descriptor names no default: it says `prepareImage`, and
+`prepareImage()` answers the box template, `boxE2bTemplate()` (`src/box-image.ts`), with no call and no wait. That is
+`<BOX_E2B_PUBLISHER>/agentrun-archil-<recipe hash>`, the box image (`box/Dockerfile`: the archil client and helper,
+the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box-e2b` job builds as a template in the publishing
+team and makes public, so any E2B account starts it by that name. A sandbox and a desktop both start from it, in either
+mode. It is kind `desktop`: computerd starts the X server and xfwm4 itself (`src/desktop.ts`), as on a Docker desktop,
+and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any template, with no display: the same
+provider, minus the X server, so it costs nothing to offer. A caller that names a template (`create({ image })`) gets
+that one: E2B Desktop's own, `desktop`, still works for kind `desktop`, since computerd needs only Xvfb and xfwm4 from
+it. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
 as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
 Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
@@ -1744,7 +1749,11 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    The listing shows a new sandbox a moment late, so the name is listed again until it shows or `listedMs` (15 s)
    passes, and the sandbox found is killed and read back gone, as release waits for one.
 2. `getInfo` reads the sandbox's state until it runs.
-3. `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
+3. A command as root makes the system paths whose permissions E2B's template build sets wider than root's root's alone
+   (`HostFacts.rootOnly`, `ROOT_ONLY` in `src/e2b.ts`), and everything under a directory: root the owner, and write
+   taken off group and other users. It fails create if any entry is still not root's alone. It runs before anything of create's is in the
+   sandbox, so the daemon's install and the Archil helper's sha256 check read what only root can change. Then
+   `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
    same install command as Daytona's (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and
    prints its sha256, which must be the uploaded one's, and who installed it (a create note).
 4. The adapter's start command, a background command as root, starts `computerd init --deadline <time> --user
@@ -1752,7 +1761,8 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    detached: in a session of its own (`setsid`), its output to `/run/agentrun-init.log`, so the command ends at once
    and a daemon that never answers is reported with init's own words. Every command goes through envd's
    `Process.Start` stream, called on the SDK's own Connect client (`commands.rpc`, `index.mjs:4972-4985`) as
-   `commands.run` calls it (`index.mjs:5123-5146`): `/bin/bash -l -c` and the argv quoted, root by the Basic header
+   `commands.run` calls it (`index.mjs:5123-5146`), without its login shell: `/bin/sh` by its path runs the argv as its
+   own words (`-c 'exec "$@"' sh <argv>`), with `PATH` the system's directories alone, root by the Basic header
    (`index.mjs:1896-1900`), envd's keepalive every 50 s, and no deadline on the stream (timeout 0, which the Connect
    transport reads as none), because envd kills a command whose timeout passes (envd `process/start.go:39-44`); the
    SDK's default would end it after 60 s (`index.mjs:4978`). Only the start is bounded.
@@ -1910,7 +1920,8 @@ The conformance module, `dist/conformance/e2b.js`, checks `AGENTRUN_COMPUTER_LIV
 else, then reads the run's settings (`settingsFromEnv`, below) and builds the provider through `create()` with every
 computer capped at 30 minutes, Hobby's plan for conformance
 (Hobby caps a sandbox at 1 h; a run that needs more moves to Pro). `conformanceImage()` is `COMPUTER_E2B_TEMPLATE`, else
-`desktop` (`base` for kind linux), and `createDriftedProvider()` uploads a daemon built with Go as `<version>-drift`.
+`desktop` (`base` for kind linux), E2B's stock templates, which conformance keeps since it proves the provider rather
+than the box (a run against the box template passes it as `COMPUTER_E2B_TEMPLATE`), and `createDriftedProvider()` uploads a daemon built with Go as `<version>-drift`.
 `test/e2b/conformance.e2b.test.mjs` runs the suite with `computerd-fixture` built for linux/amd64, and skips unless the
 switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 
@@ -2575,6 +2586,12 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   DNS name): every target must read `refused`, and the probe's `interfaces` must be `["lo"]`. So it proves, per
   provider, that a tool reaches neither the vendor's agent nor any address. A provider that declares nothing (Docker:
   no agent inside) skips it in words.
+- **What root runs** (`isolation.root-runs`, Core wherever exec runs): through `exec.run`, as the computer's user, the
+  case reads `test -w` on root's `PATH` directories, the daemon, the Archil helper and client, the vendor's agent and
+  init's table where an image has them, and every directory above each (`ROOT_RUNS`), and fails on any it may write. A
+  path on a read-only mount is closed (BusyBox's `test -w` reads the mode bits alone, so the case reads the mount's
+  options too). It checks write access alone and changes nothing.
+  `mount.archil-isolated-durable` runs the same check on its Archil computer.
 - **Core by kind.** `coreGroups(kind, daemon)` is what a computer of its kind must declare (the table in
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
@@ -2726,7 +2743,7 @@ it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `key
 fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
 `metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
 `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
-`prepareImage` (a provider that builds or pulls its image before a run), `imageEnv` (the server's environment variable
+`prepareImage` (a provider whose `prepareImage()` answers its image before a run: it builds, pulls or names it), `imageEnv` (the server's environment variable
 that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
 (a computer on this host), and
 `ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and

@@ -144,10 +144,10 @@ test("a CLI look-back answered and then cut by a lost runner: asked again once o
   assert.equal(proposal.look_back_usd, 0.013, `both attempts' look-back spend ($0.004, then $0.008 + $0.001): ${JSON.stringify(proposal)}`);
 });
 
-// Under a cap, the cut request counts at what the cap held for it and its cache-miss bound (its spend under the cap is
+// Under a cap, the cut request counts at what the cap held for it, its worst case (its spend under the cap is
 // known, as the run's own cap gates read it: learning-end.ts capSpendOf), so the next claim asks the look-back again
 // within the room left, as an uncapped run does. Its cost stays unknown.
-test("a CLI look-back a lost runner cut under a cap: the next claim asks it again once within the cap (the cut counted at its hold and bound), and keeps the job's cost and answer time from the first ask, its look-back unknown, never $0", { timeout: 120_000 }, async (t) => {
+test("a CLI look-back a lost runner cut under a cap: the next claim asks it again once within the cap (the cut counted at its hold), and keeps the job's cost and answer time from the first ask, its look-back unknown, never $0", { timeout: 120_000 }, async (t) => {
   const { row, turns, sent, kept, restartedAt } = await restarted(t, "cut", { max_cost_usd: 1 });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.deepEqual(asks(sent, turns), { prompts: 2, twice: 0 }, `sent once on each claim: ${JSON.stringify(turns)}`);

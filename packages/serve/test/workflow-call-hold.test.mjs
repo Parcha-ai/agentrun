@@ -14,7 +14,7 @@ const { CapRefused } = await import("@parcha/agentrun-kernel/kernel/cap");
 function fixture({ chargedBy = "parallel" } = {}) {
   const log = [];
   const paid = {
-    admit: async (request) => (log.push(["admit", request.id, request.chargedBy ?? null]), { id: request.id, heldUsd: request.holdUsd, boundUsd: 0, worstUsd: request.holdUsd, stoppedUsd: () => request.holdUsd }),
+    admit: async (request) => (log.push(["admit", request.id, request.chargedBy ?? null]), { id: request.id, heldUsd: request.holdUsd, stoppedUsd: () => request.holdUsd }),
     settle: async (id, usd, options) => (log.push(["settle", id, usd, options?.givenBack === true]), usd),
     spentUsd: () => 0,
     heldUsd: () => 0,
@@ -79,7 +79,7 @@ function admissions({ receipts = [], refusals = [] } = {}) {
       const refusal = refusals.shift();
       if (refusal) { log.push(["refused", refusal.forGood]); throw refusal; }
       log.push(["admit", request.id]);
-      return { id: request.id, heldUsd: request.holdUsd, boundUsd: 0, worstUsd: request.holdUsd, stoppedUsd: () => request.holdUsd };
+      return { id: request.id, heldUsd: request.holdUsd, stoppedUsd: () => request.holdUsd };
     },
     settle: async (id, usd, options) => (log.push(["settle", id, usd, options?.givenBack === true]), usd),
     spentUsd: () => 0,

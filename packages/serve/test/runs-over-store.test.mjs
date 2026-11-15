@@ -585,22 +585,23 @@ test("startRun names the run's ready files in its launch, in order, for the runn
   assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).files, ["f-2", "f-1"]);
 });
 
-test("startRun takes the agent's default cap and cap mode when the body names none", async () => {
+test("startRun takes the agent's default cap when the body names none; a stored revision's old cap mode is not read", async () => {
   const store = await freshStore();
+  // A revision stored before the one mode can still hold capMode: it is ignored on read, never carried to the launch.
   const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2, capMode: "expected" }), version: 1 }) });
   const run = await startRun(store, deps, entryOf(), { input: { content: "hi" } });
-  const launch = readLaunchBody((await store.runs.launch(run.id)).body);
-  assert.equal(launch.maxCostUsd, 2);
-  assert.equal(launch.capMode, "expected");
+  const stored = (await store.runs.launch(run.id)).body;
+  assert.equal(readLaunchBody(stored).maxCostUsd, 2);
+  assert.equal("cap_mode" in stored, false);
+  assert.equal("capMode" in readLaunchBody(stored), false);
 });
 
-test("startRun keeps the body's cap mode over the agent's default", async () => {
+test("startRun keeps the body's cap over the agent's default", async () => {
   const store = await freshStore();
-  const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2, capMode: "expected" }), version: 1 }) });
-  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" }, max_cost_usd: 5, cap_mode: "strict" });
+  const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2 }), version: 1 }) });
+  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" }, max_cost_usd: 5 });
   const launch = readLaunchBody((await store.runs.launch(run.id)).body);
   assert.equal(launch.maxCostUsd, 5);
-  assert.equal(launch.capMode, "strict");
 });
 
 test("startRun refuses an invalid body with its field issues, nothing written", async () => {
@@ -630,14 +631,6 @@ test("a trigger run with no cap and no agent default is refused (every trigger r
     (e) => e.code === "input_invalid" && /Every run a trigger starts is capped/.test(e.message),
   );
   assert.equal((await store.runs.list({ agentId: "a1" })).length, 0);
-});
-
-test("a cap mode with no cap is refused", async () => {
-  const store = await freshStore();
-  await assert.rejects(
-    () => startRun(store, startDeps(), entryOf(), { input: { content: "hi" }, cap_mode: "strict" }),
-    (e) => e.code === "input_invalid" && /cap_mode says how a run's cap prices its requests, and this run has no cap/.test(e.message),
-  );
 });
 
 test("startRun under an origin key starts one run; a retry under the same key gets that run", async () => {

@@ -198,7 +198,6 @@ export type DefinitionInput = {
   approvals?: "ask" | "never";
   learning?: true | false | "notes";
   checkout?: "pull_request" | "none";
-  cap_mode?: "expected" | "strict";
 };
 
 export type JsonObject = Record<string, unknown>;
@@ -367,7 +366,6 @@ export type RunSummary = {
     needs_usd?: number;
     least_cap_usd?: number;
     suggested_cap_usd?: number;
-    overshoot_bound_usd?: number;
     said: string;
     at: string;
     node?: string | null;
@@ -404,9 +402,9 @@ export type Cost = {
   basis: "charge" | "estimate";
   charge_state?: "held" | "settled" | "released" | null;
   cap_usd?: number | null;
+  free?: true;
   so_far_usd?: number;
   unpriced?: number;
-  overshoot_bound_usd?: number;
   plan?: {
     requests: number;
     tokens: number;
@@ -493,7 +491,6 @@ export type RunCreateInline = {
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
-  cap_mode?: "expected" | "strict";
   workflow_first?: boolean;
   learning?: "use";
   repo?: string;
@@ -562,7 +559,6 @@ export type Run = {
   kind: "agentic" | "workflow";
   archived_at: string | null;
   approvals?: "ask" | "never";
-  cap_mode?: "expected" | "strict" | null;
   last_progress_at?: string | null;
   input?: Record<string, unknown> | null;
   file_ids?: Array<string>;
@@ -648,7 +644,6 @@ export type Run = {
     needs_usd?: number;
     least_cap_usd?: number;
     suggested_cap_usd?: number;
-    overshoot_bound_usd?: number;
     said: string;
     at: string;
     node?: string | null;
@@ -722,7 +717,6 @@ export type RunCreate = {
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
-  cap_mode?: "expected" | "strict";
   workflow_first?: boolean;
   learning?: "use";
   repo?: string;
@@ -829,6 +823,7 @@ export type TimelineKind = "thinking" | "text_block" | "tool_use" | "tool_result
 export type TimelineUsage = {
   usd: number | null;
   requests: number | null;
+  free?: true;
   so_far_usd?: number;
   unpriced?: number;
   not_metered?: number;
@@ -1386,7 +1381,6 @@ export type ListLearningPromotionsResponse = {
       handed_back: number;
       of?: Array<string>;
       cost_usd?: number | null;
-      skipped_write?: number;
       skipped_tools?: Array<{
         tool: string;
         inputs: number;
@@ -2069,11 +2063,12 @@ export type GetLearnedWorkflowReplayResponse = {
   digest: string;
   status: "running" | "done" | "failed";
   inputs: number;
-  answered: number;
-  handed_back: number;
-  failed: number;
-  skipped_write: number;
-  alone: number;
+  outcomes: {
+    answered: number;
+    handed_back: number;
+    failed: number;
+    skipped_write: number;
+  };
   score: {
     n: number;
     agree: number;

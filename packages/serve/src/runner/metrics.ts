@@ -17,8 +17,9 @@ import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
 /** What a run's booking says one of its sessions spent: its requests (a hold given back unused is none), their known
  *  sum, how many have no known cost, their tokens, and how many of the requests have no known tokens (`unmetered`: booked
  *  with no usage, or sent and never answered), in no token sum; and its requests by the model each was sent on (`models`:
- *  its runner.request's model, "" for one that names none). */
-export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly unpriced: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+ *  its runner.request's model, "" for one that names none). `free`: it booked requests, every one on a free model (its
+ *  runner.turn's `free`: its known price $0 for every token), so its $0 says why. */
+export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly unpriced: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; readonly free?: true };
 
 /** The conversation each of the run's sessions books in, by its key: the first `agentrun.session.key` entry naming it. */
 function sessionConversations(entries: readonly EntryLike[]): Map<string, number> {
@@ -64,6 +65,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   let unpriced = 0;
   let requests = 0;
   let unmetered = 0;
+  let free = 0;
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const e of entries) {
     if (!chosen(e)) continue;
@@ -75,10 +77,11 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
       continue;
     }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
-    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
+    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; givenBack?: unknown; unsent?: unknown; free?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
     if (d.givenBack === true || d.unsent === true) continue;
     requests += 1;
     count(e);
+    if (d.free === true) free += 1;
     // An answer with no price of its own was booked at its hold for the cap (answeredUnpriced): as a cost it is unknown.
     const usd = answeredUnpriced(d) ? null : typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
     if (usd === null) unpriced += 1;
@@ -87,7 +90,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     if (d.usage === undefined) unmetered += 1;
     for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
   }
-  return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, models, tokens };
+  return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, models, tokens, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
 }
 
 /** The run's model requests billed to a ChatGPT plan (runner.turn `billing` "plan", booked at no price, chatgpt-plan.ts):
@@ -154,33 +157,6 @@ export function bookedCapSpend(entries: readonly EntryLike[]): number | null {
   return spent;
 }
 
-/** The bound of a run's requests since its spend last fit under `capUsd`, as the kernel's overCapOf reads it: each model
- *  request, in each model session's order, at the figure the cap counts it at, after what the paid tools and decisions
- *  spent; reset to 0 whenever the spend fits, else grown by each request's bound. What its over-cap row (run-view.ts
- *  withOverCap) reads to tell a cache miss within that bound from a run that spent past its cap. 0 when nothing ran. */
-export function overCapBound(entries: readonly EntryLike[], capUsd: number): number {
-  const keyed = sessionConversations(entries);
-  const paidConv = keyed.get(TOOL_SESSION);
-  const decisionsConv = keyed.get(DECISION_SESSION);
-  const others = [paidConv, decisionsConv].reduce<number>((sum, conversation) => {
-    if (conversation === undefined) return sum;
-    const read = sessionSpendOf(recordsIn(entries, conversation)).spentUsd;
-    return sum + (read ?? 0);
-  }, 0);
-  const booking = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn).map((e) => Number(e.conversationId)));
-  let running = others;
-  let bound = 0;
-  for (const conversation of booking) {
-    if (conversation === paidConv || conversation === decisionsConv) continue;
-    const read = sessionSpendOf(recordsIn(entries, conversation));
-    for (const { turn, usd } of read.figures) {
-      running += usd ?? 0;
-      bound = running <= capUsd ? 0 : bound + (read.bounds.get(turn) ?? 0);
-    }
-  }
-  return bound;
-}
-
 /** The booking records of `conversation`, as the kernel's session readers take them. */
 const recordsIn = (entries: readonly EntryLike[], conversation: number): SessionRecord[] =>
   entries.filter((e) => Number(e.conversationId) === conversation && e.kind !== KINDS.sessionKey).map((e) => ({ kind: e.kind, data: (e.data ?? null) as SessionRecord["data"] }));
@@ -189,14 +165,29 @@ const recordsIn = (entries: readonly EntryLike[], conversation: number): Session
  *  effort the run ran at and, on a harness other than pi, the model its revision named. */
 export type RunMetricsStored = RunMetrics & { effort?: string; model?: string };
 
+/** `counted` with each tool `catalog` names (an MCP tool's hashed wire name: store-reads/journal.ts hashedMcpOf) counted
+ *  under its catalog name, `mcp:<server>/<tool>`, as the run's timeline names its calls; the analytics' top tools read
+ *  the name a run's metrics key a tool by. Every other tool keeps the name it was called by. */
+function catalogKeyed(counted: RunMetrics, catalog: ReadonlyMap<string, string> | undefined): RunMetrics {
+  if (!catalog?.size) return counted;
+  const tools: RunMetrics["tools"] = {};
+  for (const [name, each] of Object.entries(counted.tools)) {
+    const key = catalog.get(name) ?? name;
+    const had = tools[key];
+    tools[key] = had ? { calls: had.calls + each.calls, errors: had.errors + each.errors } : each;
+  }
+  return { ...counted, tools };
+}
+
 /** The run's metrics and cost from its journal `entries`. `decisions`: a workflow run's receipts (none for pi).
- *  `effort`/`model`: the enrichment the old storedMetrics added. `costUsd` is the usage row's cost: null when a
- *  response's cost is unknown, 0 before any request (costOf). */
+ *  `effort`/`model`: the enrichment the old storedMetrics added. `catalog`: the run's MCP tools called by a hashed wire
+ *  name, each counted under its catalog name (catalogKeyed). `costUsd` is the usage row's cost: null when a response's
+ *  cost is unknown, 0 before any request (costOf). */
 export function runMetrics(
   entries: readonly EntryLike[],
-  options: { readonly decisions?: readonly DecisionLike[]; readonly effort?: string; readonly model?: string } = {},
+  options: { readonly decisions?: readonly DecisionLike[]; readonly effort?: string; readonly model?: string; readonly catalog?: ReadonlyMap<string, string> } = {},
 ): { metrics: RunMetricsStored; costUsd: number | null } {
-  const counted = runMetricsWithDecisions(entries, options.decisions ?? []);
+  const counted = catalogKeyed(runMetricsWithDecisions(entries, options.decisions ?? []), options.catalog);
   // The run's cost from its usage row, as serve/src/runs.ts costOf reads it: the usage row's usd (null unknown, 0 before
   // any request). The usage row is the one the settled timeline appends from the run's request-cost marks.
   const usage = timelineOf(entries, { settled: true }).findLast((row) => row.kind === "usage");
@@ -228,7 +219,7 @@ function modelsOf(byModel: Readonly<Record<string, number>>, run: string): Recor
   return out;
 }
 
-export function cliRunMetrics(rootEntries: readonly EntryLike[], booked: BookedSpend, options: { readonly effort?: string; readonly model: string }): RunMetricsStored {
+export function cliRunMetrics(rootEntries: readonly EntryLike[], booked: BookedSpend, options: { readonly effort?: string; readonly model: string; readonly catalog?: ReadonlyMap<string, string> }): RunMetricsStored {
   const { metrics: counted } = runMetrics(rootEntries, options);
   const { tokens } = booked;
   return { ...counted, input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead, cacheWrite: tokens.cacheWrite, requests: booked.requests, unmetered: booked.unmetered, models: modelsOf(booked.models, options.model) };

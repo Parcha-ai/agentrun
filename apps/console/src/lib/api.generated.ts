@@ -218,9 +218,9 @@ export interface components {
     basis: "charge" | "estimate";
     charge_state?: "held" | "settled" | "released" | null;
     cap_usd?: number | null;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
-    overshoot_bound_usd?: number;
     plan?: {
       requests: number;
       tokens: number;
@@ -374,7 +374,6 @@ export interface components {
     approvals?: "ask" | "never";
     learning?: true | false | "notes";
     checkout?: "pull_request" | "none";
-    cap_mode?: "expected" | "strict";
   };
   Effort: "low" | "medium" | "high";
   Error: {
@@ -729,7 +728,6 @@ export interface components {
     kind: "agentic" | "workflow";
     archived_at: string | null;
     approvals?: "ask" | "never";
-    cap_mode?: "expected" | "strict" | null;
     last_progress_at?: string | null;
     input?: Record<string, unknown> | null;
     file_ids?: string[];
@@ -815,7 +813,6 @@ export interface components {
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
-      overshoot_bound_usd?: number;
       said: string;
       at: string;
       node?: string | null;
@@ -851,7 +848,6 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
-    cap_mode?: "expected" | "strict";
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -874,7 +870,6 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
-    cap_mode?: "expected" | "strict";
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -1023,7 +1018,6 @@ export interface components {
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
-      overshoot_bound_usd?: number;
       said: string;
       at: string;
       node?: string | null;
@@ -1169,6 +1163,7 @@ export interface components {
   TimelineUsage: {
     usd: number | null;
     requests: number | null;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
     not_metered?: number;
@@ -2070,11 +2065,12 @@ export interface operations {
       digest: string;
       status: "running" | "done" | "failed";
       inputs: number;
-      answered: number;
-      handed_back: number;
-      failed: number;
-      skipped_write: number;
-      alone: number;
+      outcomes: {
+        answered: number;
+        handed_back: number;
+        failed: number;
+        skipped_write: number;
+      };
       score: {
         n: number;
         agree: number;
@@ -3293,7 +3289,6 @@ export interface operations {
           handed_back: number;
           of?: string[];
           cost_usd?: number | null;
-          skipped_write?: number;
           skipped_tools?: {
             tool: string;
             inputs: number;

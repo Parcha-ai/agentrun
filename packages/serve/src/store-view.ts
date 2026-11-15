@@ -40,6 +40,7 @@ import {
   WITHHELD_SIGN_IN,
   WITHHELD_TITLE,
   costView,
+  freeOf,
   soFarOf,
   usersOf,
   withAsks,
@@ -422,8 +423,7 @@ function underWay(started: NonNullable<RunLaunch["learning"]>, reflect: Reflect 
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
 }
 
-/** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept; a cap's room noted when it has
- *  one. A terminal run holds no request in flight, so its overshoot bound is 0. */
+/** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap. */
 function costOfView(run: StoreRun): Record<string, unknown> {
   const imported = Boolean(run.row.importedFrom);
   // The stored cost the view folds with the rows' usage: an ended run's is its row's column (number or null, so a run the
@@ -440,11 +440,12 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const plan = run.plan;
   const left = counted && plan ? counted.unpriced - plan.requests : counted?.unpriced;
   const usd = counted && left !== undefined && left <= 0 ? counted.so_far_usd : priced;
-  const soFar = counted && left !== undefined && left > 0 ? { so_far_usd: counted.so_far_usd, unpriced: left } : undefined;
+  // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
+  // decision of its own), that it is free.
+  const soFar = counted && left !== undefined && left > 0 ? { so_far_usd: counted.so_far_usd, unpriced: left } : imported || decisions?.requests ? undefined : freeOf(run.rows, usd);
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
-  const bound = cap === undefined ? {} : { overshoot_bound_usd: 0 };
-  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...bound, ...(soFar ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
+  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */
@@ -537,7 +538,6 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     review,
     pending,
     cost: costOfView(run),
-    cap_mode: launch?.maxCostUsd === undefined ? null : (launch.capMode ?? "expected"),
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,

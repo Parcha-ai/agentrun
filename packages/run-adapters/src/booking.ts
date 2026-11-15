@@ -11,7 +11,8 @@
  *   gateway's 504 or 524, an answer after an attempt that was lost, which can have been billed twice, a crash): the hold;
  * - `stopped`: our abort, its client gone part way: what streamed (its content, and the part of a hidden reasoning
  *   budget that did not stream), priced by the path (`stoppedPrice`), never past the hold.
- * With no hold (no cap), a figure no one knows is `null`, as it always was.
+ * With no hold (no cap), a figure no one knows is `null`, as it always was. A request on a free model (`free`: its known
+ * price is $0 for every token) is 0 however it ended: whatever it was billed for costs nothing.
  */
 
 /** How a request ended, as its path saw it. `label` names the case for the record (`rule`); it changes no figure but
@@ -23,8 +24,9 @@ export type Ended =
   | { end: "stopped"; streamedTokens: number };
 
 /** What a path prices a request with: what its cap held for it, and what it counts at when stopped having streamed
- *  `tokens` (its input, those tokens and the stop's allowance, at most its output limit, at its price). */
-export type Priced = { hold?: number; stoppedPrice?: (streamedTokens: number) => number };
+ *  `tokens` (its input, those tokens and the stop's allowance, at most its output limit, at its price). `free`: its model's
+ *  known price is $0 for every token, with no fee beside (runner.ts Admitted.free). */
+export type Priced = { hold?: number; stoppedPrice?: (streamedTokens: number) => number; free?: boolean };
 
 /** A booked request: its figure (null when no one knows it and nothing was held), and the rule that gave it. */
 export type Booked = { usd: number | null; rule: string };
@@ -35,6 +37,8 @@ const figure = (value: unknown): number | undefined => (typeof value === "number
 export function bookRequest(ended: Ended, priced: Priced): Booked {
   const hold = figure(priced.hold);
   const rule = "label" in ended && ended.label ? `${ended.end}:${ended.label}` : ended.end;
+  // Nothing it was billed for costs anything: a known $0, never the hold and never unknown. The rule still says how it ended.
+  if (priced.free === true) return { usd: 0, rule };
   switch (ended.end) {
     case "answered": {
       // A content filter's end is an answer: its usage when it reported one, else the hold.

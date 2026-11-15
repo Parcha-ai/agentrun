@@ -557,7 +557,7 @@ export async function runModelRef(env: NodeJS.ProcessEnv, revision: Revision): P
  *  has no price for here: a gateway's (AGENT_MODEL_BASE_URL) id with no price set and none in the catalog in any form
  *  (gatewayPrices). None elsewhere: pi-ai's providers price their own models, a $0 entry included, and a harness on a wire the gateway does not serve
  *  (Anthropic's Messages: provider.ts WIRES) prices
- *  by its catalog entry. One a cap cannot be kept on: capabilities' `models.priced`, and blockersOf's refusal of a capped
+ *  by its catalog entry, and a ChatGPT plan's model costs no dollars. One a cap cannot be kept on: capabilities' `models.priced`, and blockersOf's refusal of a capped
  *  run. A model chooseModel cannot give is not this one's to say (its own blocker says why). */
 export async function unpricedModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS): Promise<string[]> {
   const facts = harnessOf(env, harness)?.facts;
@@ -566,7 +566,8 @@ export async function unpricedModels(env: NodeJS.ProcessEnv, ref: string | undef
   const namedBy = new Map<Tier, string>();
   for (const tier of new Set(tiers)) {
     const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier, harness);
-    if ("why" in chosen) continue;
+    // A ChatGPT plan's model is billed to the plan: it costs a run no dollars, so a cap is kept on it (CapModel.plan).
+    if ("why" in chosen || chosen.model.provider === PLAN_PROVIDER) continue;
     byTier.set(tier, chosen.model);
     if (chosen.namedProvider) namedBy.set(tier, chosen.namedProvider);
   }

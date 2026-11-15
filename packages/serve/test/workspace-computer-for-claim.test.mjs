@@ -157,6 +157,18 @@ test("a Mode 2 Modal sandbox starts from the image its prepareImage() answers (t
   await answer.release();
 });
 
+test("a Mode 2 E2B sandbox and desktop start from the template its prepareImage() answers (the box template), each with the run's folder mounted", async () => {
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  for (const [kind, groups] of [["sandbox", ["exec", "files", "processes"]], ["desktop", ["exec", "files", "processes", "screen", "input.pointer", "input.keys"]]]) {
+    const { record, run } = await claim({ kind, provider: "e2b" }, { mode: 2, keys: { E2B_API_KEY: "fake-test-key" }, groups, spec });
+    const answer = await run();
+    assert.equal(answer.computer.kind, kind);
+    assert.equal(record.created[0].image, "agentrun/computer:prepared", `${kind}: the prepared template`);
+    assert.notEqual(record.created[0].mount, undefined, `${kind}: the run's folder mounted`);
+    await answer.release();
+  }
+});
+
 test("a desktop opens one proxied live view under the claim with its hold, and on release closes the view 'released' and ends the hold", async () => {
   const view = views();
   const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view });

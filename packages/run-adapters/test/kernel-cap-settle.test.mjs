@@ -12,7 +12,7 @@ const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected
 const marked = (capUsd, extra = {}) => {
   const marks = memoryMarks();
   const clock = { now: T0 };
-  return { marks, clock, cap: createCap({ capUsd: () => capUsd, mode: "strict", now: () => clock.now, marks, ...extra }) };
+  return { marks, clock, cap: createCap({ capUsd: () => capUsd, now: () => clock.now, marks, ...extra }) };
 };
 
 test("an error after the response began counts at the hold, in process and from its marks after a crash", async () => {
@@ -74,26 +74,30 @@ test("a summary that errs after its response began counts at its hold; with noth
   assert.equal(await cap.settle(quiet.id, { end: "nothing", label: "status" }), 0);
 });
 
-test("a cache miss books its real cost, past the cap by no more than the bound it was sent with", async () => {
+test("a cache miss books its real cost, and it never passes the cap: the request was held at that miss", async () => {
+  // A session whose last request read 90,000 tokens from the cache: the cap holds the next at its whole input uncached
+  // all the same, and clamps its output to what is left after that input.
   const previous = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
-  const { cap } = capOn(0.1);
+  const { cap } = capOn(0.4);
   const request = modelRequest(SONNET, 100_000, 4_096, { recent: [previous] });
   const admitted = await cap.admit(request);
-  // The cache missed: billed uncached, its worst case at the output it was sent with.
-  await cap.settle(request.id, { end: "answered", usd: admitted.worstUsd });
-  assert.ok(cap.spentUsd() > 0.1, "past the cap");
-  assert.ok(cap.spentUsd() - 0.1 <= admitted.boundUsd + 1e-12, `by no more than its bound ${admitted.boundUsd}`);
+  assert.ok(admitted.outputTokensMax >= 1_024 && admitted.outputTokensMax < 4_096, `clamped, not parked: ${admitted.outputTokensMax}`);
+  // The cache missed: billed uncached (the cache-write rate) at the output it was sent with.
+  const missed = usd(100_000, 3.75) + usd(admitted.outputTokensMax, 15);
+  assert.ok(missed <= admitted.heldUsd + 1e-12, `the miss ${missed} is within its hold ${admitted.heldUsd}`);
+  await cap.settle(request.id, { end: "answered", usd: missed });
+  assert.ok(cap.spentUsd() <= 0.4 + 1e-12, `never past the cap: ${cap.spentUsd()}`);
 });
 
 test("a stopped request counts its input, what streamed and 1,024 tokens, within its output limit, never its whole hold", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const request = modelRequest(SONNET, 10_000, 8_000);
   await cap.admit(request);
   near(await cap.settle(request.id, { end: "stopped", streamedTokens: 500 }), usd(10_000, 3.75) + usd(1_524, 15));
 });
 
 test("a stopped request whose stream and the 1,024 allowance pass its limit counts at its hold", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const request = modelRequest(SONNET, 10_000, 2_000);
   const held = (await cap.admit(request)).heldUsd;
   near(await cap.settle(request.id, { end: "stopped", streamedTokens: 1_500 }), held);
@@ -136,14 +140,14 @@ test("a Claude thinking budget, stopped after a 300-byte summary, counts its lev
 });
 
 test("a summary that fails unanswered counts at its held worst case", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const summary = modelRequest(SONNET, 5_000, 1_000, { side: true });
   const held = (await cap.admit(summary)).heldUsd;
   near(await cap.settle(summary.id, { end: "lost", label: "cut" }), held);
 });
 
 test("an answer of unknown cost counts at its hold, never $0, never more", async () => {
-  const { cap } = capOn(10, { mode: "strict" });
+  const { cap } = capOn(10);
   const request = modelRequest(SONNET, 5_000, 1_000);
   const held = (await cap.admit(request)).heldUsd;
   near(await cap.settle(request.id, { end: "answered", usd: null }), held);

@@ -138,10 +138,10 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
     launchOf: async (input) => ({ launch: { ...launchOf("asked"), input }, revisionId: "rev-1" }),
     now: () => clock.at,
   });
-  /** The replaying record a reservation writes: `runs` reserved for the graded runs in order. */
+  /** The replaying record a reservation writes: `runs` reserved for the graded runs in order, and the launch they run with. */
   const reserve = (replayId, runs, extra = {}) => recordPromotion(store.settings, "agent-1", {
     workflow: "answer", digest: DIGEST, at: new Date(clock.at).toISOString(), decided: "replaying", source: "replay", reason: "replaying, as its owner asked",
-    runs, inputs: runs.map((_, i) => gradedRuns[i % gradedRuns.length]), replay_id: replayId, commit: seed, ...extra,
+    runs, inputs: runs.map((_, i) => gradedRuns[i % gradedRuns.length]), replay_id: replayId, commit: seed, launch: { revision: "rev-1", body: launchBody({ ...launchOf("asked"), input: null }) }, ...extra,
   }, (was) => was?.decided !== "replaying");
   const reopen = async () => {
     await store.close();
@@ -211,7 +211,7 @@ test("a replay interrupted before its first run existed: a GET never starts its 
   assert.deepEqual([failed.status, failed.decided], ["failed", "hold"], JSON.stringify(failed));
   assert.match(failed.reason, /none of its 5 replay runs started by the replay's deadline/);
   assert.equal(failed.inputs, 5);
-  assert.deepEqual([failed.answered, failed.handed_back, failed.failed, failed.skipped_write], [0, 0, 0, 0]);
+  assert.deepEqual(failed.outcomes, { answered: 0, handed_back: 0, failed: 0, skipped_write: 0 });
   assert.equal(promotionOf(await v.records(), "answer", DIGEST)?.decided, "hold", "held: its owner may replay it again");
 });
 
@@ -265,36 +265,37 @@ test("a replay's counts never shrink as newer grades roll its graded runs out of
   await w.reserve("replay-a", w.gradedRuns.map((_, i) => `a-${i}`));
   const roll = () => w.store().settings.put(gradesKey("agent-1"), { v: 1, items: Array.from({ length: GRADES_KEPT }, (_, i) => ({ run: `newer-${i}`, correct: true, source: "eval", at: "t", path: "agent", seq: 1_000 + i })) });
   const before = await w.read("replay-a");
-  assert.equal(before.answered, 2);
+  assert.equal(before.outcomes.answered, 2);
   const kept = (await w.store().settings.get(gradesKey("agent-1"))).items;
   await roll();
   const running = await w.read("replay-a");
-  assert.equal(running.answered, 2, `its two ended runs still count: ${JSON.stringify(running)}`);
+  assert.equal(running.outcomes.answered, 2, `its two ended runs still count: ${JSON.stringify(running)}`);
   await w.store().settings.put(gradesKey("agent-1"), { v: 1, items: kept });
   w.gradedRuns.forEach((of, i) => w.replayRun(`a-${i}`, of));
   const decided = await w.read("replay-a");
-  assert.deepEqual([decided.status, decided.answered, decided.score.n], ["done", 5, 5], JSON.stringify(decided));
+  assert.deepEqual([decided.status, decided.outcomes.answered, decided.score.n], ["done", 5, 5], JSON.stringify(decided));
   await roll();
   const later = await w.read("replay-a");
-  assert.deepEqual([later.answered, later.handed_back, later.failed, later.skipped_write, later.score.n], [5, 0, 0, 0, 5], `read again after the grades rolled: ${JSON.stringify(later)}`);
+  assert.deepEqual([later.outcomes, later.score.n], [{ answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, 5], `read again after the grades rolled: ${JSON.stringify(later)}`);
 });
 
-test("a run answered under its guard's threshold counts answered while the replay runs and once it is decided; alone and the score hand it back", async (t) => {
+test("a run answered under its guard's threshold counts answered while the replay runs and once it is decided; the score hands it back", async (t) => {
   // #2823 review: the decided counts were derived from the score, so a run moved from answered to handed_back as it was
-  // decided. The record keeps its runs' outcomes; the thresholds' reading stays in `score` and `alone`.
+  // decided. The record keeps its runs' outcomes; the thresholds' reading stays in `score`.
   const w = await world(t);
   const low = w.gradedRuns.length - 1;
   w.gradedRuns.forEach((of, i) => w.replayRun(`g-${i}`, of, { p: i === low ? 0.2 : 0.9, state: i === low ? "running" : "ended" }));
   await w.reserve("replay-g", w.gradedRuns.map((_, i) => `g-${i}`));
   const running = await w.read("replay-g");
-  assert.deepEqual([running.status, running.answered, running.handed_back], ["running", 4, 0], JSON.stringify(running));
+  assert.deepEqual([running.status, running.outcomes.answered, running.outcomes.handed_back], ["running", 4, 0], JSON.stringify(running));
   w.replayRun(`g-${low}`, w.gradedRuns[low], { p: 0.2 });
   const seen = await w.read("replay-g");
   assert.equal(seen.status, "done", JSON.stringify(seen));
-  assert.deepEqual([seen.answered, seen.handed_back, seen.failed, seen.skipped_write], [5, 0, 0, 0], `each run as it ended: ${JSON.stringify(seen)}`);
-  assert.deepEqual([seen.score.n, seen.score.handed_back, seen.alone], [5, 1, 4], `the threshold reads the low one as handed back: ${JSON.stringify(seen)}`);
+  assert.deepEqual(seen.outcomes, { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, `each run as it ended: ${JSON.stringify(seen)}`);
+  assert.deepEqual([seen.score.n, seen.score.handed_back], [5, 1], `the threshold reads the low one as handed back: ${JSON.stringify(seen)}`);
   const record = (await w.records()).findLast((one) => one.replay_id === "replay-g");
-  assert.deepEqual(record.replay.outcomes, { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, "kept with the decision");
+  assert.deepEqual(record.replay.outcomes, seen.outcomes, "kept with the decision, read as kept");
+  assert.equal("skipped_write" in record.replay, false, "one count: outcomes");
 });
 
 test("#2823 review: an owner's replay stopped after 2 of its 5 runs is finished by a later claim on the owner's launch (model, revision, no per_run credentials), never the claim's", async (t) => {
