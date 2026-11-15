@@ -3,16 +3,21 @@
 //   - a leftover beside the install that cannot be removed now (one an orphaned npm of a crashed server still writes
 //     into, or one with a folder that can't be read) never fails the install: it stays for a later sweep;
 //   - the install it replaces, gone aside once the new one is in place, never fails the install when it can't be removed;
-//   - a failed install's own staging that can't be removed never hides why it failed.
+//   - a failed install's own staging that can't be removed never hides why it failed;
+//   - a leftover the install could not remove is swept by the next look at the installed harness (HarnessInstall's
+//     needed or ensure, a server's start), once nothing writes into it: no install runs again until the pin changes, so
+//     only that look makes the later sweep come. Never while another process holds the install.
 // npm here is a script of the test's (npm_execpath), which writes the package into the staging directory it is given.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
+import { serve } from "./support.mjs";
 
-const { npmInstall } = await import("../dist/harness-install.js");
+const { HarnessInstall, installHoldOf, npmInstall, pidNamespace, processIdentity, releaseHold } = await import("../dist/harness-install.js");
 
 const PACKAGE = "probe-harness";
 const VERSION = "1.0.0";
@@ -129,4 +134,92 @@ test("a failed install whose staging can't be removed says why npm failed, never
     return true;
   });
   assert.equal(existsSync(install), false, "nothing in place");
+});
+
+// ---- the later sweep: the next look at the installed harness ------------------------------------------------------------
+
+const PINS = { version: VERSION, platform: "any" };
+/** A server's installer of the test's harness into `install`, by npmInstall with the test's npm. */
+const installer = (entry, install, env) => new HarnessInstall(entry, install, async () => PINS, (entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal, env }));
+
+/** Resolves once `done()` is true; the bound caps the wait, it never orders anything. */
+const until = async (done, what, ms = 10_000) => {
+  const end = Date.now() + ms;
+  while (!(await done())) {
+    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/** A crashed server's npm, orphaned, writing into its staging directory `dir` (a few files each millisecond, the
+ *  directory made again when it is gone, as npm unpacking tarballs does), until `stop()`. */
+async function orphanedNpm(t, dir) {
+  const writer = spawn(process.execPath, ["-e", `const fs = require("node:fs"); const dir = process.argv[1];
+let i = 0;
+const parent = process.ppid;
+// This test's own writer ends with the test process, whatever ends it.
+setInterval(() => { if (process.ppid !== parent) process.exit(0); try { fs.mkdirSync(dir, { recursive: true }); for (let k = 0; k < 3; k++) fs.writeFileSync(dir + "/late-" + i++, ""); } catch {} }, 1);
+process.stdout.write("writing\\n");`, dir], { stdio: ["ignore", "pipe", "inherit"] });
+  const gone = new Promise((resolve) => writer.once("exit", resolve));
+  t.after(() => (writer.kill("SIGKILL"), gone));
+  await new Promise((resolve) => writer.stdout.once("data", resolve));
+  return { stop: () => (writer.kill("SIGKILL"), gone) };
+}
+
+test("a leftover the install could not remove, its orphaned npm still writing, is swept by a later look at the installed harness once that npm has stopped", { timeout: 60_000 }, async (t) => {
+  const { entry, install, harnesses, env, installs } = setup(t, "later");
+  const leftover = join(harnesses, ".probe-crashed");
+  mkdirSync(leftover);
+  for (let i = 0; i < 2_000; i++) writeFileSync(join(leftover, `early-${i}`), "");
+  const npm = await orphanedNpm(t, leftover);
+  const first = installer(entry, install, env(installs));
+  t.after(() => first.stop());
+  await first.ensure();
+  assert.equal(installed(install), VERSION, "the harness is in place");
+  await npm.stop();
+  assert.ok(existsSync(leftover), "the leftover is still there: its npm wrote on through the install's sweep");
+  // No install runs again (the harness is in); the next server on this data looks at it.
+  const later = installer(entry, install, env(installs));
+  t.after(() => later.stop());
+  assert.equal(await later.needed(), false, "installed: no run waits");
+  await until(() => !existsSync(leftover), "the leftover gone after the later look");
+  assert.deepEqual(readdirSync(harnesses), ["probe"], "nothing is left beside the install");
+});
+
+test("a leftover is never swept while another process holds the install; once it lets go, the next look sweeps it", { timeout: 60_000 }, async (t) => {
+  const { entry, install, harnesses, env, installs } = setup(t, "held");
+  await npmInstall(entry, install, PINS, { env: env(installs) });
+  // Another process's install under way: its hold (its pid alive) and its staging directory beside the install.
+  const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const otherGone = new Promise((resolve) => other.once("exit", resolve));
+  t.after(() => (other.kill("SIGKILL"), otherGone));
+  await new Promise((resolve) => other.once("spawn", resolve));
+  const [identity, pidns] = [processIdentity(other.pid), pidNamespace()];
+  writeFileSync(installHoldOf(install), JSON.stringify({ host: hostname(), ...(pidns ? { pidns } : {}), pid: other.pid, ...(identity ? { identity } : {}), startedAt: Date.now(), token: "other" }));
+  const staging = join(harnesses, ".probe-other");
+  mkdirSync(join(staging, "node_modules"), { recursive: true });
+  for (const [how, look] of [["needed", (one) => one.needed()], ["ensure", (one) => one.ensure()]]) {
+    const one = installer(entry, install, env(installs));
+    await look(one);
+    // Its close waits for any sweep it started.
+    await one.stop();
+    assert.ok(existsSync(staging), `${how}: the other install's staging stays while it holds the install`);
+  }
+  await releaseHold(install, "other");
+  const later = installer(entry, install, env(installs));
+  t.after(() => later.stop());
+  await later.ensure();
+  await until(() => !existsSync(staging), "the leftover gone after the look once the hold was let go");
+  assert.deepEqual(readdirSync(harnesses), ["probe"], "nothing is left beside the install");
+});
+
+test("a server's start sweeps what an earlier install left beside a harness it finds installed", { timeout: 120_000, skip: !claudeAgentExecutable() && "no Claude Code CLI here to install" }, async (t) => {
+  const first = await serve(t, { harnesses: true, runner: false });
+  await first.stop();
+  // What a crashed server's install left beside Claude Code, which that npm went on writing after the next install.
+  const leftover = join(first.data, "harnesses", ".claude-agent-crashed");
+  mkdirSync(join(leftover, "node_modules"), { recursive: true });
+  writeFileSync(join(leftover, "node_modules", "half-written"), "");
+  await serve(t, { data: first.data, runner: false });
+  await until(() => !existsSync(leftover), "the leftover gone after the server's start");
 });
