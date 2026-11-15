@@ -205,6 +205,14 @@ test("a background shell call keeps its own name in the grading record, as the g
   assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
+test("a codemode script's call is graded as codemode on every harness, never as a computer kind's tool; a computer tool it called is graded as its kind", () => {
+  const rows = [
+    { kind: "tool_use", tool_use_id: "1", tool_name: "codemode", tool_input_preview: "return 1;" },
+    { kind: "tool_use", tool_use_id: "1/s1", tool_name: "computer_act", tool_input_preview: "{}" },
+  ];
+  for (const harness of ["pi", "claude-agent", "opencode"]) assert.deepEqual(callsOf(rows, harness).map((c) => c.tool), ["codemode", "desktop"], harness);
+});
+
 /** A copy of the fixture package whose agent is also granted `grants` (monid endpoints), with one case `monid` whose
  *  agent calls monid's /person/enrich by its wire name and whose graders are `graders` ({file: front matter}). */
 async function monidPackage(t, grants, graders) {
