@@ -12,9 +12,9 @@ import type { CapModel, ModelPrice } from "./types.js";
 export const FREE_MODEL_REQUESTS = 60;
 
 /** OpenRouter's routers, each of which picks a model per request: OpenRouter prices them at the routed model's price,
- *  which pi-ai's catalog writes as $0, so their zeros are no price and none is free. The same list as serve's
- *  local-models.ts ROUTERS. */
-const ROUTERS: ReadonlySet<string> = new Set(["auto", "openrouter/auto", "openrouter/auto-beta", "openrouter/auto-code", "openrouter/free", "openrouter/fusion", "openrouter/pareto-code", "typesafe/jev-router"]);
+ *  which pi-ai's catalog writes as $0, so their zeros are no price and none is free. The one list: serve's
+ *  local-models.ts isRouter reads it. */
+export const ROUTERS: ReadonlySet<string> = new Set(["auto", "openrouter/auto", "openrouter/auto-beta", "openrouter/auto-code", "openrouter/free", "openrouter/fusion", "openrouter/pareto-code", "typesafe/jev-router"]);
 
 const zero = (rates: { input: number; output: number; cacheRead?: number; cacheWrite?: number }): boolean =>
   rates.input === 0 && rates.output === 0 && (rates.cacheRead ?? 0) === 0 && (rates.cacheWrite ?? 0) === 0;

@@ -349,8 +349,10 @@ export function withWebSearches(price: (model: string, usage: ProxyUsage) => num
 /** The usage a Messages response reports, read by parsing it, never by matching its text (the API nests objects in
  *  `usage`): a whole body's `usage`, or a stream's `message_start` usage (input and cache tokens) with its last
  *  `message_delta` usage over it (the final counts, the web searches among them). Each SSE `data:` line is parsed on its
- *  own and one that does not parse is skipped (the proxy keeps only the head and tail of a long answer). A stream that
- *  never stopped, or an answer with no readable usage, is unknown. */
+ *  own and one that does not parse is skipped (the proxy keeps only the head and tail of a long answer). A stream the
+ *  provider ended in its `error` event (an overload, a rate limit) is whole too: the counts it reported before it, which
+ *  the proxy books at list (a `message_start`'s input). A stream that never stopped, or an answer with no readable usage,
+ *  is unknown. */
 export function anthropicUsage(text: string): AnthropicUsage | undefined {
   const lines = text.split(/\r?\n/);
   if (!lines.some((line) => line.startsWith("data:") || line.startsWith("event:"))) {
@@ -366,7 +368,7 @@ export function anthropicUsage(text: string): AnthropicUsage | undefined {
       if (isPlain(event)) events.push(event);
     } catch { /* cut at the kept window's edge, or not JSON: skipped */ }
   }
-  if (!events.some((e) => e.type === "message_stop")) return undefined;
+  if (!events.some((e) => e.type === "message_stop" || e.type === "error")) return undefined;
   const started = events.find((e) => e.type === "message_start")?.message;
   const startUsage = isPlain(started) && isPlain(started.usage) ? started.usage : {};
   const lastDelta = events.filter((e) => e.type === "message_delta").at(-1)?.usage;

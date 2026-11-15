@@ -53,8 +53,10 @@ parameters:
   owner: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", description: "the GitHub account that owns the repository to review, as GitHub spells it, like Parcha-ai" }
   repo: { type: string, pattern: "^[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]$", description: "the repository's name alone, without its owner, as GitHub spells it, like agentrun" }
   focus: { type: string, required: false, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
-# Each run's spend cap: the reviewers' tool calls are bounded by it and by the guides' own call counts.
-budget: { per_run_usd: 0.50 }
+# Each run's spend cap: the reviewers' tool calls are bounded by it and by the guides' own call counts. About twice the
+# dearest review measured on the default model (GPT-6.1 Sol through OpenRouter: $0.16 to $0.90 a pull request, up to
+# ~400 lines), so the eight reviewers' first requests, held at their worst case together, never park the run on its cap.
+budget: { per_run_usd: 2.00 }
 learning: false
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
 approvals: never
