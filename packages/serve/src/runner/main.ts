@@ -386,8 +386,16 @@ export function lastResort(name: string, write: (line: string) => void = (line) 
 function said(name: string, event: RunnerEvent): string | undefined {
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
   if (event.type === "released") return `Runner ${name} released ${event.runId} (${event.end})`;
-  if (event.type === "claim-lost") return `Runner ${name} lost its claim on ${event.runId} (${event.why})`;
   if (event.type === "started" || event.type === "ended") return runLine(event);
+  return troubleLine(name, event);
+}
+
+/** The line of a runner's trouble, in its name: a claim it lost, and an error (a renew or a stop that failed), which
+ *  goes to stderr. Undefined for any other event. The runner beside a server says them the same way (beside.ts), so a
+ *  lapse of every claim at once shows its cause. */
+export function troubleLine(name: string, event: RunnerEvent): string | undefined {
+  if (event.type === "claim-lost") return `Runner ${name} lost its claim on ${event.runId} (${event.why})`;
+  if (event.type === "error") return `Runner ${name}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`;
   return undefined;
 }
 
@@ -461,7 +469,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
       // The runner subcommand ends what a crashed runner of this server left (never under --faux).
       janitor: true,
       onEvent: (event) => {
-        if (event.type === "error") return void console.error(`Runner ${runnerOf}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`);
+        if (event.type === "error") return void console.error(troubleLine(runnerOf, event));
         const line = said(runnerOf, event);
         if (line) console.log(line);
       },
