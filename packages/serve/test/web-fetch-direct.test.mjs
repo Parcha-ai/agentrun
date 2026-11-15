@@ -136,6 +136,22 @@ test("an Atom feed lists its entries' links: an attribute's URL, and its escaped
   assert.deepEqual(page.links, ["http://www.w3.org/2005/Atom", "https://github.com/vitejs/vite/releases", "https://github.com/vitejs/vite/releases?q=v8&expanded=true", "https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md"]);
 });
 
+test("a releases.atom entry's links are its <link href> and its escaped content's pull URL, exactly: no entity runs into a link", async () => {
+  const atom = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <entry>
+    <id>tag:github.com,2008:Repository/257485422/v8.2.6</id>
+    <link rel="alternate" type="text/html" href="https://github.com/vitejs/vite/releases/tag/v8.2.6"/>
+    <title>v8.2.6</title>
+    <content type="html">&lt;ul&gt;&lt;li&gt;fix: &lt;a href=&quot;https://github.com/vitejs/vite/pull/123&quot;&gt;#123&lt;/a&gt; by &lt;a class=&quot;user-mention&quot;&gt;someone&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;</content>
+  </entry>
+</feed>`;
+  const url = "http://public.example/vitejs/vite/releases.atom";
+  const page = await fetchPage(url, serving(url, "application/atom+xml; charset=utf-8", atom));
+  assert.deepEqual(page.links, ["https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/pull/123"], "a namespace's name is not a link");
+  assert.equal(page.links.some((link) => link.includes("&quot;") || link.includes("%22")), false);
+});
+
 test("an HTML page's links stay its link targets alone, as before: a URL written in its text is not one", async () => {
   const html = `<html><head><title>Public page</title></head><body><p>Mirror: https://bare.example/x</p><a href="/about">About</a> <a href="https://other.example/x#part">Other</a></body></html>`;
   const page = await fetchPage("http://public.example/", serving("http://public.example/", "text/html; charset=utf-8", html));

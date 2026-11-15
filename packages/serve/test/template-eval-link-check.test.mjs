@@ -80,10 +80,21 @@ test("a link a fetched JSON page holds (a Statuspage incident's shortlink) match
 test("a link a fetched Atom feed holds (a GitHub release's entry link) matches when the answer cites it, that fetch the only call", async () => {
   const { fakeFetch } = await import("../dist/web-fake.js");
   const url = "https://github.com/vitejs/vite/releases.atom";
-  const atom = `<?xml version="1.0" encoding="UTF-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom">\n  <entry>\n    <link rel="alternate" type="text/html" href="https://github.com/vitejs/vite/releases/tag/v8.2.6"/>\n    <title>v8.2.6</title>\n  </entry>\n</feed>`;
+  const atom = `<?xml version="1.0" encoding="UTF-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom">\n  <entry>\n    <link rel="alternate" type="text/html" href="https://github.com/vitejs/vite/releases/tag/v8.2.6"/>\n    <title>v8.2.6</title>\n    <content type="html">&lt;a href=&quot;https://github.com/vitejs/vite/pull/123&quot;&gt;#123&lt;/a&gt;</content>\n  </entry>\n</feed>`;
   const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: atom }], default: { error: "fetch failed" } } };
   const fetched = { tool: "web_fetch", name: "web_fetch", arguments: { url }, status: "success", result: JSON.stringify(await fakeFetch(fixture, url)) };
   assert.deepEqual(checked(graderInput(grader, "task", run("Vite shipped https://github.com/vitejs/vite/releases/tag/v8.2.6 this week.", fetched))), ["https://github.com/vitejs/vite/releases/tag/v8.2.6 — matches call 1"]);
+});
+
+test("a Slack-style link (<url|text>) cited in the answer is its URL alone, and matches the call that returned it", () => {
+  const prompt = graderInput(grader, "task", run("Pricing lives on <https://stripe.com/products|Products>.", search("https://stripe.com/products")));
+  assert.deepEqual(checked(prompt), ["https://stripe.com/products — matches call 1"]);
+});
+
+test("a link a tool other than the web's returned whole (a calendar event's htmlLink) matches when the answer cites it, that call the only one", () => {
+  const htmlLink = "https://www.google.com/calendar/event?eid=bWVldGluZzEyMw";
+  const calendar = { tool: "calendar_list_events", name: "calendar_list_events", arguments: { day: "2026-11-16" }, status: "success", result: JSON.stringify({ events: [{ summary: "Pipeline review", start: "2026-11-16T10:00:00Z", htmlLink }] }) };
+  assert.deepEqual(checked(graderInput(grader, "task", run(`Pipeline review at 10:00 (${htmlLink}).`, calendar))), ["https://www.google.com/calendar/event?eid=… — matches call 1"]);
 });
 
 test("cited links come from the answer's text and every string of its JSON, each once, shown with no query value, fragment or userinfo", () => {
