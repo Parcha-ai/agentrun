@@ -98,7 +98,7 @@ async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd, patch
     // `patches`: the cost the spec's end cost answered (the end writes it as `costUsd`, read apart from the metrics), to read
     // what the end was told to write.
     if (!patches) return spec;
-    return { ...spec, endCost: async () => { const usd = await spec.endCost(); patches.push({ costUsd: usd }); return usd; } };
+    return { ...spec, endCost: async () => { const cost = await spec.endCost(); patches.push(cost); return cost; } };
   }) });
   const row = await until(async () => {
     const now = await server.runs.get(RUN);

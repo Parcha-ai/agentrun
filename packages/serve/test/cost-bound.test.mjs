@@ -51,6 +51,8 @@ async function endedRun(t, { harness, root, records, costUsd, costUpperBound = f
   writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.session.key", data: { key: "harness", conversation: HARNESS } } });
   for (const [kind, data, model] of root) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind, ...(data === undefined ? {} : { data }), ...(model === undefined ? {} : { model }) } });
   for (const [kind, data] of records) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: HARNESS, kind, data } });
+  // Its end, as the loop writes it: the cost it read (null when unknown) and the bound beside it.
+  writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.end", data: { state: "ended", summary: "done", costUsd, ...(costUpperBound ? { costUpperBound } : {}) } } });
   await commitWrites(journal, writes, ctx);
   await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "done", costUsd, costUpperBound, endedAt: T0 + 10 });
   const view = await viewOverStore(store, "run-1", deps);

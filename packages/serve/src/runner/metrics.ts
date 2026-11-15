@@ -105,15 +105,19 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models, tokens, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
 }
 
+/** A sum of charges with its float noise rounded off, nothing more (as the decisions row rounds, decision-rows.ts): a
+ *  decision costs millionths of a dollar, so a sum rounded to the millionth would lose it. */
+const floatNoiseOff = (usd: number): number => Math.round(usd * 1e12) / 1e12;
+
 /** A cost of charges as a usage row or a run's cost block says it (costsofar/1, cutathold/1), by the kernel's one rule
- *  (costOfParts) over `parts`, rounded to the millionth: `usd` their sum, `upper_bound` when it counts a cut request at its
+ *  (costOfParts) over `parts`, its float noise rounded off (floatNoiseOff): `usd` their sum, `upper_bound` when it counts a cut request at its
  *  hold; or, while one has no known cost, `usd` null, `so_far_usd` the charges' own figures alone and `unpriced` how many
  *  have none, held ones included. `extraUnpriced`: charges with no figure beside the parts' (a CLI's model work no booking
  *  read). */
 export type CostWords = { readonly usd: number | null; readonly so_far_usd?: number; readonly unpriced?: number; readonly upper_bound?: true };
 export function costWordsOf(parts: readonly CostParts[], extraUnpriced = 0): CostWords {
   const cost = costOfParts([...parts, { known: 0, bounded: 0, atMost: 0, unpriced: extraUnpriced }]);
-  const round = (usd: number) => Math.round(usd * 1e6) / 1e6;
+  const round = floatNoiseOff;
   if (cost.usd === null) return { usd: null, so_far_usd: round(cost.soFarUsd), unpriced: cost.unpriced };
   return { usd: round(cost.usd), ...(cost.atMost ? { upper_bound: true as const } : {}) };
 }
@@ -121,7 +125,7 @@ export function costWordsOf(parts: readonly CostParts[], extraUnpriced = 0): Cos
 /** A run's cost, by the one rule every reader of it takes (the end's stored cost_usd, GET /runs/{id} and the runs list of
  *  an ended run): from its booking alone, over `entries`, every conversation of its journal: its model requests, its paid
  *  tool calls and its decisions, each request at what it was booked at (bookedSpend), joined by the kernel's costOfParts.
- *  `usd` is their sum, rounded to the millionth; null (unknown) when any request has no known cost, with what is known of
+ *  `usd` is their sum, its float noise rounded off (floatNoiseOff); null (unknown) when any request has no known cost, with what is known of
  *  it (`known`: the requests' own figures alone, never a cut request's hold) and how many have none (`unpriced`, held ones
  *  included) beside it. `atMost`, while `usd` is known: how many of its figures are a cut request's hold, so the cost is at
  *  most `usd`. `requests`: how many requests the run booked (0: it booked none, and its cost is not this booking's to say).
@@ -131,7 +135,7 @@ export type RunCost = { readonly usd: number | null; readonly known: number; rea
 export function runCostOf(entries: readonly EntryLike[], { unbooked = false }: { readonly unbooked?: boolean } = {}): RunCost {
   const parts = [bookedSpend(entries, "model"), bookedSpend(entries, "paid"), bookedSpend(entries, "decisions")];
   const cost = costOfParts([...parts, { known: 0, bounded: 0, atMost: 0, unpriced: unbooked && parts[0]!.requests === 0 ? 1 : 0 }]);
-  const round = (usd: number) => Math.round(usd * 1e6) / 1e6;
+  const round = floatNoiseOff;
   return { usd: cost.usd === null ? null : round(cost.usd), known: round(cost.soFarUsd), unpriced: cost.unpriced, atMost: cost.atMost ?? 0, requests: parts.reduce((sum, part) => sum + part.requests, 0) };
 }
 

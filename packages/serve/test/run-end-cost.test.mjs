@@ -218,7 +218,7 @@ test("a request its runner was lost in, before any answer or usage, is booked at
   const held = first("runner.request")[0]?.heldUsd;
   assert.ok(typeof held === "number" && held > 0, `the lost request was held for under the cap: ${JSON.stringify(entries.filter((e) => /^(runner\.|agentrun\.session)/.test(e.kind)).map((e) => [e.conversationId, e.kind, e.data]))}`);
   assert.deepEqual(first("runner.turn"), [{ usd: null, cut: true, turn: 1, bookedUsd: held, rule: "cut", atMost: true }], "booked once, cut, at its hold, marked an upper bound");
-  const total = Math.round((held + REQUEST_USD) * 1e6) / 1e6;
+  const total = Math.round((held + REQUEST_USD) * 1e12) / 1e12;
   assert.equal(row.costUsd, total, "the stored cost counts the cut at its hold, never unknown");
   assert.deepEqual({ usd: view.cost.usd, upper_bound: view.cost.upper_bound, unpriced: view.cost.unpriced }, { usd: total, upper_bound: true, unpriced: undefined }, `the view says the same figure, as the most it can be: ${JSON.stringify(view.cost)}`);
   assert.equal(listed.costUsd, total);
