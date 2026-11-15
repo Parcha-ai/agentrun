@@ -661,6 +661,31 @@ test('a listed name that resolves to metadata space is still refused by the addr
 	}
 });
 
+test('a host or LAN service is reachable on no network setting: a private address or CIDR is no list entry, and a listed LAN name that resolves to one is refused', async () => {
+	for (const [entry, words] of [
+		[PRIVATE, /is not a name with at least two labels/],
+		['10.0.0.0/24', /refused range/], // key-gate: denylist a refused test entry
+		['192.168.1.0/24', /refused range/], // key-gate: denylist a refused test entry
+	]) {
+		assert.throws(() => parseAllow(entry), words, entry);
+	}
+	const t = await proxy({ names: { ...NAMES, 'nas.lan': [PRIVATE] }, options: { allow: ['nas.lan'], allowHint: HINT } });
+	try {
+		const answer = head((await talk(t.path, CONNECT('nas.lan:443'), ended)).got);
+		assert.equal(answer.line, `HTTP/1.1 403 Egress refused: ${checkAddress(addressBytes(PRIVATE), []).class}`);
+		assert.deepEqual([t.lookups, t.dials], [['nas.lan'], []], 'looked up, never dialled');
+	} finally {
+		await t.close();
+	}
+	// Open is no wider: the same private address is refused with no list at all.
+	const open = await proxy({ names: { ...NAMES, 'nas.lan': [PRIVATE] } });
+	try {
+		assert.equal(head((await talk(open.path, CONNECT('nas.lan:443'), ended)).got).status, 403);
+	} finally {
+		await open.close();
+	}
+});
+
 test('with a host list, an IP literal and any port but 80 and 443 are refused, before any lookup', async () => {
 	const t = await listed();
 	try {

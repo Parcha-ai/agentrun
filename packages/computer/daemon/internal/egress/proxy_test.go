@@ -321,6 +321,27 @@ func TestAllowRefusesOffTheListBeforeAnyLookup(t *testing.T) {
 	}
 }
 
+// A host or LAN service is reachable on no network setting: a private address or CIDR is no list entry, and a listed
+// LAN name that resolves to a private address is refused, never dialled.
+func TestALANServiceIsReachableOnNoNetworkSetting(t *testing.T) {
+	for _, entry := range []string{"10.0.0.1", "10.0.0.0/24", "192.168.1.0/24"} {
+		if _, err := ParseAllow(entry); err == nil {
+			t.Errorf("ParseAllow(%q) took it; want it refused", entry)
+		}
+	}
+	allow, err := ParseAllow("nas.lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, &allow, map[string][]string{"nas.lan": {"10.0.0.1"}})
+	if status, refused, _ := h.connect(t, "nas.lan:443"); !strings.HasPrefix(status, "403") || refused != "private" {
+		t.Errorf("CONNECT nas.lan:443: %q refused %q; want 403 refused as private", status, refused)
+	}
+	if got := h.dials(); len(got) != 0 {
+		t.Fatalf("dialled %q; want no dial", got)
+	}
+}
+
 // The cap on connections open at once refuses one past it by name, and gives its slot back when one closes.
 func TestTheTunnelCapRefusesOnePastItByName(t *testing.T) {
 	h := newHarness(t, nil, map[string][]string{"example.com": {"93.184.215.14"}})
