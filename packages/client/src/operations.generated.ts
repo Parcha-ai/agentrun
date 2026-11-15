@@ -1079,6 +1079,7 @@ export type Limits = {
     min: Usd;
     max: Usd;
   } | null;
+  free_model_requests?: number;
 };
 
 export type Usd = number;

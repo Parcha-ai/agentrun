@@ -9,6 +9,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MODEL_KEYS } from "../dist/model.js";
+import { zeroPricedOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { capModelOf as capModelOfRoute } from "../dist/runner/adapter-run-spec.js";
+import { capModelOf as capModelOfCli } from "../dist/runner/cli-run-spec.js";
 import { bookedCapSpend } from "../dist/runner/metrics.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -150,6 +153,35 @@ test("a capped codex run and a capped pi run on a ChatGPT plan model are admitte
     assert.equal(bookedCapSpend(done.journal), 0.002, `${harness}: the cap's spend is the two searches`);
     for (const request of requests(done.journal)) assert.equal(request.heldUsd, 0, `${harness}: ${JSON.stringify(request)}`);
   }
+});
+
+// A plan's requests cost no dollars, so no dollar cap stops a plan run stuck in a loop: the server's limit on requests
+// priced $0 does (AGENTRUN_FREE_MODEL_REQUESTS, here 3), on codex and pi alike, capped or not. Its paid searches never
+// count toward it.
+test("a plan run looping on a tool stops at the limit on requests priced $0, on codex and on pi, in the limit's words", { timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_FREE_MODEL_REQUESTS: "3" });
+  const { openai, run } = await planServer(t);
+  openai.answer = (body) => (offers(body, "web_search") ? { call: "web_search", args: { query: `widgets ${outputsIn(body)}` } } : {});
+  for (const [harness, capUsd] of [["codex", undefined], ["pi", undefined], ["pi", 5]]) {
+    const done = await run(harness, capUsd, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } });
+    assert.equal(done.view?.status, "failed", `${harness}: ${said(done)}`);
+    assert.deepEqual({ code: done.view?.error?.code, message: done.view?.error?.message }, { code: "spend_cap_reached", message: "Not sent: this run reached its 3-request limit for free models." }, `${harness}: ${said(done)}`);
+    assert.equal(done.asked, 3, `${harness}: three requests reached the plan, the fourth refused before it was sent`);
+    const held = requests(done.journal);
+    assert.deepEqual(held.map((request) => request.zeroPriced), ["plan", "plan", "plan"], `${harness}: each counted as a plan's request: ${JSON.stringify(held)}`);
+    assert.equal(done.view?.pending ?? null, null, `${harness}: no raise-the-cap prompt: no raise lifts it`);
+  }
+});
+
+// One plan rule for the cap: a CLI runner's plan model and pi's plan route are the same cap model, so the limit on
+// requests priced $0 counts both alike.
+test("a CLI runner's plan model and pi's plan route are one cap model, counted as a plan's", () => {
+  const zeros = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const cli = capModelOfCli("gpt-6.1-sol", "openai-responses", { cost: zeros, maxTokens: 128_000 }, false, true);
+  const pi = capModelOfRoute({ model: "gpt-6.1-sol", provider: { api: "openai-responses", plan: true }, cost: zeros, unpriced: true, outputCeiling: 128_000 });
+  assert.deepEqual(cli, pi);
+  assert.deepEqual(cli, { id: "gpt-6.1-sol", api: "openai-responses", price: null, outputCeiling: 128_000, plan: true });
+  assert.deepEqual([zeroPricedOf(cli), zeroPricedOf(pi)], ["plan", "plan"]);
 });
 
 // (An unpriced model that is no plan's is still refused a cap: unpriced-said.test.mjs, a gateway default with no price.)

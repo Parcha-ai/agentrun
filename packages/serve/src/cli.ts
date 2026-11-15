@@ -77,7 +77,9 @@ to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is 
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
 it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's (a DIR/.token from an earlier start is removed), and is never printed; DIR/.token's is
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
-published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
+published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is.
+AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most model requests priced $0 (a free model's, a ChatGPT plan's) a run
+makes, capped or not: the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,

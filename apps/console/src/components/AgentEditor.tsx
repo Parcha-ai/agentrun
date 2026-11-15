@@ -15,7 +15,7 @@ import { Field as UiField, Input, Textarea } from "@/components/ui/field";
 import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, editBody, harnessOptions, defaultPlaceOf, isStarter, notOn, reachesWeb, runsOn, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, toolsOnSwitch, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
-import { contextSize, type FreeModel, harnessDefault, harnessFree, harnessModels, modelLabel, NO_DEFAULT } from "@/lib/models";
+import { contextSize, type FreeModel, freeRequestsNote, harnessDefault, harnessFree, harnessModels, modelLabel, NO_DEFAULT } from "@/lib/models";
 import { Switch } from "@/components/ui/switch";
 import { type PickerOption, Picker } from "@/components/ui/picker";
 import { SpendCapMinimum } from "@/lib/spendCap";
@@ -40,7 +40,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs for it when a definition names none (null: none). */
 /** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
  *  that lists none, where the step shows where runs go (places). */
-export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
+export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
 /** The Model picker's value for "type a model": a model id always has a provider and a slash (the save's own rule), so no
  *  id can be this. */
 const CUSTOM_MODEL = "custom";
@@ -275,6 +275,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // A server signed in to a ChatGPT plan (a harness offers its models): the cap says it counts dollars, which the plan's
   // requests are not.
   const onPlan = caps.harnesses.some((h) => isPlanModel(h.default_model) || h.models?.some(isPlanModel));
+  // The model this agent runs on, picked or the default, costs $0 a request (free, or a plan's): no dollar cap stops it, and
+  // the cap's note says the server's limit on its requests (capabilities' limits.free_model_requests).
+  const freeNote = freeRequestsNote(f.model ?? fallback, f.harness ?? "pi", caps.harnesses, caps.freeRequests);
   // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
@@ -534,7 +537,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!starting && (
-                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note={<>A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note={<>A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}{freeNote && <span className="mt-1 block" data-note="free-requests">{freeNote}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <Input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />
                 </Field>
               )}

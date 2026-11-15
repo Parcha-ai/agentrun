@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextSize, harnessDefault, harnessFree, modelLabel } from "./models";
+import { contextSize, freeRequestsNote, harnessDefault, harnessFree, modelLabel } from "./models";
 
 describe("model labels", () => {
   it("takes off exactly the routing prefix the server names (models.route_prefix); the full id is the title", () => {
@@ -37,5 +37,14 @@ describe("free models", () => {
     expect([...free.keys()]).toEqual(["openrouter/x/y:free"]);
     expect(harnessFree("pi", [{ id: "pi" }]).size).toBe(0);
     expect(harnessFree("codex", undefined).size).toBe(0);
+  });
+  it("beside the cap, a free model's and a plan's limit on requests, in the server's number; nothing for a paid model or no limit", () => {
+    const harnesses = [{ id: "pi", free_models: [{ id: "openrouter/x/y:free", context_window: 262_144 }] }];
+    expect(freeRequestsNote("openrouter/x/y:free", "pi", harnesses, 60)).toBe("free model: up to 60 requests");
+    expect(freeRequestsNote("chatgpt/gpt-6.1-sol", "codex", harnesses, 12)).toBe("free model: up to 12 requests");
+    expect(freeRequestsNote("anthropic/claude-sonnet-5-5", "pi", harnesses, 60)).toBeNull();
+    expect(freeRequestsNote("openrouter/x/y:free", "codex", harnesses, 60)).toBeNull();
+    expect(freeRequestsNote("openrouter/x/y:free", "pi", harnesses, undefined)).toBeNull();
+    expect(freeRequestsNote(null, "pi", harnesses, 60)).toBeNull();
   });
 });

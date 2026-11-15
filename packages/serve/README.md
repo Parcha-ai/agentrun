@@ -75,7 +75,8 @@ place: a token from the environment stays out of the logs. `DIR/.token`'s token 
 it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
 link carries a launch code this start made at random (`?launch=<code>`), never the token. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
-use it.
+use it. `AGENTRUN_FREE_MODEL_REQUESTS` (default 60) is the most model requests priced $0 a run makes, on a free model
+or a ChatGPT plan ([a limit on free requests](#a-limit-on-free-requests)).
 
 ## Sandbox in 60 seconds
 
@@ -3248,6 +3249,20 @@ retry reads only an error's text, and takes "out of budget" as final whatever di
 refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
 request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
 the $0.15 left of the run's $0.50 cap could buy."
+
+### A limit on free requests
+
+A request that costs $0 is one no dollar cap can stop: one on a free model (its catalog price is all zeros, as
+`harnesses[].free_models` lists them) or on a ChatGPT plan. So a run has a limit on those requests: 60, or
+`AGENTRUN_FREE_MODEL_REQUESTS` (a whole number above 0; anything else refuses the server's start and the runner's).
+Capabilities' `limits.free_model_requests` says it, and the console says "free model: up to 60 requests" beside the
+cap of an agent on such a model. A run may make that many; the next is not sent, and the run ends `failed` as one its
+cap ends, its error `spend_cap_reached`: "Not sent: this run reached its 60-request limit for free models." (the number
+is the limit). No raise lifts it, and it holds capped or not, on every harness: pi, claude-agent, codex, opencode and a
+workflow's agent nodes. Every such request of the run counts, its own model's, its subagents', its side calls' (a
+compaction, a title), and one a crash cut, which is booked at $0, a known cost; a paid request, a paid tool call and a
+workflow's decision never count, and are never refused by it. The count is read from the run's booking records at each
+request, so a restart or a claim moved to another runner keeps it.
 
 ### A run paused at its cap
 

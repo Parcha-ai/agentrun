@@ -2674,6 +2674,9 @@ const MCP_RUN_AUTH: Json = {
 };
 
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  Limits: {
+    free_model_requests: { type: "integer", minimum: 1, description: "The most model requests priced $0 a run makes: on a free model (its catalog price is all zeros) or on a ChatGPT plan, which a dollar cap cannot stop. AGENTRUN_FREE_MODEL_REQUESTS, else 60. The request after that many is not sent, and the run ends `failed`, its error `spend_cap_reached`: \"Not sent: this run reached its 60-request limit for free models.\" (the number is this one). Every request counts, the run's own, its subagents', its side calls and any cut by a crash, capped or not; a paid request, a paid tool call and a workflow decision never do.", "x-agentrun-serve": "freerequests/1" },
+  },
   MessageCreate: {
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Replaces the run's handed credentials in the message's own write (a follow-up that opens an ended run again hands its turn's), so the turn the message starts calls with them. A run handed none calls a per_run server's tools refused, nothing sent.` },
   },

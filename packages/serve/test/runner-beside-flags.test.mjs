@@ -101,6 +101,8 @@ test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner
   assert.equal(runnerHolds({}, { AGENTRUN_DRAIN_TIMEOUT: "2s" }).drainMs, 2_000, "else AGENTRUN_DRAIN_TIMEOUT");
   assert.equal(runnerHolds({ drainMs: 0 }, { AGENTRUN_DRAIN_TIMEOUT: "2s" }).drainMs, 0, "--drain-timeout over the environment");
   assert.throws(() => runnerHolds({}, { AGENTRUN_DRAIN_TIMEOUT: "soon" }), /AGENTRUN_DRAIN_TIMEOUT is a duration such as 6s/);
+  for (const bad of ["0", "-3", "2.5", "many"]) assert.throws(() => runnerHolds({}, { AGENTRUN_FREE_MODEL_REQUESTS: bad }), /AGENTRUN_FREE_MODEL_REQUESTS is a whole number of requests above 0/, bad);
+  assert.doesNotThrow(() => runnerHolds({}, { AGENTRUN_FREE_MODEL_REQUESTS: "200" }));
 });
 
 test("the CLI's stop deadline covers the runner's whole close: its drain, then the stop of the loops left, from the runner's own lease and margin", () => {

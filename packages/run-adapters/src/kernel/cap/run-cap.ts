@@ -8,7 +8,8 @@
 import { runBooking, type RunSessions } from "../../run-booking.js";
 import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from "../../runner.js";
 import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
-import { overCapEnd } from "./words.js";
+import { overCapEnd, SPEND_CAP_REACHED } from "./words.js";
+import { freeCeilingEnd, zeroPricedOf } from "./free.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf, capRequestOf, type PricedRequest } from "./port.js";
@@ -35,6 +36,10 @@ export interface RunCapOptions {
   /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
    *  view of the cap, a test's record). */
   judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
+  /** The most model requests priced $0 (a free model's, a plan's: free.ts zeroPricedOf) the run makes, capped or not:
+   *  the next one past it is refused for good, in freeCeilingEnd's words. Its paid tool calls and its decisions never
+   *  count. Undefined: no such limit. */
+  freeRequests?: number;
 }
 
 /** A run's decisions on its one cap: each admitted before it is sent and settled once it answered. */
@@ -104,11 +109,24 @@ export function runCap(options: RunCapOptions): RunCap {
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
     ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
-  const before = runBooking(options.sessions, options.judged ? async (request) => {
+  // The ceiling on requests priced $0, before the dollar rule and whatever the cap (the dollar cap cannot stop them): a
+  // model request of the run's own sessions on a free model or a plan, past the run's limit of them, is refused for good;
+  // one within it goes to the rule, and its admission says it is priced $0, written on its runner.request, so the next
+  // count holds it in any process. A paid tool call and a decision book under their own sessions and never count.
+  const limit = options.freeRequests;
+  const ruled: BeforeRequest = async (request) => {
+    if (request.paid || request.key === DECISION_SESSION || request.key === TOOL_SESSION) return rule(request);
+    const zeroPriced = zeroPricedOf(pricing.modelOf(request.model, request.route));
+    if (!zeroPriced) return rule(request);
+    if (limit !== undefined && (request.zeroPricedRequests ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
+    return answer && "refuse" in answer ? answer : { ...(answer ?? {}), zeroPriced };
+  };
+  const before = runBooking(options.sessions, options.judged ? async (request) => {
+    const answer = await ruled(request);
     options.judged!(request, answer);
     return answer;
-  } : rule);
+  } : ruled);
 
   const forget = (key: string) => void deciding.delete(key);
   return {

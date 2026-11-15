@@ -421,7 +421,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const keyCardSavesModel = caps?.models.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
     && !!caps.features?.tool_keys?.routes;
   // The server lists its tools as objects (name, available, missing).
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [] };
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], ...(typeof caps?.limits?.free_model_requests === "number" ? { freeRequests: caps.limits.free_model_requests } : {}) };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
   // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings.
