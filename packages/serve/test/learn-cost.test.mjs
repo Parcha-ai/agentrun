@@ -12,7 +12,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { CHEAPER_AFTER_RUNS, costCsv, costSummary, runCostOf } from "../dist/learning-cost.js";
 import { runPathOf } from "../dist/runner/learning-end.js";
-import { servingReplayOf } from "../dist/store-reads/learning.js";
+import { costRunOf, servingReplayOf } from "../dist/store-reads/learning.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, made, resnap, savedOf, started } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun } from "./support.mjs";
@@ -79,6 +79,19 @@ test("times cheaper is withheld when a run it reads has an unknown cost or one k
   assert.deepEqual(read([["agent", 0.9], ["agent", null]]), [null, null], "no takeover: no figure to withhold");
   const bounded = costSummary(series([["agent", 0.9], ["agent", 0.3, 0, true], ...after()]));
   assert.deepEqual(bounded.before, { runs: 1, mean_usd: 0.9 }, "a bound is never read into a mean");
+});
+
+test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bound is true, and the summary withholds the ratio with at_most 1", async () => {
+  // A store with no launch and no learning rounds: only the run row's cost fields are read.
+  const store = { runs: { launch: async () => undefined }, learning: { proposal: async () => undefined } };
+  const row = (id, extra = {}) => ({ id, startedAt: Date.UTC(2026, 10, 12), metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, ...extra });
+  const exact = await costRunOf(store, row("r1"), 1);
+  const bound = await costRunOf(store, row("r2", { costUpperBound: true }), 2);
+  assert.deepEqual([exact.cost_upper_bound, bound.cost_upper_bound, bound.cost_usd], [false, true, 0.1], "the stored marker is read, the cost stays the figure");
+  const after = Array.from({ length: CHEAPER_AFTER_RUNS }, (_, i) => ["workflow", 0.1, 0, i === 0]);
+  const withheld = costSummary(series([["agent", 0.9], ["agent", 0.9], ...after])).withheld;
+  assert.deepEqual(withheld, { unknown: 0, at_most: 1 }, "a series whose run carries the marker withholds the ratio");
+  assert.deepEqual(costSummary(series([["agent", 0.9], ["agent", 0.9], ...after.map(([p, c, l]) => [p, c, l])])).withheld, null, "no marker, nothing withheld");
 });
 
 test("the summary carries the serving promotion's replay as it is given", () => {
