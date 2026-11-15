@@ -802,9 +802,11 @@ __all__ = [
     "StartRunResponse",
     "StartRunResponseHeld",
     "StartSdkRunBody",
+    "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
     "StartSdkRunResponseLearningSkillsItem",
+    "StartSdkRunResponseLearningWorkflowsItem",
     "StopResult",
     "StopRunResponse",
     "TakeOverRunComputerBody",
@@ -5498,6 +5500,7 @@ class _SdkRunEventsBodyEventsItem3Required(TypedDict):
 class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
     input: Any
     output: Any
+    parent_tool_use_id: str
 
 
 class SdkRunEventsResponse(TypedDict):
@@ -5522,6 +5525,20 @@ class _StartSdkRunBodyRequired(TypedDict):
 
 class StartSdkRunBody(_StartSdkRunBodyRequired, total=False):
     model: str
+    workflow_tools: list[StartSdkRunBodyWorkflowToolsItem]
+    workflow_adapters: list[Literal["runNode", "runJudge"]]
+
+
+class _StartSdkRunBodyWorkflowToolsItemRequired(TypedDict):
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class StartSdkRunBodyWorkflowToolsItem(_StartSdkRunBodyWorkflowToolsItemRequired, total=False):
+    output_schema: dict[str, Any]
+    price_usd: float
 
 
 class StartSdkRunResponse(TypedDict):
@@ -5537,11 +5554,18 @@ class StartSdkRunResponseLearning(TypedDict):
     revision: str | None
     context: str
     skills: list[StartSdkRunResponseLearningSkillsItem]
+    workflows: list[StartSdkRunResponseLearningWorkflowsItem]
 
 
 class StartSdkRunResponseLearningSkillsItem(TypedDict):
     name: str
     files: dict[str, str]
+
+
+class StartSdkRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
 
 
 GetCapabilitiesResponse: TypeAlias = "Capabilities"

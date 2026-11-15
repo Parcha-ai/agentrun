@@ -4848,6 +4848,7 @@ export interface operations {
         status: "started" | "completed" | "failed";
         input?: unknown;
         output?: unknown;
+        parent_tool_use_id?: string;
       })[];
     };
     answer: {
@@ -4913,6 +4914,15 @@ export interface operations {
       input: string;
       instructions: string;
       model?: string;
+      workflow_tools?: {
+        name: string;
+        description: string;
+        input_schema: Record<string, unknown>;
+        output_schema?: Record<string, unknown>;
+        permission: "allow" | "ask" | "deny";
+        price_usd?: number;
+      }[];
+      workflow_adapters?: ("runNode" | "runJudge")[];
     };
     answer: {
       run_id: string;
@@ -4926,6 +4936,11 @@ export interface operations {
         skills: {
           name: string;
           files: Record<string, string>;
+        }[];
+        workflows: {
+          name: string;
+          workflow: string;
+          description: string;
         }[];
       };
     };
