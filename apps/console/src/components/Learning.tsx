@@ -1,3 +1,5 @@
+import { agentHash } from "@/components/AgentPage";
+import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { BookOpen, ChevronDown, Hourglass, Layers, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { workflowGraph } from "@dsl/graph";
@@ -24,6 +26,7 @@ import {
   counted, type LearnedItem, PROMOTE_SIGN_IN, PROMOTES, statusFile, supersedesOf,
 } from "@/lib/learning";
 import { keeper } from "@/lib/idempotency";
+import { backendSdkOf } from "@/lib/backendSdk";
 import type { Places } from "@/lib/place";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -159,10 +162,12 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next. Its
   // compile counts completed runs only, as the server's trigger does (learn/compile.ts COMPILE_AFTER_RUNS): the cost
   // series' total counts failed and cancelled runs too. The newest runs read hold enough: the count stops at the threshold.
+  const execution = agent.definition.native ? "native" : backendSdkOf(agent.definition) ? "sdk" : "hosted";
   const story = storyOf({
     notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
     runs: runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
     mode: agent.definition.learning === "notes" ? "notes" : "full",
+    execution,
   });
 
   if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
@@ -172,14 +177,21 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   const stale = error ? <RefreshFailed error={error} onRetry={read} /> : null;
 
   const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
+  // CSV batches launch capped server runs with follow-up answers; source-owned execution cannot use that route.
+  const learnFromTasks = on && !readOnly && (execution === "hosted"
+    ? <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />
+    : <Banner tone="info">{execution === "native"
+      ? "Run tasks with this agent’s original Claude Code or Codex setup."
+      : "Start tasks in your backend using this agent’s SDK wrapper."} Accepted notes and skills remain available here. CSV learning batches require server-managed execution. <a href={agentHash(agent.agent_id, "runs")} className="underline underline-offset-2">Open the agent’s Run controls</a>.</Banner>);
+
   if (!all.length && !skills.length && !workflows.length && !adding) return (
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
       {on && <LoopStory stages={story} />}
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
-      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
-      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} />
+      {learnFromTasks}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} execution={execution} />
       <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
       <NotKept runs={runs} />
     </div>
@@ -207,8 +219,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       <LoopStory stages={story} />
       <HeldOutTest v2={v2} agentId={agent.agent_id} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
-      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
-      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} />
+      {learnFromTasks}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} execution={execution} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
@@ -357,7 +369,11 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
 
 /** The learning switch on the tab: a new revision with `learning` on or off, made on the agent as the server has it
  *  now, shown as it goes and put back if the save fails. */
-function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+function SavedSwitch(props: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+  return props.agent.definition.native ? <div className="p-4"><NativeLearningSwitch agent={props.agent} v2={props.v2} learning={props.server} onAgent={props.onAgent} /></div> : <ManagedSavedSwitch {...props} />;
+}
+
+function ManagedSavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [trouble, setTrouble] = useState<unknown>(null);
   const [shown, setShown] = useState<boolean | null>(null);
@@ -576,7 +592,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         </div>
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
-      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
+      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={agentHash(made.agent_id)} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
       {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
         : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
         : kind === "skill" ? <Body text={bodyOf(text)} />

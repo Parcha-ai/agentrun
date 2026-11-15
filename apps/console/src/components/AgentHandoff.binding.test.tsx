@@ -6,6 +6,7 @@ import { AgentRequest } from "./AgentRequest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
 import type { Client } from "@/lib/client";
+import type { NativeBinding } from "@/lib/native";
 import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -13,9 +14,13 @@ const origin = "https://console.example.test";
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: [] };
 const managed: Agent = { agent_id: "support/a", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Support", instructions: "Answer carefully.", harness: "pi", tools: [], skills: [] } };
-const native: Agent = { ...managed, definition: { ...managed.definition, native: {
+const nativeBinding: NativeBinding = {
   runtime: "claude-code", machine_id: "source-machine", project: "/workspace/project", selector: { kind: "project" }, state: "ready",
-} as NonNullable<Agent["definition"]["native"]> } };
+  version: "1.0.0", model: "claude-test", fingerprint: "handoff-fixture", configuration: [], skills: [], mcp_servers: [],
+  issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z",
+  capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true },
+};
+const native: Agent = { ...managed, definition: { ...managed.definition, native: nativeBinding } };
 const sourceAgents = [
   { name: "native", agent: native, expected: "Edit the original native setup" },
   ...(["claude-agent-sdk", "codex-sdk"] as const).map(runtime => ({ name: runtime, agent: { ...managed, definition: { ...managed.definition, sdk: { runtime } } }, expected: runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK" })),

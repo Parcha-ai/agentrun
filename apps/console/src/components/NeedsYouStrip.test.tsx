@@ -188,3 +188,39 @@ describe("NeedsYouStrip, a run paused at its spend cap", () => {
     expect(card.querySelector('a[href="#/runs/b1"]')).not.toBeNull();
   });
 });
+
+
+describe("NeedsYouStrip, backend SDK execution ownership", () => {
+  const sdk = (id: string, runtime: "claude-agent-sdk" | "codex-sdk", over: Partial<Run> = {}) => run(id, "backend", {
+    sdk: { runtime, model: "reported-model", session_id: "native-session", learning_revision: null, usage: null }, ...over,
+  });
+  it.each(["claude-agent-sdk", "codex-sdk"] as const)("keeps live and failed %s calls read-only with backend guidance and encoded run links", async (runtime) => {
+    const writes: string[] = [];
+    const host = mount({ asking: [], live: [sdk("sdk/live", runtime, { status: "working", state: "working" })],
+      failed: [sdk("sdk/failed", runtime, { status: "failed", error: overloaded })],
+      onAnswer: async () => { writes.push("answer"); return null; },
+      onStop: async () => { writes.push("stop"); return null; },
+      onRunAgain: async () => { writes.push("rerun"); return { started: [], problem: null }; },
+    });
+    expect(host.textContent).toContain("your backend");
+    expect(host.textContent).toContain(overloaded.message);
+    expect(host.textContent).not.toMatch(/Steer|Run again|Run all again|Open to cancel/);
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).not.toContain("Stop");
+    expect(host.querySelector('a[href="#/runs/sdk%2Flive"]')?.textContent).toContain("Run sdk/live");
+    expect(host.querySelector('a[href="#/runs/sdk%2Ffailed"]')?.textContent).toContain("Run sdk/failed");
+    expect([...host.querySelectorAll("a")].filter((link) => link.textContent === "Open").map((link) => link.getAttribute("href"))).toEqual(["#/runs/sdk%2Ffailed", "#/runs/sdk%2Flive"]);
+    await act(async () => { host.querySelectorAll("button").forEach((button) => button.click()); });
+    expect(writes).toEqual([]);
+  });
+  it("never includes SDK failures in a managed retry group with the same error", async () => {
+    const retried: string[][] = [];
+    const host = mount({ asking: [], live: [], failed: [failed[0]!, failed[1]!, sdk("sdk-failed", "codex-sdk", { status: "failed", error: overloaded })],
+      onRunAgain: async (runs) => { retried.push(runs.map((r) => r.run_id)); return { started: runs.map((r) => r.run_id), problem: null }; },
+    });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Run all again")!.click(); });
+    expect(retried).toEqual([["f1", "f2"]]);
+    expect(host.textContent).toContain("Run sdk-failed");
+    expect(host.textContent).toContain("your backend");
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent?.includes("Run again"))).toBe(false);
+  });
+});
