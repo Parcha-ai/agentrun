@@ -885,6 +885,10 @@ export type Capabilities = {
   harnesses?: Array<{
     id: "pi" | "claude-agent" | "codex" | "opencode";
     available: boolean;
+    free_models: Array<{
+      id: string;
+      context_window: number;
+    }>;
     models: Array<string>;
     run_memory_mib: number;
     max_concurrent_runs: number;
