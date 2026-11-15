@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DaemonClient, ensureImage } from "../../dist/index.js";
 import { OWN_SOCKETS } from "../../dist/conformance/cases/isolation.js";
 import { desktopOf, startDisplay } from "../../dist/desktop.js";

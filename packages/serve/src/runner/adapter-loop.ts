@@ -64,7 +64,7 @@ import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../comp
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, freeModel, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -430,11 +430,14 @@ export function pendingPauseOf(entries: readonly { readonly kind?: string; reado
 }
 /** How long a turn's end waits for the runner to hand on the rows it has not yet (LoopDeps.deliverNow). */
 const DELIVER_NOW_MS = 5_000;
-/** How long a server note (the replaced computer's, the cap's wrap-up), once a request took it, waits for that request's
+/** How long a server note (the replaced computer's, a wrap-up), once a request took it, waits for that request's
  *  admission before a later request may take it. A request that leaves before its admission gives it back as it goes
  *  (ModelPort.noteReturned): this is only the backstop for a path that never does. A proxy's token count and admission
  *  take well under it. Once admitted, the request holds the note until it ends, however long it streams. */
 const WRAP_UP_OFFER_MS = 30_000;
+/** A server note a request may carry: the replaced computer's (neither field), the cap's wrap-up (`cap`) or the free
+ *  limit's (`freeLimit`). */
+type ServerNote = { words: string; cap?: { leftUsd: number; capUsd: number }; freeLimit?: number };
 
 /** A note the model was told (it begins with SERVER_NOTE_LABEL) as the server's row for it says it: the words after the
  *  label, their first letter a capital, since the row is the server's already ("AgentRun: …", timeline.ts CAP_WRAPUP). */
@@ -1503,11 +1506,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** What the run keeps back beside a request of its own session while it streams (RunCapOptions.keepBackUsd), set
          *  once the wrap-up's reserve is known (below): a tool call it makes mid-stream finds room for the steps after it. */
         let keepBackOf: RunCapOptions["keepBackUsd"];
+        /** The run's requests counted toward the free limit (free.ts freeRequestsIn) as of its last admission, in every
+         *  session: read from its records at the claim (below), then taken from each admission the cap judges, the count it
+         *  was judged with (runBooking's freeRequestsMade) and itself when it counts. Never a read of the run's records
+         *  between a request's admission and its leaving: that wait let a cancel close the session before the request was
+         *  booked, its cost left unknown. */
+        let freeMade = 0;
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
           const { beside: _beside, ...config } = specNow.runCap;
-          return (capBuilt ??= runCap({ sessions, keepBackUsd: (request, asked) => keepBackOf?.(request, asked), ...config, capUsd: capNow }));
+          const judged: RunCapOptions["judged"] = (request, answer) => {
+            config.judged?.(request, answer);
+            if (request.freeRequestsMade !== undefined) freeMade = request.freeRequestsMade + (answer && !("refuse" in answer) && answer.freeRequest === true ? 1 : 0);
+          };
+          return (capBuilt ??= runCap({ sessions, keepBackUsd: (request, asked) => keepBackOf?.(request, asked), ...config, judged, capUsd: capNow }));
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
@@ -1748,6 +1761,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           .filter((entry) => entry.kind === CAP_WRAPUP)
           .map((entry) => (entry.data as { capUsd?: unknown } | undefined)?.capUsd)
           .filter((capUsd): capUsd is number => typeof capUsd === "number");
+        // The free limits it was told under (a CAP_WRAPUP row naming `freeLimit`), read at each claim, so a restart never tells
+        // one twice.
+        const toldFreeLimits = new Set<number>(
+          (await entriesOf(gate.journal, wrapUpRoot.id, context))
+            .filter((entry) => entry.kind === CAP_WRAPUP)
+            .map((entry) => (entry.data as { freeLimit?: unknown } | undefined)?.freeLimit)
+            .filter((limit): limit is number => typeof limit === "number"),
+        );
         const toldAt = (capUsd: number | undefined): boolean => capUsd !== undefined && toldCaps.some((told) => Math.abs(told - capUsd) <= 1e-9);
         // What the run spent on its sessions other than this claim's model session, its decisions' and its paid calls' (an
         // earlier session's, a grade's), summed as overCap sums them; null while any is unknown. Read at the claim and again
@@ -1777,6 +1798,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
           if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
         }
+        // The free requests the run made before this claim, in every session (freeMade: each admission's from here on).
+        let madeBefore = 0;
+        for (const key of await sessions.keys()) madeBefore += freeRequestsIn(await sessions.read(key));
+        freeMade = madeBefore;
         const capNote: { costs: number[]; restUsd: number | null; live?: true; lastFigures?: RequestFigures } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
@@ -1821,7 +1846,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // the proxy refused) gives it back as it goes (noteReturned). WRAP_UP_OFFER_MS is only the backstop for a take that
         // never reaches its admission and is never given back: past it, a later request may take the note. An admitted
         // request always ends (the proxy books each one once), so no backstop is needed from there.
-        let carried: { words: string; at: number; turn?: number; cap?: { leftUsd: number; capUsd: number } } | undefined;
+        let carried: (ServerNote & { at: number; turn?: number }) | undefined;
         const takeNote = (model: string, asked?: NoteRequest): string | undefined => {
           if (carried && (carried.turn !== undefined || Date.now() - carried.at < WRAP_UP_OFFER_MS)) return undefined;
           const note = computerWords !== undefined && !reflecting ? { words: computerWords } : wrapUpNote(model, asked);
@@ -1831,6 +1856,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** Told: the note's row, once, the server's. The note is the run's told from here, before the row is written, so
          *  no request takes it again meanwhile. */
         const tell = async (told: NonNullable<typeof carried>): Promise<void> => {
+          if (told.freeLimit !== undefined) {
+            const { freeLimit } = told;
+            if (toldFreeLimits.has(freeLimit)) return;
+            toldFreeLimits.add(freeLimit);
+            try {
+              await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words: rowWords(told.words), freeLimit } as unknown as JsonValue }), context);
+              await deps.flush();
+            } catch (error) {
+              console.warn(`[runner] the free-limit wrap-up's row was not written (the note was answered): ${said(error)}`);
+            }
+            return;
+          }
           if (told.cap === undefined) {
             computerWords = undefined;
             try {
@@ -1851,8 +1888,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             console.warn(`[runner] the wrap-up's row was not written (the note was answered): ${said(error)}`);
           }
         };
-        /** The cap's wrap-up due for a request about to be sent, with what is left and the cap it is told under. */
-        const wrapUpNote = (model: string, asked?: NoteRequest): { words: string; cap: { leftUsd: number; capUsd: number } } | undefined => {
+        /** The wrap-up due for a request about to be sent: the cap's, with what is left and the cap it is told under, else
+         *  the free limit's. */
+        const wrapUpNote = (model: string, asked?: NoteRequest): ServerNote | undefined => {
           // The end-of-run turn comes after the run's answer: "finish now with your answer" is the job's note, never its.
           if (reflecting) return undefined;
           const config = specNow?.runCap;
@@ -1864,7 +1902,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The model session's requests in flight, at what is held for each (as the cap reads a flight); unknown gives none.
           const inFlight = bookingNow?.heldUsd();
           const capUsd = capNow();
-          if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
+          if (!config || !capModel) return undefined;
+          // The free-model limit's wrap-up (free.ts): the same note and offer, one per run and limit, on a request of a free
+          // model. The dollar cap's note, when it is due on this request, goes first: one note per request, and it is told
+          // once, so the free one waits for the next request (or never comes, the run having answered).
+          const freeNote = (): ServerNote | undefined => {
+            const limit = config.freeRequests;
+            if (limit === undefined || toldFreeLimits.has(limit) || !freeModel(capModel)) return undefined;
+            const due = freeWrapUpDue(limit, freeMade);
+            return due ? { words: freeWrapUpWords(due.left), freeLimit: limit } : undefined;
+          };
+          if (capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return freeNote();
           const spentUsd = sessionSpent + decided + paidSpent + rest;
           // The tools' gate counts a request in flight at its hold (sessionSpendOf), so the note counts it the same: it never
           // comes later than the gate's first refusal.
@@ -1879,7 +1927,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const atLine = wrappingUp(capUsd, spentUsd + heldUsd, reserveOf(figuresOf(model, asked)));
           const leftUsd = capUsd - spentUsd - heldUsd;
           const note = due ?? (atLine ? { words: wrapUpWords(leftUsd, capNote.costs.length === 0), leftUsd } : undefined);
-          return note ? { words: note.words, cap: { leftUsd: note.leftUsd, capUsd } } : undefined;
+          return note ? { words: note.words, cap: { leftUsd: note.leftUsd, capUsd } } : freeNote();
         };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
         // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
