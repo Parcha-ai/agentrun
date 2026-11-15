@@ -522,7 +522,7 @@ export interface ProxyRequest {
   /** On the session's model but no answer of the turn (the policy's `answers` reads it so: a title, a summary, a child's
    *  request). Still the turn's to book, but no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
-  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
+  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is answered. */
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
@@ -782,6 +782,27 @@ export function streamErrorOf(text: string): StreamError | undefined {
       return typeof event === "object" && event !== null && !Array.isArray(event) ? streamErrorIn(event as Record<string, unknown>) : undefined;
     } catch {
       return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** The words of a stream's last event that carries data when it is an error event (`event: error`) whose data is words,
+ *  not JSON: how a translation sends a failure it cannot read for the provider's error event (serve's model-route
+ *  messagesFetch: a provider's error status, a transport error), for its client to throw as the request's error. Never
+ *  read for a refusal: what such a failure cost is unknown. Undefined for any other stream. */
+export function wordsErrorOf(text: string): string | undefined {
+  const events = text.replace(/\r\n|\r/g, "\n").split("\n\n");
+  for (let at = events.length - 1; at >= 0; at--) {
+    const lines = events[at]!.split("\n");
+    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n").trim();
+    if (!data || data === "[DONE]") continue;
+    if (!lines.some((line) => /^event:\s*error\s*$/.test(line))) return undefined;
+    try {
+      JSON.parse(data);
+      return undefined;
+    } catch {
+      return data;
     }
   }
   return undefined;
@@ -1051,7 +1072,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
 
   /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: its client
    *  gone while it was counted, a refusal, an error) is given back to the host then, however it left, so the next request
-   *  can take it at once. From its admission on the note is the admission's: told, or given back by its refusal. */
+   *  can take it at once. From its admission on the note is the admission's: given back by its refusal, else held by the
+   *  request until its end (afterRequest), which tells it if answered and gives it back if not. */
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     const taken: { note?: string } = {};
     try {
@@ -1281,7 +1303,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
-    // The note, if this request carries it, is its admission's from here: told once admitted, given back by a refusal.
+    // The note, if this request carries it, is its admission's from here: given back by a refusal, else told if it is answered.
     if (noted) taken.note = undefined;
     // A client that goes while its request waits for room under the run's cap (runBooking) takes it out of the line: it
     // is never admitted, nothing is held or booked for it.
@@ -1706,6 +1728,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         erredIn = wordsOf(failed.words);
         say(`model proxy (${policy.id}): the provider ended its answer in an error; booked at what it reported${unread && reported === undefined ? " (none: an unknown cost)" : ""}`);
       }
+      // A translation's failure in words (wordsErrorOf): an answer that ended in an error all the same, its client asking
+      // again. Booked as before, as any answer cut short; only its end says the error.
+      const translated = failed === undefined ? wordsErrorOf(kept) : undefined;
+      if (translated !== undefined) erredIn = wordsOf(translated);
       try {
         usd = refusedIn !== undefined ? 0 : unread ? null : options.price?.(asked, usage) ?? null;
         if (refusedIn !== undefined) own = true;

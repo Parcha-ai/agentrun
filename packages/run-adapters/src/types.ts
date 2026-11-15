@@ -208,7 +208,8 @@ export interface ModelRequest {
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
    *  no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
-  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+  /** It carries the host's note (ModelPort.note) in its body: admitted, it holds the note until it ends, and the note is
+   *  told once it is answered (its afterRequest's `ended`), else the host gives it to a later request.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
   inputTokensMaxWithoutNote?: number;
