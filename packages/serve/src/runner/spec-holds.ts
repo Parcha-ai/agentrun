@@ -32,6 +32,8 @@ export class SpecHolds {
   #held: Held = {};
   #log: (line: string) => void = () => {};
   #released: Promise<void> | undefined;
+  #checkoutEnded: Promise<void> | undefined;
+  #toolsEnded: Promise<void> | undefined;
 
   /** Where a step that fails is said: the spec's own log. */
   logTo(log: (line: string) => void): void {
@@ -53,8 +55,28 @@ export class SpecHolds {
     return (this.#released ??= this.#releaseAll(how?.parked));
   }
 
+  /** The tools' end, once: the run's background commands stopped, scratch swept. The end and the release share it. */
+  #endTools(): Promise<void> {
+    return (this.#toolsEnded ??= (this.#held.tools?.end() ?? Promise.resolve()).catch((error: unknown) => this.#log(`the run's tools' end failed: ${words(error)}`)));
+  }
+
+  /** The pull request's checkout removed: the run's end calls it before it commits, so a run never reads final while
+   *  its folder still holds the pull request's code. The run's commands are stopped first (a background command still
+   *  writing under repo/ would race the removal). The release finds it done and waits for it. A removal that fails is
+   *  logged and not kept as done: the release tries it again. */
+  endCheckout(): Promise<void> {
+    if (this.#checkoutEnded) return this.#checkoutEnded;
+    const ending = this.#endTools()
+      .then(() => this.#held.checkout?.end())
+      .catch((error: unknown) => {
+        this.#log(words(error));
+        if (this.#checkoutEnded === ending) this.#checkoutEnded = undefined;
+      });
+    return (this.#checkoutEnded = ending);
+  }
+
   async #releaseAll(parked: ParkCause | undefined): Promise<void> {
-    const { tools, checkout, computer, archil, ws, scratch, keys } = this.#held;
+    const { computer, archil, ws, scratch, keys } = this.#held;
     const log = this.#log;
     const kept = parked !== undefined && computer?.keeps !== undefined && computer.park
       ? await computer.park(parked).catch((error: unknown) => {
@@ -62,8 +84,9 @@ export class SpecHolds {
           return false;
         })
       : false;
-    if (!kept) await tools?.end().catch((error: unknown) => log(`the run's tools' end failed: ${words(error)}`));
-    await checkout?.end().catch((error: unknown) => log(words(error)));
+    // A park that keeps the computer leaves the tools' end out (and its checkout is removed here, with no tools' end).
+    if (kept) await (this.#checkoutEnded ?? this.#held.checkout?.end())?.catch((error: unknown) => log(words(error)));
+    else await this.endCheckout();
     await computer?.release().catch((error: unknown) => log(`the run's computer could not be let go: ${words(error)}`));
     if (!kept) await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${words(error)}`));
     await ws?.end().catch((error: unknown) => log(`the run's workspace end failed: ${words(error)}`));
