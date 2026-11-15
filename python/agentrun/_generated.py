@@ -1864,6 +1864,7 @@ class _CostRequired(TypedDict):
 class Cost(_CostRequired, total=False):
     charge_state: Literal["held", "settled", "released"] | None
     cap_usd: float | None
+    free: Literal[True]
     so_far_usd: float
     unpriced: int
     plan: CostPlan
@@ -4680,6 +4681,7 @@ class _TimelineUsageRequired(TypedDict):
 
 
 class TimelineUsage(_TimelineUsageRequired, total=False):
+    free: Literal[True]
     so_far_usd: float
     unpriced: int
     not_metered: int

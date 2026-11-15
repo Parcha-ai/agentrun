@@ -402,6 +402,7 @@ export type Cost = {
   basis: "charge" | "estimate";
   charge_state?: "held" | "settled" | "released" | null;
   cap_usd?: number | null;
+  free?: true;
   so_far_usd?: number;
   unpriced?: number;
   plan?: {
@@ -822,6 +823,7 @@ export type TimelineKind = "thinking" | "text_block" | "tool_use" | "tool_result
 export type TimelineUsage = {
   usd: number | null;
   requests: number | null;
+  free?: true;
   so_far_usd?: number;
   unpriced?: number;
   not_metered?: number;
