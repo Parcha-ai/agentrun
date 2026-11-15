@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { PINS, standIn } from "./fixtures/eval-harness-stand-in.mjs";
 import { scratch } from "./support.mjs";
@@ -14,7 +15,7 @@ import { scratch } from "./support.mjs";
 const { claimInstallsStopped, HARNESS_INSTALLS, HarnessInstall, installDirOf, installForClaim, sharedInstaller } = await import("../dist/harness-install.js");
 
 const CLAUDE = HARNESS_INSTALLS["claude-agent"];
-const STAND_IN = new URL("./fixtures/eval-harness-stand-in.mjs", import.meta.url).pathname;
+const CHILD = fileURLToPath(new URL("./fixtures/eval-harness-child.mjs", import.meta.url));
 
 /** The regular files under `dir`, no link followed. */
 const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((one) => (one.isDirectory() ? filesUnder(join(dir, one.name)) : one.isFile() ? [join(dir, one.name)] : []));
@@ -49,8 +50,9 @@ test("two evals started at once, each in a process of its own, share one install
   const [root, first, second, logs] = [await scratch(t), await scratch(t), await scratch(t), await scratch(t)];
   const log = join(logs, "installs.log");
   writeFileSync(log, "");
-  const run = (data) => promisify(execFile)(process.execPath, [STAND_IN, root, data, log, "1500"]);
-  const said = await Promise.all([first, second].map(run));
+  // Whichever installs holds its install until the other has started its own, so the two always meet at the hold.
+  const run = (data, peer) => promisify(execFile)(process.execPath, [CHILD, root, data, peer, log]);
+  const said = await Promise.all([run(first, second), run(second, first)]);
   assert.deepEqual(said.map((one) => one.stdout.trim()), ["whole", "whole"]);
   assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [installDirOf(root, `${CLAUDE.id}@${PINS.version}-${PINS.platform}`)], "one install, into the shared root");
 });
