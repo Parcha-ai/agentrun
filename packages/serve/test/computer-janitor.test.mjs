@@ -106,6 +106,19 @@ test("whether a claim holds a run is the store's to say, never this process's cl
   assert.deepEqual(docker.released, [["parked-run-out", "delete"]]);
 });
 
+test("a computer of a run that is over is swept before its deadline: a later claim that failed before its computer left an earlier claim's running; a parked run's and a live run's older claim's wait for theirs", async () => {
+  const FUTURE = new Date(NOW + 23 * 60 * 60_000);
+  const docker = provider("docker", [
+    { name: "ended-run-early", labels: labels("run-mine", 1), deadline: FUTURE },
+    { name: "parked-early", labels: labels("run-parked", 2), deadline: FUTURE },
+    { name: "live-older-early", labels: labels("run-live", 2), deadline: FUTURE },
+    { name: "other-server-early", labels: labels("run-of-another-server", 1), deadline: FUTURE },
+  ]);
+  const swept = await sweepServerComputers({ store: store(), computers: computers([docker], { DOCKER_KEY: "k" }), now: () => NOW });
+  assert.deepEqual(swept, [{ provider: "docker", swept: { ok: true, value: { deleted: ["ended-run-early"], kept: 2 } } }]);
+  assert.deepEqual(docker.computers.map((one) => one.name), ["parked-early", "live-older-early", "other-server-early"]);
+});
+
 test("a provider that keeps only the run's hash (Orgo's names) is swept by it: the hash of this store's run, and never another's (review)", async () => {
   const { runHash } = await import("@parcha/agentrun-computer");
   const orgo = provider("orgo", [
