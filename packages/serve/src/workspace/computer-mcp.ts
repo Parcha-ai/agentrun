@@ -1,7 +1,7 @@
-// A claim's computer as an MCP server: the computer's tools (computer_observe, computer_act, computer_screenshot,
-// computer_script, the hand-over, as its groups offer them) for a harness that speaks MCP and nothing of ours. The tools
-// are the run's own bound ones (run-tools.ts RunTools.hostTools over its kindTools): the kernel registry's definitions,
-// words and executors, on the run's held port, so an answer here is byte for byte the per-step tool's and the script's.
+// A claim's computer as an MCP server: the computer's tools (computer_observe, computer_act, computer_screenshot, the
+// hand-over, as its groups offer them) for a harness that speaks MCP and nothing of ours. The tools are the run's own
+// bound ones (run-tools.ts RunTools.hostTools over its kindTools): the kernel registry's definitions, words and
+// executors, on the run's held port, so an answer here is byte for byte the per-step tool's.
 // Each answer is the tool's text, then its images as image blocks, and, when it did not fail, its value as
 // structuredContent (the SDK wraps a value that is not an object as the client's protocol needs).
 //

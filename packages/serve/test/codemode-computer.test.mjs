@@ -70,20 +70,20 @@ const methodsOf = (computer) => computer.calls.map(([method]) => method).filter(
 /** A pi run of `script` over the suite's tools and `computerTools`, its gate `gate(call)`: the request bodies the provider
  *  got, and the server's store. With `restartAt`, the first runner shuts down once it settles and a second one takes the
  *  run on. `options.computer`: the run's computer as its scripts get it bound (RunTools.computer); `options.settled`: the
- *  run's state it waits for (default ended). */
+ *  run's state it waits for (default ended); `options.adapter`: the run's adapter in pi's place. */
 async function codemodeRun(t, script, computerTools, gate = () => "allow", restartAt = undefined, options = {}) {
   const { server, runners: stores_ } = await stores({ runners: 2 });
   await queue(server, "run-1");
   const { tools } = suiteTools();
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
+    adapter: options.adapter ?? piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: [...hostTools(tools), ...computerTools], context: "fresh" },
     input: "Follow the script.",
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks: quiet,
     gate,
-    ...(options.computer ? { computer: options.computer } : {}),
+    ...(options.computer ? { scriptComputer: options.computer } : {}),
   }));
   const runner = startRunner({ store: stores_[0], createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
@@ -230,27 +230,29 @@ test("a script's computer call is held to the kind's setting: a deny on desktop 
 
 test("on a desktop whose surface is code, the model is offered codemode and the hand-over, no step tool and no computer_script; a script that acts twice and is cut by the runner's end mid-script reruns with each act reaching the computer once", async (t) => {
   const { computer, tools } = await desktop({ surface: "code" });
-  // The screenshot after the two clicks never answers on the first runner: it ends with the script waiting on it.
+  // The third click never answers on the first runner: it ends with the script waiting on it. (A click, never a
+  // screenshot: a screenshot is replay-safe, so a rerun takes it again.)
   let stuck;
   let bound;
-  // A script that never reaches the screenshot fails here, never hangs.
-  const reached = Promise.race([new Promise((resolve) => (stuck = resolve)), new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the script never reached its screenshot within 30 s")), 30_000)))]).finally(() => clearTimeout(bound));
-  let shots = 0;
-  computer.overrides["screen.shot"] = () => {
-    shots += 1;
-    if (shots === 1) stuck();
+  // A script that never reaches the third click fails here, never hangs.
+  const reached = Promise.race([new Promise((resolve) => (stuck = resolve)), new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the script never reached its third click within 30 s")), 30_000)))]).finally(() => clearTimeout(bound));
+  let clicks = 0;
+  computer.overrides["input.actions"] = ({ actions }) => {
+    clicks += 1;
+    if (clicks < 3) return { done: actions.length };
+    stuck();
     return new Promise(() => {});
   };
-  const script = "await tools.computer_act({ steps: [{ click: [10, 10] }] });\nawait tools.computer_act({ steps: [{ click: [20, 20] }] });\nreturn (await tools.computer_screenshot({})).width;";
+  const script = "await tools.computer_act({ steps: [{ click: [10, 10] }] });\nawait tools.computer_act({ steps: [{ click: [20, 20] }] });\nawait tools.computer_act({ steps: [{ click: [30, 30] }] });\nreturn 'clicked';";
   const { requests, server } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, () => "allow", reached);
   const offered = offeredTools(requests[0]);
   assert.ok(offered.includes(CODEMODE) && offered.includes("computer_request_handoff"), `codemode and the hand-over are offered: ${JSON.stringify(offered)}`);
   for (const name of [...COMPUTER, "computer_script"]) assert.ok(!offered.includes(name), `${name} is not offered: ${JSON.stringify(offered)}`);
   const result = lastResult(requests);
-  assert.match(result.text, /1\. computer_act completed[^\n]*\n2\. computer_act completed[^\n]*\n3\. computer_screenshot was started and did not report a result/, result.text);
-  assert.deepEqual(computer.calls.map(([method]) => method).filter((method) => method !== "hello"), ["input.actions", "input.actions", "screen.shot"], "each act reached the computer once: the rerun answered both from their records, and never shot the screen again");
+  assert.match(result.text, /1\. computer_act completed[^\n]*\n2\. computer_act completed[^\n]*\n3\. computer_act was started and did not report a result/, result.text);
+  assert.deepEqual(computer.calls.map(([method]) => method).filter((method) => method !== "hello"), ["input.actions", "input.actions", "input.actions"], "each act reached the computer once: the rerun answered the first two from their records, and never sent the cut one again");
   const nested = nestedRows(await runTimeline(server, "run-1", ctx));
-  assert.deepEqual(nested.filter((row) => row.kind === "tool_use").map((row) => row.tool_name), ["computer_act", "computer_act", "computer_screenshot"], "each call on the timeline once, under the script");
+  assert.deepEqual(nested.filter((row) => row.kind === "tool_use").map((row) => row.tool_name), ["computer_act", "computer_act", "computer_act"], "each call on the timeline once, under the script");
 });
 
 test("a script run again after a restart: a computer call it made is answered from its record, never made again, and a click the shutdown cut is told interrupted, never sent twice", async (t) => {
@@ -310,21 +312,20 @@ test("on a vendor's desktop, a script cut by the runner's end after a shell comm
   const { computer, run, tools } = await desktop({ more: VENDOR });
   let stuck;
   let bound;
-  const reached = Promise.race([new Promise((resolve) => (stuck = resolve)), new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the script never reached its screenshot within 30 s")), 30_000)))]).finally(() => clearTimeout(bound));
-  let shots = 0;
-  computer.overrides["screen.shot"] = () => {
-    shots += 1;
-    if (shots === 1) stuck();
+  const reached = Promise.race([new Promise((resolve) => (stuck = resolve)), new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the script never reached its app's open within 30 s")), 30_000)))]).finally(() => clearTimeout(bound));
+  // The app's open after the command and the write never answers on the first runner: it ends with the script waiting.
+  computer.overrides["apps.launch"] = () => {
+    stuck();
     return new Promise(() => {});
   };
-  const script = "await computer.shell.run('touch /workspace/once');\nawait computer.files.write('/workspace/notes.txt', 'Pears: 41');\nreturn (await computer.screen.shot()).width;";
+  const script = "await computer.shell.run('touch /workspace/once');\nawait computer.files.write('/workspace/notes.txt', 'Pears: 41');\nawait computer.apps.open('firefox');\nreturn 'opened';";
   const { requests } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, () => "allow", reached, { computer: run.computer });
   const result = lastResult(requests);
-  assert.match(result.text, /1\. computer_op completed[^\n]*\n2\. computer_op completed[^\n]*\n3\. computer_screenshot was started and did not report a result/, result.text);
+  assert.match(result.text, /1\. computer_op completed[^\n]*\n2\. computer_op completed[^\n]*\n3\. computer_op was started and did not report a result/, result.text);
   const methods = methodsOf(computer);
   assert.equal(methods.filter((one) => one === "exec.run").length, 1, `the command ran once: ${JSON.stringify(methods)}`);
   assert.equal(methods.filter((one) => one === "files.write").length, 1, `the file was written once: ${JSON.stringify(methods)}`);
-  assert.equal(methods.filter((one) => one === "screen.shot").length, 1, `the cut screenshot was never shot again: ${JSON.stringify(methods)}`);
+  assert.equal(methods.filter((one) => one === "apps.launch").length, 1, `the cut open was never sent again: ${JSON.stringify(methods)}`);
 });
 
 test("on a vendor's desktop whose agent's bash is set to ask, a script's computer.shell.run parks the run on a person's answer, asked about as bash, and nothing runs on the computer", async (t) => {
@@ -368,4 +369,21 @@ test("codemode's description declares `computer` for the run's desktop, with onl
   const result = lastResult(requests);
   assert.match(result.text, /this agent's computer runs no programs: its exec setting is off/, result.text);
   assert.deepEqual(methodsOf(computer).filter((method) => method === "exec.run"), [], "nothing ran on the computer");
+});
+
+test("on Codex, whose own code mode reaches only the tools it is handed, a desktop run lists computer_op (and under surface code the step tools), and the host offers no codemode beside Codex's own", async (t) => {
+  const { fauxAdapter } = await import("@parcha/agentrun-kernel/testing");
+  for (const surface of [undefined, "code"]) {
+    const { run, tools } = await desktop({ more: VENDOR, ...(surface ? { surface } : {}) });
+    let handed;
+    const faux = fauxAdapter({ script: (spec) => ((handed ??= spec.tools.map((tool) => ({ name: tool.name, deferred: tool.deferred === true }))), [{ say: "done" }]) });
+    // The faux harness under Codex's id: the loop reads Codex's facts (ownCodemode) by the adapter's id.
+    const codex = Object.defineProperty(Object.create(faux), "id", { value: "codex" });
+    await codemodeRun(t, [], tools, () => "allow", undefined, { computer: run.computer, adapter: codex });
+    const label = `surface ${surface}`;
+    const names = handed.map((tool) => tool.name);
+    assert.ok(!names.includes(CODEMODE), `${label}: no host codemode beside Codex's own: ${JSON.stringify(names)}`);
+    assert.ok(!names.includes("computer_script"), `${label}: ${JSON.stringify(names)}`);
+    for (const name of ["computer_op", "computer_act", "computer_screenshot"]) assert.ok(handed.some((tool) => tool.name === name && !tool.deferred), `${label}: ${name} listed: ${JSON.stringify(handed)}`);
+  }
 });

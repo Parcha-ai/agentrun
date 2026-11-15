@@ -1,6 +1,6 @@
 ---
 name: desktop-computer
-description: Use a desktop computer (a Mac, or a Linux desktop) through computer_observe, computer_act, computer_screenshot and computer_script. It covers reading an app's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and reading the computer's refusals. Use when a run has a desktop and the task needs its apps or its windows.
+description: Use a desktop computer (a Mac, or a Linux desktop) through computer_observe, computer_act, computer_screenshot and a codemode script's `computer`. It covers reading an app's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and reading the computer's refusals. Use when a run has a desktop and the task needs its apps or its windows.
 ---
 
 # Using a desktop
@@ -52,9 +52,12 @@ the new state.
 
 **`computer_screenshot` `{region?}`** is the whole screen, or `region: [x, y, w, h]` of it, in screen pixels.
 
-**`computer_script` `{code}`** runs JavaScript in an isolate whose only binding is `computer`. Its tool description
-gives the `computer` object's types for this desktop. The body is an async function: `await` the calls and `return`
-what you need; `text(...)` and `image(...)` show words and pictures beside the value.
+**Scripts: `codemode`.** A `codemode` script has the desktop as `computer`, and codemode's description gives its
+types for this desktop: its apps, its windows, its screen and input, and, where the desktop has them, its shell
+(`computer.shell.run`) and its files (`computer.files`). The body is an async function: `await` the calls and `return`
+what you need. Each call is a call of its own, asked about and recorded like the tools': a command is held to your
+bash setting, a file written to your write setting, a file read to your read setting. A call that needs a person's OK
+stops the script until they answer.
 
 ```js
 const notes = computer.app("com.apple.Notes");
@@ -65,27 +68,19 @@ const saved = await notes.key("super+s", { expect: { text: "Saved" } });
 return { saved: saved.expect, state: saved.state };
 ```
 
-**In a `codemode` script.** The desktop's tools are among its `tools`, each call one of its own: `computer_observe`
-answers the window as a value, and `computer_act` acts on the state last observed. A screenshot comes with its pixels:
-`image(shot)` shows it to you, as returning it does. `tools.computer_script` runs the code above. Codex's `exec`
-answers each as JSON text: parse it there.
-
-```js
-const notes = await tools.computer_observe({ app: "com.apple.Notes" });
-const title = notes.elements.find((node) => node.role === "textbox" && node.name === "Title");
-await tools.computer_act({ app: "com.apple.Notes", steps: [{ set: title.ref, value: "Groceries" }] });
-```
+The tools are there too, as `tools.computer_observe(...)` and `tools.computer_act(...)`. A screenshot comes with its
+pixels: `image(shot)` shows it to you, as returning it does. Codex runs scripts in its own code mode, where each call
+answers JSON text: parse it there.
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
 screenshot pixels (`computer.screen.shot()`), for what one app's window can't reach: a drag from one app to another (a
 file from Finder into a Mail message), or anything outside every window.
 
-**Only the tools you were given.** An agent's computer setting may leave some out: a code-only agent has its script
-tool and no `computer_observe`, `computer_act` or `computer_screenshot`; a tools-only agent has those and no script
-tool; an agent whose exec is off has no `computer.shell`, no `computer.processes` and no bash. Where the desktop has
-the `apps` group a script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they
-name (below); otherwise it uses the desktop's own launcher through the screen.
-Use what your tool list shows.
+**Only what you were given.** An agent's computer setting may leave some out: a code-only agent drives the desktop from
+`codemode` alone, with no `computer_observe`, `computer_act` or `computer_screenshot` in its tool list; an agent whose
+exec is off has no `computer.shell`, no `computer.processes` and no bash. Where the desktop has the `apps` group a
+script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they name (below);
+otherwise it uses the desktop's own launcher through the screen. Use what your tool list and codemode's types show.
 
 ## How to work: observe, then act by ref, then check
 
@@ -100,7 +95,7 @@ Use what your tool list shows.
 
 ## When to write a script
 
-A script is one call where tools would be many. Use one when:
+A `codemode` script is one call of yours where tools would be many. Use one when:
 
 - **You know the steps.** A form you have seen, a menu path you know, a sequence you have done once: run it as one
   script with an `expect` at the end, instead of one act per step.

@@ -521,9 +521,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's.
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
-  // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
-  // denied bash or write holds inside computer_script too.
-  tools.guard.install(gate.script);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
@@ -675,6 +672,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     agentId: runRow.agentId,
     // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
     ...(loopComputer ? { computer: loopComputer } : {}),
+    // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools.
+    ...(tools.computer ? { scriptComputer: tools.computer } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     workRoot: root,

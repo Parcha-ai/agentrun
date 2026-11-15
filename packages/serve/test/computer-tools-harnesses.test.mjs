@@ -4,10 +4,10 @@
 // call a nested call (gated and recorded as the model's own). computer_op is bound for scripts alone: never listed.
 // There is no computer_script anywhere: not as a tool, and not as tools.computer_script inside codemode (a script's
 // `tools` are the run's own). Under the agent's surface "code" the step tools are not listed either: a script reaches
-// them, as nested calls. Codex runs scripts in its own code mode, which reaches only the tools it is handed, so there
-// they stay listed, computer_op among them.
-// The kernel registry and runTools for both kinds; each CLI harness end to end through the API on the faux harness
-// (fixtures/faux-table.mjs), --faux's desktop, and the faux model: no key, no network.
+// them, as nested calls. (Codex runs scripts in its own code mode, which reaches only the tools it is handed, so there
+// they stay listed, computer_op among them: codemode-computer.test.mjs.)
+// The kernel registry and runTools for both kinds; claude-agent and opencode end to end through the API on the faux
+// harness (fixtures/faux-table.mjs), --faux's desktop, and the faux model: no key, no network.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,7 +70,9 @@ async function handed(t, surface) {
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened }, []);
   const { api } = await serve(t, { harnessTable: fauxTable(harness) });
   const seen = {};
-  for (const id of ["claude-agent", "codex", "opencode"]) {
+  // Codex is left out: on the faux harness its run is the faux adapter's, which the loop reads no facts of (its own code
+  // mode), so it would read as the others do. codemode-computer.test.mjs runs a desktop under Codex's id.
+  for (const id of ["claude-agent", "opencode"]) {
     const computer = { kind: "desktop", provider: "faux-desktop", ...(surface ? { surface } : {}) };
     const made = await api("POST", "/agents", agent(`desk-${id}`, { harness: id, tools: ["read"], computer }));
     assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -92,24 +94,24 @@ const readOpened = (file) => {
   }
 };
 
-test("every CLI harness's desktop run is handed the step tools, the hand-over and codemode (Codex: its own code mode), never computer_script", { timeout: 240_000 }, async (t) => {
+test("the CLI harnesses' desktop run is handed the step tools, the hand-over and codemode, never computer_script; computer_op for scripts alone", { timeout: 240_000 }, async (t) => {
   const seen = await handed(t);
   for (const [id, { tools, deferred }] of Object.entries(seen)) {
     assert.ok(!tools.includes(SCRIPT_TOOL), `${id}: no computer_script: ${JSON.stringify(tools)}`);
     for (const name of [...STEPS.filter((name) => name !== "computer_observe" || tools.includes(name)), HANDOFF]) assert.ok(tools.includes(name) && !deferred.includes(name), `${id}: ${name} is listed: ${JSON.stringify({ tools, deferred })}`);
-    assert.equal(tools.includes("codemode"), id !== "codex", `${id}: the host's codemode${id === "codex" ? " is not offered beside Codex's own" : " is offered"}: ${JSON.stringify(tools)}`);
-    if (tools.includes(OP)) assert.equal(deferred.includes(OP), id !== "codex", `${id}: computer_op ${id === "codex" ? "listed, for Codex's own code mode" : "for scripts alone"}: ${JSON.stringify({ tools, deferred })}`);
+    assert.ok(tools.includes("codemode"), `${id}: the host's codemode is offered: ${JSON.stringify(tools)}`);
+    if (tools.includes(OP)) assert.ok(deferred.includes(OP), `${id}: computer_op for scripts alone: ${JSON.stringify({ tools, deferred })}`);
   }
 });
 
-test("under surface code every CLI harness's desktop run reaches the step tools from a script alone: listed nowhere but on Codex, whose own code mode reaches only what it is handed; never computer_script", { timeout: 240_000 }, async (t) => {
+test("under surface code the CLI harnesses' desktop run reaches the step tools from a script alone, never computer_script", { timeout: 240_000 }, async (t) => {
   const seen = await handed(t, "code");
   for (const [id, { tools, deferred }] of Object.entries(seen)) {
     assert.ok(!tools.includes(SCRIPT_TOOL), `${id}: no computer_script: ${JSON.stringify(tools)}`);
     const steps = STEPS.filter((name) => tools.includes(name));
     assert.ok(steps.includes("computer_act") && steps.includes("computer_screenshot"), `${id}: the step tools are bound: ${JSON.stringify(tools)}`);
-    assert.deepEqual(steps.filter((name) => deferred.includes(name)), id === "codex" ? [] : steps, `${id}: ${id === "codex" ? "listed, for its own code mode" : "for scripts alone"}: ${JSON.stringify({ tools, deferred })}`);
+    assert.deepEqual(steps.filter((name) => deferred.includes(name)), steps, `${id}: for scripts alone: ${JSON.stringify({ tools, deferred })}`);
     assert.ok(tools.includes(HANDOFF) && !deferred.includes(HANDOFF), `${id}: the hand-over is listed`);
-    assert.equal(tools.includes("codemode"), id !== "codex", `${id}: codemode: ${JSON.stringify(tools)}`);
+    assert.ok(tools.includes("codemode"), `${id}: codemode: ${JSON.stringify(tools)}`);
   }
 });
