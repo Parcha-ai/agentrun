@@ -320,9 +320,13 @@ test("end to end: an agent with checkout pull_request, started by the App's pull
   runKnown(fired.run_id);
   await swap;
   const meeting = await open(pipe, "w");
-  assert.notEqual((await server.api("GET", `/runs/${fired.run_id}`)).body.status, "completed", "the run is not final while its checkout is still being removed");
-  await meeting.writeFile(claimId);
-  await meeting.close();
+  // The write and the close are in a finally: a failed assertion never leaves the removal's `cat` waiting on the pipe.
+  try {
+    assert.notEqual((await server.api("GET", `/runs/${fired.run_id}`)).body.status, "completed", "the run is not final while its checkout is still being removed");
+  } finally {
+    await meeting.writeFile(claimId);
+    await meeting.close();
+  }
   const { last } = await follow(server.api, fired.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
   const answer = (await server.api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer;
   assert.equal(last.status, "completed", JSON.stringify(last));
