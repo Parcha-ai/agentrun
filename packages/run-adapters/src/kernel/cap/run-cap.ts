@@ -142,9 +142,10 @@ export function runCap(options: RunCapOptions): RunCap {
   // count: runBooking marks them `stays`). Fits so: it `waits` (runBooking asks again once they settle, and never passes the
   // cap: every admission is the rule's over the holds as they are then). Refused even so: refused now, its figures that
   // refusal's (the least cap that sends it once they settle), its words saying what is spent and what is held apart
-  // (aloneRefusal), never holds as spent.
+  // (aloneRefusal), never holds as spent. A step in flight that holds $0 (a free model's request) frees no room when it
+  // settles, so with only such steps beside the ones that stay, the refusal is the rule's own.
   const roomOf = async (request: Parameters<BeforeRequest>[0], refused: Refusal): Promise<Refusal> => {
-    if (refused.forGood !== false || !refused.figures || !request.inFlight.some((flight) => !flight.stays)) return refused;
+    if (refused.forGood !== false || !refused.figures || !request.inFlight.some((flight) => !flight.stays && flight.holdUsd !== 0)) return refused;
     const alone = await rule({ ...request, inFlight: request.inFlight.filter((flight) => flight.stays) });
     if (!(alone && "refuse" in alone)) return { ...refused, waits: true };
     const capUsd = options.capUsd();

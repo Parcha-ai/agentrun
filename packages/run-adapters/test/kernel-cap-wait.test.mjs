@@ -179,6 +179,22 @@ test("a hold-only step is never waited on: a step that fits only once it is give
   assert.ok(refused instanceof cap.CapRefused && !refused.forGood, String(refused));
 });
 
+test("a free model's request in flight holds $0 and frees no room when it settles: a step that does not fit beside the holds that stay is refused in the rule's own words", async () => {
+  const FREE = { id: "free-model", api: "openai-completions", price: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1000 };
+  const { store, run } = runOn(0.5, { modelOf: (id) => (id === FREE.id ? FREE : undefined) });
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  await tools.admit({ ...fetchCall("browser", 0.4), hold: true });
+  const key = "run:run-1";
+  const booking = await modelPortFor(await store.open(key), { key, label: key, beforeRequest: run.before, stop: (reason, message) => Object.assign(new Error(message ?? reason), { reason }) });
+  // The free request is admitted and left unanswered: in flight at $0 when the fetch is judged.
+  await booking.models.beforeRequest({ model: FREE.id, inputTokensMax: 100 });
+  const began = Date.now();
+  const refused = await tools.admit(fetchCall("next", 0.3)).catch((error) => error);
+  assert.ok(Date.now() - began < 1_000, "refused without waiting");
+  assert.ok(refused instanceof cap.CapRefused && !refused.forGood, String(refused));
+  assert.equal(refused.message, "spend_cap_reached: Not sent: this run has spent $0 and holds $0.40 for steps still running, of its $0.50 cap, and the next step, web_fetch, could cost up to $0.30 (a fetch). Raise the cap to at least $0.70 to continue.");
+});
+
 test("the free count an observer keeps stays the run's when a step waits: only the verdict a step goes by is told, at the count it was admitted at", async () => {
   // The adapter loop's free count (adapter-loop.ts freeMade): the count each told verdict was judged with, and itself when
   // it counts. A waiter's refusals are never told, so a free request admitted while a paid call waits never has its count
