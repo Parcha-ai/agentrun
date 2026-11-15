@@ -112,8 +112,9 @@ and grades each run with the case's graders (templates/README.md, "Running the e
 own in this process, over a temp data directory removed at the end, so it never touches your server; --server URL runs
 them on that server instead, its token in AGENTRUN_API_KEY, and archives the agents it made. --on-data DIR runs its own
 server on DIR, a stopped server's data folder, so the runs use what that server keeps (its ChatGPT sign-in) and a case's
-fakes (its clock, its mailbox) still bind; it archives the agents it made there and leaves the folder, and is refused
-while another server holds DIR, or for an email case when DIR's server keeps an email account. --runs N runs each case N
+fakes (its clock, its mailbox) still bind; it archives the agents it made there and leaves the folder and its settings,
+and is refused while another server holds DIR, when DIR has enabled triggers or runs not ended, or for an email case
+when DIR's server keeps an email account. --runs N runs each case N
 times in place of its own count; --grader-model is the llm graders' model (default: the server's); --faux answers every
 model request from MODULE, as the server's --faux does. Progress goes to stderr, a summary to stdout, the whole report
 as JSON to --report FILE. Exit 0 when every case passed, 1 when one failed, 2 when the flags, the package or a case are

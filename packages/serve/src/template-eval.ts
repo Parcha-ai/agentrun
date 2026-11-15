@@ -1009,6 +1009,15 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // The package alone in a templates folder of its own, so the server applies exactly this folder, on a data
     // directory of its own, gone when the eval is.
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
+    // The owner's folder with work of its own is refused before anything runs: the eval's server would start its enabled
+    // triggers and its runner would claim its runs not ended, out of the eval's report and cleanup, on a model or a faux.
+    if (options.data !== undefined) {
+      const work = await workOf(options.data).catch((error: unknown) => (removeTree(scratch!), Promise.reject(error)));
+      if (work) {
+        removeTree(scratch!);
+        throw new Error(`the server on ${options.data} has work of its own: ${work}, which the eval's server and runner would take up: disable its triggers and let its runs end (or stop them), then run the eval; or run it without --on-data`);
+      }
+    }
     const { startServe } = await import("./server.js");
     // Claude Code and Codex installed once for every local eval under this TMPDIR, not into each eval's data: the
     // data's harnesses are links to that one install (harness-install.ts sharedInstaller).
@@ -1117,12 +1126,14 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   const saved: { name: string; url: string }[] = [];
   const runs: RunResult[] = [];
   const total = options.runs ?? one.runs;
+  // A server an owner keeps (--server, or the owner's folder with --on-data): its MCP servers are the owner's.
+  const owners = Boolean(options.server) || options.data !== undefined;
   try {
     for (const [name, fixture] of Object.entries(one.mcp)) {
       // A fake listens on this machine's loopback, which only a server on this machine reaches.
       if (options.server && !LOOPBACK_HOST.test(new URL(options.server.baseUrl).hostname)) throw new ApiFailure(`the case fakes the MCP server ${name} on this machine's loopback, which the server at ${new URL(options.server.baseUrl).host} cannot reach: run it on a server on this machine`);
       // An owner's server keeps its own MCP servers: a case never replaces one, it fails instead.
-      if (options.server &&(await api("GET", `/settings/mcp-servers/${name}`)).status !== 404) throw new ApiFailure(`the server already has an MCP server named ${name}, and the case would replace it with its fake: run the eval on its own server (no --server), or on one without ${name}`);
+      if (owners && (await api("GET", `/settings/mcp-servers/${name}`)).status !== 404) throw new ApiFailure(`the server already has an MCP server named ${name}, and the case would replace it with its fake: run the eval on its own server (no --server, no --on-data), or on one without ${name}`);
       const need = ctx.pkg.mcp.find((one) => one.toolkit === name);
       // An owner's server records what made each server, so there a fake is only ever a url one with its toolkit: one
       // standing in for a Composio or GitHub need is the eval's own server's alone.
@@ -1133,7 +1144,7 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       saved.push({ name, url: fake.url });
       // Another eval on the same server may have saved its own fake under the name meanwhile: then neither case's calls
       // can be told apart, and this one fails rather than run on a fake it does not own.
-      if (options.server && !(await ownsFake(api, name, fake.url))) throw new ApiFailure(`another eval saved its own MCP server named ${name} on this server meanwhile: run one eval of this package at a time on a server`);
+      if (owners && !(await ownsFake(api, name, fake.url))) throw new ApiFailure(`another eval saved its own MCP server named ${name} on this server meanwhile: run one eval of this package at a time on a server`);
     }
     // An email case's runs repeat on each of its mailbox's layouts, each run on a fake account of its own.
     const layouts = one.email ? one.email.layouts : [undefined];
@@ -1160,6 +1171,23 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
     if (one.email) await api("DELETE", "/settings/email", undefined, ctx.owner).catch(() => undefined);
   }
 }
+/** What the stopped server on `data` would do on its own once started, said ("1 enabled trigger, 2 runs not ended"), or
+ *  undefined when nothing: its enabled triggers and its runs not ended. Opened as its server opens it, so a folder another
+ *  server holds is refused here with the store's own words. */
+async function workOf(data: string): Promise<string | undefined> {
+  const { openStore } = await import("./store/open.js");
+  const store = await openStore({ dataDir: data, role: "server" });
+  try {
+    const triggers = (await store.triggers.all()).filter((one) => one.enabled && !one.disabled).length;
+    let runs = 0;
+    for (const state of ["queued", "running", "parked"] as const) runs += (await store.runs.list({ state })).length;
+    const said = [triggers ? `${triggers} enabled trigger${triggers === 1 ? "" : "s"}` : "", runs ? `${runs} run${runs === 1 ? "" : "s"} not ended` : ""].filter(Boolean);
+    return said.length ? said.join(", ") : undefined;
+  } finally {
+    await store.close();
+  }
+}
+
 /** Whether the server's MCP server `name` is still this eval's fake at `url`. */
 const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === shownUrl(url), () => false);
 const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r) => sum + (r.cost_usd ?? 0) + r.graders.reduce((g, x) => g + (x.cost_usd ?? 0), 0), 0) * 1e6) / 1e6;
@@ -1394,12 +1422,13 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, used: Readonly<
 
 /** The pins a case's apply fills (from its parameters) set on the in-process server before it applies, as an owner sets
  *  them (deploy/walk.md): the server's pin holds the call to the case's own target beside the agent's own, as it does in
- *  production. Another server's (--server) settings are its owner's, left as they are: there the agent's own pin alone
- *  holds the write. No permission is written on either: every eval applies with approvals never (runOnce), so a granted
- *  tool runs with no one to answer and a tool the case did not grant is refused. */
+ *  production. Another server's (--server) settings are its owner's, left as they are, and so are those of the owner's
+ *  folder (--on-data): there the agent's own pin alone holds the write. No permission is written on any: every eval
+ *  applies with approvals never (runOnce), so a granted tool runs with no one to answer and a tool the case did not grant
+ *  is refused. */
 async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
-  if (options.server) return;
+  if (options.server || options.data !== undefined) return;
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
   // Each fake is saved under its toolkit's name, so the package's own tool names are the server's.
   const pins = filledPins(pkg.mcp.map((need) => ({ ...need, server: need.toolkit })), parameters).filter(({ empty }) => !empty.length);

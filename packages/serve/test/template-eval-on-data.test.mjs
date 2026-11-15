@@ -136,7 +136,7 @@ test("a folder whose server has work of its own (an enabled trigger, a run not e
   await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data: triggered.data, serve: { faux: FAUX } }), /has work of its own: 1 enabled trigger/);
   const queued = await ownersFolder(t, async (first) => {
     const own = (await first.api("GET", "/agents")).body.agents[0].agent_id;
-    assert.equal((await first.api("POST", `/agents/${own}/runs`, { input: { content: "Say hello." } })).status, 201);
+    assert.equal((await first.api("POST", `/agents/${own}/runs`, { input: { content: "Say hello." } })).status, 202);
   }, { runner: false });
   await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data: queued.data, serve: { faux: FAUX } }), /has work of its own: 1 run not ended/);
   // Nothing ran: the owner's run is still queued.
