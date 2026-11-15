@@ -8,9 +8,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { evalTemplate } from "../dist/template-eval.js";
+import { evalTemplate, readCases, startFake } from "../dist/template-eval.js";
 import { asOwner, scratch, serve } from "./support.mjs";
 import { ADDRESS, mailbox, saved } from "./email-support.mjs";
+import { schedule } from "./trigger-support.mjs";
 
 const PKG = new URL("./fixtures/templates-eval/evalpkg", import.meta.url).pathname;
 const FAUX = new URL("./fixtures/faux-template-eval.mjs", import.meta.url).pathname;
@@ -22,9 +23,9 @@ process.env.AGENTRUN_TEST_EVAL_GRADER_LOG = join(STATE, "graders.jsonl");
 const AGENT = { version: 1, name: "The owner's own", description: "An agent the owner made before the eval.", instructions: "Answer.", skills: [], tools: [], computer: { kind: "none" }, learning: false };
 
 /** A data folder a server set up and stopped, with an agent of the owner's on it: the folder and that agent's id. */
-async function ownersFolder(t, before = async () => undefined) {
+async function ownersFolder(t, before = async () => undefined, { runner = true } = {}) {
   const data = join(await scratch(), "agents");
-  const first = await serve(t, { data });
+  const first = await serve(t, { data, runner });
   const own = await first.api("POST", "/agents", { definition: AGENT });
   assert.equal(own.status, 201, JSON.stringify(own.body));
   await before(first);
@@ -101,6 +102,47 @@ test("an email case on a folder whose server keeps an email account is refused b
   const again = await serve(t, { data });
   const account = await asOwner(again)("GET", "/settings/email");
   assert.equal(account.body.address, ADDRESS, JSON.stringify(account.body));
+});
+
+test("on an owner's folder a case's pins leave the owner's tool settings as they were, and an MCP server of the owner's by a fake's name is never replaced", { timeout: 300_000 }, async (t) => {
+  let before;
+  const { data } = await ownersFolder(t, async (first) => {
+    assert.equal((await first.api("PUT", "/settings/tools", { "mcp:crm/get_contact": { pin: { id: "9" } } })).status, 200);
+    before = (await first.api("GET", "/settings/tools")).body;
+  });
+  // mcp-match fills a pin of its own (update_contact on 7): on the owner's folder the agent's own pin holds the write, as
+  // on a named server, and the case passes with the owner's settings untouched.
+  const pinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], data, serve: { faux: FAUX } });
+  assert.equal(pinned.pass, true, JSON.stringify(pinned.cases[0], null, 1));
+  const after = await serve(t, { data });
+  assert.deepEqual((await after.api("GET", "/settings/tools")).body, before, "the owner's tool settings are as they were");
+  // The owner's own MCP server named crm: the case fails saying why, and the entry stays.
+  const owner = await startFake("crm", readCases(PKG, ["mcp-match"]).cases[0].mcp.crm);
+  t.after(() => owner.close());
+  assert.equal((await after.api("PUT", "/settings/mcp-servers/crm", { url: owner.url, auth: { type: "none" } })).status, 200);
+  await after.stop();
+  const kept = await evalTemplate({ dir: PKG, cases: ["mcp-match"], data, serve: { faux: FAUX } });
+  assert.equal(kept.pass, false);
+  assert.match(kept.cases[0].error ?? "", /already has an MCP server named crm/);
+  const again = await serve(t, { data });
+  assert.equal((await again.api("GET", "/settings/mcp-servers/crm")).body.url, `${new URL(owner.url).origin}/…`, "the owner's entry is untouched");
+});
+
+test("a folder whose server has work of its own (an enabled trigger, a run not ended) is refused before anything runs: the eval's runner and triggers would take it up", { timeout: 300_000 }, async (t) => {
+  const triggered = await ownersFolder(t, async (first) => {
+    const own = (await first.api("GET", "/agents")).body.agents[0].agent_id;
+    assert.equal((await first.api("POST", "/triggers", schedule(own, { cron: "0 9 * * 1", timezone: "UTC" }))).status, 201);
+  });
+  await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data: triggered.data, serve: { faux: FAUX } }), /has work of its own: 1 enabled trigger/);
+  const queued = await ownersFolder(t, async (first) => {
+    const own = (await first.api("GET", "/agents")).body.agents[0].agent_id;
+    assert.equal((await first.api("POST", `/agents/${own}/runs`, { input: { content: "Say hello." } })).status, 201);
+  }, { runner: false });
+  await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data: queued.data, serve: { faux: FAUX } }), /has work of its own: 1 run not ended/);
+  // Nothing ran: the owner's run is still queued.
+  const again = await serve(t, { data: queued.data, runner: false });
+  const runs = (await again.api("GET", `/runs?agent_id=${queued.own}`)).body.runs;
+  assert.deepEqual(runs.map((r) => r.status), ["queued"], JSON.stringify(runs));
 });
 
 test("a data folder is the eval's own server's: with a named server it is refused, in the API and on the command line", async () => {
