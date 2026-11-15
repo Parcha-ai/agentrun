@@ -342,3 +342,24 @@ test("a sender's References grant nothing alone: a run mallory's mail started ca
   const [, , , , bobB0] = await sawFor(bob.messageId);
   assert.equal(bobB0.messages?.[0]?.message_id, "<b0@faux.example>", `bob's reply reads the account's mail to him (addresses compared without case): ${JSON.stringify(bobB0)}`);
 });
+
+test("on a thread run, email_search's limit counts only what the sender may read: a newer linked message between others never takes the slot of an older one of theirs", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:30Z");
+  const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });
+  const faux = await mailbox(t);
+  // In Archive: alice's first message, then a newer one linked to it that only bob and carol are on.
+  faux.seed({ mailbox: "Archive", from: "Alice <alice@example.com>", to: [ADDRESS], subject: "Budget", text: "The budget draft.", date: "2026-05-01T10:00:00Z", messageId: "<al1@example.com>" });
+  faux.seed({ mailbox: "Archive", from: "Bob <bob@example.com>", to: ["carol@example.com"], subject: "Re: Budget", text: "Between us two.", date: "2026-05-02T10:00:00Z", messageId: "<bc1@example.com>", inReplyTo: "<al1@example.com>", references: ["<al1@example.com>"] });
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("limited"))).status, 201);
+  const made = await api("POST", "/triggers", emailTrigger("limited", { every_s: 60 }, calls([["email_search", { subject: "Budget", mailbox: "Archive", limit: 1 }]])));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const alice = faux.seed({ from: "Alice <alice@example.com>", to: [ADDRESS], subject: "Re: Budget", text: "Any news?", date: "2026-06-01T00:00:40Z", messageId: "<al2@example.com>", inReplyTo: "<al1@example.com>", references: ["<al1@example.com>"] });
+  clock.to("2026-06-01T00:01:00Z");
+  await checked(api, made.body.id, "2026-06-01T00:01:00Z");
+  const fired = (await firings(api, made.body.id, 2)).find((f) => f.key === keyOf("email", made.body.id, alice.messageId));
+  assert.equal(fired?.status, "started");
+  await follow(api, fired.run_id, ["completed"], { deadlineMs: 55_000 });
+  const [search] = sawOf((await api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer);
+  assert.deepEqual(search.messages?.map((m) => m.message_id), ["<al1@example.com>"], `limit 1 finds alice's own message, not nothing: ${JSON.stringify(search)}`);
+});
