@@ -37,13 +37,11 @@ const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 
 /** Models serve lists that pi-ai's catalog does not: OpenRouter's free variants of models that take tools, each a copy of
  *  `like` (a catalog entry on the same provider and wire: its api, base URL, compat and reasoning settings) under its own
- *  id, name, input, context window and output ceiling, at $0, with the `toolsAs` it takes. Context and output ceiling are
- *  OpenRouter's (GET https://openrouter.ai/api/v1/models, read 2026-11-15: context_length and
- *  top_provider.max_completion_tokens; pricing "0" prompt and completion). Each one answered a request that defined a tool
- *  with a call to that tool, through OpenRouter, on 2026-11-15, billed $0. */
-export const ADDED_MODELS: readonly { readonly provider: string; readonly id: string; readonly like: string; readonly name: string; readonly input: readonly ("text" | "image")[]; readonly contextWindow: number; readonly maxTokens: number; readonly toolsAs?: ToolsAs }[] = [
-  // Particle-1 on its free route, served by Particle AI as the paid one is: its tools as text, for the same caching.
-  { provider: "openrouter", id: "particle-ai/particle-1:free", like: "particle-ai/particle-1", name: "Particle AI: Particle-1 (free)", input: ["text", "image"], contextWindow: 1_048_576, maxTokens: 131_072, toolsAs: "text" },
+ *  id, name, input, context window and output ceiling, at $0, taking its tools natively (the `like` entry's `toolsAs` is
+ *  not copied). Context and output ceiling are OpenRouter's (GET https://openrouter.ai/api/v1/models, read 2026-11-15:
+ *  context_length and top_provider.max_completion_tokens; pricing "0" prompt and completion). Each one answered a request
+ *  that defined a tool with a call to that tool, through OpenRouter, on 2026-11-15, billed $0. */
+export const ADDED_MODELS: readonly { readonly provider: string; readonly id: string; readonly like: string; readonly name: string; readonly input: readonly ("text" | "image")[]; readonly contextWindow: number; readonly maxTokens: number }[] = [
   { provider: "openrouter", id: "baidu/ernie-5.5-flash-preview:free", like: "inclusionai/ling-3.1-flash", name: "Baidu: ERNIE 5.5 Flash Preview (free)", input: ["text"], contextWindow: 1_024_000, maxTokens: 921_600 },
   { provider: "openrouter", id: "inclusionai/ling-3.2-flash:free", like: "inclusionai/ling-3.1-flash", name: "inclusionAI: Ling 3.2 Flash (free)", input: ["text"], contextWindow: 1_048_576, maxTokens: 262_144 },
 ];
@@ -52,11 +50,11 @@ export const ADDED_MODELS: readonly { readonly provider: string; readonly id: st
  *  out) and never twice: once pi-ai lists an id itself, its own entry stands. */
 const added = <M extends { id: string }>(list: readonly M[], adds: typeof ADDED_MODELS): readonly M[] => [
   ...list,
-  ...adds.flatMap(({ id, like, name, input, contextWindow, maxTokens, toolsAs }) => {
+  ...adds.flatMap(({ id, like, name, input, contextWindow, maxTokens }) => {
     const base = list.find((model) => model.id === like);
     if (!base || list.some((model) => model.id === id)) return [];
     const { toolsAs: _base, ...rest } = base as M & { toolsAs?: ToolsAs };
-    return [{ ...rest, id, name, input: [...input], contextWindow, maxTokens, cost: { ...ZERO }, ...(toolsAs ? { toolsAs } : {}) } as unknown as M];
+    return [{ ...rest, id, name, input: [...input], contextWindow, maxTokens, cost: { ...ZERO } } as unknown as M];
   }),
 ];
 

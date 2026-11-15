@@ -1,5 +1,5 @@
-// OpenRouter's free models that take tools but that pi-ai's catalog does not list (particle-ai/particle-1:free, Baidu's
-// ERNIE 5.5 Flash preview, inclusionAI's Ling 3.2 Flash) are serve's own entries (local-models.ts ADDED_MODELS): they
+// OpenRouter's free models that take tools but that pi-ai's catalog does not list (Baidu's ERNIE 5.5 Flash preview,
+// inclusionAI's Ling 3.2 Flash) are serve's own entries (local-models.ts ADDED_MODELS): they
 // resolve, run and are priced at a known $0 wherever serve reads a model. Capabilities say which of the models a person may
 // pick for a harness are free (harnesses[].free_models, with each one's context window): those whose catalog price is all
 // zeros, read from the price and never from the id; OpenRouter's routers, whose catalog zeros are no price, are not.
@@ -10,20 +10,30 @@ import { catalogPrice, catalogPrices, chooseModel, runModels, unpricedModels } f
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { serve, withEnv } from "./support.mjs";
 
-const FREE = "particle-ai/particle-1:free";
+const FREE = "inclusionai/ling-3.2-flash:free";
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const KEY = `not-a-secret-${"router"}`;
 
-test("openrouter/particle-ai/particle-1:free resolves on OpenRouter's key at $0: the paid entry's wire, its own id, Particle's context and tool format", async () => {
+test("openrouter/inclusionai/ling-3.2-flash:free resolves on OpenRouter's key at $0: its sibling's wire, its own id, OpenRouter's context, tools taken natively", async () => {
   const { models, model } = await runModels({ OPENROUTER_API_KEY: KEY }, `openrouter/${FREE}`);
   assert.equal(`${model.provider}/${model.modelId}`, `openrouter/${FREE}`);
   const full = models.getModel("openrouter", FREE);
-  const paid = models.getModel("openrouter", "particle-ai/particle-1");
+  const like = models.getModel("openrouter", "inclusionai/ling-3.1-flash");
   assert.ok(full, "listed");
   assert.deepEqual(full.cost, ZERO);
-  assert.deepEqual([full.api, full.baseUrl, full.reasoning, full.input, full.compat, full.thinkingLevelMap], [paid.api, paid.baseUrl, paid.reasoning, paid.input, paid.compat, paid.thinkingLevelMap]);
-  assert.deepEqual([full.contextWindow, full.maxTokens, full.toolsAs, full.type], [1_048_576, 131_072, "text", "chat"]);
+  assert.deepEqual([full.api, full.baseUrl, full.reasoning, full.compat], [like.api, like.baseUrl, like.reasoning, like.compat]);
+  assert.deepEqual([full.contextWindow, full.maxTokens, full.input, full.toolsAs, full.type], [1_048_576, 262_144, ["text"], undefined, "chat"]);
   assert.equal(isFree(full), true);
+});
+
+test("an added model never takes its sibling's toolsAs: a stub sibling that takes its tools as text gives a native copy", async () => {
+  const { withLocalModels } = await import("../dist/local-models.js");
+  const sibling = { id: "inclusionai/ling-3.1-flash", provider: "openrouter", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, toolsAs: "text" };
+  const own = { id: "openrouter", getModels: () => [sibling] };
+  let listed;
+  withLocalModels({ getProvider: (id) => (id === "openrouter" ? own : undefined), setProvider: (provider) => void (listed = provider) });
+  const copy = listed.getModels().find((m) => m.id === FREE);
+  assert.deepEqual([copy.toolsAs, copy.cost], [undefined, ZERO]);
 });
 
 test("every added model is chosen on OpenRouter's key and runs at a known $0: a capped run on it has its price", async () => {
@@ -35,13 +45,13 @@ test("every added model is chosen on OpenRouter's key and runs at a known $0: a 
     assert.deepEqual([...unpriced], [], id);
     assert.deepEqual(await unpricedModels({ OPENROUTER_API_KEY: KEY }, `openrouter/${id}`, ["default"], "pi"), [], id);
   }
-  assert.deepEqual(ADDED_MODELS.map((m) => m.id), [FREE, "baidu/ernie-5.5-flash-preview:free", "inclusionai/ling-3.2-flash:free"]);
+  assert.deepEqual(ADDED_MODELS.map((m) => m.id), ["baidu/ernie-5.5-flash-preview:free", FREE]);
   // Behind a gateway a $0 catalog entry is no price (catalogPrices: a plan's $0 never prices a metered model), as for
   // pi-ai's own free entries: AGENT_MODEL_PRICE=0,0 says it there.
   assert.equal(catalogPrice(await catalogPrices(), `openrouter/${FREE}`, "openrouter"), undefined);
 });
 
-test("a request on particle-1:free goes to OpenRouter under its own id and its answer is booked at $0", async (t) => {
+test("a request on ling-3.2-flash:free goes to OpenRouter under its own id and its answer is booked at $0", async (t) => {
   const gw = await startFauxGateway({ usage: { input: 1_000_000, output: 1_000_000 } });
   t.after(() => gw.close());
   const sent = [];
@@ -78,7 +88,7 @@ test("on OpenRouter's key, pi's free models are listed with their context window
   const free = new Map(pi.free_models.map((m) => [m.id, m.context_window]));
   assert.equal(free.get(`openrouter/${FREE}`), 1_048_576);
   assert.equal(free.get("openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"), 1_000_000, "pi-ai's own free entry");
-  for (const id of ["openrouter/openrouter/free", "openrouter/openrouter/auto", "openrouter/auto", "openrouter/particle-ai/particle-1"]) assert.ok(!free.has(id), id);
+  for (const id of ["openrouter/openrouter/free", "openrouter/openrouter/auto", "openrouter/auto", "openrouter/anthropic/claude-sonnet-5.5", "openrouter/inclusionai/ling-3.1-flash"]) assert.ok(!free.has(id), id);
   for (const { id } of pi.free_models) assert.ok(pi.models.includes(id), `${id} is pickable`);
   assert.ok(pi.models.includes("openrouter/anthropic/claude-sonnet-5.5"), "the paid models stay");
   for (const h of harnesses.filter((h) => h.id !== "pi")) assert.deepEqual(h.free_models, [], h.id);

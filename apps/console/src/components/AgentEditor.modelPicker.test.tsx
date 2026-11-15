@@ -88,7 +88,7 @@ describe("AgentEditor, the Model picker", () => {
   });
 
   it("a free model is tagged Free with its context size, and Free only narrows the list to the free ones", async () => {
-    const FREE = "openrouter/particle-ai/particle-1:free";
+    const FREE = "openrouter/inclusionai/ling-3.2-flash:free";
     const NEMO = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free";
     const free: EditorCaps = { ...caps, harnesses: [{ id: "pi", available: true, default_model: "openrouter/anthropic/claude-sonnet-5.5", models: ["openrouter/anthropic/claude-sonnet-5.5", NEMO, FREE], free_models: [{ id: NEMO, context_window: 1_000_000 }, { id: FREE, context_window: 1_048_576 }] }] };
     const host = document.body.appendChild(document.createElement("div"));
