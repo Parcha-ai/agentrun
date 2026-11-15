@@ -101,6 +101,27 @@ test('recoverySystemNote says exactly this for a turn with a call in each status
   assert.equal(shared.recoverySystemNote(drive.state()), EXPECTED_NO_CALLS_NOTE);
 });
 
+test('recoverySystemNote, told which calls the conversation already shows the outcome of (a recovered script output), says where theirs is and keeps the words for every other', async () => {
+  const state = await fiveStatusesState();
+  // Every call shown: a completed or failed one says where its outcome is; a call with no outcome keeps its words; "not
+  // shown here" is said of the others only.
+  const note = shared.recoverySystemNote(state, new Set(['c1', 'c2', 'c3', 'c4', 'c5']));
+  assert.equal(note, EXPECTED_SYSTEM_NOTE
+    .replace('- read_page, call c1: completed.', '- read_page, call c1: completed. Its result is in the output of the script that made the call, above.')
+    .replace('- fail_page, call c2: failed.', '- fail_page, call c2: failed. Its error is in the output of the script that made the call, above.')
+    .replace('The output of those calls is not shown here.', 'The output of the other calls is not shown here.'));
+  // An empty set, or none: the note as every other harness gives it.
+  assert.equal(shared.recoverySystemNote(state, new Set()), EXPECTED_SYSTEM_NOTE);
+  // Only finished calls in the turn, all shown: nothing is said to be not shown.
+  const drive = await openDrive({ writer: await memorySessionStore().open('run-7'), signal: new AbortController().signal });
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'hello' });
+  await shared.placeSubmissions(drive, [drive.pending()[0]]);
+  await shared.toolBridge(drive, [{ name: 'read_page', description: 'Read.', inputSchema: { type: 'object' }, replay: 'safe', execute: async () => 'page' }], { live: false }).call('read_page', {}, 'r1');
+  const all = shared.recoverySystemNote(drive.state(), new Set(['r1']));
+  assert.match(all, /- read_page, call r1: completed\. Its result is in the output of the script that made the call, above\.\n\nCheck the actual state before repeating anything/);
+  assert.doesNotMatch(all, /not shown here/);
+});
+
 test("the tool bridge holds a result to HOST_RESULT_MAX_CHARS: a longer one keeps its start and says where it was cut, flagged truncated, a failure's text too, never half a surrogate pair", async () => {
   const BOUND = 120_000;
   const drive = await openDrive({ writer: await memorySessionStore().open('run-3'), signal: new AbortController().signal });

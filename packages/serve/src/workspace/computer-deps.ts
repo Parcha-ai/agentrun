@@ -168,13 +168,14 @@ export interface ComputerDepsOptions {
   readonly faux?: FauxComputers;
 }
 
-/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (a provider that
- *  prepares its own image, its descriptor's prepareImage: the owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox
- *  the package's recipe, which its prepareImage() builds; a provider whose descriptor declares imageEnv (Daytona's
+/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (a computer on
+ *  this machine's container engine, its descriptor's `local`, Docker's: the owner's AGENTRUN_DOCKER_IMAGE when set, else
+ *  for a sandbox the package's recipe, which its prepareImage() builds, and a desktop refused in words, needing an image
+ *  with an X server, which the recipe lacks; a provider whose descriptor declares imageEnv (Daytona's
  *  AGENTRUN_DAYTONA_SNAPSHOT): that variable's value in `env` when set; any other provider's, and such a one's while it
- *  is unset: its descriptor's defaultImage for the kind, the computer package's
- *  PROVIDERS[].defaultImage; a kind with none refused in words, a prepared desktop's saying it needs an image with an X
- *  server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its
+ *  is unset: its descriptor's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; none for a
+ *  vendor that prepares its own image and names no default (Agent37's), which the claim starts from what its
+ *  prepareImage() answers; a kind with none otherwise refused in words), the leak bound for its lifetime (its clean end is the run's release), and its
  *  network (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read from `env`) for a launch
  *  that names none; and the size of a computer on this machine's container engine (its descriptor's `local`),
  *  AGENTRUN_BOX_CPUS, _MEMORY and _PIDS (dockerLimitsOf, read once here): a vendor's computer sizes itself. No key and
@@ -184,28 +185,35 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
   const current = (): readonly string[] | "none" => boxAllowOf(env as NodeJS.ProcessEnv);
   const currentSet = (): boolean => boxAllowSetIn(env as NodeJS.ProcessEnv);
-  const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
-    if (entry.prepareImage && named !== undefined) return named;
+  const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string | undefined => {
+    // A computer on this machine's container engine (Docker's): the owner's AGENTRUN_DOCKER_IMAGE, else for a sandbox
+    // the package's own recipe, which its prepareImage() builds; a desktop needs an image with an X server.
+    if (entry.local) {
+      if (named !== undefined) return named;
+      if (kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
+      throw refused(`${aLabel(entry.label, true)} desktop needs an image with an X server; set one for desktops.`);
+    }
     const chosen = entry.imageEnv === undefined ? undefined : envValue(env, entry.imageEnv)?.trim();
     if (chosen !== undefined) return chosen;
-    // A sandbox whose provider prepares its image: the package's own recipe, which its prepareImage() builds (the
-    // descriptor gives it no default).
-    if (entry.prepareImage && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
     const image = entry.defaultImage?.[kind];
     if (image !== undefined) return image;
-    if (entry.prepareImage && kind === "desktop") throw refused(`${aLabel(entry.label, true)} desktop needs an image with an X server; set one for desktops.`);
+    // A vendor that prepares its image (Agent37's box template): the claim starts it from what prepareImage() answers.
+    if (entry.prepareImage) return undefined;
     throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
   };
   const limits = dockerLimitsOf(env);
-  return (entry, kind, run, image) => ({
-    // The setting's configuration's image (Orgo's `windows`), else the kind's.
-    image: image ?? imageOf(entry, kind),
-    // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
-    lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
-    network: networkOf(entry, kind, run, current, currentSet),
-    // The size of a computer on this machine's container engine, the operator's (dockerLimitsOf); a vendor's sizes itself.
-    ...(entry.local ? limits : {}),
-  });
+  return (entry, kind, run, configured) => {
+    // The setting's configuration's image (Orgo's `windows`), else the kind's; none for a vendor that prepares its own.
+    const image = configured ?? imageOf(entry, kind);
+    return {
+      ...(image === undefined ? {} : { image }),
+      // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
+      lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
+      network: networkOf(entry, kind, run, current, currentSet),
+      // The size of a computer on this machine's container engine, the operator's (dockerLimitsOf); a vendor's sizes itself.
+      ...(entry.local ? limits : {}),
+    };
+  };
 }
 
 /** The network a computer of `kind` on `entry` asks for: what the run allows (its box_allow), narrowed to "none" when its
@@ -285,9 +293,10 @@ const dockerDaemonOf = (env: KeyEnv): NonNullable<ComputerForClaimDeps["daemon"]
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
   const kinds = claimKinds(options);
-  // A provider that prepares its own image (its descriptor's prepareImage) is given that image's source, which its
-  // prepareImage() makes ready (built from the recipe when the engine lacks it, or pulled by name): the owner's
-  // AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the recipe's bare tag, which no registry has.
+  // A provider on this machine's container engine (its descriptor's `local`, Docker's) is given its image's source,
+  // which its prepareImage() makes ready (built from the recipe when the engine lacks it, or pulled by name): the
+  // owner's AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the recipe's bare tag, which no registry has. A
+  // vendor that prepares its image (Agent37's) knows its own.
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const preparedImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
   // The operator's Docker host addresses (AGENTRUN_DOCKER_HOST_ADDRESSES), checked once here.
@@ -316,13 +325,12 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   /** The server's own values of the environment variables a provider declares it reads on this machine (hostEnv: Local
    *  Chrome's, where it finds Chrome), and no other variable of the server's. */
   const hostEnvOf = (names: readonly string[]): Record<string, string> => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
-  /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: the image source
-   *  for one that prepares its image, the host options for a local one, the host environment it reads. */
+  /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
+   *  its image source and its host options; the host environment it reads. */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
     return {
-      ...(entry?.prepareImage ? { image: preparedImage } : {}),
-      ...(entry?.local ? await localHostOptions(boxAllow) : {}),
+      ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : {}),
       ...(entry?.hostEnv ? { env: hostEnvOf(entry.hostEnv) } : {}),
     };
   };

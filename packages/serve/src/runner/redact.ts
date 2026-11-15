@@ -6,6 +6,7 @@
 import { redactedAnswer } from "../key-refusal.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { hostSecrets, SECRET_NAMES } from "../secrets.js";
+import { planOf } from "../chatgpt-plan.js";
 
 /** Text with every secret value the redactor holds cut out. `heldValues()`, when the redactor knows them: every value it
  *  cuts, for the live ticker alone (live-ticker.ts), which must cut what is not whole text (a value still streaming, whose
@@ -74,4 +75,6 @@ export function heldRedactor(base: Redact): HeldRedact {
  *  one redactor, so a host tool's or a provider's error that echoes one is cut in the run's record, its end and its logs. */
 export function holdClaimed(redact: HeldRedact, env: NodeJS.ProcessEnv): void {
   redact.hold(runnerSecrets(env));
+  // A ChatGPT plan's tokens, each one as the claim reads or renews it.
+  planOf(env)?.watch((tokens) => redact.hold(tokens));
 }

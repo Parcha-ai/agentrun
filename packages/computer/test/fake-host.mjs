@@ -19,6 +19,21 @@ export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.po
 const NO_CAPS = "0000000000000000";
 const STDIN_VERBS = new Set(["mount", "revoke"]);
 
+/** The fake's descriptor, as a vendor's (src/descriptors/*): its network, mounts and configurations. */
+export const FAKE_DESCRIPTOR = {
+	id: "fakehost",
+	label: "Fakehost",
+	network: ["none"],
+	mounts: ["archil"],
+	capabilities: [
+		{ kind: "linux", groups: [...LINUX_GROUPS] },
+		{ kind: "desktop", groups: [...DESKTOP_GROUPS] },
+	],
+};
+
+/** The fake's descriptor with GPUs on its linux configuration. */
+export const gpuDescriptor = (gpu) => ({ ...FAKE_DESCRIPTOR, capabilities: [{ kind: "linux", groups: [...LINUX_GROUPS], gpu }, FAKE_DESCRIPTOR.capabilities[1]] });
+
 export class NotFound extends Error {
 	name = "NotFound";
 }
@@ -72,7 +87,9 @@ const START = Date.now();
 
 /**
  * A fake host. Its calls answer plain values or throw, as src/host.ts says. Options:
- *  - facts: over the defaults (child daemon, vendor lifetime); its descriptor takes network none and an archil mount;
+ *  - facts: over the defaults (child daemon, vendor lifetime);
+ *  - descriptor: the host's, FAKE_DESCRIPTOR by default (network none, an archil mount, a linux and a desktop
+ *    configuration, no GPU);
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
@@ -81,7 +98,6 @@ const START = Date.now();
  *  - flaps: for a new machine, whether each listing after its create shows it (true) or leaves it out (false), in turn,
  *    until they run out; then every listing shows it;
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
- *    a machine reads back the GPUs its create asked for;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
@@ -125,6 +141,7 @@ export function fakeHost({
 	sockets = [],
 	socketsFail,
 	stale = false,
+	descriptor = FAKE_DESCRIPTOR,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -177,7 +194,6 @@ export function fakeHost({
 		labels: { ...m.labels },
 		state: m.deleted || m.why !== undefined ? "gone" : m.state,
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
-		...(m.request?.gpu === undefined ? {} : { gpu: { ...m.request.gpu } }),
 		endsAt: new Date(m.endsAt),
 		...(m.why === undefined ? {} : { why: m.why }),
 	});
@@ -447,7 +463,7 @@ export function fakeHost({
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
 	const host = {
-		descriptor: { id: "fakehost", label: "Fakehost", network: ["none"], mounts: ["archil"] },
+		descriptor,
 		facts: {
 			daemon: "child",
 			isolation: "microvm",
@@ -455,7 +471,6 @@ export function fakeHost({
 			maxLifetimeMs: 24 * 3_600_000,
 			arch: "amd64",
 			vendorAgentPorts: [7777],
-			gpuReadBack: true,
 			...facts,
 		},
 		errorCode(error) {
@@ -471,7 +486,7 @@ export function fakeHost({
 			await onStep("create", undefined);
 			if (create === "fail") throw new Refused("400: no such image");
 			const make = () => {
-				const m = add({ labels: req.labels, network: req.network, image: req.image, lifetimeMs: req.lifetimeMs ?? 600_000, state: starting > 0 ? "starting" : "running", startingReads: starting });
+				const m = add({ labels: req.labels, network: req.egress ? "open" : "none", image: req.image, lifetimeMs: req.lifetimeMs, state: starting > 0 ? "starting" : "running", startingReads: starting });
 				m.hidden = unlisted;
 				m.flaps = [...flaps];
 				m.request = req;

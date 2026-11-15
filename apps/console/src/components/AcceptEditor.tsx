@@ -73,17 +73,17 @@ export function ConditionList({ name, at, where, onChange, issues, label }: { na
 }
 
 /** A filter's rules, each an event typed by its name, its actions and its conditions. `name`: the prefix of every
- *  control's name (`accept`); `offset`: the first rule's index in the sent `accept` (after the GitHub picker's rules);
+ *  control's name (`accept`); `indexOf`: a rule's index in the sent `accept` (the GitHub form mixes its picker's rules in);
  *  `room`: how many rules may still be added in all. */
-export function AcceptEditor({ name, rules, onChange, issues, offset = 0, room, eventHint, eventPlaceholder, addLabel = "Add a rule", empty }: {
-  name: string; rules: RuleDraft[]; onChange: (rules: RuleDraft[]) => void; issues: Issues; offset?: number; room: number; eventHint: string; eventPlaceholder?: string; addLabel?: string; empty?: ReactNode;
+export function AcceptEditor({ name, rules, onChange, issues, indexOf = (i) => i, room, eventHint, eventPlaceholder, addLabel = "Add a rule", empty }: {
+  name: string; rules: RuleDraft[]; onChange: (rules: RuleDraft[]) => void; issues: Issues; indexOf?: (i: number) => number; room: number; eventHint: string; eventPlaceholder?: string; addLabel?: string; empty?: ReactNode;
 }) {
   const set = (i: number, change: Partial<RuleDraft>) => onChange(rules.map((r, k) => (k === i ? { ...r, ...change } : r)));
   return (
     <div className="min-w-0 space-y-3">
       {!rules.length && empty}
       {rules.map((r, i) => {
-        const at = `source.accept[${offset + i}]`;
+        const at = `source.accept[${indexOf(i)}]`;
         const n = `${name}-${i}`;
         return (
           <section key={r.key} data-rule={n} aria-label={`Rule ${i + 1}`} className="space-y-4 border p-4">

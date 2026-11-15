@@ -10,7 +10,7 @@ import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
+import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -162,7 +162,7 @@ const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
 
 /**
  * A sandbox as the adapter reads a machine, from getInfo or the listing alike: E2B's state (a paused one is stopped), its
- * start, its end. E2B keeps no metadata change, so once an extend moved its timer clear of create's end (setTimer), the
+ * start, its end. E2B keeps no metadata change, so once an extend moved its timer clear of create's end (extend), the
  * deadline label reads that end, up to the most the computer may live: a restarted provider reads the extend all the same.
  */
 function machineOf(info: SandboxInfo): Machine {
@@ -216,28 +216,29 @@ class E2BHost implements MachineHost {
 		return { ...this.#connection, requestTimeoutMs: ms, ...(signal ? { signal } : {}) };
 	}
 
-	/** An E2B template is a name or id: letters, digits and ._:/- (no shell word, no path out). */
-	check({ image }: Partial<ComputerSpec>): Refusal[] {
-		if (typeof image === "string" && image !== "" && !TEMPLATE.test(image)) {
-			return [{ field: "image", message: `an image is the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"` }];
+	/** An E2B template is a name or id: letters, digits and ._:/- (no shell word, no path out); its size is the template's. */
+	check(spec: Partial<ComputerSpec>): Refusal[] {
+		const refusals = sizeRefusals(spec, "an E2B computer", "template");
+		if (typeof spec.image === "string" && spec.image !== "" && !TEMPLATE.test(spec.image)) {
+			refusals.push({ field: "image", message: `an image is the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"` });
 		}
-		return [];
+		return refusals;
 	}
 
 	/**
 	 * Sandbox.create with the lifetime as its timeout in the whole seconds E2B takes (index.mjs:502-504), recorded in a
-	 * label for its end's arithmetic; no internet access unless the adapter asks open (an Archil computer's root), no
+	 * label for its end's arithmetic; no internet access unless the adapter asks egress (an Archil computer's root), no
 	 * public traffic (a project's default may let it in: E2B docs, network/restrict-public-access), and kill at the
 	 * timeout, never a pause that keeps the computer (index.mjs:5674-5699).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
-		const timeoutMs = Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000;
+		const timeoutMs = Math.ceil(req.lifetimeMs / 1000) * 1000;
 		const options: SandboxOpts = {
 			...this.#api(ctx.timeoutMs),
 			timeoutMs,
 			metadata: { ...req.labels, [TIMEOUT_LABEL]: String(timeoutMs) },
 			envs: {},
-			allowInternetAccess: req.network === "open",
+			allowInternetAccess: req.egress,
 			network: { allowPublicTraffic: false },
 			lifecycle: { onTimeout: "kill" },
 		};

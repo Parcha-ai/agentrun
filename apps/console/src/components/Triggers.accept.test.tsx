@@ -32,7 +32,7 @@ const AGENTS = [{ agent_id: "triage", kind: "agentic", definition: { name: "Tria
 type Call = { method: string; path: string; body: unknown; key: string | null };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-function server({ triggers = [BASE, FILTERED, PRS], create, patch }: { triggers?: Trigger[]; create?: (call: Call) => Response; patch?: (call: Call) => Response | undefined } = {}) {
+function server({ triggers = [BASE, FILTERED, PRS], create, patch }: { triggers?: Trigger[]; create?: (call: Call) => Response; patch?: (call: Call) => Response | Promise<Response> | undefined } = {}) {
   const calls: Call[] = [];
   triggers = triggers.map((t) => structuredClone(t));
   const fetch = (async (url: string, init?: RequestInit) => {
@@ -254,6 +254,57 @@ describe("Triggers: editing a filter from the trigger's page", () => {
     await t.set("github-pull_request-where-0-value", "main");
     await t.click(/^Save filter$/);
     expect(patched(s.calls)).toEqual([{ source: { kind: "github", accept: [{ event: "pull_request", actions: ["opened", "synchronize"], where: [{ pointer: "/pull_request/base/ref", in: ["main"] }] }, { event: "issues", actions: ["opened"] }] } }]);
+  });
+
+  // A filter made through the API comes back as it came: a rule or a field the owner didn't touch is sent exactly as read
+  // (a pointer as it was, spaces and all; an action list as its values; the rules and actions in their order; a pointer to
+  // the whole body), so a save that changes nothing sends nothing.
+  const MADE: Trigger = { ...BASE, source: { kind: "webhook", signature: "standard", accept: [{ event: "issue", actions: ["foo,bar"], where: [{ pointer: "/label ", in: ["bug"] }, { pointer: "", exists: true }, { pointer: "/title", prefix: "  [agent]" }] }] } };
+
+  it("a filter made through the API, saved unchanged, sends nothing: a pointer ending in a space, an action with a comma, a whole-body pointer, a prefix with leading spaces", async () => {
+    const s = server({ triggers: [MADE] });
+    const t = await open(s.v2, { trigger: "trg_w", edit: true });
+    await t.click(/^Save filter$/);
+    expect(t.issue("source.accept[0].where[1].pointer")).toBeNull();
+    expect(patched(s.calls)).toEqual([]);
+    expect(t.went).toEqual(["#/triggers/trg_w"]);
+  });
+
+  it("one condition edited: the rest of the filter goes back as it came, and the edited pointer as typed", async () => {
+    const s = server({ triggers: [MADE] });
+    const t = await open(s.v2, { trigger: "trg_w", edit: true });
+    await t.set("accept-0-where-0-value", "bug\nfeature");
+    await t.click(/^Save filter$/);
+    expect(patched(s.calls)).toEqual([{ source: { kind: "webhook", signature: "standard", accept: [{ event: "issue", actions: ["foo,bar"], where: [{ pointer: "/label ", in: ["bug", "feature"] }, { pointer: "", exists: true }, { pointer: "/title", prefix: "  [agent]" }] }] } }]);
+  });
+
+  it("a GitHub filter whose rules and actions are in another order than the picker's, saved unchanged, sends nothing; edited, keeps its order", async () => {
+    const reordered: Trigger = { ...BASE, id: "trg_r", source: { kind: "github", accept: [{ event: "issue_comment", actions: ["created"] }, { event: "pull_request", actions: ["synchronize", "opened"] }] } };
+    const s = server({ triggers: [reordered] });
+    const t = await open(s.v2, { trigger: "trg_r", edit: true });
+    await t.click(/^Save filter$/);
+    expect(patched(s.calls)).toEqual([]);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const again = server({ triggers: [reordered] });
+    const u = await open(again.v2, { trigger: "trg_r", edit: true });
+    await u.click(/^Add a condition$/, u.scope('[data-github-event="pull_request"]'));
+    await u.set("github-pull_request-where-0-pointer", "/pull_request/base/ref");
+    await u.set("github-pull_request-where-0-value", "main");
+    await u.click(/^Save filter$/);
+    expect(patched(again.calls)).toEqual([{ source: { kind: "github", accept: [{ event: "issue_comment", actions: ["created"] }, { event: "pull_request", actions: ["synchronize", "opened"], where: [{ pointer: "/pull_request/base/ref", in: ["main"] }] }] } }]);
+  });
+
+  it("a save that answers after the person left the editor opens nothing", async () => {
+    let answer!: (r: Response) => void;
+    const s = server({ patch: () => new Promise<Response>((r) => { answer = r; }) });
+    const t = await open(s.v2, { trigger: "trg_f", edit: true });
+    await t.choose("accept-0-where-0-op", "exists");
+    await t.click(/^Save filter$/);
+    // Left the editor (Cancel, the back link, the sidebar): the page goes, and the save answers after.
+    act(() => root?.unmount());
+    await act(async () => { answer(json(200, FILTERED)); });
+    await t.settle();
+    expect(t.went).toEqual([]);
   });
 
   it("an edit refused with a 422 shows the issue on the condition, and stays", async () => {

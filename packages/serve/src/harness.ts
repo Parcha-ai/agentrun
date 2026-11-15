@@ -7,6 +7,9 @@
 export const HARNESSES = ["pi", "claude-agent", "codex", "opencode"] as const;
 export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
+/** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses
+ *  API as the plan takes them. The others need a model key. */
+export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] satisfies HarnessId[]);
 
 /** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
  *  mid-turn (`steer`), or queues it for the turn's end. */

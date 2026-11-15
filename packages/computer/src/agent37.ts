@@ -1,4 +1,4 @@
-// The Agent37 host: Agent37 Cloud instances (kind linux, or kind desktop on our box template, agentrun-box, whose Xvfb
+// The Agent37 host: Agent37 Cloud instances (kind linux, or kind desktop on our box template, agentrun-box-<hash>, whose Xvfb
 // the adapter starts through the daemon), each a whole VM by default (type "vm"), or a gVisor sandbox
 // (type "default"). The control plane is Agent37's REST API over fetch (https://api.agent37.com/v1, a Bearer key);
 // every command (the daemon's upload, its install, init's start, the stdio bridge) goes over SSH, as root, through the
@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./agent37-ssh.js";
+import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
@@ -18,8 +19,8 @@ import { orThrow } from "./hosted/process.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
-import type { ComputerSpec, Refusal } from "./provider.js";
-import type { ComputerErrorCode } from "./result.js";
+import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
+import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 
 /** A WebSocket as this provider uses one: Node's global WebSocket (undici), which takes headers, or the same slice. */
 export interface WebSocketLike {
@@ -82,7 +83,7 @@ export interface Agent37ProviderOptions extends Omit<HostedOptions, "maxLifetime
 	region?: Agent37Region;
 	/**
 	 * linux (default): no screen; desktop: an X server started through the daemon (Xvfb on :0 unless options.desktop says
-	 * otherwise), so the spec's image is a template that has one: our box template, agentrun-box (box/build-agent37.mjs).
+	 * otherwise), so the spec's image is a template that has one: our box template, which prepareImage() registers.
 	 */
 	kind?: "desktop" | "linux";
 	/** The longest lifetime check takes: 24 h by default, the janitor's cap; Agent37 itself never ends an instance. */
@@ -116,13 +117,25 @@ const SHAPES: ReadonlyArray<{ cpu: number; memory: number }> = [
 	{ cpu: 4, memory: 32 },
 ];
 const MAX_CPUS = 4;
-/** metadata's cap, serialized (docs: instances/edit, "up to 4 KB serialized"). */
+/**
+ * metadata's cap, serialized (docs: instances/edit, "up to 4 KB serialized"): check() holds the names and values to it,
+ * and create the JSON, its quotes and commas too.
+ */
 const METADATA_MAX_BYTES = 4096;
 /** A VM boots inside the create's POST, which answers once it runs (docs: instances/create, Defaults). */
 const DEFAULT_CREATE_MS = 300_000;
 /** How much a tunnel may hold unsent before a write waits for it (the WebSocket's bufferedAmount). */
 const TUNNEL_HIGH_WATER = 1024 * 1024;
 const TUNNEL_POLL_MS = 10;
+/**
+ * A registration copies the image into the workspace's storage before it answers, "up to a few minutes for a large
+ * image" (docs: templates, Register a workspace template): the POST's bound, and the wait on another's registration.
+ */
+const REGISTER_MS = 15 * 60_000;
+/** One read of a template. */
+const TEMPLATE_READ_MS = 30_000;
+/** How often a template another registration is making is read again. */
+const TEMPLATE_POLL_MS = 1_000;
 
 /** An id held to Agent37's form before it reaches a URL or a host name (an id is also a DNS label here): not_found else. */
 function instanceId(id: string): string {
@@ -291,19 +304,17 @@ class Agent37Host implements MachineHost {
 		this.#WebSocket = options.WebSocket;
 		this.#proxyDomain = options.proxyDomain;
 		this.#declared = { type: options.type, region: options.region };
-		const runtime = options.type === "vm" ? "vm" : "gvisor";
 		this.facts = {
 			daemon: "child",
-			isolation: runtime,
+			// The adapter holds the probe's kernel to it: gVisor's for type default, never for a VM.
+			isolation: options.type === "vm" ? "vm" : "gvisor",
 			lifetime: "janitor",
 			maxLifetimeMs: DAY_MS,
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
-			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
+			// The box template is the box image (box/Dockerfile), which has xfwm4: the apps an agent opens are framed and focused.
 			windowManager: true,
-			specFields: ["cpus", "memoryMb"],
-			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
-			runtime: () => runtime,
+			labels: { bytes: METADATA_MAX_BYTES },
 		};
 	}
 
@@ -332,7 +343,7 @@ class Agent37Host implements MachineHost {
 		return parsed as T;
 	}
 
-	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelRules). */
+	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (facts.labels.bytes). */
 	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const { image, cpus, memoryMb } = given;
@@ -353,6 +364,8 @@ class Agent37Host implements MachineHost {
 	 * no public port. It answers once the instance runs (docs: instances/create, Defaults).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
+		const bytes = Buffer.byteLength(JSON.stringify(req.labels));
+		if (bytes > METADATA_MAX_BYTES) throw new HostError("invalid", `Agent37 holds an instance's metadata to ${METADATA_MAX_BYTES} bytes as JSON, and this one's would be ${bytes}: give shorter labels`);
 		const shape = req.cpus !== undefined || req.memoryMb !== undefined ? shapeOf(req.cpus, req.memoryMb) : undefined;
 		const made = await this.#rest<Agent37Instance>(
 			"POST",
@@ -364,7 +377,7 @@ class Agent37Host implements MachineHost {
 				...(shape === undefined ? {} : { resources: { cpu: shape.cpu, memory: shape.memory } }),
 				name: req.name,
 				metadata: req.labels,
-				network: req.network === "open" ? "allow-all" : "deny-all",
+				network: req.egress ? "allow-all" : "deny-all",
 				auto_sleep: false,
 				public_ports: [],
 			},
@@ -417,6 +430,42 @@ class Agent37Host implements MachineHost {
 		const instance = await this.#rest<Agent37Instance>("GET", path, undefined, ctx);
 		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), [DEADLINE_LABEL]: endsAt.toISOString() } }, ctx);
 	}
+
+	/** GET /v1/templates/{name}: whether the workspace has it (404: it has not), else a HostError in Agent37's words. */
+	async #hasTemplate(name: string, signal: AbortSignal | undefined): Promise<boolean> {
+		const read = orThrow(await this.#client.call("GET", this.#client.url(`/v1/templates/${name}`), { timeoutMs: TEMPLATE_READ_MS, accept: (status) => status === 200 || status === 404 }, signal));
+		return read.status === 200;
+	}
+
+	/**
+	 * The workspace template `name`, made from the public image `imageRef` when the workspace has none (docs: templates):
+	 * GET it; on a 404, `registering` is told, then POST /v1/templates { name, image_ref }, which answers once Agent37 has
+	 * copied the image into the workspace. A 409 is another registration of the name, which this waits for, reading the
+	 * template until the workspace has it. Throws a HostError in Agent37's words.
+	 */
+	async template(name: string, imageRef: string, registering: () => void, signal: AbortSignal | undefined): Promise<void> {
+		if (await this.#hasTemplate(name, signal)) return;
+		registering();
+		const json = { name, image_ref: imageRef, description: `AgentRun's box image ${imageRef}, registered by the server that first needed it` };
+		const posted = orThrow(await this.#client.call("POST", this.#client.url("/v1/templates"), { json, timeoutMs: REGISTER_MS, accept: (status) => (status >= 200 && status < 300) || status === 409 }, signal));
+		if (posted.status !== 409) return;
+		const end = Date.now() + REGISTER_MS;
+		while (!(await this.#hasTemplate(name, signal))) {
+			if (Date.now() > end) throw new HostError("timeout", `another registration of ${name} was not done within ${REGISTER_MS / 60_000} minutes`);
+			await new Promise<void>((resolve, reject) => {
+				const done = () => {
+					clearTimeout(timer);
+					reject(new HostError("aborted", `the wait on another registration of ${name} was aborted`));
+				};
+				const timer = setTimeout(() => {
+					signal?.removeEventListener("abort", done);
+					resolve();
+				}, TEMPLATE_POLL_MS);
+				if (signal?.aborted) done();
+				else signal?.addEventListener("abort", done, { once: true });
+			});
+		}
+	}
 }
 
 /**
@@ -435,11 +484,42 @@ export async function create(options: Agent37Options): Promise<Agent37Provider> 
 /** The conformance CLI's module for Agent37: its live switch, the run's cap, its template and the drifted twin. */
 export const conformance = () => import("./conformance/agent37.js");
 
+const fail = failFor(AGENT37.id);
+
 /**
- * Computers that are Agent37 instances, on the shared adapter. A spec's image is an Agent37 template's name:
- * "agent37-base", Agent37's plain Linux, for a sandbox; "agentrun-box", our box template with Xvfb, for a desktop.
+ * Computers that are Agent37 instances, on the shared adapter. A spec's image is an Agent37 template's name, such as
+ * "agent37-base", Agent37's plain Linux. A server starts every one from the template prepareImage() answers: our box
+ * image, registered in the key's own workspace.
  */
 export class Agent37Provider extends HostedProvider {
+	/**
+	 * The provider contract's prepareImage (its descriptor declares it): the box image the release publishes
+	 * (box-image.ts), as the workspace template agentrun-box-<recipe hash>, registered from the public image the first
+	 * time the workspace needs it, so a new recipe is a new template and the one before is left as it is. ok with the
+	 * template's name; onWait is told "pull" once, before a registration it waits on, never when the workspace has it.
+	 * A sandbox and a desktop start from the same image.
+	 */
+	async prepareImage(context: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void } = {}): Promise<Result<string>> {
+		const name = `agentrun-box-${boxRecipeHash()}`;
+		const ref = boxImageRef();
+		let registering = false;
+		try {
+			await (this.host as Agent37Host).template(
+				name,
+				ref,
+				() => {
+					registering = true;
+					context.onWait?.("pull", ref);
+				},
+				context.signal,
+			);
+			return ok(name);
+		} catch (error) {
+			const said = error instanceof Error ? error.message : String(error);
+			return fail(codeOf(error), registering ? `registering ${ref} as the Agent37 template ${name}: ${said}` : `reading the Agent37 template ${name}: ${said}`);
+		}
+	}
+
 	constructor(options: Agent37ProviderOptions) {
 		const {
 			apiKey,

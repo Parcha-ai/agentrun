@@ -15,12 +15,13 @@ import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
 import type { AdapterNeeds } from "./adapters.js";
-import { DEFAULT_HARNESS, type HarnessId } from "./harness.js";
+import { DEFAULT_HARNESS, type HarnessId, PLAN_HARNESSES } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
 import { chooseModel } from "./model.js";
 import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
 import { WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
+import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
 
 /** A module of entries a test merges over the built-in ones (HarnessTableModule), by absolute path. */
 export const HARNESS_TABLE_ENV = "AGENTRUN_HARNESS_TABLE";
@@ -111,6 +112,7 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
   const { wire, id } = facts;
   const { vendor, gateway } = WIRES[wire];
   const installs = HARNESS_INSTALLS[id];
+  const onPlan = PLAN_HARNESSES.includes(id);
   const entry: HarnessEntry = {
     id,
     steer: facts.steer,
@@ -120,8 +122,8 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     ...(installs ? { installs } : {}),
     ...extra,
     // Its wire's vendor's model, or that vendor's on OpenRouter; behind serve's gateway, on the wire it serves, any id,
-    // which is the gateway's own string and names no provider here.
-    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor),
+    // which is the gateway's own string and names no provider here. One that runs on a ChatGPT plan, the plan's models.
+    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
     model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
@@ -129,12 +131,13 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     route: async (env, needs) => {
       const { nativeOptions, priceOf } = await import("./adapters.js");
       const provider = providerFor(wire, env, needs.model, id);
-      const policy = facts.policy({ model: provider.modelId, tools: [], auth: provider.auth, ...nativeOptions(facts, env) });
+      const policy = facts.policy({ model: provider.modelId, tools: [], auth: provider.auth, ...nativeOptions(facts, env), ...(provider.billing === "plan" ? { plan: true } : {}) });
       return { api: wire, options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf({ ...needs, model: provider.priceModel }) } };
     },
     refusal: async (env, given, { atStart }) => {
       const { harnessInstalled, startReason } = await import("./adapters.js");
-      const needs = given ?? { model: { provider: vendor, modelId: "default" }, models: { getModel: () => undefined } };
+      // Signed in to a ChatGPT plan, a harness that runs on it is asked of the plan's route, which needs no key.
+      const needs = given ?? { model: { provider: onPlan && signedIn(env) ? PLAN_PROVIDER : vendor, modelId: "default" }, models: { getModel: () => undefined } };
       try {
         // Not installed yet installs on first use (harness-install.ts): until then the provider decides, as it would for
         // a session.

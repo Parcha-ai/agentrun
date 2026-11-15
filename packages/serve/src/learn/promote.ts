@@ -8,9 +8,11 @@
 // orchestration is runner/promotion.ts, the threshold refit learn/refit.ts.
 import type { GuardRow } from "../learned-nodes.js";
 import type { RunPath } from "../learning-cost.js";
+import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { workflowNodes } from "./workflow-nodes.js";
+import type { Skipped } from "./replay-calls.js";
 
 /** How many of the agent's newest graded inputs a replay runs on. */
 export const REPLAY_INPUTS = 20;
@@ -24,7 +26,10 @@ export const REFIT_EVERY = 20;
 export const GRADES_KEPT = 500;
 export const PROMOTIONS_KEPT = 200;
 
-export const GRADE_SOURCES = ["feedback", "eval"] as const;
+/** The most characters a grade's words (`label`) may hold, and the most of them and of a wrong answer a revise ask shows. */
+export const LABEL_MAX = 4_000;
+
+export const GRADE_SOURCES =["feedback", "eval"] as const;
 export type GradeSource = (typeof GRADE_SOURCES)[number];
 
 /** One graded run: whether its answer was right (`correct`), the answer's expected fields when the grader knows them
@@ -42,6 +47,13 @@ export interface Grade {
   /** Its place among the agent's grades, one more than the grade put before it (a re-grade takes a new one): a cursor a
    *  serving digest's check counts new grades from (PromotionRecord.checked) that the GRADES_KEPT trim never moves back. */
   readonly seq?: number;
+  /** The feedback round the grade opened its run again on, null for none (runner/feedback-round.ts keepGrade). Set only
+   *  once the round opened, so a kept grade never names a round that didn't. */
+  readonly feedback?: FeedbackRound | null;
+  /** The steer command that round opened the run again on (store.runs.reopen's id), set with `feedback`: the run's journal
+   *  and that steer's row say how that round stands (runner/feedback-round.ts feedbackStatus), never a clock. Not in the
+   *  API's view. */
+  readonly feedbackCommand?: number;
 }
 
 /** What a replay says (learn/refit.ts scoreRows), the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
@@ -117,7 +129,7 @@ export function skippedToolsOf(rows: readonly ReplayRow[]): SkippedTool[] {
 }
 
 /** One switch a refit changed: a guard's step, its threshold before and after (`threshold` null: the guard switched off,
- *  gone from the revision), and its new fit when one was fit; or an escalate node a replay recorded (softEscalatesOf),
+ *  gone from the revision), and its new fit when one was fit; or an escalate node a replay recorded (dsl softEscalates),
  *  switched off (`escalate`: gone from the revision; `was` and `threshold` null, it had none). */
 export interface RefitGuard {
   readonly node: string;
@@ -160,6 +172,15 @@ export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | 
     return [...items.filter((one) => one.run !== grade.run), kept].slice(-GRADES_KEPT);
   });
   return kept;
+};
+
+/** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened and
+ *  that round's steer, in place: its `seq` stays, so a serving digest's check never counts it twice. A newer grade of the
+ *  run is left as it is, one given in the same millisecond too (its `seq` is another). The grade, marked. */
+export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade, opened: OpenedRound): Promise<Grade> => {
+  const mark = { feedback: opened.round, feedbackCommand: opened.command };
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at && one.seq === grade.seq ? { ...one, ...mark } : one)));
+  return { ...grade, ...mark };
 };
 
 /** The agent's promotion records, oldest first. */
@@ -294,16 +315,21 @@ export interface ReplayRow {
   readonly of: string;
   readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
   readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
-  readonly skipped?: { readonly tool: string; readonly unmarked?: true };
+  readonly skipped?: Skipped;
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
 }
 
-/** An answer's value: its text as JSON when it is JSON, else its last fenced json block, else its trimmed text. */
+/** The text inside an answer that is one unlabelled fence and nothing else, or undefined. */
+const WHOLE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n([\s\S]*?)\r?\n {0,3}\1[`~]*[ \t]*$/;
+
+/** An answer's value: its text as JSON when it is JSON (bare, or the whole of one unlabelled fence), else its last fenced
+ *  json block, else its trimmed text. */
 function valueOf(answer: string): unknown {
   const text = answer.trim();
+  const inner = WHOLE_FENCE.exec(text)?.[2];
   try {
-    return JSON.parse(text);
+    return JSON.parse(inner ?? text);
   } catch {
     const block = answerJson(text);
     return "value" in block ? block.value : text;
@@ -371,118 +397,6 @@ export function walkGuards(doc: unknown, visit: (label: string, guard: Record<st
  *  hands back at its serving setting exactly when it fired. */
 export const SOFT_ESCALATE_THRESHOLD = 0.5;
 
-/** Who may have written a state key last, over every path the run can take to a point: a judge, or anything else (the
- *  input, a draft, a call, a code node). A key no step wrote holds the input's value: `OTHER`. */
-type Writers = Map<string, ReadonlySet<"judge" | "other">>;
-const JUDGE_WROTE: ReadonlySet<"judge" | "other"> = new Set(["judge"]);
-const OTHER_WROTE: ReadonlySet<"judge" | "other"> = new Set(["other"]);
-const writersOf = (state: Writers, key: string) => state.get(key) ?? OTHER_WROTE;
-/** The writers after any of `states`: each key's writers on every one of them. */
-function joinWriters(states: readonly Writers[]): Writers {
-  const out: Writers = new Map();
-  for (const key of new Set(states.flatMap((state) => [...state.keys()]))) {
-    const each = states.map((state) => writersOf(state, key));
-    out.set(key, each.every((writers) => writers === each[0]) ? each[0] : new Set(each.flatMap((writers) => [...writers])));
-  }
-  return out;
-}
-const sameWriters = (a: Writers, b: Writers): boolean =>
-  a.size === b.size && [...a].every(([key, writers]) => { const other = b.get(key); return other !== undefined && other.size === writers.size && [...writers].every((w) => other.has(w)); });
-/** Past this nesting, or this many passes over a loop's body, softEscalatesOf reads every escalate as hard. */
-const SOFT_WALK_DEPTH = 256;
-const SOFT_WALK_PASSES = 16;
-class SoftWalkTooDeep extends Error {}
-
-/** The writers after `value` (a workflow node) runs from `state`, as the DSL runs it (workflow.ts runNodeBody): a chain's
- *  steps in order; one route branch, any of them, after its `as` (its choice); a parallel's branches each from the same
- *  state, a key one wrote taking that branch's writer; a loop's body once or more, each pass from the last's; a map's
- *  body per item on its own copy (with `item`, `item_index`), only its `as` (and `failedAs`) left after; a child
- *  workflow on its own state, only its `as` left after. A judge writes its `as`; a code node with no `as` may write any
- *  key. Each escalate's verdict (whether its path's head was last written by a judge on every path to it) lands in
- *  `verdicts`, false on any pass where it is not. */
-function walkWriters(value: unknown, state: Writers, prefix: string, verdicts: Map<string, boolean>, depth: number): Writers {
-  const node = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-  if (!node) return state;
-  if (depth > SOFT_WALK_DEPTH) throw new SoftWalkTooDeep();
-  const wrote = (key: unknown, writers: ReadonlySet<"judge" | "other">, from: Writers = state): Writers => (typeof key === "string" && key !== "" ? new Map(from).set(key, writers) : from);
-  const asNode = (inner: unknown) => (inner && typeof inner === "object" && !Array.isArray(inner) ? (inner as Record<string, unknown>) : undefined);
-  switch (node.node) {
-    case "chain":
-      return (Array.isArray(node.steps) ? node.steps : []).reduce<Writers>((at, step) => walkWriters(step, at, prefix, verdicts, depth + 1), state);
-    case "route": {
-      const routed = wrote(node.as, OTHER_WROTE);
-      const bodies = asNode(node.branches) ? Object.values(node.branches as Record<string, unknown>).map((branch) => asNode(branch)?.body) : [];
-      return bodies.length ? joinWriters(bodies.map((body) => walkWriters(body, routed, prefix, verdicts, depth + 1))) : routed;
-    }
-    case "parallel": {
-      const outs = (Array.isArray(node.branches) ? node.branches : []).map((branch) => walkWriters(branch, state, prefix, verdicts, depth + 1));
-      const merged: Writers = new Map(state);
-      for (const key of new Set(outs.flatMap((out) => [...out.keys()]))) {
-        const writers = outs.filter((out) => out.get(key) !== state.get(key));
-        if (writers.length) merged.set(key, joinWriters(writers).get(key)!);
-      }
-      return merged;
-    }
-    case "loop": {
-      let entry = state;
-      for (let pass = 0; pass < SOFT_WALK_PASSES; pass++) {
-        const out = walkWriters(node.body, entry, prefix, verdicts, depth + 1);
-        const next = joinWriters([state, out]);
-        if (sameWriters(next, entry)) return out;
-        entry = next;
-      }
-      throw new SoftWalkTooDeep();
-    }
-    case "map": {
-      walkWriters(node.body, wrote("item_index", OTHER_WROTE, wrote("item", OTHER_WROTE)), prefix, verdicts, depth + 1);
-      return wrote(node.failedAs, OTHER_WROTE, wrote(node.as, OTHER_WROTE));
-    }
-    case "workflow":
-      walkWriters(asNode(node.workflow)?.root, new Map(), typeof node.label === "string" ? `${prefix}${node.label}/` : prefix, verdicts, depth + 1);
-      return wrote(node.as, OTHER_WROTE);
-    case "judge":
-      return wrote(node.as, JUDGE_WROTE);
-    case "escalate": {
-      if (typeof node.label !== "string") return state;
-      let when = node.when as { predicate?: unknown; of?: unknown; path?: unknown } | undefined;
-      while (when?.predicate === "not") when = when.of as typeof when;
-      const writers = typeof when?.path === "string" ? writersOf(state, when.path.split(".")[0]!) : OTHER_WROTE;
-      const name = `${prefix}${node.label}`;
-      verdicts.set(name, (verdicts.get(name) ?? true) && writers.size === 1 && writers.has("judge"));
-      return state;
-    }
-    case "code":
-      if (typeof node.as === "string" && node.as !== "") return wrote(node.as, OTHER_WROTE);
-      return new Map([...state].map(([key, writers]) => [key, writers.has("other") ? writers : new Set([...writers, "other" as const])]));
-    case "report":
-      return wrote("report_markdown", OTHER_WROTE);
-    case "artifact":
-      return wrote("artifact", OTHER_WROTE);
-    default:
-      // agent, decide, extract (`as`, else the label), pick, sift, call (`as`).
-      return wrote(typeof node.as === "string" && node.as !== "" ? node.as : node.label, OTHER_WROTE);
-  }
-}
-
-/** The escalate nodes of a workflow document a replay records instead of obeying, by label as the DSL names its step (a
- *  child's `parent/child`): each whose `when` (under any number of `not`s) reads a field a judge node wrote, the judge
- *  being the step that last wrote that path's head on every path the run can take to the escalate (walkWriters: a judge
- *  an extract overwrites, one in only some of a route's branches, one a code node with no `as` may have overwritten, are
- *  not). A judge's field is one model's opinion of a draft the workflow already wrote: the replay goes on to that draft
- *  and records whether the escalate fired (WorkflowDeps.softEscalate), so a refit can weigh the check against the drafts
- *  it stopped (learn/refit.ts). Every other escalate (on a call's result, a route's, the input) stays hard in a replay: it
- *  stops the run, as serving does. A document too deep to walk has none. */
-export function softEscalatesOf(doc: unknown): Set<string> {
-  const verdicts = new Map<string, boolean>();
-  try {
-    walkWriters(doc && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>).root : undefined, new Map(), "", verdicts, 0);
-  } catch (error) {
-    if (error instanceof SoftWalkTooDeep) return new Set();
-    throw error;
-  }
-  return new Set([...verdicts].flatMap(([name, soft]) => (soft ? [name] : [])));
-}
-
 /** The threshold a replay's guards read at: the least the DSL takes (a threshold is in (0, 1), exclusive), so a guard
  *  hands back only when p is null (a signal it reads is missing) or 0. */
 export const RECORD_ONLY_THRESHOLD = 1e-9;
@@ -509,8 +423,8 @@ export function recordOnly(workflowText: string): string {
  *  alone on at least one input (one that hands back every input scores the agent's own accuracy, and would never serve). */
 export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && answersAlone(score);
 
-/** A grade as the API answers it (PUT /runs/{id}/grade). */
+/** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({
   run_id: grade.run, correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}), source: grade.source, graded_at: grade.at,
-  path: grade.path, workflow: grade.workflow ?? null, workflow_digest: grade.digest ?? null,
+  path: grade.path, workflow: grade.workflow ?? null, workflow_digest: grade.digest ?? null, feedback: grade.feedback ?? null,
 });

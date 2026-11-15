@@ -102,16 +102,16 @@ function views(refusal) {
   return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3, list } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3, list, spec = SPEC } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
   return { root, record, run };
 }
 
@@ -137,6 +137,14 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"]], "released once");
   assert.equal(record.revoked, 1, "the run's mount credential is removed once, after the computer");
+});
+
+test("an Agent37 desktop starts from the template its prepareImage() answers, where the spec names no image for it", async () => {
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  const { record, run } = await claim({ kind: "desktop", provider: "agent37" }, { keys: { AGENT37_API_KEY: "fake-test-key", AGENT37_SSH_KEY: "not-a-secret" }, groups: ["screen", "input.pointer", "input.keys"], spec });
+  const answer = await run();
+  assert.equal(record.created[0].image, "agentrun/computer:prepared");
+  await answer.release();
 });
 
 test("a desktop opens one proxied live view under the claim with its hold, and on release closes the view 'released' and ends the hold", async () => {

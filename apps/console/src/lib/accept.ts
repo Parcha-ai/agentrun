@@ -21,10 +21,13 @@ export type Op = "in" | "prefix" | "exists" | "missing";
 export const OP_WORDS: Record<Op, string> = { in: "is one of", prefix: "starts with", exists: "exists", missing: "is missing" };
 export const OPS = Object.keys(OP_WORDS) as Op[];
 
-/** A condition as typed: its field (a JSON pointer), its test, and its value (`in`: one a line; `prefix`: the text). */
-export type ConditionDraft = { key: string; pointer: string; op: Op; value: string };
-/** A rule as typed: its event, its actions (names split by commas or spaces) and its conditions. */
-export type RuleDraft = { key: string; event: string; actions: string; where: ConditionDraft[] };
+/** A condition as typed: its field (a JSON pointer), its test, and its value (`in`: one a line; `prefix`: the text).
+ *  `was`: the condition as read, on one that came with the trigger: left as it was, it is sent exactly so. */
+export type ConditionDraft = { key: string; pointer: string; op: Op; value: string; was?: Where };
+/** A rule as typed: its event, its actions (names split by commas or spaces) and its conditions. `was`: the rule as read,
+ *  on one that came with the trigger: each part left as it was is sent exactly so (an action list as its values, a
+ *  condition as it was), and a rule left whole is the rule as read. */
+export type RuleDraft = { key: string; event: string; actions: string; where: ConditionDraft[]; was?: Accept };
 
 let made = 0;
 /** A key for a row React keeps across a removal above it. */
@@ -66,15 +69,25 @@ export const whereWords = (w: Where): string =>
 export const acceptWords = (a: Accept, conditions = true): string =>
   `${a.event}${a.actions?.length ? ` (${a.actions.join(", ")})` : ""}${conditions && a.where?.length ? ` where ${a.where.map(whereWords).join(" and ")}` : ""}`;
 
-/** A condition as the form holds it, to edit. */
-export function conditionDraftOf(w: Where): ConditionDraft {
-  const key = nextKey();
-  if ("in" in w) return { key, pointer: w.pointer, op: "in", value: w.in.map(lineOfValue).join("\n") };
-  if ("exists" in w) return { key, pointer: w.pointer, op: w.exists ? "exists" : "missing", value: "" };
-  return { key, pointer: w.pointer, op: "prefix", value: w.prefix };
+/** A condition's fields as the form shows them. */
+function fieldsOf(w: Where): Pick<ConditionDraft, "pointer" | "op" | "value"> {
+  if ("in" in w) return { pointer: w.pointer, op: "in", value: w.in.map(lineOfValue).join("\n") };
+  if ("exists" in w) return { pointer: w.pointer, op: w.exists ? "exists" : "missing", value: "" };
+  return { pointer: w.pointer, op: "prefix", value: w.prefix };
 }
-/** A rule as the form holds it, to edit. */
-export const ruleDraftOf = (a: Accept): RuleDraft => ({ key: nextKey(), event: a.event, actions: (a.actions ?? []).join(", "), where: (a.where ?? []).map(conditionDraftOf) });
+/** A condition as the form holds it, to edit: its fields, and the condition as read. */
+export const conditionDraftOf = (w: Where): ConditionDraft => ({ key: nextKey(), ...fieldsOf(w), was: w });
+/** A condition as read whose fields the person left as they were. */
+const untouched = (d: ConditionDraft): d is ConditionDraft & { was: Where } => {
+  if (!d.was) return false;
+  const read = fieldsOf(d.was);
+  return read.pointer === d.pointer && read.op === d.op && read.value === d.value;
+};
+/** An action list in its field, comma separated. */
+const actionsText = (actions: readonly string[] | undefined) => (actions ?? []).join(", ");
+/** A rule as the form holds it, to edit: its fields, and the rule as read. */
+export const ruleDraftOf = (a: Accept): RuleDraft => ({ key: nextKey(), event: a.event, actions: actionsText(a.actions), where: (a.where ?? []).map(conditionDraftOf), was: a });
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Names typed in one field, split by commas or spaces. */
 export const namesOf = (text: string): string[] => text.split(/[\s,]+/).filter(Boolean);
@@ -84,12 +97,15 @@ const chars = (text: string) => [...text].length;
 const POINTER = /^(\/([^~]|~[01])*)?$/;
 type Issues = Record<string, string>;
 
-/** A rule's conditions as sent, each issue under `at` (`source.accept[i]`) as the server names it. */
+/** A rule's conditions as sent, each issue under `at` (`source.accept[i]`) as the server names it. A condition as read
+ *  and left as it was is sent exactly so (a pointer to the whole body, ""; a prefix with spaces before it); any other
+ *  is sent as typed, its pointer untrimmed (the server reads "/label " and "/label" as two fields). */
 function whereOf(drafts: readonly ConditionDraft[], at: string, issues: Issues): Where[] {
   if (drafts.length > L.conditions) issues[`${at}.where`] = `At most ${L.conditions} conditions a rule.`;
   return drafts.map((d, j) => {
+    if (untouched(d)) return d.was;
     const here = `${at}.where[${j}]`;
-    const pointer = d.pointer.trim();
+    const pointer = d.pointer;
     if (!pointer) issues[`${here}.pointer`] = "Name a field: a JSON pointer such as /title.";
     else if (!pointer.startsWith("/")) issues[`${here}.pointer`] = "A field starts with /: /title, /issue/labels/0/name.";
     else if (!POINTER.test(pointer)) issues[`${here}.pointer`] = "Write ~ in a field's name as ~0, and / in it as ~1.";
@@ -111,13 +127,19 @@ function whereOf(drafts: readonly ConditionDraft[], at: string, issues: Issues):
 }
 
 /** A rule as sent: its event and actions as given (the GitHub picker's) or typed, its conditions; each issue under
- *  `source.accept[index]`. */
-export function ruleOf(d: { event: string; actions: string | string[]; where: readonly ConditionDraft[] }, index: number, issues: Issues): Accept {
+ *  `source.accept[index]`. A rule as read (`was`) goes back as it came where the person left it: its action list as its
+ *  values while its field reads as it did (["foo,bar"] stays one action), and the whole rule as read when nothing in it
+ *  changed. */
+export function ruleOf(d: { event: string; actions: string | string[]; where: readonly ConditionDraft[]; was?: Accept }, index: number, issues: Issues): Accept {
   const at = `source.accept[${index}]`;
-  const event = d.event.trim();
+  const was = d.was;
+  const event = was && d.event === was.event ? was.event : d.event.trim();
   if (!event) issues[`${at}.event`] = "Name the event.";
-  else if (!NAME.test(event) || chars(event) > L.text) issues[`${at}.event`] = `An event's name has no spaces: printable characters only, at most ${L.text}.`;
-  const actions = typeof d.actions === "string" ? namesOf(d.actions) : d.actions;
+  else if (event !== was?.event && (!NAME.test(event) || chars(event) > L.text)) issues[`${at}.event`] = `An event's name has no spaces: printable characters only, at most ${L.text}.`;
+  const keptActions = was && (typeof d.actions === "string" ? d.actions === actionsText(was.actions) : sameList(d.actions, was.actions ?? []));
+  const actions = keptActions ? [...(was.actions ?? [])] : typeof d.actions === "string" ? namesOf(d.actions) : d.actions;
+  const whole = was && keptActions && event === was.event && d.where.length === (was.where?.length ?? 0) && d.where.every((c, j) => untouched(c) && c.was === was.where![j]);
+  if (whole) return was;
   if (actions.length > L.list) issues[`${at}.actions`] = `At most ${L.list} actions.`;
   else if (actions.some((a) => !NAME.test(a) || chars(a) > L.text)) issues[`${at}.actions`] = `An action's name is printable characters, at most ${L.text}.`;
   const where = whereOf(d.where, at, issues);
@@ -126,7 +148,7 @@ export function ruleOf(d: { event: string; actions: string | string[]; where: re
 
 /** A whole filter as sent, the rules in order, or the issues by field. More rules than the server takes is said at
  *  `source.accept`. */
-export function acceptOf(rules: readonly { event: string; actions: string | string[]; where: readonly ConditionDraft[] }[]): { accept: Accept[]; issues: Issues } {
+export function acceptOf(rules: readonly { event: string; actions: string | string[]; where: readonly ConditionDraft[]; was?: Accept }[]): { accept: Accept[]; issues: Issues } {
   const issues: Issues = {};
   if (rules.length > L.rules) issues["source.accept"] = `At most ${L.rules} rules.`;
   return { accept: rules.map((r, i) => ruleOf(r, i, issues)), issues };

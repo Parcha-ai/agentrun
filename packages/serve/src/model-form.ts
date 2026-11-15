@@ -6,6 +6,8 @@ import { ADAPTER_FACTS } from "./adapter-facts.js";
 import { FAUX_ENV, MODEL_KEYS } from "./model.js";
 import { openRouterName } from "./provider.js";
 import { WIRES } from "./wires.js";
+import { PLAN_PROVIDER, planOf, signedIn } from "./chatgpt-plan.js";
+import { PLAN_HARNESSES } from "./harness.js";
 
 /** The current models a person may pick, by vendor, in the vendor's own ids (Anthropic's dashes; OpenRouter's dotted name
  *  for the same model is derived, provider.ts openRouterName). The everyday model first: it is the example a refusal gives.
@@ -40,7 +42,9 @@ export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): strin
   const facts = ADAPTER_FACTS.find((f) => f.id === harness);
   if (env.AGENT_MODEL_BASE_URL && facts?.wire !== "anthropic-messages") return [...new Set([env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].filter((id): id is string => Boolean(id)))];
   const vendors = vendorsOf(harness);
-  return PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)));
+  // Signed in to a ChatGPT plan, its models first for a harness that runs on it (`chatgpt/<model-id>`).
+  const plan = PLAN_HARNESSES.includes(harness) && signedIn(env) ? (planOf(env)?.models ?? []).map((id) => `${PLAN_PROVIDER}/${id}`) : [];
+  return [...plan, ...PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)))];
 }
 
 /** A model id with its spelling taken out (case, spaces, dots, dashes), and the provider's segments off. */
