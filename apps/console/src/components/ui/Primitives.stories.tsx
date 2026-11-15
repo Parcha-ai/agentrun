@@ -13,10 +13,10 @@ const noop = () => {};
 export const Buttons: Story = {
   render: () => (
     <Themes>
-      <Block title="Variants" note="One solid button a page, for its main action. Outline is the default.">
+      <Block title="Variants" note="One softly tinted orange primary action per toolbar or form. Top toolbars place it at the far right; other actions are neutral.">
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="solid"><Play aria-hidden /> Run agent</Button>
-          <Button variant="primary"><Plus aria-hidden /> New agent</Button>
+          <Button variant="primary"><Play aria-hidden /> Run agent</Button>
+          <Button><Plus aria-hidden /> New agent</Button>
           <Button>Cancel</Button>
           <Button variant="ghost">Skip</Button>
           <Button variant="destructive"><Trash2 aria-hidden /> Delete</Button>
@@ -152,7 +152,7 @@ function NavigationDemo() {
   const group = useId();
   return (
     <div className="space-y-8">
-      <Block title="NavItem" note="The sidebar's places. The one you are on is the brand colour with a 2px bar.">
+      <Block title="NavItem" note="The sidebar's places. The active place has a soft orange tint and the shared action corners.">
         <nav aria-label="Example" className="flex w-sidebar flex-col gap-1 border p-3">
           {([["mission", "Mission Control", LayoutDashboard], ["agents", "Agents", Bot], ["runs", "Runs", History]] as const).map(([id, label, icon]) => <NavItem key={id} icon={icon} active={at === id} onClick={() => setAt(id)}>{label}</NavItem>)}
         </nav>
