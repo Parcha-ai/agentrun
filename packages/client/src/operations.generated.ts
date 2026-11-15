@@ -1541,12 +1541,28 @@ export type EnrollRemoteConnectorBody = {
   label?: string;
   capabilities?: {
     native_execution?: boolean;
+    history_import?: boolean;
   };
 };
 export type EnrollRemoteConnectorResponse = {
   enrollment_token: string;
   expires_at: string;
   workspace_id: "local";
+};
+
+/** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+export type ImportRemoteHistoryBody = {
+  sessions: Array<Record<string, unknown>>;
+};
+export type ImportRemoteHistoryResponse = {
+  agent_id: string;
+  runs: Array<{
+    session_id: string;
+    run_id: string;
+    already: boolean;
+  }>;
+  imported: number;
+  already: number;
 };
 
 /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
@@ -1587,6 +1603,7 @@ export type ImportRemoteTargetBody = {
       target_id: string;
     };
   };
+  history_only?: boolean;
 };
 export type ImportRemoteTargetResponse = {
   agent_id: string;
@@ -1638,6 +1655,7 @@ export type ListRemoteConnectorsResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   }>;
@@ -1665,6 +1683,7 @@ export type RegisterRemoteConnectorBody = {
   label?: string;
   capabilities: {
     native_execution: boolean;
+    history_import?: boolean;
   };
 };
 export type RegisterRemoteConnectorResponse = {
@@ -1678,6 +1697,7 @@ export type RegisterRemoteConnectorResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
@@ -1707,6 +1727,7 @@ export type RevokeRemoteConnectorResponse = {
     capabilities: {
       observe: true;
       native_execution: boolean;
+      history_import: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
@@ -4838,6 +4859,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteTarget: {"method":"POST","path":"/connectors/{connector_id}/import","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRemoteConnectors: {"method":"GET","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pollRemoteConnector: {"method":"POST","path":"/connectors/{connector_id}/poll","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5005,6 +5027,8 @@ export function resources(call: Call) {
       completeRemoteCommand: (connectorId: string, commandId: string, body: CompleteRemoteCommandBody, options?: RequestOptions): Promise<CompleteRemoteCommandResponse> => call("completeRemoteCommand", [connectorId, commandId], body, undefined, options),
       /** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
       enrollRemoteConnector: (body: EnrollRemoteConnectorBody, options?: RequestOptions): Promise<EnrollRemoteConnectorResponse> => call("enrollRemoteConnector", [], body, undefined, options),
+      /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+      importRemoteHistory: (connectorId: string, targetId: string, body: ImportRemoteHistoryBody, options?: RequestOptions): Promise<ImportRemoteHistoryResponse> => call("importRemoteHistory", [connectorId, targetId], body, undefined, options),
       /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
       importRemoteTarget: (connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options),
       /** List remote source machines and imported agent targets (GET /connectors). */
