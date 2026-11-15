@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { harnessDefault, modelLabel } from "./models";
+import { contextSize, harnessDefault, harnessFree, modelLabel } from "./models";
 
 describe("model labels", () => {
   it("takes off exactly the routing prefix the server names (models.route_prefix); the full id is the title", () => {
@@ -25,5 +25,17 @@ describe("model labels", () => {
     expect(harnessDefault("codex", harnesses)).toBe("agent-model/gpt-6-luna");
     expect(harnessDefault("claude-agent", harnesses)).toBeUndefined();
     expect(harnessDefault("pi", [{ id: "pi", default_model: null }])).toBeUndefined();
+  });
+});
+
+describe("free models", () => {
+  it("a context window reads as a person says it", () => {
+    expect([1_048_576, 1_000_000, 1_024_000, 2_000_000, 1_500_000, 262_144, 65_536, 8_192].map(contextSize)).toEqual(["1M", "1M", "1M", "2M", "1.5M", "262K", "66K", "8K"]);
+  });
+  it("a harness's free models by id; none from a server that lists none", () => {
+    const free = harnessFree("pi", [{ id: "pi", free_models: [{ id: "openrouter/x/y:free", context_window: 262_144 }] }]);
+    expect([...free.keys()]).toEqual(["openrouter/x/y:free"]);
+    expect(harnessFree("pi", [{ id: "pi" }]).size).toBe(0);
+    expect(harnessFree("codex", undefined).size).toBe(0);
   });
 });

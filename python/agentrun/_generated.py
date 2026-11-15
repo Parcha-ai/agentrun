@@ -43,6 +43,7 @@ __all__ = [
     "CancelRunResponse",
     "Capabilities",
     "CapabilitiesHarnessesItem",
+    "CapabilitiesHarnessesItemFreeModelsItem",
     "CapabilitiesHome",
     "CapabilitiesLearning",
     "CapabilitiesLinks",
@@ -5012,6 +5013,7 @@ class CapabilitiesPlacesDefaultPlace2(TypedDict):
 class _CapabilitiesHarnessesItemRequired(TypedDict):
     id: Literal["pi", "claude-agent", "codex", "opencode"]
     available: bool
+    free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
     run_memory_mib: int
     max_concurrent_runs: int
@@ -5023,6 +5025,11 @@ class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False)
     reason: str
     needs: list[Literal["key", "chatgpt"]]
     installs: Literal["on_first_use"]
+
+
+class CapabilitiesHarnessesItemFreeModelsItem(TypedDict):
+    id: str
+    context_window: int
 
 
 class _CapabilitiesToolsItemRequired(TypedDict):
