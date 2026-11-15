@@ -153,6 +153,27 @@ test("an email case with no new message starts as the package's schedule's run, 
   assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
 });
 
+test("a schedule case run more than once fires each run on the case's own date, never the schedule's next one after the last run", { timeout: 600_000 }, async (t) => {
+  const dir = await mailPackage(t, {
+    "digest-dated": {
+      fixture: { description: "Two threads in the inbox, for the morning digest on its day.", account: { address: "agent@acme.example" }, mailboxes: { INBOX } },
+      graders: { "found.md": "---\ntype: regex\npattern: \"<b1@example\\\\.com>\"\n---\n", "dated.md": "---\ntype: llm\n---\nPass if the answer starts with \"DIGEST\".\n" },
+      yaml: "now: \"2026-11-14T08:30:00Z\"\n",
+    },
+  });
+  const report = await evalTemplate({ dir, cases: ["digest-dated"], runs: 3, serve: { faux: FAUX } });
+  const { runs } = report.cases[0];
+  assert.equal(runs.length, 3, JSON.stringify(report.cases[0], null, 1));
+  for (const run of runs) {
+    assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+    assert.match(run.answer, /^DIGEST \{"messages":\[\{"message_id":"<b1@example\.com>"/, `run ${run.run}: its mail`);
+  }
+  // Each run's input says the schedule time it fired for: the case's day's 09:00, run 1 as run 3 (the daily schedule's next
+  // time after the case's clock), never a later day the trigger clock reached on an earlier run.
+  const fired = graderInputs().flatMap((input) => /\(Started by the schedule "Morning digest" for ([^)]*)\.\)/.exec(input)?.[1] ?? []);
+  assert.deepEqual(fired, ["Nov 14, 2026, 9:00 AM UTC", "Nov 14, 2026, 9:00 AM UTC", "Nov 14, 2026, 9:00 AM UTC"], fired.join(" | "));
+});
+
 test("email_file with archive false keeps the message in INBOX on both layouts: refused on folders (the refused call still counts), a label on gmail; a grader of one layout grades that layout's run alone", { timeout: 600_000 }, async (t) => {
   const dir = await mailPackage(t, {
     reply: {

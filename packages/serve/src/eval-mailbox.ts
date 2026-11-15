@@ -194,12 +194,23 @@ export function mailboxVerdict(record: MailboxRecord, id: string, inside: string
 
 /** The eval's own server's trigger clock: the real one, which `to` moves on to `at` at once, every timer due by then
  *  fired. A run starts as its trigger's would: the eval moves the clock to the trigger's next time, and the trigger's own
- *  poll or schedule fires through the engine's path, never a paste of its payload into an ordinary run. */
-export type EvalClock = TriggerClock & { to(at: number): void };
+ *  poll or schedule fires through the engine's path, never a paste of its payload into an ordinary run. `set` puts it at
+ *  `at`, back or forward, before a case's run makes its trigger: a case with a clock of its own (`now`) fires every run on
+ *  its own date, never on the schedule's next time after the run before. */
+export type EvalClock = TriggerClock & { to(at: number): void; set(at: number): void };
 export function evalClock(): EvalClock {
   let skew = 0;
   const holds = new Set<{ at: number; fire: () => void; timer: NodeJS.Timeout }>();
   const now = () => Date.now() + skew;
+  // Every timer due by the clock's time, fired.
+  const due = () => {
+    for (const hold of [...holds]) {
+      if (hold.at > now()) continue;
+      clearTimeout(hold.timer);
+      holds.delete(hold);
+      hold.fire();
+    }
+  };
   return {
     now,
     arm(fire, ms) {
@@ -212,12 +223,11 @@ export function evalClock(): EvalClock {
     },
     to(at) {
       skew += Math.max(0, at - now());
-      for (const hold of [...holds]) {
-        if (hold.at > now()) continue;
-        clearTimeout(hold.timer);
-        holds.delete(hold);
-        hold.fire();
-      }
+      due();
+    },
+    set(at) {
+      skew = at - Date.now();
+      due();
     },
   };
 }
