@@ -71,7 +71,7 @@ const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
-  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", choices: [{ id: "particle", label: "Particle 1 (OpenRouter)", model: "openrouter/particle-ai/particle-1", harness: "pi", secrets: ["OPENROUTER_API_KEY"], note: "The model this template was tuned and measured on: about 18 cents a review on our own pull requests." }] }, "medium", { per_run_usd: 0.5 }, false]);
+  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", choices: [{ id: "particle", label: "Particle 1 (OpenRouter)", model: "openrouter/particle-ai/particle-1", harness: "pi", secrets: ["OPENROUTER_API_KEY"], note: "The model this template was tuned and measured on: about 18 cents a review on our own pull requests." }] }, "medium", { per_run_usd: 2 }, false]);
   assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("skills/review/findings.schema.json"), "the answer's schema lives in the skill's folder, where the reviewers' guides read it");
@@ -259,7 +259,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   meets("/agents/{agent_id}", "get", "200", agent);
   const { definition } = agent;
-  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "medium", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
+  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "medium", 2, false, ["review"]], "definition.version is the revision number, never the package's");
   assert.equal(definition.checkout, "pull_request", "the checkout the platform makes before the first turn");
   // No shell here (no box): [shell, none] takes none, so the agent is made without bash, and the apply says so.
   assert.deepEqual([definition.computer, definition.tools, definition.tool_settings], [{ kind: "none" }, ["read", "subagent"], undefined], "no shell and no GitHub MCP server here: read for the skill's files, subagent for the reviewers");
@@ -281,7 +281,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);
   const done = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.equal(done.cost.cap_usd, 0.5, "capped at the package's budget");
+  assert.equal(done.cost.cap_usd, 2, "capped at the package's budget");
   const block = [...done.result.final_answer.matchAll(/```json\n([\s\S]*?)\n```/g)].at(-1)?.[1];
   assert.ok(block, `a fenced json block: ${done.result.final_answer}`);
   const schema = JSON.parse(file("skills/review/findings.schema.json"));

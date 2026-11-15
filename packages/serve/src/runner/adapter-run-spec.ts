@@ -85,7 +85,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
-import { monidForClaim, withMonid } from "./monid-run.js";
+import { monidForClaim, type MonidFakes, withMonid } from "./monid-run.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -201,6 +201,10 @@ export interface AdapterSpecDeps {
    *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
    *  maps onto it. Absent, or undefined for a run: the real clock. */
   readonly clockOf?: (agentId: string) => Date | undefined;
+  /** A template eval's monid fakes, by the agent a run is of (template-eval.ts, a case's `monid`): such a run's monid
+   *  endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). Only the eval's own runner, in
+   *  the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field maps onto it. */
+  readonly monidFakes?: MonidFakes;
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
@@ -676,7 +680,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   gate.learn(workflows);
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the run's one redactor as the other non-hand tools'.
-  const monid = monidForClaim(revisionRow.monidPin ?? undefined, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined);
+  const monid = monidForClaim(revisionRow.monidPin ?? undefined, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, deps.monidFakes?.(runRow.agentId));
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, cut)) });
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, catalog, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
