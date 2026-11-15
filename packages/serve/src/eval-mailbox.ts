@@ -130,6 +130,8 @@ export function snapshot(faux: EmailFaux): Snapshot {
   const unnamed: Place[] = [];
   for (const mailbox of faux.mailboxes()) {
     for (const m of faux.messages(mailbox)) {
+      // A gmail label's mailbox lists the messages under the label, which their own place's labels already say.
+      if (m.labels?.includes(mailbox)) continue;
       // Gmail's \Inbox label is the message being in INBOX, which its mailbox already says: only the labels a person reads.
       const labels = m.labels?.filter((label) => label !== "\\Inbox");
       const place = { mailbox, ...(labels?.length ? { labels } : {}), raw: m.raw };

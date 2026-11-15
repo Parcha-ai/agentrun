@@ -150,8 +150,9 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   ```
   A message is the email trigger's payload (`from`, `from_name`, `to`, `cc`, `subject`, `date`, `message_id`,
   `in_reply_to`, `text`, `attachments`) plus `flags` and `references`; it is checked when the case is read. `layouts`
-  (default `[folders]`) are the kinds of server each run repeats on, reported per layout: `gmail` (a folder is a label;
-  filing labels a message, `archive: true` takes it out of the inbox) and `folders` (every other server; filing moves a
+  (default `[folders]`) are the kinds of server each run repeats on, reported per layout: `gmail` (a folder is a label,
+  and searching a label's mailbox finds every message under it, as Gmail's does; filing labels a message,
+  `archive: true` takes it out of the inbox) and `folders` (every other server; filing moves a
   message, so `email_file` with `archive: false` is refused and nothing moves). The fake runs the real email tools, so
   filing on it is the tools' own rule. A mailbox the fixture names with no messages (`Receipts: []`) is made empty. A
   run starts as its trigger would, never as an ordinary run with the payload pasted in: the mailboxes are seeded, the

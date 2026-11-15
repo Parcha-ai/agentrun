@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { seededFaux } from "../dist/eval-mailbox.js";
+import { seededFaux, snapshot } from "../dist/eval-mailbox.js";
 import { CaseError, evalTemplate, markdownReport, readCases } from "../dist/template-eval.js";
 import { scratch } from "./support.mjs";
 
@@ -206,14 +206,17 @@ test("a trigger that watches a folder gets the new message there, a folder the f
   assert.equal(graderOf(run, "filed.md").pass, true, graderOf(run, "filed.md").reason);
 });
 
-test("on gmail every message of a fixture's label is in All Mail with the label, its second as its first; an empty label is made", async (t) => {
+test("on gmail every message of a fixture's label is in All Mail with the label, its second as its first, and the label's mailbox lists them; an empty label is made", async (t) => {
   const receipt = (n) => msg({ from: "shop@example.com", subject: `Receipt ${n}`, message_id: `<r${n}@example.com>`, text: `Receipt ${n}.` });
   const faux = await seededFaux({ description: "Receipts", account: { address: "agent@acme.example" }, layouts: ["gmail"], mailboxes: { INBOX, Receipts: [receipt(1), receipt(2)], Travel: [] } }, "gmail");
   t.after(() => faux.close());
   const labelled = faux.messages("[Gmail]/All Mail").map((m) => [m.messageId, m.labels]);
   assert.deepEqual(labelled, [["<r1@example.com>", ["Receipts"]], ["<r2@example.com>", ["Receipts"]]]);
-  assert.deepEqual(faux.messages("Receipts"), [], "the label's mailbox holds no copy");
+  assert.deepEqual(faux.messages("Receipts").map((m) => [m.uid, m.messageId]), [[1, "<r1@example.com>"], [2, "<r2@example.com>"]], "the label's mailbox lists them, as Gmail's does");
   assert.ok(faux.mailboxes().includes("Travel"), faux.mailboxes().join(", "));
+  // Each message has one place, its own mailbox and labels, never the label's mailbox that lists it.
+  const { places } = snapshot(faux);
+  assert.deepEqual([...places].filter(([id]) => id.startsWith("<r")).map(([id, place]) => [id, place.mailbox, place.labels]), [["<r1@example.com>", "[Gmail]/All Mail", ["Receipts"]], ["<r2@example.com>", "[Gmail]/All Mail", ["Receipts"]]]);
 });
 
 test("an email case checks when it is read: its fixture, an email tool, the trigger it starts from, no prompt of its own, and only on the eval's own server", async (t) => {
