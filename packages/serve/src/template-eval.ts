@@ -18,6 +18,7 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
+import { linkCheck } from "./link-check.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
@@ -55,6 +56,8 @@ export const RUN_TIMEOUT_MS = 30 * 60_000;
  *  name, its state when the wait gave up, never by the run's whole timeout. */
 export const QUEUE_TIMEOUT_MS = 2 * 60_000;
 export const GRADER_NAME = "Template eval grader";
+/** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
+export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
@@ -527,8 +530,8 @@ export function outputVerdict(pkg: Package, result: unknown): GraderResult | und
 }
 
 /** The input a grader run gets for an llm grader: the rubric, the clock the run ran on when its case set one (the grader's
- *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one) and its
- *  calls. Never another grader, the case's description or anything the case expects. */
+ *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one), its
+ *  calls and, for a run that searched or fetched, the link check of its cited links (link-check.ts). Never another grader, the case's description or anything the case expects. */
 export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max = GRADER_PROMPT_MAX): string {
   const target = grader.target ? targetOf(run.answer, grader.target) : undefined;
   const at = run.now === undefined ? undefined : instantOf(run.now);
@@ -550,13 +553,16 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
   const wrapMcp = (text: string) => `<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${text}\n</mcp-calls>`;
-  // Both lists share the room the rubric, the task and the answer leave, each in proportion to its whole size.
-  const room = max - [...before, wrap(""), ...(mcpLines.length ? [wrapMcp("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
+  // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
+  const links = linkCheck(run.answer, run.calls);
+  const linked = links === undefined ? [] : [`<link-check untrusted>\n${links}\n</link-check>`];
+  // Both lists share the room the rubric, the task, the answer and the link check leave, each in proportion to its whole size.
+  const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
   const [callsWhole, mcpWhole] = [wholeOf(lines), wholeOf(mcpLines)];
   const mcpRoom = callsWhole + mcpWhole <= room ? mcpWhole : Math.floor((room * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
   const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
-  return [...before, wrap(lines.length ? fitCalls(lines, room - mcpRoom) : "(none)"), ...after].join("\n\n");
+  return [...before, wrap(lines.length ? fitCalls(lines, room - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
@@ -924,9 +930,13 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // directory of its own, gone when the eval is.
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
+    // Claude Code and Codex installed once for every local eval under this TMPDIR, not into each eval's data: the
+    // data's harnesses are links to that one install (harness-install.ts sharedInstaller).
+    const { sharedInstaller } = await import("./harness-install.js");
+    const harnessInstall = sharedInstaller(join(process.env.TMPDIR ?? tmpdir(), EVAL_HARNESSES));
     // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
     // Its fakes stand in for the package's MCP needs (mcpStandIns): each is saved as the source and toolkit it fakes.
-    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, ...(options.serve ?? {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -938,7 +948,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), clockOf: (agentId) => clocks.get(agentId), monidFakes: (agentId) => monids.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), clockOf: (agentId) => clocks.get(agentId), monidFakes: (agentId) => monids.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;

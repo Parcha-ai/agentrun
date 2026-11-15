@@ -153,7 +153,7 @@ test("a script stopped by a parked call lists each earlier call's result as the 
 });
 
 test("a stopped script lists a call's string value as the script read it: its structured string, never its fuller text", async () => {
-  // As computer_script answers one that showed text('note') and returned 'saved': text "note\nsaved", value "saved".
+  // A nested call that showed text('note') and returned 'saved': text "note\nsaved", value "saved".
   const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
   const nested = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { text: "note\nsaved", structured: "saved", fresh: false }), memo: async () => first };
   const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });

@@ -33,7 +33,7 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
  *  holds each paired computer's socket in this process, so a run here takes one. Returns the runner and a close() that
  *  stops both and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, webFakes, clockOf, monidFakes, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; webFakes?: import("../web-fake.js").WebFakes; clockOf?: (agentId: string) => Date | undefined; monidFakes?: import("./monid-run.js").MonidFakes; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, webFakes, clockOf, monidFakes, harnessInstall, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; webFakes?: import("../web-fake.js").WebFakes; clockOf?: (agentId: string) => Date | undefined; monidFakes?: import("./monid-run.js").MonidFakes; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -67,8 +67,10 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // loopback; any other runner's runs never do. A run's log lines (a learning run's skipped generality check) go to
   // stderr with the runner's other lines. `webFakes`: the template eval's web fakes (web-fake.ts), by the agent each of its
   // runs is of; only the eval, in its own process, hands them. `clockOf`: its clocks (a case's `now`), the same way, and
-  // `monidFakes`: its monid fakes (a case's `monid`, runner/monid-run.ts).
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(webFakes ? { webFakes } : {}), ...(clockOf ? { clockOf } : {}), ...(monidFakes ? { monidFakes } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
+  // `monidFakes`: its monid fakes (a case's `monid`, runner/monid-run.ts). `harnessInstall`: what a claim's first-use
+  // install installs with (the eval's sharedInstaller, which the server beside it takes too).
+  const { installForClaim } = await import("../harness-install.js");
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(webFakes ? { webFakes } : {}), ...(clockOf ? { clockOf } : {}), ...(monidFakes ? { monidFakes } : {}), ...(harnessInstall ? { installForClaim: (entry, dir, pins, given) => installForClaim(entry, dir, pins, { ...given, install: harnessInstall }) } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
   // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).
@@ -86,7 +88,10 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
     const line = runLine(event);
     if (line) (onLine ?? console.log)(line);
   };
-  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store), onEvent: said, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
+  const { runEndComputers } = await import("../workspace/run-end-computers.js");
+  const runEnded = runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`) });
+  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store), onEvent: said, runEnded, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");

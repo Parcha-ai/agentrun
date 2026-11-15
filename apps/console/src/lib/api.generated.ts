@@ -255,6 +255,7 @@ export interface components {
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
+    upper_bound?: true;
     plan?: {
       requests: number;
       tokens: number;
@@ -273,6 +274,9 @@ export interface components {
     output_schema?: components["JsonObject"];
     workflow?: components["JsonObject"];
     max_cost_usd?: number;
+    sdk?: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+    };
     native?: {
       runtime: "claude-code" | "codex";
       project: string;
@@ -732,6 +736,19 @@ export interface components {
     error: components["RunError"] | null;
     cost: components["Cost"];
     poll_after_ms: number;
+    sdk?: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
     native?: {
       runtime: string;
       project: string;
@@ -849,6 +866,7 @@ export interface components {
       kind: "budget";
       cap_usd: number;
       spent_usd?: number;
+      held_usd?: number;
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
@@ -963,6 +981,19 @@ export interface components {
     created_at: components["Timestamp"];
     ended_at: components["Timestamp"] | null;
     cost: components["Cost"];
+    sdk?: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
     native?: {
       runtime: string;
       project: string;
@@ -1054,6 +1085,7 @@ export interface components {
       kind: "budget";
       cap_usd: number;
       spent_usd?: number;
+      held_usd?: number;
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
@@ -1205,6 +1237,7 @@ export interface components {
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
+    upper_bound?: true;
     not_metered?: number;
   };
   Timestamp: string;
@@ -1392,6 +1425,26 @@ export interface operations {
       lease_token: string;
       result?: unknown;
       error?: string;
+    };
+    answer: {
+      accepted: true;
+    };
+  };
+  completeSdkRun: {
+    body: {
+      status: "completed" | "failed" | "cancelled";
+      answer: string;
+      error?: string;
+      model?: string;
+      session_id?: string;
+      usage?: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      };
+      evidence_complete?: boolean;
     };
     answer: {
       accepted: true;
@@ -2697,6 +2750,15 @@ export interface operations {
         patch?: string;
         withheld?: "too_large" | "secret";
       }[];
+    };
+  };
+  getSdkRun: {
+    body: never;
+    answer: {
+      run_id: string;
+      state: "running" | "processing" | "completed" | "failed" | "cancelled";
+      learning_run_id?: string;
+      learning: unknown;
     };
   };
   getStats: {
@@ -4785,6 +4847,29 @@ export interface operations {
       note: string;
     };
   };
+  sdkRunEvents: {
+    body: {
+      sequence: number;
+      events: ({
+        type: "text";
+        text: string;
+      } | {
+        type: "session";
+        session_id: string;
+      } | {
+        type: "tool";
+        id: string;
+        name: string;
+        status: "started" | "completed" | "failed";
+        input?: unknown;
+        output?: unknown;
+        parent_tool_use_id?: string;
+      })[];
+    };
+    answer: {
+      accepted: true;
+    };
+  };
   sendMessage: {
     body: components["MessageCreate"];
     answer: components["MessageResult"];
@@ -4835,6 +4920,43 @@ export interface operations {
     answer: {
       held: {
         state: "started";
+      };
+    };
+  };
+  startSdkRun: {
+    body: {
+      runtime: "claude-agent-sdk" | "codex-sdk";
+      input: string;
+      instructions: string;
+      model?: string;
+      workflow_tools?: {
+        name: string;
+        description: string;
+        input_schema: Record<string, unknown>;
+        output_schema?: Record<string, unknown>;
+        permission: "allow" | "ask" | "deny";
+        price_usd?: number;
+      }[];
+      workflow_adapters?: ("runNode" | "runJudge")[];
+    };
+    answer: {
+      run_id: string;
+      agent_id: string;
+      console_url: string;
+      token: string;
+      learning: {
+        enabled: boolean;
+        revision: string | null;
+        context: string;
+        skills: {
+          name: string;
+          files: Record<string, string>;
+        }[];
+        workflows: {
+          name: string;
+          workflow: string;
+          description: string;
+        }[];
       };
     };
   };

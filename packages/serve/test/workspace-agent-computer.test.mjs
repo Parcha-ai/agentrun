@@ -162,6 +162,16 @@ test("the agent's next run attaches the same computer under its claim, and says 
   await second.release();
 });
 
+test("the agent's own computer is not kept by a run's park (computer-kept.ts): its park detaches it as the run's end does, with no kept row", async () => {
+  const { store, computers, calls, claim } = await setup();
+  const first = await claim("run-1", 2);
+  assert.equal(first.keeps, undefined);
+  assert.equal(await first.park(), false);
+  assert.deepEqual(calls.at(-1), ["release", "c-1", "detach"]);
+  assert.equal(computers.get("c-1").state, "stopped");
+  assert.deepEqual([...store.rows.keys()].filter((key) => key.startsWith("computer_kept:")), []);
+});
+
 test("the agent's own computer at a later claim of the run is never called a new one: it is the same computer, kept", async () => {
   const { claim } = await setup();
   const first = await claim("run-1", 1);

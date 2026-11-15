@@ -18,6 +18,8 @@ import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
 import { pointerHash, type signInReads } from "./sign-ins-store.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+import { costWordsOf, type CostWords, usageParts } from "./runner/metrics.js";
+import type { CostParts } from "@parcha/agentrun-kernel";
 
 /** The sign-in read surface a run's served view needs: a run's handed-pointer cut reads only `peek` (the agent's saved
  *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
@@ -32,6 +34,14 @@ const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind 
 export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
+};
+
+/** The run's cost in its usage row's own words (a bound with its exact part and holds, an unknown cost with what is
+ *  known), for a reader that joins it with more charges (costWordsOf over usageParts): undefined before any request
+ *  (nothing spent), `{ usd: null }` for a usage row that says nothing. */
+export const usageWordsOf = (rows: readonly TimelineEvent[]): NonNullable<TimelineEvent["usage"]> | { usd: null } | undefined => {
+  const usage = usageOf(rows);
+  return usage ? (usage.usage ?? { usd: null }) : undefined;
 };
 
 /** Whether `row` carries a paid tool's charge counted here: `tool`'s alone when given, every other tool's with `others`
@@ -52,32 +62,17 @@ export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string, others
 export const knownToolCostOf = (rows: readonly TimelineEvent[], tool?: string, others = false): number =>
   rows.reduce((sum, row) => (!chargeOf(row, tool, others) ? sum : sum + (row.usage!.usd ?? row.usage!.so_far_usd ?? 0)), 0);
 
-/** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
- *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
+/** A run's cost for its views, in the words its Cost says it (costsofar/1, cutathold/1): its usage row's, joined with a
+ *  workflow's booked decisions (`decisions`, their parts; null when they could not be read, which says nothing) by the
+ *  one rule (costWordsOf over usageParts), so a bound on the row stays a bound, its exact part apart: any charge of no
+ *  known cost makes the cost unknown with the exact charges alone known, never a hold. With no decisions and no usage
+ *  row: what the store kept when it carried the run back (`stored`, exact; 0 before any request, unknown when it kept
+ *  none). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
-export function costView(rows: readonly TimelineEvent[], stored: number | null | undefined, decisions?: number | null): number | null {
+export function costWordsOfView(rows: readonly TimelineEvent[], stored: number | null | undefined, decisions?: CostParts | null): CostWords {
   const usage = usageOf(rows);
-  // A workflow run's decisions, once its end is read: their cost joins its model nodes', and one unknown makes it unknown.
-  if (decisions !== undefined) {
-    const models = usage ? (usage.usage?.usd ?? null) : 0;
-    return models === null || decisions === null ? null : models + decisions;
-  }
-  if (!usage) return stored === undefined ? 0 : stored;
-  return usage.usage?.usd ?? null;
-}
-
-/** What a run whose cost is unknown has cost so far (costsofar/1): the sum of its charges whose cost is known, and how many
- *  have none, from its usage row, plus a workflow's decisions (`decisions`: their known sum and how many are not known;
- *  null when they could not be read, which says nothing). Undefined while the cost is known, when the row says neither
- *  (an older run's), or when a workflow's decisions are unreadable. No ceiling is claimed. */
-export type SoFar = { so_far_usd: number; unpriced: number };
-export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: number; unpriced: number } | null): SoFar | undefined {
-  if (decisions === null) return undefined;
-  const usage = usageOf(rows)?.usage;
-  const models = !usage ? { known: 0, unpriced: 0 } : usage.usd !== null ? { known: usage.usd, unpriced: 0 } : usage.so_far_usd !== undefined && usage.unpriced !== undefined ? { known: usage.so_far_usd, unpriced: usage.unpriced } : undefined;
-  if (!models) return undefined;
-  const unpriced = models.unpriced + (decisions?.unpriced ?? 0);
-  return unpriced > 0 ? { so_far_usd: Math.round((models.known + (decisions?.known ?? 0)) * 1e6) / 1e6, unpriced } : undefined;
+  if (decisions === undefined && !usage) return { usd: stored === undefined ? 0 : stored };
+  return costWordsOf([usageParts(usageWordsOf(rows)), ...(decisions !== undefined ? [decisions] : [])]);
 }
 
 /** Whether a run's cost (`usd`) is $0 because every model request went to a free model (one whose known price is $0 for
@@ -100,8 +95,12 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
   const usd = rows[at]?.usage?.usd;
   if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
   const { usage: _, ...usage } = rows[at]!;
+  // What is known spent: a figure that counts a hold (`upper_bound`) is the most it can have cost, its exact part
+  // (usageParts) the spend. Past the cap by its exact part: spent, said so; by its holds alone: at most, never "spent".
+  const parts = usageParts(rows[at]!.usage);
+  const spent = parts?.known ?? usd;
   // In cents: what it went over by rounded up.
-  const summary = `Spent ${cents(usd)}, ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
+  const summary = spent > cap + FIT_TOLERANCE ? `Spent ${cents(spent)}, ${centsUp(spent - cap)} over the run's cap of ${cents(cap)}` : `At most ${cents(usd)} spent, at most ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
   const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary, text: null };
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
@@ -242,7 +241,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
 
 /** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
  *  as the run row's summary says them. */
-type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
@@ -306,16 +305,17 @@ export const raiseFollowUpId = (pause: string): string => `agentrun:raise:${paus
 
 /** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
  *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
- *  the park's), what the cap counted as taken and the least the refused step needs, the raise offered (recomputed from
- *  those by the view's one formula), and the cap's words at the run's last meaningful row. Undefined when no park is
- *  active. */
+ *  the park's), what it had spent, what it held for steps still running and the least the refused step needs, the raise
+ *  offered (recomputed from those by the view's one formula, the holds counted with the spend so it covers them), and the
+ *  cap's words at the run's last meaningful row. Undefined when no park is active. */
 export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "meta" | "rows" | "updatedAt">): Pending | undefined {
   const mark = activeBudget(entries);
   if (!mark) return undefined;
   const p = mark.pending;
   const cap = run.meta.max_cost_usd ?? p.cap_usd;
+  const held = p.held_usd ?? 0;
   const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
-    ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd) }
+    ? { spent_usd: micro(p.spent_usd), held_usd: micro(held), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd + held, p.needs_usd) }
     : {};
   // A workflow's pause names the node whose step waits (null when not known); an agentic run's names none.
   return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt, ...(mark.node !== undefined ? { node: mark.node } : {}) };
@@ -463,7 +463,7 @@ export const raisedToGo = (run: RunView): boolean => raisedSince(run) && continu
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
+export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
 export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;

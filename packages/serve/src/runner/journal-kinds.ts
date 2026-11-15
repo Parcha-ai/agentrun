@@ -186,10 +186,11 @@ export function capNowOf(launchCapUsd: number | undefined, entries: readonly { r
   return raised ? (raised.data as RaiseData).capUsd : launchCapUsd;
 }
 
-/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
- *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
+/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what it had spent, what it held for steps
+ *  still running, the least the refused request needs, the least cap that sends it and the raise offered, in the run's
+ *  money units (dollars). */
 export interface BudgetData {
-  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
+  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly held_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
   /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
@@ -199,6 +200,8 @@ export interface BudgetData {
 
 export interface CallStartData {
   readonly callId: string;
+  /** A checked SDK workflow callback's owning learned_workflow invocation. */
+  readonly parentCallId?: string;
   readonly tool: string;
   readonly input: unknown;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
@@ -341,6 +344,10 @@ export interface EndData {
   /** What the run cost, as its end knows it: null when unknown, which clears a cost an earlier end of the run stored (a
    *  follow-up's end). Absent: the stored cost is left as it is. */
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost, not its cost (RunPatch.costUpperBound; the row reads it back
+   *  as RunRow.costAtMostUsd, its costUsd then null): it counts a
+   *  request cut with no answer at what its cap held for it. Written with the cost; absent, false. */
+  readonly costUpperBound?: boolean;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it

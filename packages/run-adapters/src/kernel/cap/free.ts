@@ -4,8 +4,10 @@
 // else the operator's), its next one is refused for good and the run ends as the dollar cap ends one it can never fit:
 // failed, in the cap's code and these words. A paid request never counts toward it, and is never refused by it; nor is a
 // ChatGPT plan's request (ChatGPT-plan requests don't count).
-import type { BeforeRequest } from "../../runner.js";
+import { type BeforeRequest, RUNNER_RECORDS } from "../../runner.js";
+import type { SessionRecord } from "../../types.js";
 import { SPEND_CAP_REACHED } from "./words.js";
+import { SERVER_NOTE_LABEL } from "./wrap-up.js";
 import type { CapModel, ModelPrice } from "./types.js";
 
 /** The requests on a free model a run may make by default. */
@@ -21,7 +23,8 @@ const zero = (rates: { input: number; output: number; cacheRead?: number; cacheW
 
 /** Whether `model` is a free model: one whose known price is $0 for every token, each tier's included. A model with no
  *  price (null), or none at all, is no free model: unknown, the dollar cap's to refuse; nor is an OpenRouter router
- *  (ROUTERS), whatever its catalog price; nor a ChatGPT plan's (CapModel.plan), whatever its listing. */
+ *  (ROUTERS), whatever its catalog price; nor a ChatGPT plan's (CapModel.plan), whatever its listing. The one rule: serve's
+ *  local-models.ts isFree, the model picker's free mark, reads it on the catalog entry's price. */
 export function freeModel(model: CapModel | undefined): boolean {
   if (!model || model.plan || ROUTERS.has(model.id)) return false;
   const price: ModelPrice | null = model.price;
@@ -41,6 +44,26 @@ export function freeRequest(request: Parameters<BeforeRequest>[0], modelOf: (id:
 export function planCapModel(id: string, api: string, outputCeiling: number | null): CapModel {
   return { id, api, price: null, outputCeiling, plan: true };
 }
+
+/** The requests before its limit at which a run on a free model is told to finish (told on the request that has this many
+ *  left, itself included). 3: enough for the model to read the note, answer and tidy up once, few enough that a normal
+ *  run never sees it. */
+export const FREE_WRAP_UP_MARGIN = 3;
+
+/** Whether a run that has made `made` counted requests, under `limit`, is due its wrap-up on its next one: at most
+ *  FREE_WRAP_UP_MARGIN requests left, that next one included. Returns how many are left. */
+export function freeWrapUpDue(limit: number, made: number): { left: number } | undefined {
+  const left = limit - made;
+  return left >= 1 && left <= FREE_WRAP_UP_MARGIN ? { left } : undefined;
+}
+
+/** The note's words, once per run and limit (the dollar cap's wrap-up note carries them, the same mechanism). */
+export const freeWrapUpWords = (left: number): string => `${SERVER_NOTE_LABEL}${left} free-model request${left === 1 ? "" : "s"} left in this run, this one included: finish now with your answer.`;
+
+/** The requests counted toward the free limit that `records` (a session's runner records) hold: each runner.request marked
+ *  `freeRequest`, answered, in flight or cut. The one count, runBooking's and the wrap-up's. */
+export const freeRequestsIn = (records: readonly SessionRecord[]): number =>
+  records.filter((r) => r.kind === RUNNER_RECORDS.request && (r.data as { freeRequest?: unknown } | undefined)?.freeRequest === true).length;
 
 /** The words a run ends in once it has made `limit` requests on free models: the dollar cap's code, then why. */
 export const freeCeilingEnd = (limit: number): string => `${SPEND_CAP_REACHED}: Not sent: this run reached its ${limit}-request limit for free models.`;

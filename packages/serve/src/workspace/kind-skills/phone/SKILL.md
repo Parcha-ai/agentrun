@@ -1,6 +1,6 @@
 ---
 name: phone-computer
-description: Use a phone (a cloud Android or an iPhone) through computer_observe, computer_act, computer_screenshot and computer_script. It covers reading the screen's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and what a phone cannot do. Use when a run has a phone and the task needs its screen or apps.
+description: Use a phone (a cloud Android or an iPhone) through computer_observe, computer_act, computer_screenshot and a codemode script's `computer`. It covers reading the screen's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and what a phone cannot do. Use when a run has a phone and the task needs its screen or apps.
 ---
 
 # Using a phone
@@ -48,9 +48,9 @@ states or expects.
 
 **`computer_screenshot` `{region?}`** is the whole screen, or `region: [x, y, w, h]` of it, in pixels.
 
-**`computer_script` `{code}`** runs JavaScript in an isolate whose only binding is `computer`. Its tool description
-gives the `computer` object's types for this phone. The body is an async function: `await` the calls and `return` what
-you need.
+**Scripts: `codemode`.** A `codemode` script has the phone as `computer`, and codemode's description gives its types
+for this phone. The body is an async function: `await` the calls and `return` what you need. Each call is a call of its
+own, asked about and recorded like the tools'.
 
 ```js
 await computer.apps.open("com.android.settings");
@@ -61,23 +61,20 @@ const page = await settings.press(about.ref, { expect: { text: "Android version"
 return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /version/i.test(line)) };
 ```
 
-**In a `codemode` script.** The phone's tools are among its `tools`, each call one of its own: `computer_observe`
-answers the screen as a value, and `computer_act` acts on the state last observed. `tools.computer_script` runs the code
-above. Codex's `exec` answers each as JSON text: parse it there.
+App ids come from `computer.apps.list()`: call it before `computer.apps.open`. The tools are there too, as
+`tools.computer_observe(...)` and `tools.computer_act(...)`.
 
-```js
-const page = await tools.computer_observe({ app: "com.android.settings" });
-const about = page.elements.find((node) => node.name === "About phone");
-await tools.computer_act({ app: "com.android.settings", steps: [{ press: about.ref }] });
-```
+**On Codex** there is no `codemode` and no `computer`: Codex runs scripts in its own code mode, which calls the tools in
+your list, and each call answers JSON text to parse. The phone's apps are `computer_op` there, one call per op with its
+arguments, named as `computer`'s methods are: `computer_op({op: "apps.open", args: {id: "com.android.settings"}})`.
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
 screenshot pixels, for what the app's window can't reach: a swipe from the screen's top edge opens the notification
 shade (`{ type: "swipe", path: [[540, 5], [540, 1200]] }`), and anything outside the app.
 
-**Only the tools you were given.** An agent's computer setting may leave some out: a code-only agent has its script
-tool and no `computer_observe`, `computer_act` or `computer_screenshot`; a tools-only agent has those and no script
-tool; an agent whose exec is off has no shell of any kind. Use what your tool list shows.
+**Only what you were given.** An agent's computer setting may leave some out: a code-only agent drives the phone from
+`codemode` alone, with no `computer_observe`, `computer_act` or `computer_screenshot` in its tool list; an agent whose
+exec is off has no shell of any kind. Use what your tool list and codemode's types show.
 
 ## How to work: observe, then act by ref, then check
 
@@ -91,6 +88,8 @@ tool; an agent whose exec is off has no shell of any kind. Use what your tool li
    screen, the surest way back to a known place.
 
 ## When to write a script
+
+A `codemode` script is one call of yours where tools would be many.
 
 - **Known steps**: open an app, press through a known path, read one value: one script, an `expect` on each page.
 - **A few facts out of a long screen**: `find()` inside the script and return only those, never whole observations.

@@ -216,6 +216,19 @@ test("archil claim: a reclaim whose list lags the earlier epoch's mint misses it
   assert.deepEqual(fake.requests.filter((one) => one.method === "DELETE").map((one) => one.query.identifier), ["tok-2", "tok-1"]);
 });
 
+test("archil claim: a claim that attached the desktop a park kept takes on its credential: nothing minted, and its revoke removes it with the run's earlier epochs", async (t) => {
+  const { fake, mount } = await controlOn(t);
+  // Epoch 3 parks with its desktop kept: its credential is neither revoked nor released.
+  const parked = await claimOf({ mount });
+  assert.equal(await parked.claim.token(), TOKEN);
+  const resumed = await claimOf({ mount: { ...mount, epoch: 5 } });
+  resumed.claim.inherit();
+  assert.deepEqual([...fake.users.values()].map((one) => one.nickname), ["agentrun:run-1:3"], "nothing new minted");
+  await resumed.claim.revoke();
+  assert.deepEqual([...fake.users.keys()], [], "the inherited credential removed at the run's end");
+  assert.deepEqual(fake.requests.slice(2).map((one) => [one.method, one.query.identifier]), [["GET", undefined], ["DELETE", "tok-1"]], "one read of the run's users, no second read: the inherited user is long listed");
+});
+
 test("archil claim: a lost claim removes the run's mount credential at once, not at its ttl", async (t) => {
   const { fake, mount } = await controlOn(t);
   const controller = new AbortController();
