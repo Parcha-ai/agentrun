@@ -81,12 +81,12 @@ test("a leftover beside the install that an orphaned npm still writes into never
   const leftover = join(harnesses, ".probe-crashed");
   mkdirSync(leftover);
   for (let i = 0; i < 2_000; i++) writeFileSync(join(leftover, `early-${i}`), "");
-  const writer = spawn(process.execPath, ["-e", `const fs = require("node:fs"); const dir = process.argv[1];
+  const writer = spawn(process.execPath, ["-e", `const fs = require("node:fs"); const dir = process.env.SWEEP_WRITER_DIR;
 let i = 0;
 const parent = process.ppid;
 // This test's own writer ends with the test process, whatever ends it.
 setInterval(() => { if (process.ppid !== parent) process.exit(0); for (let k = 0; k < 3; k++) try { fs.writeFileSync(dir + "/late-" + i++, ""); } catch {} }, 1);
-process.stdout.write("writing\\n");`, leftover], { stdio: ["ignore", "pipe", "inherit"] });
+process.stdout.write("writing\\n");`], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, SWEEP_WRITER_DIR: leftover } });
   t.after(() => writer.kill("SIGKILL"));
   const gone = new Promise((resolve) => writer.once("exit", resolve));
   t.after(() => gone);
@@ -154,12 +154,12 @@ const until = async (done, what, ms = 10_000) => {
 /** A crashed server's npm, orphaned, writing into its staging directory `dir` (a few files each millisecond, the
  *  directory made again when it is gone, as npm unpacking tarballs does), until `stop()`. */
 async function orphanedNpm(t, dir) {
-  const writer = spawn(process.execPath, ["-e", `const fs = require("node:fs"); const dir = process.argv[1];
+  const writer = spawn(process.execPath, ["-e", `const fs = require("node:fs"); const dir = process.env.SWEEP_WRITER_DIR;
 let i = 0;
 const parent = process.ppid;
 // This test's own writer ends with the test process, whatever ends it.
 setInterval(() => { if (process.ppid !== parent) process.exit(0); try { fs.mkdirSync(dir, { recursive: true }); for (let k = 0; k < 3; k++) fs.writeFileSync(dir + "/late-" + i++, ""); } catch {} }, 1);
-process.stdout.write("writing\\n");`, dir], { stdio: ["ignore", "pipe", "inherit"] });
+process.stdout.write("writing\\n");`], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, SWEEP_WRITER_DIR: dir } });
   const gone = new Promise((resolve) => writer.once("exit", resolve));
   t.after(() => (writer.kill("SIGKILL"), gone));
   await new Promise((resolve) => writer.stdout.once("data", resolve));
