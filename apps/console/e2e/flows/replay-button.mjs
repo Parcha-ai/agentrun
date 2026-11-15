@@ -25,7 +25,9 @@ const promo = (digest, at, decided, reason, n) => ({ workflow: "invoice-sorter",
 export default {
   name: "replay-button",
   signedIn: true,
-  async run({ page, base, api }) {
+  // The page reports the 409 this flow answers itself (the second replay); it checks that it is the only error (below).
+  allowsErrors: true,
+  async run({ page, base, api, errors }) {
     const made = await api("POST", "/agents", { definition: { version: 1, name: "Invoice sorter", description: "Sorts an invoice into its ledger account.", instructions: "Answer in one line.", harness: "pi", tools: [], skills: [], learning: true } });
     check(made.status === 201 || made.status === 200, `POST /v2/agents answered ${made.status}: ${JSON.stringify(made.body)}`);
     const id = made.body.agent_id;
@@ -91,5 +93,7 @@ export default {
       const wide = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, view: window.innerWidth }));
       check(wide.page <= wide.view, `${where}: the page scrolls sideways (${wide.page}px in ${wide.view}px)`);
     }
+    const others = errors.filter((e) => !/Failed to load resource: the server responded with a status of 409/.test(e));
+    check(others.length === 0, `the page reported errors other than the 409s answered here: ${errors.join(" | ")}`);
   },
 };
