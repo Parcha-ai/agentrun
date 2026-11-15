@@ -62,12 +62,12 @@ function Replay({ v2, agentId, name, choices, onPick, promotions, serving, loop,
     <section className="border" aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
   );
   if (!data) return <section className="border" aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
-  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} loop={loop} stopped={stopped} replay={{ v2, agentId, onDecided: onReplayed }} /></section>;
+  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} loop={loop} stopped={stopped} replay={{ v2, agentId, onStarted: onReplayed, onDecided: () => { setAsked((n) => n + 1); onReplayed?.(); } }} /></section>;
 }
 
 /** The replay of a read: the controls, the step's line and date, its graph. `stopped`: the digest the money rule stopped
  *  running first (stoppedOf), which says Stopped where it would say Serving. */
-export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null, loop = null, stopped = null, replay }: { data: WorkflowRevisions; stepMs?: number; promotions?: readonly Promotion[]; serving?: string | null; loop?: LearningLoop | null; stopped?: string | null; replay?: { v2: Client; agentId: string; onDecided?: () => void } }) {
+export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null, loop = null, stopped = null, replay }: { data: WorkflowRevisions; stepMs?: number; promotions?: readonly Promotion[]; serving?: string | null; loop?: LearningLoop | null; stopped?: string | null; replay?: { v2: Client; agentId: string; onStarted?: () => void; onDecided?: () => void } }) {
   const { steps, unreadable } = useMemo(() => replaySteps(data.revisions), [data.revisions]);
   const [at, setAt] = useState(Math.max(0, steps.length - 1));
   const [playing, setPlaying] = useState(false);
@@ -120,7 +120,7 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
             {record?.reason}
           </p>
         )}
-        {replay && step.digest && <ReplayRevision key={step.digest} v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={!replacedBy && replayable(standing)} resume={record?.decided === "replaying" ? (record.replay_id ?? null) : null} onDecided={replay.onDecided} />}
+        {replay && step.digest && <ReplayRevision key={step.digest} v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={!replacedBy && replayable(standing)} resume={record?.decided === "replaying" ? (record.replay_id ?? null) : null} onStarted={replay.onStarted} onDecided={replay.onDecided} />}
       </div>
       {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
       <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">

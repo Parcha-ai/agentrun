@@ -44,7 +44,7 @@ export function decisionLine(read: ReplayRead): { text: string; score: string | 
 }
 
 /** The Replay button of one revision of a learned workflow, and what its replay is doing or decided. */
-export function ReplayRevision({ v2, agentId, workflow, digest, offered, resume = null, onDecided, pollMs = POLL_MS }: { v2: Client; agentId: string; workflow: string; digest: string; offered: boolean; resume?: string | null; onDecided?: () => void; pollMs?: number }) {
+export function ReplayRevision({ v2, agentId, workflow, digest, offered, resume = null, onStarted, onDecided, pollMs = POLL_MS }: { v2: Client; agentId: string; workflow: string; digest: string; offered: boolean; resume?: string | null; onStarted?: () => void; onDecided?: () => void; pollMs?: number }) {
   // `resume`: the id of this revision's replay that is running (its promotion record's replay_id), so a card opened or
   // reloaded mid-replay follows it. The caller keys the card by revision: another revision starts clean.
   const [state, setState] = useState<State>(resume ? { at: "running", replay: resume, read: null } : { at: "idle" });
@@ -73,7 +73,8 @@ export function ReplayRevision({ v2, agentId, workflow, digest, offered, resume 
   const start = () => {
     setState({ at: "starting" });
     Promise.resolve().then(() => v2.startLearnedWorkflowReplay(agentId, workflow, digest)).then(
-      (r) => setState({ at: "running", replay: r.replay, read: null }),
+      // The tab reads its promotions again, so a card that is stepped away from and back to finds this replay's record.
+      (r) => { setState({ at: "running", replay: r.replay, read: null }); onStarted?.(); },
       (e: unknown) => {
         const code = (e as { code?: unknown })?.code;
         setState({ at: "refused", message: e instanceof Error ? e.message : String(e), code: typeof code === "string" ? code : null });
