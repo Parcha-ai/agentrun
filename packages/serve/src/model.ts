@@ -9,6 +9,7 @@ import { withLocalModels } from "./local-models.js";
 import { pathToFileURL } from "node:url";
 import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
+import type { ThinkingLevelMap } from "./port-models.js";
 import { DEFAULT_HARNESS, PLAN_HARNESSES } from "./harness.js";
 import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
@@ -466,7 +467,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
   // the provider's client per wire, which pi-ai picks by the model's `api`.
   const gatewayModels = ids.map((id) => {
     const cost = priceOf(id);
-    const shared = { id, name: id, provider: MODEL_PROVIDER, reasoning: true, input: ["text", "image"] as ("text" | "image")[], cost, contextWindow: 128_000, maxTokens: 32_000 };
+    // The effort each thinking level asks for, as the catalog says of the model (catalogThinking): sol's off sends none.
+    const thinking = catalogThinking(catalog, id, namedOf.get(id));
+    const shared = { id, name: id, provider: MODEL_PROVIDER, reasoning: true, input: ["text", "image"] as ("text" | "image")[], cost, contextWindow: 128_000, maxTokens: 32_000, ...(thinking ? { thinkingLevelMap: thinking } : {}) };
     return wireOf(id) === "anthropic-messages" ? { ...shared, api: "anthropic-messages", baseUrl: base } : { ...shared, api: "openai-responses", baseUrl, compat: { supportsDeveloperRole: false } };
   });
   const each = <A extends ProviderStreams>(api: A): A => (unpriced.size ? unpricedApi(api, unpriced, ai) : api);
@@ -634,7 +637,8 @@ async function withPlanModels<M extends Awaited<ReturnType<typeof withLocalModel
   const [ai, { createProvider }, { openAIResponsesApi }] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/openai-responses.lazy")]);
   const baseUrl = `${PLAN_ORIGIN}/v1`;
   const none = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  const listed = plan.models.map((id) => ({ ...(models.getModel("openai", id) ?? { name: id, api: "openai-responses", reasoning: true, input: ["text", "image"], contextWindow: 272_000, maxTokens: 128_000 }), id, provider: PLAN_PROVIDER, baseUrl, cost: none }));
+  // A model the catalog doesn't list yet is sent no effort at thinking off (`off: null`): a plan model may refuse "none".
+  const listed = plan.models.map((id) => ({ ...(models.getModel("openai", id) ?? { name: id, api: "openai-responses", reasoning: true, thinkingLevelMap: { off: null }, input: ["text", "image"], contextWindow: 272_000, maxTokens: 128_000 }), id, provider: PLAN_PROVIDER, baseUrl, cost: none }));
   models.setProvider(createProvider({
     id: PLAN_PROVIDER,
     name: "ChatGPT plan",
@@ -694,18 +698,40 @@ function unpricedApi<A extends ProviderStreams>(api: A, unpriced: ReadonlySet<st
   return { ...api, stream: unpricedOf(api.stream.bind(api)), streamSimple: unpricedOf(api.streamSimple.bind(api)) };
 }
 
-export type Listed = { provider: string; cost: ModelCost };
+export type Listed = { provider: string; cost: ModelCost; thinkingLevelMap?: ThinkingLevelMap };
 
-/** pi-ai's catalog list prices by model id: every provider's entry for it, in the catalog's order. */
+/** pi-ai's catalog list prices by model id: every provider's entry for it, in the catalog's order, with the effort each
+ *  thinking level asks for where the entry says. */
 export async function catalogPrices(): Promise<Map<string, Listed[]>> {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const out = new Map<string, Listed[]>();
   for (const model of withLocalModels(builtinModels()).getModels()) {
     const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, tiers } = (model as { cost?: Partial<ModelCost> }).cost ?? {};
     const listed = out.get(model.id) ?? out.set(model.id, []).get(model.id)!;
-    listed.push({ provider: model.provider, cost: { input, output, cacheRead, cacheWrite, ...(tiers ? { tiers } : {}) } });
+    listed.push({ provider: model.provider, cost: { input, output, cacheRead, cacheWrite, ...(tiers ? { tiers } : {}) }, ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}) });
   }
   return out;
+}
+
+/** A gateway model's thinking levels in `catalog` (catalogPrices'), by its own id (the last segment of `id`) in either
+ *  version form: the vendor's entry (the id's segment before it, else `named`); else each level every entry that says
+ *  agrees on (gpt-6.1-sol's entries differ on `minimal` alone: openai-codex's asks low), a level they differ on left to
+ *  pi-ai's default. None: undefined, pi-ai's defaults. So pi through a gateway at thinking off asks gpt-6.1-sol for no
+ *  effort, as its catalog entries say (off: null), not the "none" it refuses. */
+export function catalogThinking(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ThinkingLevelMap | undefined {
+  const segments = id.split("/");
+  const own = segments.at(-1)!;
+  const vendor = segments.length > 1 ? segments.at(-2) : named;
+  const saying = [own, ...flippedForms(own)].flatMap((form) => catalog.get(form) ?? []).flatMap((entry) => (entry.thinkingLevelMap ? [{ provider: entry.provider, map: entry.thinkingLevelMap as Readonly<Record<string, string | null | undefined>> }] : []));
+  const vendors = saying.find((entry) => entry.provider === vendor);
+  if (vendors) return vendors.map as ThinkingLevelMap;
+  const agreed: Record<string, string | null> = {};
+  for (const level of new Set(saying.flatMap((entry) => Object.keys(entry.map)))) {
+    const values = new Set(saying.map((entry) => entry.map[level]));
+    const [value] = values;
+    if (values.size === 1 && value !== undefined) agreed[level] = value;
+  }
+  return Object.keys(agreed).length ? (agreed as ThinkingLevelMap) : undefined;
 }
 
 /** A gateway model's price in `catalog` (catalogPrices'), by its id as the host or the revision names it: a ref that names

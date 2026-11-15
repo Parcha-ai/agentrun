@@ -535,6 +535,56 @@ describe("applying a template", () => {
     expect(t.sent[0].body.overrides).toEqual({ approvals: "never" });
   });
 
+  it("offers a package's model choices in one Model group, the default first, each choice's warning and note shown word for word before it is picked, and sends the pick as overrides.choice", async () => {
+    const WARNING = "Free models may keep and train on what you send. Your email goes to whoever serves this model.";
+    const NOTE = "In OpenRouter's privacy settings, turn on ZDR only.";
+    const INBOX: TemplateView = { ...NOTES, name: "inbox", harness: ["codex", "pi"], model: { tier: "balanced", choices: [{ id: "free", label: "Free model", model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", harness: "pi", warning: WARNING, note: NOTE, secrets: ["OPENROUTER_API_KEY"] }] } };
+    const t = await open("inbox", { templates: [INBOX] });
+    const group = t.host.querySelector('fieldset[aria-label="Model"]');
+    expect(group).toBeTruthy();
+    const radios = [...group!.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+    expect(radios.map((r) => r.closest("label")!.querySelector("[data-choice-label]")!.textContent)).toEqual(["Your default: balanced on the first of codex, pi this server runs", "Free model"]);
+    expect(radios[0].checked).toBe(true);
+    // Shown while the default is picked: the owner reads it before choosing.
+    expect(group!.querySelector('[data-choice-warning="free"]')!.textContent).toBe(WARNING);
+    expect(group!.querySelector('[data-choice-note="free"]')!.textContent).toBe(NOTE);
+    await t.click(radios[1]);
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.overrides).toEqual({ approvals: "ask", choice: "free" });
+    // A choice the server can't run: its refusal shows in the Model group, and goes once the owner picks another.
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const refusal = "The inbox template's choice Free model runs it on pi, which this server can't run. Nothing was created.";
+    const refused = await open("inbox", { templates: [INBOX], apply: async () => { throw Object.assign(new ClientError(409, "agent_not_runnable", refusal), { fields: [{ field: "overrides.choice", reason: "not_set_up_here", message: refusal }] }); } });
+    const choiceRadio = (id: string) => refused.host.querySelector<HTMLInputElement>(`[data-choice="${id}"] input[type="radio"]`);
+    await refused.click(choiceRadio("free"));
+    await refused.click(refused.button(/^Apply/));
+    expect(refused.host.querySelector('fieldset[aria-label="Model"]')!.textContent).toContain(refusal);
+    await refused.click(choiceRadio("(default)"));
+    expect(refused.host.querySelector('fieldset[aria-label="Model"]')!.textContent).not.toContain(refusal);
+    // A package with no choices: no Model group, and no choice sent.
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const plain = await open("meeting-notes");
+    expect(plain.host.querySelector('fieldset[aria-label="Model"]')).toBeNull();
+    await plain.click(plain.button(/^Apply/));
+    expect(plain.sent[0].body.overrides).toEqual({ approvals: "ask" });
+  });
+
+  it("a key only the picked choice needs, refused at apply: its words and fix under that choice, once", async () => {
+    const INBOX: TemplateView = { ...NOTES, name: "inbox", secrets: [], model: { tier: "balanced", choices: [{ id: "searched", label: "With search", model: "openrouter/particle-ai/particle-1", harness: "pi", warning: null, note: null, secrets: ["PARALLEL_API_KEY"] }] } };
+    const message = "PARALLEL_API_KEY is not set on this server.";
+    const fix = "Add it in Settings → Tool keys, then apply the template again.";
+    const t = await open("inbox", { templates: [INBOX], apply: async () => { throw Object.assign(new ClientError(409, "agent_not_runnable", "The inbox template needs PARALLEL_API_KEY. Nothing was created."), { fields: [{ field: "secrets.PARALLEL_API_KEY", reason: "not_set_up_here", message, fix }] }); } });
+    await t.click(t.host.querySelector<HTMLInputElement>('[data-choice="searched"] input[type="radio"]'));
+    await t.click(t.button(/^Apply/));
+    const under = t.host.querySelector('[data-choice-keys="searched"]');
+    expect(under?.textContent).toContain(message);
+    expect(under?.textContent).toContain(fix);
+    expect(t.host.textContent!.split(message).length - 1).toBe(1);
+    // Picking another choice clears it: that key was the old pick's.
+    await t.click(t.host.querySelector<HTMLInputElement>('[data-choice="(default)"] input[type="radio"]'));
+    expect(t.host.textContent).not.toContain(message);
+  });
+
   it("titles what was applied with the values sent, not edits made while the apply was under way", async () => {
     const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
     let answer: (v: unknown) => void = () => {};
