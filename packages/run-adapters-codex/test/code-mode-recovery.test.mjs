@@ -192,13 +192,13 @@ async function gateParkedExec(gate, repair = 'note') {
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
   const recovered = mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since, true);
   /** A second crash, after the recovered output reached the rollout and before the exec's end reached the host's record: the
-   *  next drive restores those lines, and the end it records for the exec. */
-  const restart = async () => {
+   *  next drive restores those lines, and the end it records for the exec (`full`: with the output its row shows). */
+  const restart = async (full = false) => {
     const line = (payload) => JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload });
     const lines = [line({ type: 'custom_tool_call', name: 'exec', input: 'await tools.mcp_fake__add({a:2,b:3})', call_id: EXEC }), line({ type: 'custom_tool_call_output', call_id: EXEC, output: items[0].output })];
     const later = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
     const ends = [];
-    const ownCalls = { opened: async () => {}, nestedIn() {}, ended: async (exec, _output, failed) => void ends.push({ exec, failed }) };
+    const ownCalls = { opened: async () => {}, nestedIn() {}, ended: async (exec, output, failed) => void ends.push({ exec, failed, ...(full ? { output } : {}) }) };
     codeMode({ ctx: later, machine: {}, ownCalls, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines, rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
     await pause(10);
     return ends;
@@ -275,7 +275,8 @@ async function yieldedExecEnd(gate, resume = true) {
   const bridge = toolBridge(next, [codexTool(host)], { live: false, gate });
   let listen;
   const ends = [];
-  const ownCalls = { opened: async () => {}, nestedIn() {}, ended: async (exec, output, failed) => void ends.push({ exec, failed }) };
+  const shown = [];
+  const ownCalls = { opened: async () => {}, nestedIn() {}, ended: async (exec, output, failed) => void (ends.push({ exec, failed }), shown.push(output)) };
   const mode = codeMode({ ctx: next, machine: { onRolloutLine: (fn) => (listen = fn) }, ownCalls, journal, logged: new Set(), synced: async () => {}, bridge, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
   const wait = { callId: 'call_wait_1', name: 'wait', type: 'function_call', arguments: JSON.stringify({ cell_id: '1' }) };
   const line = (payload) => JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload });
@@ -289,7 +290,7 @@ async function yieldedExecEnd(gate, resume = true) {
   await mode.recoverItems(items, [wait], before, since, resume);
   listen(line({ type: 'function_call_output', call_id: wait.callId, output: items[0].output }));
   await pause(10);
-  return { ran, ends, output: items[0].output };
+  return { ran, ends, shown, output: items[0].output };
 }
 
 test("a yielded exec whose pending wait a resume answered with its parked call refused ends failed on the host's record", async () => {
@@ -303,6 +304,34 @@ test("a yielded exec whose pending wait a resume answered with its parked call a
   const { ran, ends } = await yieldedExecEnd(async () => 'allow');
   assert.deepEqual(ran, [{ a: 2, b: 3 }]);
   assert.deepEqual(ends, [{ exec: EXEC, failed: false }], 'parked then allowed is not a failure');
+});
+
+// The words that open a recovered output ("cut short", "cut off") tell the model its script went with the session. On the
+// host's record they belong to an exec that failed: an exec that ends ok shows its calls' outcomes alone (live, 01a1e117-20b1).
+test("an exec that ends ok after its parked call was allowed and ran shows its calls' outcomes on the host's record, never opening with the cut-short words", async () => {
+  const { recovered, items, restart } = await gateParkedExec(async () => 'allow');
+  await recovered;
+  assert.match(items[0].output, /^The exec was cut short after these calls/, 'the model is still told its script was cut');
+  const [end] = await restart(true);
+  assert.equal(end.failed, false);
+  assert.doesNotMatch(end.output, /cut short|session stopped/, `an ok exec's row: ${end.output}`);
+  assert.match(end.output, /^1\. mcp_fake__add waited for a person's approval, then ran: "5"\. Its effect is done; it was not run again\.$/);
+});
+
+test("an exec that ends failed after its parked call was refused keeps the cut-short words on the host's record", async () => {
+  const { recovered, items, restart } = await gateParkedExec(async () => ({ deny: 'Denied: not now.' }));
+  await recovered;
+  const [end] = await restart(true);
+  assert.equal(end.failed, true);
+  assert.equal(end.output, items[0].output, 'a failed exec shows what the model was told, whole');
+});
+
+test("a yielded exec that ends ok after its parked call was allowed and ran shows its calls' outcomes on the host's record, never opening with the cut-off words", async () => {
+  const { ends, shown, output } = await yieldedExecEnd(async () => 'allow');
+  assert.deepEqual(ends, [{ exec: EXEC, failed: false }]);
+  assert.match(output, /^The session stopped while waiting on cell 1; that cell's script was cut off\./, "the model's wait is still told");
+  assert.doesNotMatch(shown[0], /cut off|session stopped/, `an ok exec's row: ${shown[0]}`);
+  assert.match(shown[0], /^1\. mcp_fake__add waited for a person's approval, then ran: "5"\. Its effect is done; it was not run again\./);
 });
 
 test("a yielded exec whose pending wait is told its script was cut off, its parked call never run, ends failed on the host's record", async () => {
