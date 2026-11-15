@@ -651,11 +651,12 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const { expected: _, ...graded } = gradeView(grade);
   // How that round stands, from the run's journal and its steer's row (feedbackStatus: its words taken, then the run's
   // end; or the steer refused by an end that came first), never the API server's `graded_at` against the runner's
-  // `ended_at`. A journal or a row that can't be read says running. null for a grade that opened none.
+  // `ended_at`. A journal or a row that can't be read fails the read (the console retries it), never says running.
+  // null for a grade that opened none.
   const command = grade.feedback ? grade.feedbackCommand : undefined;
   const status = command === undefined ? null : feedbackStatus(
-    used ? entries : await runEntries(store, runId, BACKGROUND_CONTEXT).catch(() => []),
-    await store.commands(runId, command - 1).then((rows) => rows.find((one) => one.id === command), () => undefined),
+    used ? entries : await runEntries(store, runId, BACKGROUND_CONTEXT),
+    await store.commands(runId, command - 1).then((rows) => rows.find((one) => one.id === command)),
   );
   return { ...body, graded: { ...graded, workflow: graded.workflow === null ? null : shown.name(graded.workflow), feedback_status: status } };
 }
