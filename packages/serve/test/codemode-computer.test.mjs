@@ -72,14 +72,16 @@ const methodsOf = (computer) => computer.calls.map(([method]) => method).filter(
 /** A pi run of `script` over the suite's tools and `computerTools`, its gate `gate(call)`: the request bodies the provider
  *  got, and the server's store. With `restartAt`, the first runner shuts down once it settles and a second one takes the
  *  run on. `options.computer`: the run's computer as its scripts get it bound (RunTools.computer); `options.settled`: the
- *  run's state it waits for (default ended); `options.adapter`: the run's adapter in pi's place. */
+ *  run's state it waits for (default ended); `options.adapter`: the run's adapter in pi's place, or `options.adapterOf(run)`
+ *  makes it; `options.record`: the run's record as its harness keeps it ("loop" for a CLI's). */
 async function codemodeRun(t, script, computerTools, gate = () => "allow", restartAt = undefined, options = {}) {
   const { server, runners: stores_ } = await stores({ runners: 2 });
   await queue(server, "run-1");
   const { tools } = suiteTools();
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: options.adapter ?? piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
+    adapter: options.adapterOf ? await options.adapterOf(run) : options.adapter ?? piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
+    ...(options.record ? { record: options.record } : {}),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: [...hostTools(tools), ...computerTools], context: "fresh" },
     input: "Follow the script.",
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
@@ -444,6 +446,50 @@ test("on Codex, whose own code mode reaches only the tools it is handed, a deskt
     assert.ok(!names.includes("computer_script"), `${label}: ${JSON.stringify(names)}`);
     for (const name of ["computer_op", "computer_act", "computer_screenshot"]) assert.ok(handed.some((tool) => tool.name === name && !tool.deferred), `${label}: ${name} listed: ${JSON.stringify(handed)}`);
   }
+});
+
+/** A Responses origin for Codex's stand-in (FAKE_CODEX_MODEL=responses): its first answer is one code-mode `exec` whose
+ *  script (the stand-in's: a JSON list of host tool calls) is `calls`; every later one says done. */
+function codexScript(calls) {
+  const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+  const usage = { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: 0 } };
+  return async (_url, init = {}) => {
+    const input = JSON.parse(String(init.body ?? "{}")).input ?? [];
+    const done = (n) => ({ type: "response.completed", response: { id: `resp_${n}`, object: "response", status: "completed", usage } });
+    if (!input.some((item) => item.type === "custom_tool_call")) {
+      const item = { type: "custom_tool_call", id: "ctc_1", call_id: "call_exec", name: "exec", input: JSON.stringify(calls), status: "completed" };
+      return sse([{ type: "response.output_item.done", output_index: 0, item }, done(1)]);
+    }
+    return sse([{ type: "response.output_text.delta", item_id: "m_2", output_index: 0, content_index: 0, delta: "done" }, done(2)]);
+  };
+}
+
+test("on Codex, a script's computer_op calls sit under the script's own call on the timeline as on every other harness: the exec has its own rows, and each nested row names it as its parent", async (t) => {
+  const { resolveHarness } = await import("../dist/runner/adapters/index.js");
+  const standIn = new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url).pathname;
+  const saved = process.env.AGENTRUN_CODEX_STANDIN;
+  process.env.AGENTRUN_CODEX_STANDIN = "1";
+  t.after(() => (saved === undefined ? delete process.env.AGENTRUN_CODEX_STANDIN : (process.env.AGENTRUN_CODEX_STANDIN = saved)));
+  const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-"));
+  dirs.push(sessionsDir);
+  const { computer, run, tools } = await desktop({ more: VENDOR });
+  const harness = resolveHarness("codex");
+  const fetch = codexScript([{ tool: "computer_op", args: { op: "apps.list", args: {} } }, { tool: "computer_op", args: { op: "files.write", args: { path: "/workspace/notes.txt", data: "Pears: 41" } } }]);
+  const adapterOf = (run_) => harness.adapter({ run: run_, model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "not-a-secret" }, price: () => 0, sessionsDir, fetch }, { standIn: { command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "responses" } } });
+  const { server } = await codemodeRun(t, [], tools, () => "allow", undefined, { computer: run.computer, adapterOf, record: harness.record });
+  assert.deepEqual(methodsOf(computer).filter((method) => method === "apps.list" || method === "files.write"), ["apps.list", "files.write"], "each call reached the computer once");
+  const rows = await runTimeline(server, "run-1", ctx);
+  const seen = JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.tool_use_id, row.parent_tool_use_id]));
+  const outer = rows.find((row) => row.kind === "tool_use" && row.tool_name === "exec");
+  assert.ok(outer, `the script's own call has its row: ${seen}`);
+  assert.equal(outer.tool_use_id, "call_exec", `under the model's own id for its exec: ${seen}`);
+  assert.equal(outer.parent_tool_use_id, undefined, "the script's own call is the model's: no parent");
+  assert.equal(outer.tool_input_preview, null, "the script's row shows no script: it can hold what an act types");
+  assert.ok(rows.some((row) => row.kind === "tool_result" && row.tool_use_id === "call_exec"), `the script's own call has its result row: ${seen}`);
+  const nested = rows.filter((row) => (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_name === "computer_op");
+  assert.equal(nested.length, 4, seen);
+  assert.deepEqual(nested.map((row) => [row.kind, row.parent_tool_use_id]), [["tool_use", "call_exec"], ["tool_result", "call_exec"], ["tool_use", "call_exec"], ["tool_result", "call_exec"]], `every nested row names the script's call: ${seen}`);
+  assert.ok(rows.indexOf(outer) < rows.indexOf(nested[0]), `the script's row comes first: ${seen}`);
 });
 
 test("a desktop run whose codemode is set to deny, under surface code too, lists the step tools and computer_op: with no script to call them, the computer stays in the model's reach", async (t) => {
