@@ -5,12 +5,13 @@
 // that names it, in words that say what is wrong. Then the CLI: --exec-stream builds the host with the module's
 // createHost and calls nothing but exec.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { main } from "../dist/conformance/cli.js";
-import { bytesProblem, checkExecStream, EXEC_STREAM_CHECKS, formatExecStream } from "../dist/conformance/exec-stream.js";
+import { bytesProblem, checkExecStream, EXEC_STREAM_CHECKS, formatExecStream, PID_STATE_SCRIPT } from "../dist/conformance/exec-stream.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
 
 /** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB. */
@@ -38,6 +39,20 @@ test("a live, two-way, byte-exact exec with no timeout passes every check, and t
 	);
 	assert.ok(host.calls.every((call) => call.id === "machine-1"));
 	assert.match(formatExecStream(report), /exec PASS/);
+});
+
+test("kill's probe reads a killed process its parent has not reaped yet (a zombie) as gone, and a live one as running", async (t) => {
+	if (!existsSync("/proc/self/status")) return t.skip("no /proc here: the probe falls back to kill -0 alone");
+	const probe = (pid) => spawnSync("sh", ["-c", PID_STATE_SCRIPT, "sh", String(pid)], { encoding: "utf8" }).stdout.trim();
+	const child = spawn("sh", ["-c", "exec sleep 600"], { stdio: "ignore" });
+	await new Promise((done) => child.once("spawn", done));
+	t.after(() => child.kill("SIGKILL"));
+	assert.equal(probe(child.pid), "running", "a sleeping process runs");
+	child.kill("SIGKILL");
+	// spawnSync holds this event loop, so the child is not reaped until the probe has answered: the window CI hit.
+	for (let at = 0; at < 200 && !/^State:\s*Z/m.test(readFileSync(`/proc/${child.pid}/status`, "utf8")); at++) spawnSync("sleep", ["0.01"]);
+	assert.match(readFileSync(`/proc/${child.pid}/status`, "utf8"), /^State:\s*Z/m, "the killed child is a zombie until this loop reaps it");
+	assert.equal(probe(child.pid), "gone", "a zombie has ended: kill -0 alone would read it as running");
 });
 
 test("an exec that decodes stdout as UTF-8 fails the byte checks, and says byte 0x80 came back as ef bf bd", async () => {
