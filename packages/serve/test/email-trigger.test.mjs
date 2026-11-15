@@ -243,3 +243,31 @@ test("a message whose text grows when escaped (newlines, quotes and backslashes)
     await follow(api, fired.run_id, ["completed"]);
   }
 });
+
+test("a run an email started is handed no other run's answer: bob's run never reads what alice's answered, though the agent has an output schema", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api, data } = await serve(t, { triggerClock: clock });
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  const SCHEMA = { type: "object", additionalProperties: false, required: ["reply"], properties: { reply: { type: "string" } } };
+  const ANSWER = { reply: "Alice, your refund of $120 is approved." };
+  await made(api, "answerer", { output_schema: SCHEMA });
+  const { id } = await trigger(api, emailTrigger("answerer", { every_s: 60 }, `Answer with this json: ${JSON.stringify(ANSWER)}`));
+  await firings(api, id, 1);
+
+  const alice = faux.seed({ from: "alice@example.com", to: [ADDRESS], subject: "Refund", text: "Where is my refund?" });
+  clock.to(minute(1));
+  const first = (await firings(api, id, 2)).find((f) => f.key === keyOf("email", id, alice.messageId));
+  assert.equal(first?.status, "started");
+  await follow(api, first.run_id, ["completed"]);
+  assert.deepEqual((await api("GET", `/runs/${first.run_id}`)).body.result.output, ANSWER, "alice's run has a structured answer");
+
+  const bob = faux.seed({ from: "bob@example.com", to: [ADDRESS], subject: "Hello", text: "A question of my own." });
+  clock.to(minute(2));
+  const second = (await firings(api, id, 3)).find((f) => f.key === keyOf("email", id, bob.messageId));
+  assert.equal(second?.status, "started");
+  const { content } = await firedInput(data, second.run_id);
+  assert.ok(!content.includes("The result of this trigger's last completed run"), `bob's run is handed nothing of alice's: ${content}`);
+  assert.ok(!content.includes("refund of $120"), "alice's answer is nowhere in bob's input");
+  await follow(api, second.run_id, ["completed"]);
+});

@@ -115,8 +115,8 @@ function watchedStore() {
   return store;
 }
 
-const ACCOUNT_A = { preset: "other", address: "a@a.example", user: "a-user", password: "a-password-1", imap: { host: "imap.a.example", port: 993 }, smtp: { host: "smtp.a.example", port: 465 } };
-const ACCOUNT_B = { preset: "other", address: "b@b.example", user: "b-user", password: "b-password-2", imap: { host: "imap.b.example", port: 993 }, smtp: { host: "smtp.b.example", port: 465 } };
+const ACCOUNT_A = { preset: "other", address: "a@a.example", user: "a-user", password: "pw-a-1", imap: { host: "imap.a.example", port: 993 }, smtp: { host: "smtp.a.example", port: 465 } };
+const ACCOUNT_B = { preset: "other", address: "b@b.example", user: "b-user", password: "pw-b-2", imap: { host: "imap.b.example", port: 993 }, smtp: { host: "smtp.b.example", port: 465 } };
 const whole = (opened) => [ACCOUNT_A, ACCOUNT_B].some((one) => isDeepStrictEqual(opened, one));
 
 test("the account is one row, saved in one write: a read during a switch, or after a save that failed part way, gets one account whole, never one's servers with the other's password", async () => {
