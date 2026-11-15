@@ -29,7 +29,8 @@ It opens a console on your machine and keeps its data in `~/.agentrun`. Set a pa
 (Settings → Model keys, or the first screen) or add a model key, and apply a template to run your first agent. Codex
 and pi agents run on your ChatGPT plan; Claude Agent, OpenCode, Jev decisions and paid tools need their own keys.
 The [three-step local quickstart](../README.md#run-locally-in-three-steps) walks
-through a due diligence agent and its results.
+through a due diligence agent and its results. The [inbox quickstart](inbox-quickstart.md) sets up an assistant that
+files your new mail and drafts your replies, on your ChatGPT plan, in three minutes.
 
 To have your coding agent handle local setup, tell it:
 
