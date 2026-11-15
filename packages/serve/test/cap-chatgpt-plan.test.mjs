@@ -9,9 +9,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MODEL_KEYS } from "../dist/model.js";
-import { zeroPricedOf } from "@parcha/agentrun-kernel/kernel/cap";
+import * as cap from "@parcha/agentrun-kernel/kernel/cap";
 import { capModelOf as capModelOfRoute } from "../dist/runner/adapter-run-spec.js";
-import { capModelOf as capModelOfCli } from "../dist/runner/cli-run-spec.js";
+import * as cliSpec from "../dist/runner/cli-run-spec.js";
 import { bookedCapSpend } from "../dist/runner/metrics.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -177,11 +177,12 @@ test("a plan run looping on a tool stops at the limit on requests priced $0, on 
 // requests priced $0 counts both alike.
 test("a CLI runner's plan model and pi's plan route are one cap model, counted as a plan's", () => {
   const zeros = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  const cli = capModelOfCli("gpt-6.1-sol", "openai-responses", { cost: zeros, maxTokens: 128_000 }, false, true);
+  assert.equal(typeof cliSpec.capModelOf, "function", "the CLI runners' cap model rule is exported, beside pi's");
+  const cli = cliSpec.capModelOf("gpt-6.1-sol", "openai-responses", { cost: zeros, maxTokens: 128_000 }, false, true);
   const pi = capModelOfRoute({ model: "gpt-6.1-sol", provider: { api: "openai-responses", plan: true }, cost: zeros, unpriced: true, outputCeiling: 128_000 });
   assert.deepEqual(cli, pi);
   assert.deepEqual(cli, { id: "gpt-6.1-sol", api: "openai-responses", price: null, outputCeiling: 128_000, plan: true });
-  assert.deepEqual([zeroPricedOf(cli), zeroPricedOf(pi)], ["plan", "plan"]);
+  assert.deepEqual([cap.zeroPricedOf(cli), cap.zeroPricedOf(pi)], ["plan", "plan"]);
 });
 
 // (An unpriced model that is no plan's is still refused a cap: unpriced-said.test.mjs, a gateway default with no price.)
