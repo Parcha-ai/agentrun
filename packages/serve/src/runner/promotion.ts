@@ -61,7 +61,7 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { answersAlone, championOf, clears, type Grade, gradesOf, heldOn, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayLaunch, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
+import { answersAlone, championOf, clears, type Grade, gradesOf, heldOn, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayLaunch, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, skippedToolsOf, thresholdsOf, withinBar } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -565,12 +565,17 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   // Skipped: the inputs whose workflow needed a write the graded run's recording does not have (learn/replay-calls.ts): a
   // replay never runs one, so they are no evidence either, and never wrong.
   const scored = read.scored;
-  const score = scoreRows(scored, thresholdsOf(workflow.workflow));
-  // A revision held on served runs graded wrong promotes only once its replay answered (or handed back) on each of them:
-  // a pass on other inputs alone never puts it back.
-  const unanswered = heldOn(record).filter((run) => !read.rows.some((row) => row.of === run && (row.outcome === "answered" || row.outcome === "handed_back")));
+  const thresholds = thresholdsOf(workflow.workflow);
+  const score = scoreRows(scored, thresholds);
+  // A revision held on served runs graded wrong promotes only once its replay answered (or handed back) on each of them,
+  // and is within the bar on them alone (the one scorer over their rows; a hand-back on each is the agent's, right): a
+  // pass on other inputs never puts it back, nor pays for repeating the wrong answers it was held on.
+  const owedRuns = heldOn(record);
+  const unanswered = owedRuns.filter((run) => !read.rows.some((row) => row.of === run && (row.outcome === "answered" || row.outcome === "handed_back")));
+  const owedScore = owedRuns.length ? scoreRows(scored.filter((row) => row.of !== undefined && owedRuns.includes(row.of)), thresholds) : undefined;
+  const owedWrong = owedScore !== undefined && owedScore.n > 0 && !withinBar(owedScore);
   const passed = scored.length >= REPLAY_MIN && clears(score);
-  const ok = passed && !unanswered.length;
+  const ok = passed && !unanswered.length && !owedWrong;
   const pts = (value: number) => `${(value * 100).toFixed(1)}%`;
   const skipped = read.rows.filter((row) => row.outcome === "skipped_write").length;
   const failed = read.rows.length - scored.length - skipped;
@@ -592,6 +597,7 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
     : scored.length < REPLAY_MIN
       ? `only ${plural(scored.length, "replay")} answered or handed back${aside ? ` (${aside})` : ""}, fewer than ${REPLAY_MIN}`
       : passed && unanswered.length ? `replayed ${said}, but it did not answer on ${plural(unanswered.length, "graded run")} it was held on (its held_on): it serves again only once a replay answers on them`
+      : passed && owedScore && owedWrong ? `replayed ${said}, but on the ${plural(owedScore.n, "graded run")} it was held on the workflow ${pts(owedScore.wf_acc)}, the agent ${pts(owedScore.agent_acc)}: more than ${PROMOTE_BAR * 100} pts under; it serves again only once it answers them right`
       : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts`
         : !answersAlone(score) ? `it handed back every one of its ${plural(score.n, "replayed input")}: it would never answer alone (${said})`
           : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
@@ -612,10 +618,10 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   // Decided past its deadline with runs still at work: they are cancelled, never left spending on a decided replay.
   const cancelled = await cancelUnended(deps, record);
   if (cancelled) log(`workflow-first: ${workflow.name} at ${digest}: ${plural(cancelled, "replay run")} still at work past the replay's deadline cancelled`);
-  if (!ok && scored.length >= REPLAY_MIN && !unanswered.length) {
+  if (!ok && scored.length >= REPLAY_MIN && !unanswered.length && !owedWrong) {
     // Held: one refit over the replay's scored rows (each step's p known: its guards read record-only, its judge-driven
     // escalates recorded). One with neither changes nothing. Never one that still owes runs it was held on: a refit is
-    // promoted on its rows, and they did not answer on those.
+    // promoted on all its rows, and they did not answer on those, or answered them under the bar.
     await refitAndWrite(deps, workflow, digest, scored, "its replay held it");
   }
   return decided.record;

@@ -492,7 +492,11 @@ export function recordOnly(workflowText: string): string {
 
 /** Whether a score clears the bar: the workflow's accuracy at most PROMOTE_BAR under the agent path's, and it answered
  *  alone on at least one input (one that hands back every input scores the agent's own accuracy, and would never serve). */
-export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && answersAlone(score);
+export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => withinBar(score) && answersAlone(score);
+
+/** Whether a score's workflow is at most PROMOTE_BAR under the agent: clears' bar, and what a replay of a held revision
+ *  meets on the runs it was held on alone (runner/promotion.ts settle), where a hand-back on each is fine. */
+export const withinBar = (score: Pick<ReplayScore, "delta">): boolean => score.delta >= -PROMOTE_BAR - 1e-9;
 
 /** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({
