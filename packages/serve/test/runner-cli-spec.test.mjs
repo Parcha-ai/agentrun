@@ -211,7 +211,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : undefined;
     const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
     assert.equal(built.session.system[0], environmentLine(), "the date line first");
-    assert.match(built.session.system[0], /^Today is \d{4}-\d{2}-\d{2} \(UTC\)\./);
+    assert.match(built.session.system[0], /^Today is [A-Z][a-z]+ \d{1,2} [A-Z][a-z]+ \d{4} \([A-Za-z_\/]+\)\./);
     assert.equal(built.session.system[1], "Answer.", "then the revision's instructions");
   });
 }

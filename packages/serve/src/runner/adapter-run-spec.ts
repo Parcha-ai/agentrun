@@ -34,7 +34,7 @@ import type { WebFake, WebFakes } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
-import { environmentLine } from "../environment.js";
+import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
@@ -691,7 +691,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (clockOf), else the real one.
   const now = deps.clockOf?.(runRow.agentId);
-  const system = [environmentLine(now), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
+  const zone = await runZone(deps.store, launch.inputOrigin);
+  const system = [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
@@ -712,7 +713,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         if (at.unpriced && !at.provider.plan && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
         return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
-      preamble: environmentLine(now),
+      preamble: environmentLine(now, zone),
     }));
   }
 

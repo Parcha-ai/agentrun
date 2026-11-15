@@ -139,6 +139,8 @@ export interface ClaudeAgentAdapterOptions {
   fetch?: typeof fetch;
   /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
   now?: () => Date;
+  /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
+  zone?: string;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -432,6 +434,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
+        ...(options.zone ? { zone: options.zone } : {}),
         // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
