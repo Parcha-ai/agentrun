@@ -51,7 +51,7 @@ alone, so an email you send yourself is skipped.
 
 Within a minute or two, a run starts for it. The run files the email under **Needs reply**, **FYI** or **Ignored**:
 a label in Gmail, a folder elsewhere. When the email needs you, it stays in your inbox and a reply waits in your
-Drafts. The run shows its tokens and that it used your ChatGPT plan, at $0.
+Drafts. The run shows its tokens and **Using ChatGPT plan**: no dollars, no key.
 
 ## What it may do
 
