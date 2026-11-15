@@ -1,5 +1,5 @@
 import type { Api, Model, MutableModels, Provider } from "@earendil-works/pi-ai";
-import { ROUTERS } from "@parcha/agentrun-kernel/kernel/cap";
+import { freeModel, type ModelPrice, ROUTERS } from "@parcha/agentrun-kernel/kernel/cap";
 
 /** Particle-1's price, USD per million tokens: Particle's own list price, from https://docs.particle.ai/models (read
  *  2026-11-07: $0.25 input, $0.03 cached input, $1.00 output; no cache-write price, so $0). */
@@ -67,17 +67,10 @@ const added = <M extends { id: string }>(list: readonly M[], adds: typeof ADDED_
  *  catalog's $0 (model.ts runModels' `unpriced`). */
 export const isRouter = (provider: string, id: string): boolean => provider === "openrouter" && ROUTERS.has(id);
 
-const PRICE_FIELDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
-
-/** Whether a catalog entry runs at $0: its price is all zeros, every price tier's too. Read from the price alone, never
- *  from the id (a `:free` id at a price is not free), except an OpenRouter router (ROUTERS), whose zeros are no price. */
-export function isFree(model: { provider: string; id: string; cost?: Partial<Model<Api>["cost"]> }): boolean {
-  if (isRouter(model.provider, model.id)) return false;
-  if (!model.cost) return false;
-  // The price fields alone: a tier's `inputTokensAbove` is where it starts, a token count, not a price. A field left out is $0.
-  const zero = (price: Record<string, unknown>) => PRICE_FIELDS.every((k) => (price[k] ?? 0) === 0);
-  const { tiers = [] } = model.cost as { tiers?: readonly Record<string, unknown>[] };
-  return model.cost.input === 0 && model.cost.output === 0 && zero(model.cost as Record<string, unknown>) && tiers.every(zero);
+/** Whether a catalog entry runs at $0: the kernel's freeModel (kernel/cap/free.ts, the one rule, what a run on it books
+ *  at $0) on the entry's price, its tiers included. An entry with no cost has no price, so is not free. */
+export function isFree(model: { id: string; api?: string; cost?: ModelPrice | null }): boolean {
+  return freeModel({ id: model.id, api: model.api ?? "", price: model.cost ?? null, outputCeiling: null });
 }
 
 /** `models` (pi-ai's built-in catalog, or one built on it) with PRICE_OVERRIDES set on their providers' own entries and

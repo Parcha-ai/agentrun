@@ -121,7 +121,7 @@ target, and take another screenshot to see what your steps did. Click a field be
 
 Open an app from a script with `computer.apps.open("mousepad")`, by its id, its name or its program: it answers once
 the app's window shows in front, and the app stays open. `computer.apps.list()` names the apps the desktop has (the
-text editor, the terminal, Firefox). With the tools, name the app: `computer_observe` or `computer_act` with
+text editor, the terminal, Firefox). App ids come from `apps.list`: call it before `apps.open`. With the tools, name the app: `computer_observe` or `computer_act` with
 `app: "org.xfce.mousepad"` opens it, or brings it in front, first. A screenshot with no app in front lists the ids. `computer.shell.run` ends everything its command started when it returns, so an
 app it starts closes at once; `computer.processes.start` keeps a program that is not one of the listed apps.
 

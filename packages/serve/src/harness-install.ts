@@ -768,7 +768,9 @@ export function sharedInstaller(root: string, install?: HarnessInstaller): Harne
   return async (entry, dir, pins, signal) => {
     if (!(await ownAlone(base))) return (install ?? ((entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal })))(entry, dir, pins, signal);
     const shared = installDirOf(base, `${entry.id}@${pins.version}-${pins.platform}`);
-    if (entry.lacking(shared, pins) !== undefined) await installForClaim(entry, shared, async () => pins, { signal, ...(install ? { install } : {}) });
+    // Always through the server's own installer on that directory, installed or not: its hold makes two evals at once
+    // share one install, and found installed, it sweeps what an install cut short left beside it.
+    await installForClaim(entry, shared, async () => pins, { signal, ...(install ? { install } : {}) });
     // The link made beside `dir`, then renamed over it, so a look at `dir` finds the install or nothing.
     await mkdir(dirname(dir), { recursive: true });
     const next = `${dir}.link-${randomUUID()}`;
