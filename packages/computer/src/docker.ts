@@ -87,7 +87,7 @@ import { countTested } from "./test-connection.js";
 const fail = failFor("docker");
 
 /**
- * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
+ * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Alpine and Xvfb).
  * computerd stays the first process and starts nothing of its own: create gives it DISPLAY, then starts the X server
  * through it with process.start (startDisplay in ./desktop.ts).
  */
