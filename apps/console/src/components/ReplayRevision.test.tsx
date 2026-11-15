@@ -2,7 +2,7 @@ import { act, createElement, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decisionLine, progressLine, replayable, ReplayRevision } from "./ReplayRevision";
-import { Steps } from "./WorkflowReplay";
+import { Steps, WorkflowReplay } from "./WorkflowReplay";
 import { ClientError, createClient, type Client } from "@/lib/client";
 import type { Promotion, ReplayRead, WorkflowRevision } from "@/lib/v2";
 
@@ -187,6 +187,18 @@ describe("on the workflow card", () => {
     expect(text(host, "replay-progress")).toContain("Replaying on 5 graded inputs");
     act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
     expect(host.querySelector('[data-testid="replay-revision"]')).toBeNull();
+  });
+  it("tells the tab when a replay starts (so stepping away and back finds its record), and reads the revisions again when it is decided", async () => {
+    const client = Object.assign(fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ status: "done", decided: "hold", reason: "worse" })]), { learnedWorkflowRevisions: vi.fn(async () => data) });
+    const onReplayed = vi.fn();
+    const host = mount(createElement(WorkflowReplay, { v2: client, agentId: "a", workflows: [{ name: "sorter", status: "active" }], promotions: [promo(1, "promote"), promo(2, "hold")], serving: [{ workflow: "sorter", digest: "1".repeat(16), replaying: null }], onReplayed }));
+    await flush();
+    expect(client.learnedWorkflowRevisions).toHaveBeenCalledTimes(1);
+    act(() => button(host)!.click());
+    await flush();
+    expect(client.startLearnedWorkflowReplay).toHaveBeenCalledTimes(1);
+    expect(onReplayed).toHaveBeenCalledTimes(2);
+    expect(client.learnedWorkflowRevisions).toHaveBeenCalledTimes(2);
   });
   it("offers none on a card with no replay wired (a read-only view)", () => {
     expect(button(mount(createElement(Steps, { data, promotions: [promo(2, "hold")] })))).toBeUndefined();
