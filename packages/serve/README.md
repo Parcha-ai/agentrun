@@ -3142,10 +3142,10 @@ base64's bytes, plus what the provider adds server-side (a tool-use prompt), fro
 claude-agent, codex and opencode uses; there the proxy measures each request's body. On codex and opencode (the
 Responses API) the text the model reads as it is (a message, a call's arguments, a tool's output, a reasoning summary)
 counts at its own bytes, not the JSON escapes around it (`\"`, `\n`), which no token is billed for; tool definitions and
-encrypted reasoning keep every byte. On a route straight to OpenAI (`https://api.openai.com`, codex and opencode), each
-answer request is also counted by OpenAI's own token count (`POST /v1/responses/input_tokens`, with only the credential
-and account headers, and never through a gateway or any other base), and its bound is that count when it is below the
-byte bound. On a route straight to Anthropic
+encrypted reasoning keep every byte. For a model whose tokenizer is o200k_base (gpt-4o and later, the o-series, on
+codex and opencode, and on pi and claude-agent through serve's translation), each request is also counted on the host
+with that vocabulary, plus a stated margin (10% of the count, 16 tokens an item, 256 a request), on every route and with
+nothing asked of the provider, and its bound is that count when it is below the byte bound. On a route straight to Anthropic
 (`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
 token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
 gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count

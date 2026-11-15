@@ -94,8 +94,6 @@ export interface WorkflowProvider {
   readonly plan?: boolean;
   /** Told the credential an upstream 401 refused, so the next one is renewed (a ChatGPT plan's route). */
   readonly refused?: (credential: string) => Promise<void>;
-  /** Its answers state their cost (OpenRouter's): the proxy books that figure, the price's beside it (ModelRoute). */
-  readonly usageCost?: boolean;
 }
 
 /** A tier's provider from the runner's model route (model-route.ts routeOf), the one way the runner resolves a model
@@ -127,7 +125,6 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(route.provider.plan ? { plan: true } : {}),
     ...(route.provider.refused ? { refused: route.provider.refused } : {}),
-    ...(route.provider.usageCost ? { usageCost: true } : {}),
   };
 }
 
@@ -282,7 +279,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         ...(provider.headers ? { headers: provider.headers } : {}),
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
         ...(provider.refused ? { credentialRefused: provider.refused } : {}),
-        ...(provider.usageCost ? { usageCost: true } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
       // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.

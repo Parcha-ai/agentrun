@@ -11,6 +11,7 @@
 // The upstream here is a stand-in for OpenRouter's Chat Completions endpoint: nothing leaves loopback.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { statesUsageCost } from "@parcha/agentrun-kernel/host";
 
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { capModelOf } = await import("../dist/runner/adapter-run-spec.js");
@@ -91,9 +92,9 @@ test("an OpenRouter answer with no cost in its usage is booked at the list price
   assert.equal(usage.tableUsd, undefined);
 });
 
-test("a workflow model node on OpenRouter books what OpenRouter charged too (its provider carries usageCost)", async () => {
+test("a workflow model node on OpenRouter books what OpenRouter charged too (its proxy's origin states its cost)", async () => {
   const route = await routeOf(MODEL, OR_ALONE, "default", undefined, upstream(answer({})).fetch);
-  assert.equal((await providerFromRoute(route)).usageCost, true);
+  assert.equal(statesUsageCost((await providerFromRoute(route)).origin), true);
 });
 
 test("OpenRouter's routers have no price here: unpriced on every path, a cap's price unknown, and a capped run refused before it starts", async () => {
