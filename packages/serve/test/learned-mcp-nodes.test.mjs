@@ -1,8 +1,8 @@
-// A learned workflow's call node that names an MCP tool (`via: "tool"`, `tool: "mcp:<server>/<tool>"`) runs it through the
-// run's own MCP, as the harness's own call of it runs (host-calls.ts: the loop's wrapped tool), under the same gate and
-// booked on the run's one ledger: allowed, it runs once and its price is the run's tool cost; denied, the workflow is
-// refused before any node runs and the server sees nothing; set to ask, the learned_workflow call itself asks once, the run
-// parks, and the owner's allow runs it once; a stop while it runs cuts the call at the server. pi, on the faux model.
+// A learned workflow's call node that names an MCP tool (`via: "tool"`, `tool: "mcp:<server>/<tool>"`) runs it as a call
+// nested in the learned_workflow call (NestedCalls), as the harness's own call of it runs, under the same gate and booked
+// on the run's one ledger: allowed, it runs once and its price is the run's tool cost; denied, the workflow is refused
+// before any node runs and the server sees nothing; set to ask, the learned_workflow call itself asks once, the run parks,
+// and the owner's allow runs it once; a stop while it runs cuts the call at the server. pi, on the faux model.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -12,7 +12,8 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, call, clientOwnerSession, follow, retried, serve as serveOf, withEnv } from "./support.mjs";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
-import { LEARNED_ASK_CARD_BYTES, learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
+import { learnedApprovedTools, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
+import { ARGS_PREVIEW_BYTES } from "../dist/tool-gate.js";
 import { git, resnap } from "./learn-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -46,7 +47,7 @@ async function addFake(t, api, prices) {
 /** The owner's answer to approval `approvalId` of run `runId`, as the console sends it: its status. */
 async function owner(server) {
   const { cookie, origin } = await clientOwnerSession(server);
-  return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
+  return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${encodeURIComponent(approvalId)}`, headers: { ...json, cookie, origin }, body })).status;
 }
 
 /** Agent `id`, learning, granted `tools`, with `flows` learned in its folder; one run of it asking `content`. */
@@ -138,15 +139,21 @@ test("a workflow with an MCP node set to deny is refused without asking, even wh
   assert.equal(calls(fake).length, 0, "nothing was sent");
 });
 
-test("a learned call's card leads with its MCP fields and names every ask-gated tool; a list past the card's bound doesn't fit, so the gate refuses the call rather than hide a tool", () => {
-  const few = ["mcp:fake/add", "mcp:fake/paid"];
-  assert.deepEqual(Object.keys(learnedAskShown(few)), ["mcp_arguments", "mcp_calls"], "the arguments' note first, then the tools");
+test("a learned call's card leads with its MCP fields and names each ask-gated action with its arguments' shape; past the card's bound it names only those shown whole, so an approval never covers one unseen", () => {
+  const few = [{ tool: "mcp:fake/add", args: { a: "{a}", b: "{b}" } }, { tool: "mcp:fake/paid", args: { query: "{q}" } }];
+  assert.deepEqual(Object.keys(learnedAskShown(few)), ["mcp_arguments", "mcp_calls"], "the arguments' note first, then the actions");
   assert.deepEqual(learnedAskShown(few).mcp_calls, few);
-  assert.equal(learnedAskFits(few), true);
-  // Enough tools that their names alone pass the card's preview bound.
-  const many = Array.from({ length: 120 }, (_, i) => `mcp:server-${i}/tool-with-a-long-name-${i}`);
-  assert.ok(Buffer.byteLength(JSON.stringify(learnedAskShown(many))) > LEARNED_ASK_CARD_BYTES);
-  assert.equal(learnedAskFits(many), false, "too many to show: refused, never approved unseen");
+  assert.deepEqual([...learnedApprovedTools(learnedAskShown(few))], ["mcp:fake/add", "mcp:fake/paid"], "an allow covers the tools it named");
+  // Enough actions that their names alone pass the card's preview bound: the card names a whole first part of them, within
+  // the bound, and its allow covers those and no other (each other one asks on its own as it runs).
+  const many = Array.from({ length: 120 }, (_, i) => ({ tool: `mcp:server-${i}/tool-with-a-long-name-${i}`, args: { id: "{id}" } }));
+  const shown = learnedAskShown(many);
+  assert.ok(Buffer.byteLength(JSON.stringify(shown)) <= ARGS_PREVIEW_BYTES - 128, "within the card's preview bound");
+  assert.ok(shown.mcp_calls.length > 0 && shown.mcp_calls.length < many.length, `a first part: ${shown.mcp_calls.length}`);
+  assert.deepEqual(shown.mcp_calls, many.slice(0, shown.mcp_calls.length));
+  assert.ok(!learnedApprovedTools(shown).has(many.at(-1).tool), "one past the bound is never covered");
+  // A model-written card field reads as no tool: only `{ tool }` entries count.
+  assert.equal(learnedApprovedTools({ mcp_calls: ["mcp:fake/add"] }).size, 0);
 });
 
 /** Run `runId`'s pending approval of `tool`, once it waits on one: a call other than `after`'s (an earlier card the run
@@ -164,7 +171,7 @@ async function pendingOf(api, runId, tool, after) {
   }
 }
 
-test("an MCP node set to ask asks once for the learned_workflow call, its card naming every MCP tool it may call and that their arguments are decided as it runs; the owner's allow runs it once", { timeout: 150_000 }, async (t) => {
+test("an MCP node set to ask asks once for the learned_workflow call, its card naming every MCP tool it may call and that their arguments are filled in as it runs; the owner's allow runs it once", { timeout: 150_000 }, async (t) => {
   const server = await serve(t);
   const { api } = server;
   const answer = await owner(server);
@@ -172,12 +179,12 @@ test("an MCP node set to ask asks once for the learned_workflow call, its card n
   assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" } })).status, 200);
   const runId = await learnedRun(server, "asker", ["mcp:fake/add"], [ADD_FLOW], RUN_ADD);
   const pending = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
-  // The person sees what they approve: the workflow's input, the MCP tool it may call, and that its arguments are the
-  // workflow's to decide.
+  // The person sees what they approve: the workflow's input, the MCP tool it may call, and that its arguments are filled
+  // in by the workflow as it runs.
   const card = JSON.stringify(pending.args_preview ?? pending);
   assert.match(card, /add-two/, card);
   assert.match(card, /mcp:fake\/add/, card);
-  assert.match(card, /decided by the workflow while it runs/, card);
+  assert.match(card, /filled in while the workflow runs/, card);
   assert.equal(calls(fake).length, 0, "nothing sent while it waits");
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
@@ -185,7 +192,7 @@ test("an MCP node set to ask asks once for the learned_workflow call, its card n
   assert.equal(calls(fake, "add").length, 1, "run once, after the allow");
 });
 
-test("the up-front card names every MCP tool set to ask that the workflow can call, never one it may call without asking, and says their arguments are decided while it runs", { timeout: 150_000 }, async (t) => {
+test("the up-front card names every MCP tool set to ask that the workflow can call, never one it may call without asking, and says their arguments are filled in while it runs", { timeout: 150_000 }, async (t) => {
   const server = await serve(t);
   const { api } = server;
   const answer = await owner(server);
@@ -206,7 +213,7 @@ test("the up-front card names every MCP tool set to ask that the workflow can ca
   assert.equal(typeof card, "string", JSON.stringify(pending));
   for (const asked of ["mcp:fake/add", "mcp:fake/paid"]) assert.ok(card.includes(asked), `the card names ${asked}: ${card}`);
   assert.ok(!card.includes("mcp:fake/slow_write"), `the card names no tool the workflow may call without asking: ${card}`);
-  assert.ok(card.includes("decided by the workflow while it runs"), `the card says the arguments are decided while it runs: ${card}`);
+  assert.ok(card.includes("filled in while the workflow runs"), `the card says the arguments are filled in while it runs: ${card}`);
   assert.equal(calls(fake).length, 0, "nothing sent while it waits");
   assert.equal(await answer(runId, pending.id, { decision: "deny" }), 204);
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
@@ -262,34 +269,6 @@ test("an allow of a learned_workflow call covers that call only: the same workfl
   assert.equal(await answer(runId, second.id, { decision: "deny" }), 204);
   await pendingOf(api, runId, "mcp:fake/add", second);
   assert.equal(calls(fake, "add").length, 1, "the harness's own call of the tool waits for its own approval");
-});
-
-test("an approval covers exactly the MCP tools its card named: a tool set to ask after the card was shown is refused, and nothing is sent", { timeout: 150_000 }, async (t) => {
-  const server = await serve(t);
-  const { api } = server;
-  const answer = await owner(server);
-  const fake = await addFake(t, api);
-  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "allow" } })).status, 200);
-  // Two MCP nodes in turn: add is set to ask (no setting), slow_write is allowed.
-  const node = (label, tool, args, as) => ({ node: "call", label, via: "tool", tool, args, out: "Any", as, deadline_s: 60 });
-  const TWO = {
-    v: 2, name: "two-calls",
-    schemas: { In: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, Any: {} },
-    input: { schemaId: "In" }, output: { schemaId: "Any", path: "sum" },
-    root: { node: "chain", steps: [node("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum"), node("write", "mcp:fake/slow_write", { line: "x", seconds: 0 }, "wrote")] },
-  };
-  const runId = await learnedRun(server, "unshown", ["mcp:fake/add", "mcp:fake/slow_write"], [TWO], `Call ${LEARNED_WORKFLOW_TOOL} with ${JSON.stringify({ name: "two-calls", input: { a: 2, b: 3 } })}`);
-  const pending = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
-  const card = pending.args_preview ?? "";
-  assert.ok(card.includes("mcp:fake/add") && !card.includes("mcp:fake/slow_write"), `the card names add alone: ${card}`);
-  // slow_write is set to ask after the card was shown: the person never saw it, so their allow never covers it.
-  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "ask" } })).status, 200);
-  assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
-  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
-  const result = learnedResult(rows);
-  const said = `${result?.text ?? ""} ${result?.tool_result_preview ?? ""}`;
-  assert.match(said, /two-calls was not run: .*mcp:fake\/slow_write/s, JSON.stringify(result));
-  assert.equal(calls(fake).length, 0, "refused before any node ran: nothing sent, add included");
 });
 
 test("a stop while an MCP node's call runs cuts it at the server: the work never finishes and nothing of it reaches the run", { timeout: 150_000 }, async (t) => {
@@ -383,7 +362,7 @@ test("an MCP action the approved card did not name asks on its own: the run park
   assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "ask" } })).status, 200);
   assert.equal(await answer(runId, card.id, { decision: "allow" }), 204);
   const nested = await pendingOf(api, runId, "mcp:fake/slow_write", card);
-  assert.match(JSON.stringify(nested.args_preview ?? nested), /"line":"x"/, "the nested card shows the call's own arguments");
+  assert.match(nested.args_preview ?? "", /"line":"x"/, `the nested card shows the call's own arguments: ${JSON.stringify(nested)}`);
   assert.deepEqual([calls(fake, "add").length, calls(fake, "slow_write").length], [1, 0], "the named action ran; the unnamed one waits unsent");
   assert.equal(await answer(runId, nested.id, { decision: "allow" }), 204);
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });

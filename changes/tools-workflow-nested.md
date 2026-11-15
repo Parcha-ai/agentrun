@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-serve
+kind: breaking
+---
+A learned workflow asks once per call, and its card says what it will do. The `learned_workflow` call's approval card lists each MCP action set to ask that the workflow can call, with the shape of its arguments (`{"tool":"mcp:linear/create_issue","args":{"title":"{title}"}}`; a `{name}` is filled in while the workflow runs). One allow lets those actions run with no second ask.
+- Each MCP node now runs as a call nested in the workflow's call, asked at the gate as its own tool. An action the card did not name (set to ask after the card was shown, or past the card's 2 KB preview) parks the run on a card of its own instead of failing the workflow. A deny of any of the workflow's MCP actions still refuses the whole call before any node runs.
+- A draft is no longer refused at learn time because its ask-set MCP actions would not all fit on one card: the ones past the card ask as they run.
+- A `learned_workflow` call that a park or a crash cut runs again from its start. Its model, decision and call nodes answer what they answered the first time, and an MCP call that already ran answers from its record, so nothing is sent twice. A workflow served first still hands the job back when a crash cuts it, and an ask its card did not name refuses that node.
+- Breaking: removed from `@parcha/agentrun-serve`'s modules: `host-calls.js` (`HostCalls`, `withHostCalls`, `hostCalls`), `learnedAskFits`, `LEARNED_ASK_CARD_BYTES` and `learnedMcpTools` (use `learnedMcpCalls`, which returns each action with its arguments), `DraftAsk` and `draftProblems`' `ask` parameter, `learnedDraftTools`' `asked` field, `RunPermissions.decide`, `SpecGate.askedFor` (the gate answers `{ ask: card }` instead) and `LearnedWorkflowRun.decide`. `LearnedWorkflowRun.mcpTools` is now a map from catalog name to the session's tool name, and `nestedOf` hands a call its nested calls.

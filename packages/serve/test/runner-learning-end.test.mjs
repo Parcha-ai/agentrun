@@ -290,9 +290,10 @@ test("with no one to answer an ask (the store's approvers row: the server's acco
   assert.ok(!prompt.includes("mcp:github/create_pull_request"), "github's tool asks, and no one can answer: not offered");
 });
 
-// #2424's card rule on the runner path: the learning end hands the draft check the MCP tools set to ask and learnedAskFits,
-// so a draft calling more ask-set MCP tools than one approval card can name is left out of what the run keeps.
-test("a run's workflow draft whose ask-set MCP tools would not all fit on its learned call's approval card is left out in the gate's words; its note is kept (LS-07, #2424)", async (t) => {
+// The card's bound on the runner path: a learned call's card names the ask-set MCP actions its preview shows whole, and
+// each one past it asks on its own as it runs, so a draft calling more of them than one card names is kept, never left out
+// for its card's size.
+test("a run's workflow draft whose ask-set MCP tools would not all fit on its learned call's approval card is kept: those past the card ask as they run (LS-07)", async (t) => {
   const names = Array.from({ length: 40 }, (_, i) => `create_issue_with_a_rather_long_descriptive_name_${String(i).padStart(2, "0")}`);
   const flow = {
     v: 2, name: "file-issues",
@@ -310,8 +311,8 @@ test("a run's workflow draft whose ask-set MCP tools would not all fit on its le
   await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }, { say: answer }] });
   await w.ended();
   const kept = await w.server.learning.proposal("run-1");
-  assert.equal(kept?.proposal?.workflows, 0, JSON.stringify(kept?.proposal));
-  assert.match(JSON.stringify(kept?.proposal?.left ?? kept?.proposal), /its approval card can't name all 40 MCP tools it would call that are set to ask/);
+  assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
+  assert.doesNotMatch(JSON.stringify(kept?.proposal), /approval card/);
 });
 
 test("a run's workflow draft calling an MCP tool with no declared price is proposed held, saying which step, tool and server; one calling a priced tool is not (LS-07)", async (t) => {
