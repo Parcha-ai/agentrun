@@ -26,9 +26,9 @@ import { raiseFollowUpId } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
- *  takeover's note, its computer's hold, the learning seed it laid): read past when a claim asks whether the run's root ends
- *  on its end (a fresh reopen). */
-const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold", HELD_KIND, CALL_KIND, COMPUTER_CALLS, REQUEST_STARTED, REQUEST_ENDED]);
+ *  takeover's note, its computer's hold, the learning seed it laid, the computer it made): read past when a claim asks
+ *  whether the run's root ends on its end (a fresh reopen). */
+const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, KINDS.computerMade, "computer.hold", HELD_KIND, CALL_KIND, COMPUTER_CALLS, REQUEST_STARTED, REQUEST_ENDED]);
 
 /** What the run's learned workflow did when it ran first: answered (`text` its answer) or handed the job back (`text`
  *  the agent's first input, runner/workflow-first.ts handbackText). */

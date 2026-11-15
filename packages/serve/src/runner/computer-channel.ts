@@ -19,7 +19,7 @@ export type LoopComputer = {
   readonly hello?: HelloResult;
   readonly hold?: ComputerHold;
   /** The claim made it the run's own (computer-for-claim.ts ClaimComputer.made): the loop records its kind in the run's
-   *  journal (COMPUTER_MADE), so a later claim knows the run had one. */
+   *  journal (KINDS.computerMade), so a later claim knows the run had one. */
   readonly own?: true;
 };
 

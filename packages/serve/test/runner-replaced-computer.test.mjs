@@ -150,7 +150,7 @@ test("pi on a free route (OpenRouter's ling-3.2-flash:free, the runner's own rou
   const launch = { input: { content: "Look." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "openrouter", modelId: "inclusionai/ling-3.2-flash:free" }, maxCostUsd: 1 };
   const opened = await storeWith(t, { tools: ["read"] }, launch);
   const bodies = [];
-  const route = await routeOf("openrouter/inclusionai/ling-3.2-flash:free", { OPENROUTER_API_KEY: "not-a-secret-openrouter" }, "default", undefined, openRouterFree(bodies));
+  const route = await routeOf("openrouter/inclusionai/ling-3.2-flash:free", { OPENROUTER_API_KEY: "fake-test-key" }, "default", undefined, openRouterFree(bodies));
   assert.deepEqual([route.cost.input, route.cost.output], [0, 0], "a free model");
   const acts = [];
   const deps = { env: {}, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: replacedClaim(acts), computerDeps: FAUX_DEPS };
