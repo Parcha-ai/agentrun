@@ -216,8 +216,8 @@ Over a cap is refused, never cut.
   answer is a call's result, and no step writing that key writes anything else. A model's summary of a page is no
   page, nor is the key a model step writes it back to. A composed workflow node writing the whole answer whose own
   workflow passes this rule in its own state has checked the places its own schema declares; any other place the
-  parent's schema declares is the parent's to check. An answer schema holding quotes in more than 8 places, or nesting
-  past 16 keys, is refused rather than read in part. Otherwise the draft is refused, the detail naming the predicate
+  parent's schema declares is the parent's to check. An answer schema holding quotes in more than 8 places, nesting
+  past 16 keys, or recurring around them (a definition used again inside itself), is refused rather than read in part. Otherwise the draft is refused, the detail naming the predicate
   to write. The predicate reads each page string alone, so no quote runs from one page into the next. A judge or an
   `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
   question flagged 149 of 170 answers while 416 of 429 quotes were in the fetched pages, and it could not tell the 8

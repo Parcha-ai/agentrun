@@ -269,10 +269,10 @@ const QUOTE_SITE_DEPTH = 16;
  *  key's value is read shape by shape: each `anyOf`/`oneOf` branch, and each kind a `type` list names (a string, and the
  *  list or record beside it), gives its own place, so `quotes: string | [{quote}]` holds quotes at `quotes` and at
  *  `quotes[].quote`. `allOf` members describe one value, so they are read together (the types all of them allow, the
- *  properties and items any of them names). A shape holding structure where no `quote` key is found (records of other fields) holds quotes
- *  no check reads (`*`). `over` when there are more than QUOTE_SITES_MAX places or the schema nests past
- *  QUOTE_SITE_DEPTH keys: the places found are then not all of them, and the rule refuses rather than read a part as
- *  the whole. */
+ *  properties and items any of them names). A shape holding structure where no `quote` key is found (records of other
+ *  fields) holds quotes no check reads (`*`). `over` when there are more than QUOTE_SITES_MAX places, or the schema
+ *  nests past QUOTE_SITE_DEPTH keys or recurs (a definition met again below itself) around quotes: the places found are
+ *  then not all of them, and the rule refuses rather than read a part as the whole. */
 function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { sites: QuoteSite[]; over: boolean } {
   const resolve = (node: unknown): unknown => {
     for (let hops = 0; hops < 8 && isObject(node) && typeof node.$ref === "string"; hops++) {
@@ -290,13 +290,18 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { site
     else over = true;
     return true;
   };
+  // The schemas the walk is inside (cycle detection, one per walk, never a value's other allOf parts, so a definition
+  // shared by a part and a property is still read at the property), and those of them it met again below themselves.
   const around = new Set<unknown>();
-  /** `schema` and its `allOf` members (theirs too, refs resolved): the parts of one value, read together. */
+  const recurring = new Set<unknown>();
+  /** `schema` and its `allOf` members (theirs too, refs resolved): the parts of one value, read together. A member the
+   *  walk is inside already recurs, read no further. */
   const partsOf = (schema: Record<string, unknown>): Record<string, unknown>[] => {
     const parts: Record<string, unknown>[] = [];
     const take = (node: unknown): void => {
       const part = resolve(node);
-      if (!isObject(part) || parts.includes(part) || (part !== schema && around.has(part))) return;
+      if (!isObject(part) || parts.includes(part)) return;
+      if (part !== schema && around.has(part)) return void recurring.add(part);
       parts.push(part);
       if (Array.isArray(part.allOf)) for (const inner of part.allOf) take(inner);
     };
@@ -309,15 +314,19 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { site
    *  found a place holding quotes. */
   const walk = (node: unknown, at: string[], quoted = false): boolean => {
     const schema = resolve(node);
+    if (over) return false;
     // A quote key's value the schema leaves open (an unresolved ref, `true`) is read as a quote.
     if (!isObject(schema)) return quoted && add(at);
-    if (around.has(schema) || over) return false;
+    if (around.has(schema)) {
+      recurring.add(schema);
+      return false;
+    }
     if (at.length > QUOTE_SITE_DEPTH) {
       over = true;
       return false;
     }
+    around.add(schema);
     const parts = partsOf(schema);
-    for (const part of parts) around.add(part);
     // The types every part allows; the other shapes an anyOf/oneOf branch allows, each read alone.
     const typeLists = parts.flatMap((part) => (typeof part.type === "string" ? [[part.type as unknown]] : Array.isArray(part.type) ? [part.type as unknown[]] : []));
     const types = typeLists.length ? typeLists.reduce((all, list) => all.filter((type) => list.includes(type))) : undefined;
@@ -342,9 +351,11 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { site
       if (maps.length) found = walk(together(maps), [...at, "*"], quoted) || found;
     }
     for (const inner of branches) found = walk(inner, at, quoted) || found;
-    for (const part of parts) around.delete(part);
+    around.delete(schema);
     // A quote key's list or record holding no `quote` key and no string: its quotes are where no check reads them.
     if (quoted && structured && !found && (shaped || !branches.length)) found = add([...at, "*"]);
+    // A schema met again below itself that holds quotes holds them at ever deeper paths, past any set of checks.
+    if (recurring.delete(schema) && found) over = true;
     return found;
   };
   walk(schema, []);
