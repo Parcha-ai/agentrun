@@ -5,7 +5,7 @@
 // sets equal, and each value equal, except that a call's value read as "…" (a timeline read elides query values,
 // scrubUrls) matches any value for its key. Structural only: whether a cited item is in scope stays the rubric's call.
 import { lastJsonBlock } from "./answer-json.js";
-import { linksOf, targetEnd, TEXT_URL, TRAILING, trimmed, wholeUrl } from "./text-urls.js";
+import { linksOf, linksWritten, TRAILING, trimmed, wholeUrl } from "./text-urls.js";
 import { scrubUrl } from "./timeline/index.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
@@ -58,17 +58,11 @@ function formsOf(raw: string): string[] {
   return forms;
 }
 
-/** Every http(s) URL in `text` (TEXT_URL, text-urls.ts), in order, each as the forms it may end at: a markdown link's
- *  target (`[text](url)`), which its closing bracket ends (targetEnd), as that one form; any other as formsOf gives it. A
- *  link's text and target read as two. */
+/** Every http(s) URL in `text`, in order, read as a page's links are (linksWritten, text-urls.ts), each as the forms it may
+ *  end at: a markdown link's target that its ")" closed as that one form; any other as formsOf gives it. A link's text
+ *  and target read as two. */
 function linksIn(text: string): string[][] {
-  return [...text.matchAll(TEXT_URL)].flatMap((match) =>
-    match[0].split("](").flatMap((part, i) => {
-      if (!/^https?:\/\//i.test(part)) return [];
-      const end = i > 0 || text.slice(Math.max(0, match.index - 2), match.index) === "](" ? targetEnd(part) : -1;
-      return [end >= 0 && part[end] === ")" ? [part.slice(0, end)] : formsOf(part)];
-    }),
-  );
+  return [...linksWritten(text)].flatMap(({ raw, exact }) => (/^https?:\/\//i.test(raw) ? [exact ? [raw] : formsOf(raw)] : []));
 }
 
 /** A JSON string's links: the string itself when it is one URL whole (wholeUrl: a field holding a link means all of it),
@@ -107,12 +101,13 @@ export function citedLinks(answer: string): string[][] {
 
 /** A call's urls for the check, and whether it is a web call: a web_search's results', a web_fetch's asked url, final url
  *  and page links, with how many of that page's links its output lost to a cut (`links_cut`). Any other call's are the
- *  URLs its result holds as it returned them (linksOf: a JSON string that is a URL whole counts whole), with no cut: a
- *  skill cites only links a call returned whole. */
+ *  URLs its result holds as it returned them (linksOf: a JSON string that is a URL whole counts whole). A grader reads
+ *  only such a result's head (CALL_RESULT_CHARS, cut with "..." as timeline/util.ts cut ends it), so one ending in "..."
+ *  may have held more past it: a cut of unknown count (1), named on a link that matches nothing, never a verdict. */
 function sourceOf(call: CheckedCall): { urls: string[]; cut: number; web: boolean } {
   const tool = call.name ?? call.tool;
   const text = call.result ?? "";
-  if (tool !== WEB_SEARCH_TOOL && tool !== WEB_FETCH_TOOL) return { urls: [...linksOf(text)], cut: 0, web: false };
+  if (tool !== WEB_SEARCH_TOOL && tool !== WEB_FETCH_TOOL) return { urls: [...linksOf(text)], cut: text.endsWith("...") ? 1 : 0, web: false };
   const end = text.indexOf("\n");
   let read: unknown;
   try {

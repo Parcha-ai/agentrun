@@ -54,23 +54,36 @@ export function wholeUrl(text: string): string | undefined {
 /** Where a link starts: a markdown link's target (after its "]("), or a URL written out (TEXT_URL). */
 const LINK_AT = new RegExp(`\\]\\(|${TEXT_URL.source}`, "gi");
 
-/** Every link `text` holds, in order, as written: a markdown link's target (`[text](url)`, targetEnd), and a URL written
- *  out (TEXT_URL) less its tail (trimmed). A URL written out that runs into a "](" is a link written as its own text
- *  (`[https://a](https://a)`): what follows each "](" in it is a target. Each link is looked for from where the last one
- *  ended, so no character is scanned twice: one pass, however many unclosed "](" a hostile page holds. */
-export function* hrefsIn(text: string): Generator<string> {
+/** A link as `text` writes it, and whether that is all of it (`exact`): a markdown link's target that its ")" closed is;
+ *  a URL written out, or a target with no ")", may end in a tail that is not its own (TRAILING). */
+export type WrittenLink = { raw: string; exact: boolean };
+
+/** Every link `text` holds, in order, as written (WrittenLink): a markdown link's target (`[text](url)`, targetEnd), and a
+ *  URL written out (TEXT_URL). A URL written out that runs into a "](" is a link written as its own text
+ *  (`[https://a](https://a)`): what follows each "](" in it is a target. A target ends where targetEnd says, never where
+ *  TEXT_URL stopped, so one holding a "|" (`](https://a/?m=1|2)`) is whole. Each link is looked for from where the last
+ *  one ended, a target read past the URL running into it scanned once more at most: linear, however many unclosed "](" a
+ *  hostile page holds. A page's links (hrefsIn) and an answer's cited links (link-check.ts) both read it. */
+export function* linksWritten(text: string): Generator<WrittenLink> {
   const at = new RegExp(LINK_AT.source, "gi");
   for (let found = at.exec(text); found; found = at.exec(text)) {
-    if (found[0] === "](") {
-      const end = targetEnd(text, found.index + 2);
-      yield text.slice(found.index + 2, end);
-      at.lastIndex = end;
-      continue;
+    // A "](" alone is ["", ""]: one target, after it.
+    const pieces = found[0].split("](");
+    if (pieces[0]) yield { raw: pieces[0], exact: false };
+    let from = found.index + pieces[0]!.length + 2;
+    for (let i = 1; i < pieces.length; i++) {
+      // Each target but the last ends by the next "](" in the URL; the last may run on past where TEXT_URL stopped.
+      const end = targetEnd(text, from, i < pieces.length - 1 ? from + pieces[i]!.length : text.length);
+      yield { raw: text.slice(from, end), exact: text[end] === ")" };
+      at.lastIndex = Math.max(at.lastIndex, end);
+      from += pieces[i]!.length + 2;
     }
-    const [written, ...targets] = found[0].split("](");
-    yield trimmed(written!);
-    for (const target of targets) yield target.slice(0, targetEnd(target));
   }
+}
+
+/** Every link `text` holds, in order (linksWritten): a target its ")" closed as it is, any other less its tail (trimmed). */
+export function* hrefsIn(text: string): Generator<string> {
+  for (const { raw, exact } of linksWritten(text)) yield exact ? raw : trimmed(raw);
 }
 
 /** The entities XML names (`&apos;` HTML's `&#39;` too, a numeric reference), undone once in a text that is not JSON. */
