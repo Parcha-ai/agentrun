@@ -191,7 +191,19 @@ async function gateParkedExec(gate, repair = 'note') {
   }
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
   const recovered = mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since, true);
-  return { ran, asked, recovered, items, state: () => next.state() };
+  /** A second crash, after the recovered output reached the rollout and before the exec's end reached the host's record: the
+   *  next drive restores those lines, and the end it records for the exec. */
+  const restart = async () => {
+    const line = (payload) => JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload });
+    const lines = [line({ type: 'custom_tool_call', name: 'exec', input: 'await tools.mcp_fake__add({a:2,b:3})', call_id: EXEC }), line({ type: 'custom_tool_call_output', call_id: EXEC, output: items[0].output })];
+    const later = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
+    const ends = [];
+    const ownCalls = { opened: async () => {}, nestedIn() {}, ended: async (exec, _output, failed) => void ends.push({ exec, failed }) };
+    codeMode({ ctx: later, machine: {}, ownCalls, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines, rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+    await pause(10);
+    return ends;
+  };
+  return { ran, asked, recovered, items, restart, state: () => next.state() };
 }
 
 test("a nested MCP call the gate parked runs once on the resume after the person's allow, under its own id, and the cut-off exec's output carries its result", async () => {
@@ -225,6 +237,20 @@ test("a nested call the gate parked after its exec yielded and the person denied
   await recovered;
   assert.deepEqual(ran, []);
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
+});
+
+test("a cut-off exec whose recovered output tells a refused call still ends failed when a second crash kept its end off the host's record", async () => {
+  const { recovered, items, restart } = await gateParkedExec(async () => ({ deny: 'Denied: not now.' }));
+  await recovered;
+  assert.match(items[0].output, /It did not run\./);
+  assert.doesNotMatch(items[0].output, /^Script failed/, 'the recovered output carries no failed header to read it by');
+  assert.deepEqual(await restart(), [{ exec: EXEC, failed: true }]);
+});
+
+test("a cut-off exec whose recovered output tells an allowed call that ran still ends ok when a second crash kept its end off the host's record", async () => {
+  const { recovered, restart } = await gateParkedExec(async () => 'allow');
+  await recovered;
+  assert.deepEqual(await restart(), [{ exec: EXEC, failed: false }]);
 });
 
 /** The end the host's record gets for a yielded exec whose pending wait a resume answered: its rollout lines (the exec, its
