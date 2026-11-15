@@ -59,6 +59,8 @@ export const RUN_TIMEOUT_MS = 30 * 60_000;
  *  name, its state when the wait gave up, never by the run's whole timeout. */
 export const QUEUE_TIMEOUT_MS = 2 * 60_000;
 export const GRADER_NAME = "Template eval grader";
+/** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
+export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
@@ -976,9 +978,13 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // directory of its own, gone when the eval is.
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
+    // Claude Code and Codex installed once for every local eval under this TMPDIR, not into each eval's data: the
+    // data's harnesses are links to that one install (harness-install.ts sharedInstaller).
+    const { sharedInstaller } = await import("./harness-install.js");
+    const harnessInstall = sharedInstaller(join(process.env.TMPDIR ?? tmpdir(), EVAL_HARNESSES));
     // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
     // Its fakes stand in for the package's MCP needs (mcpStandIns): each is saved as the source and toolkit it fakes.
-    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -990,7 +996,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, evalFakes: (agentId) => fakes.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
