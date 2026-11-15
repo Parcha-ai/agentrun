@@ -55,6 +55,15 @@ const WRITE_CHUNK = 256 * 1024;
 /** How long stdout-live watches, after "early", that stdout stays open and wait() has no answer. */
 const LIVE_GRACE_MS = 1_000;
 
+/**
+ * kill's probe, `sh -c PID_STATE_SCRIPT sh <pid>`: "running" or "gone". A killed process its parent has not reaped yet
+ * is a zombie, which kill -0 still finds; it has ended, so its /proc state (Z, or X) reads gone, and any other state
+ * running. Its state is read first, in one read, so a reap during the probe never reads as running; where there is no
+ * state to read (no /proc, a status hidden, or the process already gone), kill -0 answers.
+ */
+export const PID_STATE_SCRIPT =
+	'st=$(sed -n "s/^State:[[:space:]]*\\([A-Z]\\).*/\\1/p" "/proc/$1/status" 2>/dev/null); case "$st" in Z|X) echo gone ;; ?) echo running ;; *) if kill -0 "$1" 2>/dev/null; then echo running; else echo gone; fi ;; esac';
+
 /** A failed check: its words are the report's. */
 class Problem extends Error {}
 
@@ -460,7 +469,7 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 			() => undefined,
 			(error: unknown) => error,
 		);
-		const probe = await s.start(["sh", "-c", 'if kill -0 "$1" 2>/dev/null; then echo running; else echo gone; fi', "sh", pid], false);
+		const probe = await s.start(["sh", "-c", PID_STATE_SCRIPT, "sh", pid], false);
 		await probe.out.end(s.stepMs, s.signal);
 		await s.exit(probe, s.stepMs, "kill -0");
 		const state = probe.out.bytes().toString("latin1").trim();
