@@ -77,6 +77,15 @@ test("a link a fetched JSON page holds (a Statuspage incident's shortlink) match
   assert.deepEqual(checked(graderInput(grader, "task", run("GitHub Actions is degraded: https://stspg.io/abc.", fetched))), ["https://stspg.io/abc — matches call 1"]);
 });
 
+test("a link a fetched Atom feed holds (a GitHub release's entry link) matches when the answer cites it, that fetch the only call", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://github.com/vitejs/vite/releases.atom";
+  const atom = `<?xml version="1.0" encoding="UTF-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom">\n  <entry>\n    <link rel="alternate" type="text/html" href="https://github.com/vitejs/vite/releases/tag/v8.2.6"/>\n    <title>v8.2.6</title>\n  </entry>\n</feed>`;
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: atom }], default: { error: "fetch failed" } } };
+  const fetched = { tool: "web_fetch", name: "web_fetch", arguments: { url }, status: "success", result: JSON.stringify(await fakeFetch(fixture, url)) };
+  assert.deepEqual(checked(graderInput(grader, "task", run("Vite shipped https://github.com/vitejs/vite/releases/tag/v8.2.6 this week.", fetched))), ["https://github.com/vitejs/vite/releases/tag/v8.2.6 — matches call 1"]);
+});
+
 test("cited links come from the answer's text and every string of its JSON, each once, shown with no query value, fragment or userinfo", () => {
   const key = ["not-a-secret", "cited", "0123456789"].join("-");
   const json = JSON.stringify({ sources: [{ url: "https://vendor.example/report" }, { url: `https://api.example/data?token=${key}&q=x` }], note: "see https://vendor.example/report#p2" }).replaceAll("/", "\\/");

@@ -107,6 +107,28 @@ test("the URLs a hostile text writes out are read in one pass: runs of schemes, 
   assert.deepEqual(found.slice(1), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
 });
 
+/** A GitHub releases.atom, as github.com serves it: each entry's link in an attribute, its content escaped HTML. */
+const RELEASES_ATOM = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/vitejs/vite/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/vitejs/vite/releases?q=v8&amp;expanded=true"/>
+  <title>Release notes from vite</title>
+  <entry>
+    <id>tag:github.com,2008:Repository/257485422/v8.2.6</id>
+    <link rel="alternate" type="text/html" href="https://github.com/vitejs/vite/releases/tag/v8.2.6"/>
+    <title>v8.2.6</title>
+    <content type="html">&lt;p&gt;See &lt;a href=&quot;https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md&quot;&gt;the changelog&lt;/a&gt;.&lt;/p&gt;</content>
+  </entry>
+</feed>`;
+
+test("an Atom feed lists its entries' links: an attribute's URL, and its escaped content's, with XML's entities undone", async () => {
+  const url = "http://public.example/vitejs/vite/releases.atom";
+  const page = await fetchPage(url, serving(url, "application/atom+xml; charset=utf-8", RELEASES_ATOM));
+  assert.equal(page.ok, true, JSON.stringify(page));
+  // Every URL the body writes out: its namespace's and the one in its tag URI's id too, as the text holds them.
+  assert.deepEqual(page.links, ["http://www.w3.org/2005/Atom", "https://github.com/vitejs/vite/releases", "https://github.com/vitejs/vite/releases?q=v8&expanded=true", "https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md"]);
+});
+
 test("an HTML page's links stay its link targets alone, as before: a URL written in its text is not one", async () => {
   const html = `<html><head><title>Public page</title></head><body><p>Mirror: https://bare.example/x</p><a href="/about">About</a> <a href="https://other.example/x#part">Other</a></body></html>`;
   const page = await fetchPage("http://public.example/", serving("http://public.example/", "text/html; charset=utf-8", html));
