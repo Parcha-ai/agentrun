@@ -20,7 +20,7 @@ import type { Command, CommandOutcome } from "./loop-contract.js";
 
 /** Whether the run's journal says a desktop or a phone of the run came up (a hold's up entry, which only a claim's pass
  *  writes): what a later claim asks (computerForClaim's earlierUp) when it makes a fresh one and found no older
- *  computer of the run to let go, its claim having let it go at its end (a server's stop, a park). */
+ *  computer of the run to let go, its claim having let it go at its end (a server's stop). */
 export async function earlierUp(journal: JournalReads, context: Context): Promise<boolean> {
   return holdIn((await journalEntries(journal, context)).map((entry) => ({ kind: entry.kind, data: entry.data }))).up;
 }

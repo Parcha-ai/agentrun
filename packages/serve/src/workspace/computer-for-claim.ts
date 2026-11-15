@@ -7,10 +7,10 @@
 // be had is refused in words with code computer_unavailable; kind none, or no setting where the server's default is none,
 // is no computer.
 //
-// A run's own computer does not outlive its claim: a later claim (a runner lost, a crash, a server's stop, a park) makes
-// a new one. When it replaces an earlier claim's (`replaced`: one this claim let go of, or a desktop or a phone the
-// run's journal says came up), the ready line says so, and the run's tools and model are told (run-tools.ts, the adapter
-// loop's computer note).
+// A run's own computer does not outlive its claim: a later claim (a runner lost, a crash, a server's stop) makes a new
+// one. When it replaces an earlier claim's (`replaced`: one this claim let go of, or a desktop or a phone the run's
+// journal says came up, earlierUp), the ready line says so, and the run's tools and model are told (run-tools.ts, the
+// adapter loop's computer note).
 //
 // A provider is made with its keys (the server's environment's, else the store's sealed keys, through the composer's
 // keyOf: computer-deps.ts), by the names the registry declares, through serve's own
@@ -163,7 +163,8 @@ export interface ComputerForClaimDeps {
   readonly onComputerNote?: (words: string) => void;
   /** Whether the run's journal says an earlier claim's desktop or phone came up (its hold's up entry, computer-journal.ts):
    *  asked only at a later claim that makes a fresh desktop or phone and found no older computer of the run to let go,
-   *  as after a server's stop or a park, where the earlier claim let its own go at its end. Absent: not asked. */
+   *  as after a server's stop, where the earlier claim let its own go at its end. The caller gives it only to a claim
+   *  that took over a running run (never a parked run's resume). Absent: not asked. */
   readonly earlierUp?: () => Promise<boolean>;
   readonly signal?: AbortSignal;
 }
@@ -643,7 +644,7 @@ export async function computerForClaim(
         const fresh = await providerLaunch(provider, launch, spec, signal);
         launched = fresh;
         // A fresh computer in place of an earlier claim's: one this claim let go of (its runner lost, a crash), or a
-        // desktop's or a phone's the run's journal says came up (its claim let it go at its end: a server's stop, a park).
+        // desktop's or a phone's the run's journal says came up (its claim let it go at its end: a server's stop).
         // A paired computer is the same one at every claim.
         const earlier = fresh.releasedOlder || ((kind === "desktop" || kind === "phone") && launch.epoch > 1 && (await deps.earlierUp?.()) === true);
         if (earlier && !pairedRow) replaced = { folderKept: deps.mode === 2 && mount !== undefined };

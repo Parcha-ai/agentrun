@@ -358,8 +358,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
     // whose computer is a browser is refused in words at its claim, before anything is made.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
-    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp).
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, earlierUp: () => earlierUp(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp), asked only of a claim
+    // that took the run over while it was running (a server's stop): a parked run's resume is no lost runner.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(claim.from === "running" ? { earlierUp: () => earlierUp(deps.journal(claim), context) } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held);

@@ -451,8 +451,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
     // became of the agent's own computer (a persistent setting) is said on the run's timeline.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
-    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp).
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, earlierUp: () => earlierUp(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp), asked only of a claim
+    // that took the run over while it was running (a server's stop): a parked run's resume is no lost runner.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(claim.from === "running" ? { earlierUp: () => earlierUp(deps.journal(claim), context) } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
