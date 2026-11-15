@@ -196,15 +196,20 @@ export interface ModelRequest {
    *  release, the time a person used): held at `feeUsd` and booked, never asked of the cap's rule, so a run past its cap
    *  or of unknown spend still counts it (main keeps it so: keepHold). `hold`: a hold-only step: money reserved, not
    *  spent; given back on a lost claim, never booked as cut (its holder's charges book the money, each its own step).
-   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string };
+   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked.
+   *  `under`: the key of the model session whose tool call it runs in (the CLI's session): a request of that session
+   *  still in flight may be the one that asked for the call, unbooked until the call returns (Claude Code books its
+   *  cost after its calls, Codex starts a call with its response open), so the call never waits on it (runBooking).
+   *  Not written on its record. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
    *  no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
-  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+  /** It carries the host's note (ModelPort.note) in its body: admitted, it holds the note until it ends, and the note is
+   *  told once it is answered (its afterRequest's `ended`), else the host gives it to a later request.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
   inputTokensMaxWithoutNote?: number;
@@ -216,6 +221,9 @@ export interface ModelRequest {
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
   route?: string;
+  /** Aborted when the request's client goes (a stop, a cancel, a lost claim): a request still waiting for room under the
+   *  run's cap (runBooking) leaves its line then, admitted for nothing and holding nothing. */
+  signal?: AbortSignal;
 }
 
 /** What a paid request cost, once it completed. */

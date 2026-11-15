@@ -10,7 +10,9 @@
 // - never one a claim holds, at the computer's own epoch: whether a claim holds the run now is the store's to say
 //   (runs.heldAt), by its own clock, never this process's. A claim that ran out holds nothing, so a run a crashed runner
 //   left parked under its name still has its computer swept at the deadline;
-// - past its deadline, by the computer package's sweep (janitor.ts): the deadline label, or over the provider's cap.
+// - past its deadline, by the computer package's sweep (janitor.ts): the deadline label, or over the provider's cap; or
+//   its run is over (final in the store), whatever its deadline: the run's end lets go of every claim's computer
+//   (run-end-computers.ts), and this is for one a server that stopped before then left.
 // What a computer leaves outside itself (Docker's egress parts) goes with its release; the provider's sweepLeftovers is
 // not asked, since it reads labels alone and can't tell this server's parts from another's.
 //
@@ -25,7 +27,7 @@
 import { type ComputerInfo, type ComputerProvider, epochOf, ok, ownerOf, RUN_HASH_LABEL, RUN_LABEL, type Result, runHash, sweep, type Swept } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { FAUX_ENV } from "../model.js";
-import type { Store } from "../store/index.js";
+import { FINAL_STATES, type Store } from "../store/index.js";
 import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-computer.js";
 import type { ComputerDeps } from "./computer-deps.js";
 import { storeLedger } from "./computer-ledger.js";
@@ -71,9 +73,10 @@ const runsByHash = (store: JanitorDeps["store"]): RunsByHash => {
 
 /** Whether a listed computer is this server's and no claim holds it: its run (by its label, or its hash's) is in this
  *  store, and no claim holds the run now (by the store's clock), or one holds it at a later epoch than the computer's.
- *  An agent's own computer (owned, or an owner label, readable or not) is this server's when its owner names
- *  `serverId`, whatever its run: the sweep's ownerGone then decides. */
-async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash: RunsByHash, serverId: string | undefined): Promise<boolean> {
+ *  "over" for one of these whose run is over (final in the store): no claim of the run will use it again. An agent's own
+ *  computer (owned, or an owner label, readable or not) is this server's when its owner names `serverId`, whatever its
+ *  run: the sweep's ownerGone then decides. */
+async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash: RunsByHash, serverId: string | undefined): Promise<boolean | "over"> {
   const { labels } = info;
   const label = ownerOf(labels);
   const owner = info.owner ?? (label.ok ? label.value : undefined);
@@ -86,15 +89,18 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
   // No such run here: another server's computer.
   if (!run) return false;
   const held = await store.runs.heldAt(run.id);
-  if (held === undefined) return true;
   // A claim holds its own epoch's computer; one of an older epoch is a lost claim's (releaseOlder's too).
   const epoch = epochOf(labels);
-  return epoch.ok && epoch.value < held;
+  if (held !== undefined && !(epoch.ok && epoch.value < held)) return false;
+  return FINAL_STATES.includes(run.state) ? "over" : true;
 }
 
 /** `provider` as the sweep sees it: its list cut to this server's computers that no claim holds, and no leftovers pass.
- *  Each call goes to the provider itself, so its own state is used as it is. */
-function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined): ComputerProvider {
+ *  A computer of a run that is over is listed past its deadline (the run's end is its deadline), so the sweep ends it
+ *  now: a server that stopped before its run's end let go of an earlier claim's computer (run-end-computers.ts) leaves
+ *  it for this sweep, never for its day-long deadline. Each call goes to the provider itself, so its own state is used
+ *  as it is. */
+function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined, at: number): ComputerProvider {
   // The agents' own computers the list kept, by id: their delete goes under the agent's hold (deleteUnderHold), which
   // also clears the agent's record of it, so its view no longer shows it deleting.
   const ownedBy = new Map<string, string>();
@@ -121,11 +127,12 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
       if (!listed.ok) return listed;
       const kept: ComputerInfo[] = [];
       for (const info of listed.value) {
-        if (!(await sweepable(store, info, byHash, serverId))) continue;
+        const mine = await sweepable(store, info, byHash, serverId);
+        if (!mine) continue;
         const label = ownerOf(info.labels);
         const owner = info.owner ?? (label.ok ? label.value : undefined);
         if (owner !== undefined) ownedBy.set(info.ref.id, owner.agent);
-        kept.push(info);
+        kept.push(mine === "over" ? { ...info, deadline: new Date(at - 1) } : info);
       }
       return ok(kept);
     },
@@ -174,7 +181,7 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
       // A vendor that ends its own computers needs no janitor.
       if (provider.capabilities().lifetime !== "janitor") continue;
       const ownerGone = serverId !== undefined && settings && agents ? ownerGoneOf({ agents, settings, runs: store.runs }, serverId, entry.id) : undefined;
-      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
+      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId, at), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
     } catch (error) {
       out.push({ provider: entry.id, swept: { ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } } });
     }

@@ -67,7 +67,9 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   // web search, the CLI's built-ins and its multi-agent namespace are not the session's: only `lookup` is offered.
   assert.deepEqual(f.body.tools.map((t) => `${t.type}:${t.name}`), ['function:lookup']);
   // With the output the body asks for (the policy's clamp, 32,000) and the least it may be limited to and still answer.
-  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8'), outputTokensAsked: 32_000, outputTokensLeast: 1_024 }], "the runner is asked about the applied body's model, with its input bound (the sent body's bytes), its output and its least");
+  // Beside the client's signal (a client that goes leaves the cap's line).
+  assert.ok(asked.every((one) => one.signal instanceof AbortSignal), 'each ask carries its client signal');
+  assert.deepEqual(asked.map(({ signal: _signal, ...one }) => one), [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8'), outputTokensAsked: 32_000, outputTokensLeast: 1_024 }], "the runner is asked about the applied body's model, with its input bound (the sent body's bytes), its output and its least");
   const sent = JSON.stringify(f);
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
 });

@@ -26,8 +26,8 @@ const runNode = createHarnessRunner(
   answers the tool's value as JSON text, its images' data in it, for the script to `JSON.parse`; any other tool answers
   its words and a line saying how many images it returned were not sent, since in code mode an image reaches a script only
   as text (`test/code-mode-images-taken.test.mjs`). Codex's runtime takes no
-  binding of ours, so a script that wants the `computer` object itself calls `computer_script`, which runs in the host's
-  isolate with `computer` bound. The proxy passes `exec` and
+  binding of ours, so a computer run offers `computer_op` (`{op, args}`: apps, shell, files, processes, raw input)
+  beside the computer's tools, and a script calls it as a nested call like any other, held to the run's gate. The proxy passes `exec` and
   `wait` and drops the sub-agent and user-input tools Codex lists beside them; it keeps parallel tool calls off for a
   code-mode request, and offers no `exec` while a script that yielded still runs, so one script is live at a time. A
   nested call has an id of Codex's own (`exec-<uuid>`) that no line of the rollout carries and that names no `exec`, so

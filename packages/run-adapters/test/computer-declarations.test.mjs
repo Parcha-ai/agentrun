@@ -1,4 +1,4 @@
-// The `computer` object's declarations a run's computer_script reads (computer-surface.generated.ts): a script typed
+// The `computer` object's declarations a codemode script reads (computer-surface.generated.ts): a script typed
 // against them compiles, and a computer's declarations hold only the members its groups offer.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -36,12 +36,17 @@ test("a computer's declarations hold only the types its members reach: no elemen
   assert.match(mac, /type UiStep/);
 });
 
-test("a ui computer's declarations keep raw input, and read compactly: no comments, one line each, steps named by computer_act", () => {
+test("a ui computer's declarations keep raw input, and read compactly: no comments, one line each, its steps typed in full", () => {
   const mac = computerDeclarations(["ui", "screen", "apps", "input.pointer", "input.keys"]);
   assert.match(mac, /readonly input: \{ act\(actions: InputAction\[\]\): Promise<InputResult>; \};/, "the screen-level way out stays");
   assert.deepEqual(errorsOf(mac, `return computer.input.act([{ type: "drag", path: [[10, 10], [900, 400]] }]);`), []);
   assert.doesNotMatch(mac, /\/\*\*/, "no doc comments: the kind skill and the tools' words say them");
-  assert.match(mac, /^type UiStep = object; \/\/ computer_act's steps$/m);
+  // A codemode script under surface code reads no computer_act schema (the step tools are not listed), so its steps
+  // and its expect are typed here, never left to another tool's words.
+  assert.match(mac, /^type UiStep = \{ press: UiRef; \} \| /m);
+  assert.match(mac, /^interface UiExpect \{ /m);
+  assert.deepEqual(errorsOf(mac, `const app = computer.app("x"); await app.observe(); return app.act([{ press: "@e1" }, { type: "hi", into: "@e2" }], { expect: { text: "Saved" } });`), []);
+  assert.match(errorsOf(mac, `return computer.app("x").act([{ tap: "@e1" }]);`).join("\n"), /tap/, "a step no computer takes does not compile");
   assert.match(mac, /^interface App \{ [^\n]* \}$/m, "one line a declaration");
-  assert.ok(mac.length < 4_000, `a Mac's declarations stay short: ${mac.length} characters`);
+  assert.ok(mac.length < 4_500, `a Mac's declarations stay short: ${mac.length} characters`);
 });

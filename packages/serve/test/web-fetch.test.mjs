@@ -584,7 +584,7 @@ test("only reads that have ended count toward the run's pages: one page done whi
 
 // Moved from cap-models.test.mjs, onto the run's one ledger: the extract's hold is the run's RunTools step, and the model
 // request beside it is judged by the same run's rule (kernel runCap.before).
-test("under a cap, a page's one Parallel extract is held on the run's ledger as any Parallel request: a model request that fits only without its $0.001 is refused while the read is under way, and the page's later parts hold and ask nothing", async (t) => {
+test("under a cap, a page's one Parallel extract is held on the run's ledger as any Parallel request: a model request that fits only without its $0.001 waits while the read is under way, is refused once the read is charged its $0.001, and the page's later parts hold and ask nothing", async (t) => {
   // A model at $1 a million input tokens: 1,000 tokens in is $0.001, which a $0.0015 cap holds beside nothing else.
   const paid = await toolLedger(0.0015, { model: { id: "m", api: "anthropic", price: { input: 1, output: 0 }, outputCeiling: 100 } });
   let arrived, release;
@@ -605,11 +605,17 @@ test("under a cap, a page's one Parallel extract is held on the run's ledger as 
   const net = network();
   const first = bookedIn(ledger, () => webFetch(PUBLIC, { ...net, parallel: extract, pages: pages }));
   await reached;
-  const beside = await paid.modelRequest(1_000);
-  assert.ok(beside && "refuse" in beside, `refused while the extract is under way: ${JSON.stringify(beside)}`);
+  // It would fit once the extract's hold settles (the cap's wait for room): it waits for it, neither sent nor refused.
+  let answered = false;
+  const beside = paid.modelRequest(1_000).then((verdict) => ((answered = true), verdict));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(answered, false, "the model request waits while the extract is under way");
   assert.ok(Math.abs(paid.heldUsd() - PARALLEL_EXTRACT_USD) < 1e-12, `the extract held at its fee: ${paid.heldUsd()}`);
   release();
   assert.equal((await first).via, "parallel");
+  // The extract is charged its whole $0.001: spent, it leaves no room, so the request that waited is refused then.
+  const refused = await beside;
+  assert.ok(refused && "refuse" in refused && !refused.waits, `refused once the extract was charged: ${JSON.stringify(refused)}`);
   const later = await bookedIn(ledger, () => webFetch(PUBLIC, { ...net, parallel: extract, pages: pages, offset: 20_000 }));
   assert.deepEqual([later.via, later.offset, asked], ["parallel", 20_000, [1_000_001]], "a later part from what the run read: no request");
   assert.deepEqual(paidBookings(await paid.records()).map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", PARALLEL_EXTRACT_USD]], "held and charged once");

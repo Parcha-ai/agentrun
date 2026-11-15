@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-computer
+kind: breaking
+---
+`computer_script` is gone: a desktop or phone run scripts its computer through the host's `codemode`, whose script has the computer as `computer` (its types in codemode's description), and each of its calls is a nested call, held to the run's gate and recorded on the timeline. A shell command is held to the agent's `bash` setting, a started process to `bash_background`, a file written to `write`, and a file read to `read`. An agent definition that named `computer_script` uses `codemode` instead. Codex, whose code mode takes no binding, and an MCP client of the claim's computer server (which serves the step tools and `computer_op`, never `codemode`) call the step tools and `computer_op` (`{op, args}`, an op named as `computer`'s method is, `shell.run` or `apps.open`) for what a `computer_script` script's `computer` ran. An earlier run's `computer_script` rows still read as they did.

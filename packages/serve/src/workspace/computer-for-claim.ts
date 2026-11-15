@@ -217,8 +217,9 @@ async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly 
   return older.value.released.length > 0;
 }
 
-/** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. */
-async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents">): Promise<ComputerSetting | undefined> {
+/** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. The
+ *  run's end reads it the same way (run-end-computers.ts). */
+export async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents">): Promise<ComputerSetting | undefined> {
   if (launch.computer) return launch.computer;
   const body = launch.revisionId ? ((await store.agents.revision(launch.revisionId))?.body as { computer?: RevisionComputer; place?: PlaceView } | undefined) : undefined;
   if (body?.computer) return body.computer;

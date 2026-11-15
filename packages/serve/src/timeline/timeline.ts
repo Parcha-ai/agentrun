@@ -911,8 +911,8 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          // A call the loop's record kept for a tool that nests (a script's, tools_call's) sits under that tool's call.
-          const nesting = entry.recordedCall ? nestingCallOf(id) : undefined;
+          // Recorded managed calls derive their nesting from the id; SDK calls keep their validated explicit parent.
+          const nesting = (entry.recordedCall ? nestingCallOf(id) : undefined) ?? str(obj(entry.data)?.parentCallId);
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
