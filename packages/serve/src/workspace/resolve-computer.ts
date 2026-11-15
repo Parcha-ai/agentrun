@@ -110,6 +110,10 @@ export type ClaimSide = {
    *  and its image, when it names one, is the computer's. `gpu`: a sandbox's GPUs, held to that configuration.
    *  `persistent`: the agent's own computer, which that configuration keeps (and which mounts no run's folder). */
   launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly mount?: MountSpec; readonly gpu?: GpuSpec; readonly persistent?: true; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+  /** The computer an earlier claim of the run kept at its park (computer-kept.ts), attached again in place of a launch,
+   *  or undefined to launch one. Asked first: a computer attached again mounts what it mounted, so no mount is made for
+   *  it, and its mount reads back under `epoch`, the claim epoch its labels carry. Never throws. Absent: always a launch. */
+  reattach?(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly persistent?: true; readonly signal?: AbortSignal }): Promise<(LaunchedComputer & { readonly epoch: number }) | undefined>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -376,17 +380,20 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     mounts,
     ports,
     async start({ workspace, check, signal }) {
-      const mount = mounts ? await workspace.mountSpec() : undefined;
+      // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
+      const again = await side.reattach?.(entry, { kind, keys, configuration, ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
+      const mount = mounts && !again ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {
-        launched = await side.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
+        launched = again ?? await side.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         // A provider that binds a folder of this machine (Docker) whose daemon does not answer: the one wording.
         const said = entry.mounts.includes("bind") && side.daemon ? await side.daemon(entry.id).catch(() => undefined) : undefined;
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const computer = runComputerOf(kind, launched, mounts ? check : undefined, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noPrograms(setting) ? { exec: false as const } : {}) });
+      const checked = mounts ? (again ? { ...check, epoch: again.epoch } : check) : undefined;
+      const computer = runComputerOf(kind, launched, checked, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noPrograms(setting) ? { exec: false as const } : {}) });
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
