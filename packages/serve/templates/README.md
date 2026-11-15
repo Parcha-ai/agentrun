@@ -101,7 +101,23 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   server writes them, under `Input:`; a body that holds its own `Input:` block is refused.
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply grants, always a
   list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
-  the agent starts with: `MEMORY.md` and its notes).
+  the agent starts with: `MEMORY.md` and its notes), `web` (fakes `web_search` and `web_fetch` for the case's runs).
+- `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
+  `web_fetch` fails as a page that never answers does; no call reaches the network. `web:` a fixture file in the case
+  answers from that file instead:
+  ```json
+  { "search": { "answers": [ { "query": "robot", "results": [ { "url": "https://...", "title": "...", "snippet": "...", "published": "2026-11-10" } ] },
+                            { "query": "^outage", "error": "Parallel's search answered 503" } ],
+                "default": { "results": [] } },
+    "fetch": { "answers": [ { "url": "https://.../post", "title": "...", "text": "the page's text" },
+                            { "url": "https://.../gone", "status": 404, "text": "" } ],
+               "default": { "error": "fetch failed" } } }
+  ```
+  A search answer's `query` is a regular expression over the call's query (case-insensitive), a fetch answer's `url`
+  the exact URL; the first answer that matches is taken, else `default`. A `status` of 400 or more fails the fetch as
+  that answer would. The calls show in the run's timeline as any other, so a `tool_used` grader counts them. Each
+  harness gets the same fake: on claude-agent and codex their own web search is never offered to a `web:` case's runs.
+  Only the eval's own server honours `web`, so a case with it refuses to run with `--server`.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",

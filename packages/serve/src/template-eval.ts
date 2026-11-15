@@ -23,6 +23,9 @@ import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
+import { type WebFake, webFixtureOf } from "./web-fake.js";
+import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
@@ -52,7 +55,7 @@ export const GRADER_NAME = "Template eval grader";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "learning"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "learning"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -98,6 +101,9 @@ export type EvalCase = {
   grants: string[];
   /** Each fake MCP server, by the name it is saved under. */
   mcp: Record<string, McpFixture>;
+  /** What the case's runs' web_search and web_fetch answer from in place of the web (web-fake.ts): the eval's own server's
+   *  runner alone binds it. Absent: the web. */
+  web?: WebFake;
   /** The notes a run's agent starts with (not MEMORY.md, which the server builds from them). */
   learning: { file: string; text: string }[];
   graders: Grader[];
@@ -291,6 +297,24 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       const { server, tool } = mcpNameOf(grant) ?? {};
       if (server !== undefined && mcp[server] && !Object.hasOwn(mcp[server].tools, tool!)) bad(`${at}/case.yaml: grants ${grant}, a tool the fake ${server} does not serve`);
     }
+    // The case's web fake: every web call failing (`unavailable`), or a fixture file of the case (web-fake.ts).
+    let web: WebFake | undefined;
+    if (c.web !== undefined) {
+      const path = c.web === "unavailable" ? undefined : inside(root, c.web, "file");
+      // A package that names no tools gets the server's defaults, the web tools among them.
+      if (pkg.tools && !pkg.tools.includes(WEB_SEARCH_TOOL) && !pkg.tools.includes(WEB_FETCH_TOOL)) bad(`${at}/case.yaml: web fakes web_search and web_fetch, and the package grants neither`);
+      else if (c.web === "unavailable") web = "unavailable";
+      else if (!path) bad(`${at}/case.yaml: web is unavailable, or a fixture file in the case (not ${JSON.stringify(c.web)})`);
+      else {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(readFileSync(join(root, path), "utf8"));
+        } catch (error) {
+          bad(`${at}/${path}: is not JSON (${(error as Error).message})`);
+        }
+        if (parsed !== undefined) web = webFixtureOf(parsed, `${at}/${path}`, bad);
+      }
+    }
     const learning: EvalCase["learning"] = [];
     if (c.learning !== undefined) {
       const folder = inside(root, c.learning, "dir");
@@ -321,7 +345,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, learning, graders,
+      parameters, grants, mcp, ...(web ? { web } : {}), learning, graders,
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -786,7 +810,8 @@ export type EvalOptions = {
 /** What the eval made on the server: its agents (archived at the end on an owner's server), its runs not known to have
  *  ended (cancelled at each case's end), and the package's triggers its applies made (deleted). */
 type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json };
+/** `webs`: each run's web fake by its agent's id, read by the eval's own runner (runner/beside.ts webFakes). */
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; webs: Map<string, WebFake> };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 /** A run's tokens, model requests and tool calls as its end wrote them (GET /stats over the run's agent: an eval makes a
  *  fresh agent for each run). `input` excludes cached input: the whole prompt is `input + cache_read + cache_write`.
@@ -822,6 +847,11 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const log = options.log ?? (() => undefined);
   const { pkg, cases } = readCases(options.dir, options.cases);
   if (options.graderModel !== undefined && !MODEL_REF.test(options.graderModel)) throw new CaseError(options.dir, [`--grader-model is "provider/model-id", not ${options.graderModel}`]);
+  // A web fake is bound by the eval's own runner, in this process: a named server's runs would search the real web.
+  const faked = cases.filter((one) => one.web !== undefined);
+  if (options.server && faked.length) throw new CaseError(options.dir, faked.map((one) => `evals/${one.name}: web fakes the web tools on the eval's own server alone: run it without --server`));
+  // Each run's web fake, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
+  const webs = new Map<string, WebFake>();
   const started = new Date().toISOString();
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
   let close = async () => undefined as unknown;
@@ -846,7 +876,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, webFakes: (agentId) => webs.get(agentId), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -861,7 +891,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
   const ctx: Ctx = {
-    api, pkg, options, made, log,
+    api, pkg, options, made, log, webs,
     graderAgent: async () => {
       if (grader) return grader;
       const agent = expectOk("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: GRADER_NAME, description: "Grades a template eval's runs against a rubric: answers {pass, reason}.", instructions: GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, max_cost_usd: GRADER_CAP_USD, ...(options.graderModel ? { model: options.graderModel } : {}) } }));
@@ -978,6 +1008,8 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
   }
   stopped();
+  // The case's web fake, for this run's agent alone, before its run can be claimed.
+  if (one.web !== undefined) ctx.webs.set(agentId, one.web);
   const runId = await startRun(ctx, agentId, { input: runInput(one.input, one.fields), ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.

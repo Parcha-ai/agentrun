@@ -547,3 +547,29 @@ test("a Parallel search under way holds its fee on the run's ledger: a model req
   const admitted = await paid.modelRequest(1_000);
   assert.ok(admitted && !("refuse" in admitted), `with the search's hold settled at $0, the request fits: ${JSON.stringify(admitted)}`);
 });
+
+test("a template eval's web fake: a native plane turns to the run's own web_search, a search takes the first matching answer at the call's n, and a page fails in the guarded fetch's own words", async () => {
+  const { fakedPlane, fakeFetch, fakeSearch } = await import("../dist/web-fake.js");
+  // Claude's and Codex's own search answer in place of the run's web_search where the plane says native (adapters.ts
+  // nativeOptions): a faked run's plane never does, and leaves every other tool's pick as it was.
+  assert.deepEqual(fakedPlane({ web_search: "native", web_fetch: "parallel" }), { web_search: "exa-keyless", web_fetch: "parallel" });
+  assert.deepEqual(fakedPlane({ web_search: "parallel" }), { web_search: "parallel" });
+  assert.equal(fakedPlane(undefined), undefined);
+  assert.deepEqual(fakeSearch("unavailable", { query: "anything" }, "exa-keyless"), { error: keyless.RATE_LIMITED });
+  assert.deepEqual(fakeSearch("unavailable", {}, "exa-keyless"), { error: "web_search needs a query" });
+  const hit = (i) => ({ url: `https://example.com/${i}`, title: `Hit ${i}`, snippet: `snippet ${i}` });
+  const fixture = {
+    search: { answers: [{ query: "^robots? funding", results: [hit(1), hit(2), hit(3)] }, { query: "funding", error: "Parallel's search answered 503" }], default: { results: [] } },
+    fetch: { answers: [{ url: "https://example.com/empty", status: 204, text: "" }], default: { error: "fetch failed" } },
+  };
+  assert.deepEqual(fakeSearch(fixture, { query: "Robot funding this week", n: 2 }, "parallel"), { provider: "parallel", query: "Robot funding this week", results: [hit(1), hit(2)] }, "the first answer whose query matches, case-insensitive, cut at n");
+  assert.deepEqual(fakeSearch(fixture, { query: "seed funding" }, "native"), { error: "Parallel's search answered 503" }, "the next answer when the first does not match");
+  assert.deepEqual(fakeSearch(fixture, { query: "weather" }, "native"), { provider: "native", query: "weather", results: [] }, "else the default");
+  const refused = await fakeFetch("unavailable", "https://example.com/post");
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, "fetch failed", "as a fetch whose connection is refused fails");
+  const empty = await fakeFetch(fixture, "https://example.com/empty");
+  assert.equal(empty.ok, true, `a status with no body is still a page: ${JSON.stringify(empty)}`);
+  const local = await fakeFetch(fixture, "http://127.0.0.1/admin");
+  assert.equal(local.ok, false, "the guard's own checks run on a faked fetch too");
+});
