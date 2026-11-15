@@ -11,7 +11,7 @@ import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
-import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
+import { LEARNED_NODES_MAX, learnedCallEntries } from "../learned-nodes.js";
 import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
 import { labelled, type Reflect, reflects } from "../reflect-range.js";
 import { reflectRanges } from "../runner/end-of-run.js";
@@ -296,16 +296,16 @@ function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[],
 }
 
 /** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
- *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label through
- *  `redact` when given (the run's cut), as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
+ *  LEARNED_NODES entry that counts for the call (learned-nodes.ts learnedCallEntries: a rerun refused before any node ran
+ *  leaves the attempt before it showing), joined by the call's id: each label through `redact` when given (the run's cut),
+ *  as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
 function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
   const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
   const said = (text: string) => (redact ? redact(text) : text);
-  for (const entry of entries) {
-    if (entry.kind !== LEARNED_NODES) continue;
-    const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
-    if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
-    traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
+  for (const [call, index] of learnedCallEntries(entries)) {
+    const data = (entries[index]!.data ?? {}) as { nodes?: unknown };
+    if (!Array.isArray(data.nodes)) continue;
+    traces.set(call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
       const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown; model?: unknown; tier?: unknown };
       if (typeof one.label !== "string" || typeof one.status !== "string") return [];
       // A model node's model and tier, each through the run's cut as the label is.
