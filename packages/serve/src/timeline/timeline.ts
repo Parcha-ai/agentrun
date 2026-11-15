@@ -2,6 +2,7 @@ import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, input
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 import type { ComputerCallRow } from "./computer.js";
+import { webShownOf, webWithin } from "./web-calls.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -79,7 +80,8 @@ export type TimelineEvent = {
    *  makes it where the call is first seen, cut at CAPS.text. */
   tool_input?: Obj;
   /** On a `tool_result` row of a timeline read with `calls`: the head of the call's output, to `calls.result` characters,
-   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are. */
+   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every url, its long
+   *  texts cut to fit (CALL_RESULT_CHARS). */
   tool_result_text?: string | null;
 };
 
@@ -90,9 +92,10 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 
 /** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
-/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a search's first rows (web_search
- *  answers up to 10 results, each snippet at most 3,000 characters, most far shorter) or a fetched page's first screens,
- *  and still one redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). */
+/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a tool's output's head, still one
+ *  redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). A web call's is not its head: a
+ *  web_search's every result keeps its url, title and published date, and a web_fetch its url and title, their snippets
+ *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it (25 results, long titles). */
 export const CALL_RESULT_CHARS = 8000;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
@@ -253,8 +256,9 @@ export type TimelineOptions = {
    *  tail as long as a key, not by the word holdback. */
   redactLive?: (text: string) => string;
   /** For a reader that grades the run (a template eval): each `tool_use` row carries its call's arguments whole
-   *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`),
-   *  made safe by `redact`, a redactor that reads that far (the rows' own `redact` stops at the head a row shows).
+   *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`; a
+   *  web call's every url, each of its strings redacted on its own), made safe by `redact`, a redactor that reads that
+   *  far (the rows' own `redact` stops at the head a row shows).
    *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
    *  digits); such a number is shown as "[redacted]". */
   calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
@@ -737,9 +741,15 @@ function createProjector(options: TimelineOptions) {
     const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
-  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own. */
+  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, its
+   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut (web-calls.ts). */
   const wholeRedact = options.calls?.redact ?? options.redact;
-  const resultText = (text: string): string | null => (text ? cut(scrubUrls(wholeRedact ? wholeRedact(text) : text), options.calls!.result) : null);
+  const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
+  const resultText = (tool: string, text: string): string | null => {
+    if (!text) return null;
+    const web = webShownOf(tool, text, callShown);
+    return web ? webWithin(web, options.calls!.result) : cut(callShown(text), options.calls!.result);
+  };
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
   /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
    *  outcome is read once, for the summary and the status both. */
@@ -762,7 +772,7 @@ function createProjector(options: TimelineOptions) {
       summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
-      ...(options.calls ? { tool_result_text: resultText(view.text) } : {}),
+      ...(options.calls ? { tool_result_text: resultText(tool.name, view.text) } : {}),
     });
   };
 

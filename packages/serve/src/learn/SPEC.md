@@ -190,7 +190,7 @@ Over a cap is refused, never cut.
 | `skill_outcome` | a skill from a run whose job did not complete |
 | `too_many_skills` | a skill added or changed past the first |
 | `too_many_workflows` | a workflow draft added or changed past the first |
-| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, a README that does not name its folder or has no description, or one of the two files without the other |
+| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, one whose answering step (the model node writing the key `output.path` reads) names tier `fast`, a README that does not name its folder or has no description, or one of the two files without the other |
 | `no_tool_list` | a draft that names a tool, checked with no tool list |
 | `executable_node` | a draft with a `code` node, or a call via shell or executor |
 

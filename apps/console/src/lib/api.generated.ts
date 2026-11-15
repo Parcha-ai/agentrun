@@ -397,7 +397,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "external_body_conflict" | "learned_not_active" | "replay_conflict";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict";
   ExternalRef: {
     source: string;
     kind: string;
@@ -488,7 +488,7 @@ export interface components {
     };
     triggers?: {
       routes: boolean;
-      sources: ("schedule" | "webhook" | "github")[];
+      sources: ("schedule" | "webhook" | "github" | "composio")[];
       targets: ("start_run" | "message_run")[];
       min_every_s: number;
       history_kept: number;
@@ -1119,7 +1119,7 @@ export interface components {
     origin?: "server" | "trigger";
     trigger?: {
       id: string;
-      source: "schedule" | "webhook" | "slack" | "github";
+      source: "schedule" | "webhook" | "slack" | "github" | "composio";
       owner: boolean;
       name?: string;
     };
@@ -1548,6 +1548,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -1613,6 +1635,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -1652,7 +1696,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -1684,6 +1728,12 @@ export interface operations {
       removed: {
         disk_id: string;
       } | null;
+    };
+  };
+  deleteComposioSubscription: {
+    body: never;
+    answer: {
+      deleted: true;
     };
   };
   deleteComputer: {
@@ -1718,7 +1768,13 @@ export interface operations {
   };
   deleteTrigger: {
     body: never;
-    answer: never;
+    answer: {
+      deleted: true;
+      composio: {
+        done: false;
+        note: string;
+      };
+    };
   };
   deleteWebhook: {
     body: never;
@@ -1837,7 +1893,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -2750,6 +2806,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -2789,7 +2867,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -2995,6 +3073,21 @@ export interface operations {
     body: never;
     answer: components["RunList"];
   };
+  listComposioEvents: {
+    body: never;
+    answer: {
+      server: string;
+      toolkit: string;
+      events: {
+        slug: string;
+        name: string;
+        description: string;
+        config: Record<string, unknown>;
+        polled: boolean;
+        instructions?: string;
+      }[];
+    };
+  };
   listComposioTools: {
     body: {
       api_key: string;
@@ -3008,6 +3101,24 @@ export interface operations {
         name: string;
         description: string;
       }[];
+    };
+  };
+  listComposioTriggers: {
+    body: never;
+    answer: {
+      triggers: {
+        id: string;
+        name: string;
+        enabled: boolean;
+        event: string;
+        instance_id: string;
+        on_composio: "on" | "off" | "missing" | "unknown";
+      }[];
+      subscription: {
+        ours: boolean;
+        webhook_url: string;
+      } | null;
+      composio_error?: string;
     };
   };
   listComputerChoices: {
@@ -3549,7 +3660,7 @@ export interface operations {
     answer: {
       firings: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3617,6 +3728,28 @@ export interface operations {
               prefix: string;
             })[];
           }[];
+        } | {
+          kind: "composio";
+          server: string;
+          event: string;
+          config: Record<string, unknown>;
+          accept?: {
+            event: string;
+            actions?: string[];
+            where?: ({
+              pointer: string;
+              in: unknown[];
+            } | {
+              pointer: string;
+              exists: boolean;
+            } | {
+              pointer: string;
+              prefix: string;
+            })[];
+          }[];
+          instance_id?: string;
+          hook?: string;
+          move_subscription?: true;
         };
         target: {
           kind: "start_run";
@@ -3656,7 +3789,7 @@ export interface operations {
         updated_at: string;
         last_firing: {
           key: string;
-          by: "schedule" | "manual" | "webhook" | "github";
+          by: "schedule" | "manual" | "webhook" | "github" | "composio";
           nominal_at: string;
           status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
           at: string;
@@ -3935,7 +4068,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3955,7 +4088,7 @@ export interface operations {
       ok: "duplicate";
     } | {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3971,12 +4104,58 @@ export interface operations {
       catch_up?: true;
     };
   };
+  receiveHook_composio: {
+    body: never;
+    answer: {
+      firings: ({
+        key: string;
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
+        nominal_at: string;
+        status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+        at: string;
+        run_id: string | null;
+        reason: string | null;
+        error: {
+          code: string;
+          message: string;
+        } | null;
+        count?: number;
+        attempts?: number;
+        retry_at?: string;
+        catch_up?: true;
+      } | {
+        ok: "duplicate";
+      })[];
+    } | {
+      ok: "ignored";
+    } | {
+      firings: ({
+        key: string;
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
+        nominal_at: string;
+        status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+        at: string;
+        run_id: string | null;
+        reason: string | null;
+        error: {
+          code: string;
+          message: string;
+        } | null;
+        count?: number;
+        attempts?: number;
+        retry_at?: string;
+        catch_up?: true;
+      } | {
+        ok: "duplicate";
+      })[];
+    };
+  };
   receiveHook_github: {
     body: never;
     answer: {
       firings: ({
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3998,7 +4177,7 @@ export interface operations {
     } | Record<string, unknown> | {
       firings: ({
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4127,6 +4306,12 @@ export interface operations {
   retireLearningFile: {
     body: never;
     answer: never;
+  };
+  rotateComposioSecret: {
+    body: never;
+    answer: {
+      rotated: true;
+    };
   };
   rotateTriggerSecret: {
     body: {
@@ -4488,6 +4673,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target?: {
         kind: "start_run";
@@ -4553,6 +4760,28 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "composio";
+        server: string;
+        event: string;
+        config: Record<string, unknown>;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
+        instance_id?: string;
+        hook?: string;
+        move_subscription?: true;
       };
       target: {
         kind: "start_run";
@@ -4592,7 +4821,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4610,6 +4839,10 @@ export interface operations {
       hook_url?: string;
       secret?: components["SecretMeta"];
       note?: string;
+      composio?: {
+        done: false;
+        note: string;
+      };
     };
   };
   uploadFile: {
