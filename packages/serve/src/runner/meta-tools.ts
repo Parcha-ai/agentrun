@@ -18,6 +18,7 @@ import { withoutImageData } from "@parcha/agentrun-computer/surface";
 import type { HostTool, JsonValue, NestedCalls, NestedResult, ToolImage } from "@parcha/agentrun-kernel";
 
 import { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "../meta-tool-names.js";
+import { typeofTools } from "./codemode-typeof.js";
 
 export { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH };
 
@@ -224,7 +225,8 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
   let failed: unknown;
   let wake: () => void = () => {};
   try {
-    const run = sandbox.start(script, {
+    // `typeof tools.<name>` answers "undefined" for a name the run has no tool by, never the read's error.
+    const run = sandbox.start(typeofTools(script), {
       startedAt: start.startedAt,
       seed: start.seed,
       // The tools the first run declared, by the names it gave them, that this run still has.
