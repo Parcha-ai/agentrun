@@ -141,3 +141,23 @@ test("finished results past one result's bound (and the words around it) togethe
   }
   assert.match(told(output, 3).line, /^3\. mcp_fake__file waited for a person's approval, then: "Denied: no issue for this check\."\. It did not run\./);
 });
+
+test("a script whose calls' lines alone pass the bound: the note says a result is above only for the calls the cut output still tells, and \"not shown\" for the rest", async () => {
+  // 2,000 short reads beside the parked write: even their outcome lines, results cut to nothing, pass the bound, so the
+  // output itself is cut and the later calls are not in it.
+  const siblings = Array.from({ length: 2_000 }, (_, i) => ({ id: `exec-${i + 1}`, name: 'list', answer: { text: `r${i + 1}` } }));
+  const { output, note } = await cutBesidePark(siblings);
+  assert.ok(output.length <= HOST_RESULT_MAX_CHARS + 2_000, `held to the bound: ${output.length}`);
+  const inOutput = (n) => output.includes(`\n${n}. mcp_fake__list completed: "r${n}". Its effect is done; it was not run again.\n`);
+  assert.ok(inOutput(1), 'the first call is told');
+  assert.ok(!inOutput(2_000), 'the last call is cut from the output');
+  let above = 0;
+  for (let n = 1; n <= 2_000; n++) {
+    const said = note.includes(`- mcp_fake__list, call exec-${n}: completed. Its result is in the output of the script that made the call, above.\n`);
+    assert.equal(said, inOutput(n), `call ${n}: the note says its result is above only when the output holds it (${inOutput(n) ? 'held' : 'cut'})`);
+    if (said) above++;
+  }
+  assert.ok(above > 0 && above < 2_000, `some above, some not: ${above}`);
+  assert.match(note, /- mcp_fake__list, call exec-2000: completed\.\n/, 'a cut call keeps the plain words');
+  assert.match(note, /\n\nThe output of the other calls is not shown here\. Check the actual state before relying on it\./);
+});
