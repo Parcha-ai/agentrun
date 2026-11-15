@@ -21,7 +21,11 @@ test("a compact quoted list's URLs are each scrubbed alone, and a URL run into a
   // Credentials made at runtime: no credential-shaped literal for the source export.
   const signed = (host) => Object.assign(new URL(`https://${host}/`), { username: "user", password: "pw-held" }).href;
   assert.equal(scrubUrls(`['https://a.example/','${signed("b.example")}']`), "['https://a.example/','https://b.example/']");
-  assert.equal(scrubUrls(`['https://a.example/?k=v','${signed("b.example")}x?token=v']`), "['https://a.example/?k=…','https://b.example/x?token=…']");
+  assert.equal(scrubUrls(`['https://a.example/x','${signed("b.example")}y?token=v']`), "['https://a.example/x','https://b.example/y?token=…']");
+  // Past the first entry's "?" or "#" the rest is its query or fragment: dropped with it, never split out.
+  assert.equal(scrubUrls(`['https://a.example/?k=v','${signed("b.example")}x?token=v']`), "['https://a.example/?k=…']");
+  assert.equal(scrubUrls("https://a.example/?next='https://b.example/reset/held-token'"), "https://a.example/?next=…'");
+  assert.equal(scrubUrls("https://a.example/#'https://b.example/reset/held-token'"), "https://a.example/'");
   assert.equal(scrubUrls(`https://a.example/,${signed("b.example")}`), "https://a.example/,https://b.example/");
   assert.equal(scrubUrls(`https://a.example,${signed("b.example")}`), "https://a.example,https://b.example/");
   // A URL in another's query is a value, dropped with it.

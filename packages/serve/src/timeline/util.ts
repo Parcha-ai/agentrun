@@ -67,10 +67,15 @@ const ALNUM = /[A-Za-z0-9]/;
 export function scrubUrls(text: string): string {
   return text.replace(TEXT_URL, (raw) => {
     // A URL that starts after nothing but punctuation holding an apostrophe is the next of a compact quoted list
-    // (`'https://a','https://b'`): each is scrubbed alone. Each look back stops at the last start, so this is linear.
+    // (`'https://a','https://b'`): each is scrubbed alone. Never one past a "?" or "#" of the URL before it: that one is
+    // in its query or fragment (`?next='https://b/...'`), a value dropped with it. Each look back stops at a letter or a
+    // digit, and the scan for "?" and "#" goes once through `raw`, so this is linear.
     const starts = [0];
+    let [scanned, valued] = [0, false];
     for (const found of raw.matchAll(SCHEME)) {
       if (found.index === 0) continue;
+      for (; scanned < found.index; scanned++) valued ||= raw[scanned] === "?" || raw[scanned] === "#";
+      if (valued) continue;
       let quoted = false;
       for (let i = found.index - 1; i > starts.at(-1)! && !ALNUM.test(raw[i]!); i--) quoted ||= raw[i] === "'";
       if (quoted) starts.push(found.index);
