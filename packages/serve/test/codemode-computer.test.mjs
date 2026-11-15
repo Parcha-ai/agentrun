@@ -122,7 +122,7 @@ test("each computer call a script makes carries its own computer_calls on its ow
   const { computer, tools } = await desktop({ ui: true });
   const script = [
     "const page = await tools.computer_observe({ app: 'com.apple.TextEdit' });",
-    "await tools.computer_act({ app: 'com.apple.TextEdit', state: page.state, steps: [{ key: 'super+a' }, { type: 'Pears: 42 typed-words-stay-out', into: '@e1' }, { key: 'x' }] });",
+    "await tools.computer_act({ app: 'com.apple.TextEdit', state: page.id, steps: [{ key: 'super+a' }, { type: 'Pears: 42 typed-words-stay-out', into: '@e1' }, { key: 'x' }] });",
     "await tools.computer_act({ app: 'com.apple.TextEdit', steps: [{ press: '@e2' }] });",
     "return 'saved';",
   ].join("\n");

@@ -61,12 +61,14 @@ const page = await settings.press(about.ref, { expect: { text: "Android version"
 return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /version/i.test(line)) };
 ```
 
-**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
-there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+**In a `codemode` script.** The phone's tools are among its `tools`, each call one of its own: `computer_observe`
+answers the screen as a value, and `computer_act` acts on the state last observed. `tools.computer_script` runs the code
+above. Codex's `exec` answers each as JSON text: parse it there.
 
 ```js
-const page = JSON.parse(await tools.computer_observe({ app: "com.android.settings" }));
+const page = await tools.computer_observe({ app: "com.android.settings" });
 const about = page.elements.find((node) => node.name === "About phone");
+await tools.computer_act({ app: "com.android.settings", steps: [{ press: about.ref }] });
 ```
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at

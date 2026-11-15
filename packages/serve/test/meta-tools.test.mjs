@@ -448,7 +448,7 @@ test("codemode, tools_search and tools_call each have a setting: allow unless an
   assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_CALL))).offered, all);
 });
 
-test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words; pi's computer codemode stays the kind's", async () => {
+test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words", async () => {
   const gate = (settings, where) => runnerGate({ settings, harness: "pi", ...where });
   for (const name of [CODEMODE, TOOLS_SEARCH, TOOLS_CALL]) {
     assert.equal(await verdictOf(gate({}), name), "allow", `${name}: allow by default`);

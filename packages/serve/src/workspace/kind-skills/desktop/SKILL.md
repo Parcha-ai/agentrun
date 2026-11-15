@@ -65,12 +65,14 @@ const saved = await notes.key("super+s", { expect: { text: "Saved" } });
 return { saved: saved.expect, state: saved.state };
 ```
 
-**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
-there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+**In a `codemode` script.** The desktop's tools are among its `tools`, each call one of its own: `computer_observe`
+answers the window as a value, and `computer_act` acts on the state last observed. `tools.computer_script` runs the code
+above. Codex's `exec` answers each as JSON text: parse it there.
 
 ```js
-const notes = JSON.parse(await tools.computer_observe({ app: "com.apple.Notes" }));
+const notes = await tools.computer_observe({ app: "com.apple.Notes" });
 const title = notes.elements.find((node) => node.role === "textbox" && node.name === "Title");
+await tools.computer_act({ app: "com.apple.Notes", steps: [{ set: title.ref, value: "Groceries" }] });
 ```
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at

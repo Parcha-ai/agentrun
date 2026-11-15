@@ -149,13 +149,18 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
   return [...(options.discovery.search ? [search] : []), ...(options.discovery.call ? [call] : []), ...(options.codemode ? [codemode] : [])];
 }
 
-/** One nested call's line in a script's stopped answer, as Codex's code mode words its recovered calls. */
+/** One nested call's line in a script's stopped answer, as Codex's code mode words its recovered calls. A completed call's
+ *  result is its value as the script read it (scriptValue): JSON as itself where it parsed, so it reads as the object it
+ *  is, never as a string holding it; else its text, quoted. */
 function lineOf(index: number, name: string, result: NestedResult): string {
-  const said = JSON.stringify(result.text.length > 2_000 ? `${result.text.slice(0, 2_000)}…` : result.text);
+  const quoted = (text: string) => JSON.stringify(text.length > 2_000 ? `${text.slice(0, 2_000)}…` : text);
   const label = `${index}. ${name}`;
-  if (result.refused) return `${label} was refused: ${said}. It did not run.`;
+  if (result.refused) return `${label} was refused: ${quoted(result.text)}. It did not run.`;
   if (result.interrupted) return `${label} was started and did not report a result, so it may have taken effect: check before calling it again. It was not run again.`;
-  if (result.isError) return `${label} failed: ${said}. It was not run again.`;
+  if (result.isError) return `${label} failed: ${quoted(result.text)}. It was not run again.`;
+  const value = scriptValue(result);
+  const json = typeof value === "string" ? undefined : JSON.stringify(value);
+  const said = json === undefined ? quoted(result.text) : json.length > 2_000 ? `${json.slice(0, 2_000)}…` : json;
   return `${label} completed: ${said}. Its effect is done; it was not run again.`;
 }
 

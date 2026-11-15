@@ -8,8 +8,8 @@
 //
 // The record has two homes. The owner's calls (the computer call channel, computer-channel.ts) are `computer.call`
 // entries on the run's journal. The agent's calls are the `computer_calls` of the tool call that made them, on its
-// tool_result row (timeline/timeline.ts): the adapter loop runs each tool call inside recordingCalls (a pi-native tool's,
-// code mode's among them, through the session's io: pi.ts), and the run's computer client (recordedClient, made at the
+// tool_result row (timeline/timeline.ts): the adapter loop runs each tool call inside recordingCalls (a pi-native tool's
+// through the session's io: pi.ts; a codemode script's computer call is a call of its own, on its own row), and the run's computer client (recordedClient, made at the
 // claim) records each call made inside one.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ComputerClient } from "@parcha/agentrun-computer";
