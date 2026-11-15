@@ -199,6 +199,14 @@ export function script(spec, session = {}) {
   // answer (<how>: an error status, our stop after it streamed, a lost connection); the client sends it again, answered.
   const carrierUnanswered = /Wrap up with the carrier unanswered \((status|stopped|lost)\)\./.exec(text)?.[1];
   if (carrierUnanswered) return [{ unanswered: carrierUnanswered, inputTokensMax: 1_000 }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // Two requests in flight at once, each of 1,000 input tokens asking 1,024 output tokens: the first, due at step 0 under
+  // a small cap so it carries the note, answered with its cost booked only once <a> exists; the second sent meanwhile and
+  // held unanswered until <b> exists.
+  const twoInFlight = /Carry the note with a second request in flight \(the first booked when (\S+), the second answered when (\S+)\)\./.exec(text);
+  if (twoInFlight) {
+    const [, first, second] = twoInFlight;
+    return [{ say: "First.", inputTokensMax: 1_000, outputTokensAsked: 1_024, usd: 0.001, bookWhen: first }, { say: "Second.", inputTokensMax: 1_000, outputTokensAsked: 1_024, usd: 0.001, until: second }];
+  }
   // A request lost once it left (no cost came back), one our side stopped part way, then an answer reported at $0 (a
   // free model's, whose every token is $0).
   if (/Answer at \$0 after a lost and a stopped request\./.test(text)) return [{ unanswered: "lost" }, { unanswered: "stopped" }, { say: "Answered.", usd: 0 }];
@@ -268,6 +276,10 @@ export function script(spec, session = {}) {
     const call = { call: `monid__faux__${again.replaceAll("/", "__")}`, args: { body: { name: "Ada" } }, usd: 0.001 };
     return [call, call, { say: "Ran.", usd: 0.001 }];
   }
+  // monid's run called by an answer whose cost is booked only after its calls, as Claude Code's is: the answer held at
+  // $0.33 to $0.62 at Sonnet 5.5's prices (120,000 input tokens at the cache write's price, 3,072 to 32,000 out) is still
+  // out while the call is asked. Then a closing answer.
+  if (/Run monid's \/person\/lookup while the answer asking for it is booked after it\./.test(text)) return [{ calls: [{ call: "monid__faux__person__lookup", args: { body: { name: "Ada" } } }], bookAfter: true, inputTokensMax: 120_000, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens: { input: 3, output: 300 }, usd: 0.01 }, { say: "Ran.", usd: 0.001 }];
   // A faux endpoint of monid's, called as a harness calls it: by its wire name (monid:faux/person/enrich is
   // monid__faux__person__enrich).
   const endpoint = /Run monid's \/(\S+) on Ada\./.exec(text)?.[1];

@@ -141,9 +141,9 @@ export function costIsBooked(entries: readonly EntryLike[], cli: boolean): boole
   return cli || sessionConversations(entries).has(WORKFLOW_SESSION);
 }
 
-/** What the run has spent as its cap reads it (the kernel's sessionSpendOf over every session's records: a request still
- *  out at its hold and bound), for a run whose cost is its booking: the runs list's figure while it runs. Null when one
- *  session's is unknown, never 0 for it. */
+/** What the run has spent and holds as its cap reads it (the kernel's sessionSpendOf over every session's records: a
+ *  request still out at its hold and bound), for a run whose cost is its booking: the figure a gate holds it to (the
+ *  runs list says bookedListSpend). Null when one session's is unknown, never 0 for it. */
 export function bookedCapSpend(entries: readonly EntryLike[]): number | null {
   let spent = 0;
   // Every conversation that holds booking records, keyed or not, as bookedSpend reads them.
@@ -153,6 +153,23 @@ export function bookedCapSpend(entries: readonly EntryLike[]): number | null {
     const read = sessionSpendOf(records).spentUsd;
     if (read === null) return null;
     spent += read;
+  }
+  return spent;
+}
+
+/** What a run whose cost is its booking has spent, as the runs list says it while the run goes on: every booked request at
+ *  what it was booked at, never the hold of a request still out (a hold is no spend: the request settles at what it cost,
+ *  which the cap's own reading, bookedCapSpend, holds it to meanwhile). Null when a booked request's figure is unknown. */
+export function bookedListSpend(entries: readonly EntryLike[]): number | null {
+  let spent = 0;
+  const booking = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn).map((e) => Number(e.conversationId)));
+  for (const conversation of booking) {
+    const read = sessionSpendOf(recordsIn(entries, conversation));
+    for (const { turn, usd } of read.figures) {
+      if (!read.answered.has(turn)) continue;
+      if (usd === null) return null;
+      spent += usd;
+    }
   }
   return spent;
 }
