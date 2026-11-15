@@ -523,7 +523,7 @@ test("the answering step runs on the agent's model: a draft whose answering node
   assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /The step that writes the answer \(`output.path`\) names no tier: it runs on the agent's model\./);
 });
 
-test("answerTierProblems: the answering step is the model node writing output.path's key, by its as or its label, under any chain, route or parallel, and a composed workflow's own; a decision node or a step writing another key is never read", () => {
+test("answerTierProblems: the answering step is the model node writing output.path's key, by its as or its label, under any chain, route, parallel or loop, a map's collected result, and a composed workflow's own; a decision node or a step writing another key is never read", () => {
   const flow = (root, path = "answer") => ({ v: 2, name: "n", schemas: {}, output: { schemaId: "A", path }, root });
   const refused = (kind, label, path = "answer") => `the ${kind} step "${label}" writes the answer (output.path "${path}") on tier "fast": the answering node runs on the agent's model: drop its tier`;
   // By its label when it has no `as`; a field under the key is the same answer.
@@ -543,6 +543,19 @@ test("answerTierProblems: the answering step is the model node writing output.pa
   const child = flow({ node: "extract", label: "inner", as: "out", tier: "fast" }, "out");
   assert.deepEqual(answerTierProblems(flow({ node: "workflow", label: "sub", as: "answer", workflow: child })), [refused("extract", "inner", "out")]);
   assert.deepEqual(answerTierProblems(flow({ node: "chain", steps: [{ node: "workflow", label: "sub", as: "facts", workflow: child }, { node: "decide", label: "answer" }] })), []);
+  // #2895 review (P1): a map collects each item's result under its own `as`: its body's step writing that result (its
+  // resultPath's key, else the body's `as`, else the item's whole state) is the answering one, whatever key it writes.
+  // A map that gathers legwork keeps its body's keys in the item: a fast `answer` there is not the outer answer.
+  const map = (body, extra = {}) => ({ node: "map", label: "each", itemsPath: "items", as: "answer", body, ...extra });
+  assert.deepEqual(answerTierProblems(flow(map({ node: "extract", label: "one", as: "itemAnswer", tier: "fast" }))), [refused("extract", "one")]);
+  const picked = map({ node: "chain", steps: [{ node: "extract", label: "look", as: "facts", tier: "fast" }, { node: "decide", label: "pick", as: "code", tier: "fast" }] }, { resultPath: "code.value" });
+  assert.deepEqual(answerTierProblems(flow(picked)), [refused("decide", "pick")], "the resultPath's key; legwork in the item stays fast");
+  const whole = map({ node: "chain", steps: [{ node: "extract", label: "look", as: "facts", tier: "fast" }, { node: "decide", label: "pick", as: "code" }] });
+  assert.deepEqual(answerTierProblems(flow(whole)), [refused("extract", "look")], "no resultPath and no body `as`: the item's whole state is the answer");
+  const gather = flow({ node: "chain", steps: [{ ...map({ node: "extract", label: "item", as: "answer", tier: "fast" }), as: "facts" }, { node: "decide", label: "answer" }] });
+  assert.deepEqual(answerTierProblems(gather), [], "a map gathering facts: its item-local `answer` is not the outer one");
+  // A loop's body writes the state around it.
+  assert.deepEqual(answerTierProblems(flow({ node: "loop", label: "again", maxIters: 3, until: { predicate: "exists", path: "answer" }, body: { node: "agent", label: "answer", tier: "fast" } })), [refused("agent", "answer")]);
   // A call's args or a step's state holding a `node` key is data, never a step; no output.path, nothing read.
   assert.deepEqual(answerTierProblems(flow({ node: "call", label: "c", as: "r", args: { node: "agent", label: "answer", tier: "fast" } })), []);
   assert.deepEqual(answerTierProblems({ root: { node: "agent", label: "answer", tier: "fast" } }), []);

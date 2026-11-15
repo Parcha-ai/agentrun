@@ -205,26 +205,38 @@ const isNode = (value: unknown): value is Record<string, unknown> => value !== n
  *  decide's or extract's label. */
 const writeKeyOf = (node: Record<string, unknown>): unknown => (node.node === "report" ? "report_markdown" : typeof node.as === "string" && node.as ? node.as : ["agent", "decide", "extract"].includes(node.node as string) ? node.label : undefined);
 
+/** An item's whole state, as a map collects it when neither its resultPath nor its body's `as` picks one key: every
+ *  write in the body is in the answer. */
+const WHOLE = Symbol("whole state");
+
 /** Why a draft's answer is not written on the agent's own model: each model node that writes the state key its
  *  output.path reads (its answering step) and names tier "fast", one line each, in words the compile retry acts on. A
- *  composed workflow node that writes it answers with its own workflow's answering step, held to the same. Legwork on
- *  fast and an answer on strong pass. Out of sample (H1), the same answering step on the fast model scored 8.5-9.6 points
- *  lower than on the agent's. */
+ *  composed workflow node that writes it answers with its own workflow's answering step, held to the same; a map that
+ *  writes it collects each item's result (the DSL's map: its resultPath's key in the item's state, else its body's `as`,
+ *  else the item's whole state), so the body's step writing that is the answering one. A map body's other writes stay in
+ *  its item and are never the answer; a loop's body writes the state around it. Legwork on fast and an answer on strong
+ *  pass. Out of sample (H1), the same answering step on the fast model scored 8.5-9.6 points lower than on the agent's. */
 export function answerTierProblems(doc: unknown): string[] {
   const problems: string[] = [];
   const answered = (workflow: unknown): void => {
     const path = (workflow as { output?: { path?: unknown } } | null)?.output?.path;
     if (typeof path !== "string" || !path) return;
-    const head = path.split(".")[0];
-    const walk = (node: unknown): void => {
+    const walk = (node: unknown, key: string | typeof WHOLE): void => {
       if (!isNode(node)) return;
-      if (node.node === "workflow") return void (writeKeyOf(node) === head && answered(node.workflow));
-      if (TIERED_KINDS.has(node.node as string) && node.tier === "fast" && writeKeyOf(node) === head) {
+      const writes = key === WHOLE || writeKeyOf(node) === key;
+      if (node.node === "workflow") return void (writes && answered(node.workflow));
+      if (node.node === "map") {
+        if (!writes) return;
+        const result = typeof node.resultPath === "string" && node.resultPath ? node.resultPath.split(".")[0] : undefined;
+        const bodyAs = isNode(node.body) && typeof node.body.as === "string" && node.body.as ? node.body.as : undefined;
+        return walk(node.body, result ?? bodyAs ?? WHOLE);
+      }
+      if (TIERED_KINDS.has(node.node as string) && node.tier === "fast" && writes) {
         problems.push(`the ${node.node as string} step ${JSON.stringify(String(node.label ?? "(no label)").slice(0, 64))} writes the answer (output.path ${JSON.stringify(path.slice(0, 64))}) on tier "fast": the answering node runs on the agent's model: drop its tier`);
       }
-      for (const child of childNodes(node)) walk(child);
+      for (const child of childNodes(node)) walk(child, key);
     };
-    walk((workflow as { root?: unknown } | null)?.root);
+    walk((workflow as { root?: unknown } | null)?.root, path.split(".")[0]);
   };
   answered(doc);
   return problems;
