@@ -92,6 +92,17 @@ test("a page that is not HTML lists the absolute URLs its text holds: a JSON bod
   assert.deepEqual(text.links, ["https://status.example/a", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/O'Reilly"], "a sentence's punctuation, an unopened bracket and a closing quote stay outside a URL");
 });
 
+test("the URLs a hostile text writes out are read in one pass: runs of schemes, closing brackets and nesting take no longer than their length", async () => {
+  const { linksOf } = await import("../dist/web-fetch-direct.js");
+  const n = 400_000;
+  const texts = ["https://".repeat(n / 8), `https://a.example/${")".repeat(n)}`, `https://a.example/${"(".repeat(n)}${".".repeat(n)}`, `${"[".repeat(5_000)}"https://deep.example/"${"]".repeat(5_000)}`, `${"](".repeat(n / 2)} https://after.example/`];
+  const started = performance.now();
+  const found = texts.map((text) => [...linksOf(text)]);
+  const ms = performance.now() - started;
+  assert.ok(ms < 1_000, `read in ${Math.round(ms)} ms, not under 1,000`);
+  assert.deepEqual(found.slice(1), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
+});
+
 test("an HTML page's links stay its link targets alone, as before: a URL written in its text is not one", async () => {
   const html = `<html><head><title>Public page</title></head><body><p>Mirror: https://bare.example/x</p><a href="/about">About</a> <a href="https://other.example/x#part">Other</a></body></html>`;
   const page = await fetchPage("http://public.example/", serving("http://public.example/", "text/html; charset=utf-8", html));

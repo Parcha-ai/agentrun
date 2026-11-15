@@ -141,6 +141,93 @@ export function linksWithin(links: Iterable<string>): Pick<Page, "links" | "link
   return { links: kept, ...(omitted ? { links_omitted: omitted } : {}) };
 }
 
+/** Where a link might start: a markdown link's target (after its "]("), or a URL written out. */
+const LINK_AT = /\]\(|https?:\/\//gi;
+/** What ends a URL written out in text: whitespace, a quote, an angle bracket, a backtick or a backslash. */
+const URL_END = /[\s"`<>\\]/;
+/** The punctuation a sentence ends a URL written out with, left off it; a closing bracket the URL opened stays. */
+const TRAILING = ".,;:!?*)]}'";
+const OPENER: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+/** A JSON string that is one URL whole: a field holding a link means all of it, its last character too. */
+const WHOLE_URL = /^https?:\/\/\S+$/i;
+
+/** A URL written out in text, less the punctuation that ends a sentence after it: `)`, `]` or `}` stays where the URL
+ *  opened as many as it closes (a wiki title's). One count, then one walk back, so a long run of them stays linear. */
+function trimmed(url: string): string {
+  const count: Record<string, number> = { "(": 0, ")": 0, "[": 0, "]": 0, "{": 0, "}": 0 };
+  for (const char of url) if (char in count) count[char]! += 1;
+  let end = url.length;
+  for (; end > 0 && TRAILING.includes(url[end - 1]!); end--) {
+    const char = url[end - 1]!;
+    const opener = OPENER[char];
+    if (opener && count[opener]! >= count[char]!) break;
+    if (opener) count[char]! -= 1;
+  }
+  return url.slice(0, end);
+}
+
+/** Every link `text` holds, in order, as written: a markdown link's target (`[text](url)`), which ends at whitespace or at
+ *  the ")" that closes the link, so parentheses it holds in pairs stay; and a URL written out, which ends at URL_END or
+ *  at a "](" (a link written as its own text), trimmed. Each is looked for from where the last one ended, so no character
+ *  is scanned twice: one pass, however many unclosed "](" a hostile page holds. */
+function* hrefsIn(text: string): Generator<string> {
+  const at = new RegExp(LINK_AT.source, "gi");
+  for (let found = at.exec(text); found; found = at.exec(text)) {
+    let end = found.index + found[0].length;
+    if (found[0] === "](") {
+      for (let depth = 0; end < text.length && !/\s/.test(text[end]!); end++) {
+        if (text[end] === "(") depth++;
+        else if (text[end] === ")" && depth-- === 0) break;
+      }
+      yield text.slice(found.index + 2, end);
+    } else {
+      while (end < text.length && !URL_END.test(text[end]!) && !text.startsWith("](", end)) end++;
+      yield trimmed(text.slice(found.index, end));
+    }
+    at.lastIndex = end;
+  }
+}
+
+/** A JSON body's links as written, in the body's order: each string value's (hrefsIn), one that is a URL whole taken as
+ *  it is; undefined for a text that is not JSON. Read from the parsed body, so an escape (`\/`) never hides or cuts one. */
+function jsonHrefs(text: string): Iterable<string> | undefined {
+  if (!/^\s*[[{]/.test(text)) return undefined;
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return (function* () {
+    // A stack, not recursion: a deeply nested body never overflows it.
+    const stack = [body];
+    while (stack.length) {
+      const next = stack.pop();
+      if (typeof next === "string") yield* WHOLE_URL.test(next.trim()) ? [next.trim()] : hrefsIn(next);
+      else if (typeof next === "object" && next !== null) {
+        const values = Object.values(next);
+        for (let i = values.length - 1; i >= 0; i--) stack.push(values[i]);
+      }
+    }
+  })();
+}
+
+/** The absolute http(s) URLs a page's text holds, each once and without its fragment, in order (linksWithin keeps those
+ *  within the caps and counts the rest): markdown link targets and URLs written out (hrefsIn), or, for a JSON body, those
+ *  of its string values (jsonHrefs). A Parallel read's markdown and a direct fetch's body that is not HTML are read so;
+ *  an HTML page's links are readPage's, its link targets. */
+export function* linksOf(text: string): Generator<string> {
+  const seen = new Set<string>();
+  for (const href of jsonHrefs(text) ?? hrefsIn(text)) {
+    const link = /^https?:\/\//i.test(href) ? URL.parse(href) : null;
+    if (!link) continue;
+    link.hash = "";
+    if (seen.has(link.href)) continue;
+    seen.add(link.href);
+    yield link.href;
+  }
+}
+
 /** A page read once, before any part of it is taken: its final url, status and title, its Text, the links its first part
  *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. */
 export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text" } & Text;
@@ -168,7 +255,7 @@ export async function readDirect(url: unknown, options: Omit<PublicFetchOptions,
     if (answer.body === null) return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error: `the page answered ${answer.status}` });
     // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
     const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
-    const page = read ?? { title: "", text: answer.body, links: [] };
+    const page = read ?? { title: "", text: answer.body, links: linksOf(answer.body) };
     return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...textOf(page.text, !read?.truncated), ...(read?.truncated ? { html_chars: read.html_chars! } : {}), ...(read?.converted === "text" ? { converted: "text" as const } : {}), ...linksWithin(page.links) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });

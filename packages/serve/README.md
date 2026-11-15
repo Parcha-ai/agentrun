@@ -1065,8 +1065,10 @@ length, and no `original_chars`, its text is the start of the page, and the last
 1,000,000 characters of HTML before reading; the rest wasn't read.` `converted: "text"` says the text is the page's
 plain text, its conversion to markdown having run out of time. A page is read to its first 1,000,000 characters: an
 `offset` at or past them is refused, and the last part a read reaches of a longer page has `beyond_read`. The links,
-absolute http(s) only, come with the part at offset 0: at most 200, in 20,000 characters, with `links_omitted`
-counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
+absolute http(s) only, each once without its fragment, are the page's link targets and the URLs written out in its
+text (a JSON body's: those of its string values, so an API's `url` or `shortlink` field is one); an HTML page fetched
+directly gives its link targets alone. They come with the part at offset 0: at most 200, in 20,000 characters, with
+`links_omitted` counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
 run keeps what it read of its last 8 pages by the URL asked for: every later part of that URL comes from it, with no
 request, so a page's parts are always one read's. Through Parallel that is one billed extract a page a run, asked for
 its first 1,000,001 characters (the extract has no offset: its text always starts at the page's start). A refusal or a

@@ -41,7 +41,7 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   const { sent, send } = parallel();
   const net = network();
   const page = await webFetch(PUBLIC, { ...net, parallel: parallelExtract(CANARY, send) });
-  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, without fragments");
+  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["http://public.example/", "https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, the URL its text writes out among them, without fragments");
   assert.match(page.text, /^# Read by Parallel\n\nThe page at http:\/\/public\.example\//);
   assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 } } } }], "the most of a page web_fetch reads and one character, so a page Parallel cut there shows as cut");
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
