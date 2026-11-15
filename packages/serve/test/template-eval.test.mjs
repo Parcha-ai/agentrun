@@ -254,6 +254,37 @@ test("a tool_used grader naming a monid endpoint the package does not grant by n
   assert.match(said, /graders\/star\.md: monid:apollo\/\* is not a monid endpoint the package grants by name/);
 });
 
+test("an llm grader sees each call's whole arguments, a web_fetch's URL with its query, and never a secret one carried", { timeout: 300_000 }, async (t) => {
+  // A secret-shaped header and api_key (an sk- key, a GitHub token): the run's own redaction takes them out of what is
+  // served, so neither the grader's prompt nor the report holds them. The URL's query is no secret, and is shown whole.
+  const url = "https://pricing.example.test/plans?tier=enterprise&seats=50";
+  const bearer = "sk-evalargs0123456789abcdefghijklmn";
+  const github = `ghp_${"Ab1".repeat(12)}`;
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const manifest = readFileSync(join(dir, "agent.md"), "utf8");
+  writeFileSync(join(dir, "agent.md"), manifest.replace("tools: [read, write, ask_person]", "tools: [read, write, ask_person, web_fetch]"));
+  const at = join(dir, "evals", "fetch-args");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\n");
+  const call = { url, headers: { Authorization: `Bearer ${bearer}` }, api_key: github };
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: Fetches the pricing page with a header.\n---\nCall web_fetch with ${JSON.stringify(call)}\nAnswer:\nFETCH-ARGS done\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "fetch-args"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "fetched.md"), `---\ntype: llm\n---\nPass if the answer contains "FETCH-ARGS".\nThe run fetched ${url}.\n`);
+  const report = await evalTemplate({ dir, cases: ["fetch-args"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  const prompt = graderInputs().find((input) => input.includes("The run fetched https://pricing.example.test"));
+  assert.ok(prompt, "the grader ran");
+  const calls = prompt.slice(prompt.indexOf("<tool-calls untrusted>"));
+  assert.ok(calls.includes(url), `the grader's calls hold the whole URL:\n${calls}`);
+  for (const secret of [bearer, github]) {
+    assert.ok(!prompt.includes(secret), "no secret reaches the grader's prompt");
+    assert.ok(!JSON.stringify(report).includes(secret), "no secret reaches the report");
+  }
+  const fetched = run.calls.find((one) => one.tool === "web_fetch");
+  assert.equal(fetched?.arguments?.url, url, JSON.stringify(run.calls));
+});
+
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
   const of = (...passes) => exitCodeOf({ cases: passes.map((pass, i) => ({ name: `c${i}`, pass })) });
   assert.deepEqual([of(true), of(true, true), of(false), of(true, false), of(false, true, true)], [0, 0, 1, 1, 1]);
