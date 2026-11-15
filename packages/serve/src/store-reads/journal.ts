@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, SideSpend, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
+import { CALL_ENDED_WITH_RUN, CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -83,7 +83,10 @@ export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // One refused before it ran (its gate's deny, a person's, an approval the run ended without) carries pi's refusal
       // mark, so its rows read refused, as pi's do, never as a call that ran and failed.
       const refused = data.status === "refused" ? { details: { [CALL_REFUSED]: true } } : {};
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...timestamp }] };
+      // One the run's end closed, nothing having ended it (`withRun`), carries that mark: it reads interrupted with no
+      // outcome, never as a call that failed.
+      const withRun = data.status === "interrupted" && data.withRun === true ? { details: { [CALL_ENDED_WITH_RUN]: true } } : {};
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...withRun, ...timestamp }] };
     }
     return entry;
   });

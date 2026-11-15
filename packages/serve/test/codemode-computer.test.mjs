@@ -581,7 +581,8 @@ test("on Codex, a script whose shell.run parked on a person's approval and ran o
   assert.ok(under.some((row) => row.kind === "tool_result" && row.tool_use_id === ask.callId), `the allowed call has its result row under the exec: ${seen}`);
   assert.ok(under.every((row) => rows.indexOf(row) < rows.indexOf(end)), `the exec's end sorts after every row of its calls: ${seen}`);
   assert.equal(end.tool_status, "success", `parked, then resumed with its call's answer, the exec did not fail: ${end.summary}`);
-  assert.match(end.tool_result_preview ?? "", /waited for a person's approval, then ran/, `its end tells what the model was told: ${end.tool_result_preview}`);
+  assert.match(end.tool_result_preview ?? "", /^1\. computer_op waited for a person's approval, then ran/, `its end tells its call's outcome: ${end.tool_result_preview}`);
+  assert.doesNotMatch(end.tool_result_preview ?? "", /cut short|session stopped/, `an exec that ended ok never opens with a failed exec's words: ${end.tool_result_preview}`);
 });
 
 test("on Codex, a script cut by the runner's end mid-call: the call cut off ends interrupted and the exec ends after it, told what its calls came to, failed as a codemode script cut there reads on pi", async (t) => {
@@ -611,7 +612,8 @@ test("on Codex, a script cut by the runner's end mid-call: the call cut off ends
 });
 
 /** The exec's one end on `rows` and the rows of its calls: each of them before it, and it read interrupted in the words
- *  every harness gives a call cut off. */
+ *  every harness gives a call cut off. Its status is no outcome (null), never failed: a park or a stop failed nothing
+ *  (live, 01a1e117-20fa: the row read failed). */
 function endedInterruptedAfterCalls(rows) {
   const seen = rowsSeen(rows);
   const ends = rows.filter((row) => row.kind === "tool_result" && row.tool_use_id === "call_exec");
@@ -621,6 +623,9 @@ function endedInterruptedAfterCalls(rows) {
   assert.ok(under.length > 0, `its calls have rows: ${seen}`);
   assert.ok(under.every((row) => rows.indexOf(row) < rows.indexOf(end)), `the exec's end sorts after every row of its calls: ${seen}`);
   assert.equal(end.tool_result_preview, INTERRUPTED_TEXT, `the exec reads interrupted: ${end.summary}`);
+  assert.equal(end.tool_status, null, `the exec's status is no outcome, never failed: ${end.summary}`);
+  assert.equal(end.summary, "Using tool: exec interrupted", seen);
+  assert.notEqual(end.refused, true, "it ran: it was not refused");
 }
 
 test("on Codex, a run stopped while its exec's call waits for a person's approval: the run's end closes the exec interrupted, after its call's rows, never left open", async (t) => {

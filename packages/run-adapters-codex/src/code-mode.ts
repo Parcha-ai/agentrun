@@ -17,7 +17,7 @@ import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, r
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
-import { callKey, completedNested, execRecovery, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveredFailed, recoveryFacts, Scripts, settle, UNWATCHED, waitResumed } from "./scripts.js";
+import { callKey, completedNested, execRecovery, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveredFailed, recoveredRowText, recoveryFacts, Scripts, settle, UNWATCHED, waitResumed } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = "codex.nested";
@@ -194,13 +194,17 @@ export function codeMode(deps: CodeModeDeps) {
   const rows = new Map<string, Promise<void>>();
   /** The host's record of `exec`'s end, once its row is written: `output`, failed as a recovery recorded it (RECOVERED_END_STREAM)
    *  or else as its status header says (`failed`). A crash leaves an exec open on the record (its start is marked as one its
-   *  harness answers), so its end is always one of these. */
+   *  harness answers), so its end is always one of these. A recovered exec that ended ok shows its calls' outcomes without
+   *  the words telling the model its script was cut short (recoveredRowText): on the record, those are a failed exec's. */
   const endRow = (exec: string, output: string, failed: boolean): void => {
     const own = deps.ownCalls;
     if (!own) return;
     void (rows.get(exec) ?? Promise.resolve())
       .then(() => journal.read<{ exec: string; failed: boolean }>(RECOVERED_END_STREAM))
-      .then((kept) => own.ended(exec, output, kept.findLast((r) => r.data.exec === exec)?.data.failed ?? failed))
+      .then((kept) => {
+        const recovered = kept.findLast((r) => r.data.exec === exec)?.data;
+        return recovered ? own.ended(exec, recoveredRowText(output, recovered.failed), recovered.failed) : own.ended(exec, output, failed);
+      })
       .catch((error) => deps.log("codex: an exec's end was not written", { exec, error: String(error) }));
   };
   // An `exec` of the log restored that Codex finished before the session stopped: its end, which a crash may have kept off
