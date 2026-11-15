@@ -50,7 +50,9 @@ export function where(url: string): string {
 }
 
 const ELIDED = "\u2026";
-const TEXT_URL = /https?:\/\/[^\s"'`<>\\]+/gi;
+// An apostrophe is part of a URL (a path's O'Reilly, a query's quoted word): a URL that stopped at one would leave the query
+// after it unscrubbed. One that closes a quote around the URL is in its tail, as a sentence's punctuation is.
+const TEXT_URL = /https?:\/\/[^\s"`<>\\]+/gi;
 const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i;
 
 /**
@@ -59,7 +61,7 @@ const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i
  */
 export function scrubUrls(text: string): string {
   return text.replace(TEXT_URL, (raw) => {
-    const tail = /[.,;:!?)\]}]+$/.exec(raw)?.[0] ?? "";
+    const tail = /[.,;:!?)\]}']+$/.exec(raw)?.[0] ?? "";
     const parts = URL_PARTS.exec(raw.slice(0, raw.length - tail.length));
     if (!parts) return raw;
     const keys = [...new Set((parts[4] ?? "").split("&").map((pair) => pair.split("=")[0]).filter(Boolean))];
