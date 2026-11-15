@@ -15,7 +15,8 @@ import { MCP_SOURCES, type McpSource } from "./mcp-sources.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
+import { harnessOf } from "./harness-table.js";
+import { chooseModel, FAUX_ENV, harnessRuns, hostModel, MODEL_KEYS, providerModels, THINKING_LEVELS, type Tier } from "./model.js";
 import { harnessModel } from "./runnable.js";
 import { isPinKeys, type PinKeys, type PinScalar, type PinValue } from "./tool-gate.js";
 import { formatToolName, isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
@@ -957,6 +958,18 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
 }
 
+/** `model` on `harness` as a save and a run take it (runnable.ts harnessModel, on the harness's own route), and where it
+ *  runs, refused all the same when no catalog here lists the entry its runs are priced by (the harness's priceModel):
+ *  claude-agent takes any Anthropic id on its own, and a package's model no catalog knows makes an agent whose runs fail
+ *  at the provider. A faux model server runs any. */
+async function modelHere(env: NodeJS.ProcessEnv, harness: string, model: string): ReturnType<typeof harnessModel> {
+  const chosen = await harnessModel(env, harness, model, true);
+  if (!chosen || !("model" in chosen) || env[FAUX_ENV]) return chosen;
+  const priced = harnessOf(env, harness)?.priceModel(env, chosen.model) ?? chosen.model;
+  if ((await providerModels(env)).getModel(priced.provider, priced.modelId)) return chosen;
+  return { why: `${model} is not a model ${harness} runs here: no model catalog here lists it`, host: false, needs: "model" };
+}
+
 /** Why this server can't run a package's `prefer` on `harness`, and what the owner does about it, as `{why, fix}` in
  *  words; undefined when it can. Asked as a save and a run ask it (runnable.ts harnessModel), on the harness's own
  *  route: codex reaches an OpenAI model through OpenRouter's key alone. A missing key names its provider and Settings → Model keys; a model no catalog here
@@ -966,7 +979,7 @@ async function preferUnrunnable(env: NodeJS.ProcessEnv, prefer: string, harness:
   const other = `apply with overrides.model${choices ? " or one of the package's model choices (overrides.choice)" : ""}.`;
   const another = `${other[0]!.toUpperCase()}${other.slice(1)}`;
   if (!harnessRuns(env, prefer, harness)) return { why: `${harness} does not run it`, fix: another };
-  const chosen = await harnessModel(env, harness, prefer, true);
+  const chosen = await modelHere(env, harness, prefer);
   if (chosen && "model" in chosen) return undefined;
   if (chosen && "why" in chosen && chosen.needs === "model") return { why: "no model catalog here lists it", fix: another };
   const row = MODEL_KEYS.find((one) => one.id === prefer.slice(0, prefer.indexOf("/")));
@@ -983,7 +996,7 @@ export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoi
   if (!offer?.available) return `${choice.harness} is not available here${offer?.reason ? `: ${offer.reason.replace(/\.$/, "")}` : ""}`;
   if (env.AGENT_MODEL_BASE_URL) return "this server reaches its models through a gateway, which has not said it serves that model; overrides.model picks one it serves";
   if (!harnessRuns(env, choice.model, choice.harness)) return `${choice.harness} does not run that model here`;
-  const chosen = await harnessModel(env, choice.harness, choice.model, true);
+  const chosen = await modelHere(env, choice.harness, choice.model);
   return chosen === undefined ? `${choice.harness} does not run here` : "refused" in chosen ? chosen.refused : "why" in chosen ? chosen.why : undefined;
 }
 

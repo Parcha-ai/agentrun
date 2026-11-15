@@ -105,6 +105,12 @@ test("a choice runs only where its harness is available, its model in that harne
   assert.equal(await choiceUnrunnable(env, { ...free, model: "openai/gpt-6.1-sol", harness: "codex" }, up), undefined);
   assert.equal(await choiceUnrunnable(env, { ...free, model: "anthropic/claude-sonnet-5.5", harness: "claude-agent" }, up), undefined);
   assert.deepEqual(await packageModel(env, { tier: "balanced", prefer: "openai/gpt-6.1-sol" }, "codex"), { model: "openai/gpt-6.1-sol" }, "a package's prefer, the same");
+  // claude-agent takes any Anthropic id on its own route: one no catalog here lists is refused all the same, before an
+  // agent is made whose runs would fail at the provider.
+  const anthropic = { ANTHROPIC_API_KEY: "fake-test-key" };
+  assert.match(await choiceUnrunnable(anthropic, { ...free, model: "anthropic/no-such-model", harness: "claude-agent" }, up) ?? "", /no model catalog here lists it/);
+  assert.equal(await choiceUnrunnable(anthropic, { ...free, model: "anthropic/claude-haiku-5-5", harness: "claude-agent" }, up), undefined);
+  assert.deepEqual(await packageModel(anthropic, { tier: "balanced", prefer: "anthropic/no-such-model" }, "claude-agent"), { refused: { why: "no model catalog here lists it", fix: "Apply with overrides.model." } });
 });
 
 /** A server with an OpenRouter key alone (no other model key, no gateway), serving the inbox package. */
