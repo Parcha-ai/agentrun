@@ -97,6 +97,30 @@ test("a link a tool other than the web's returned whole (a calendar event's html
   assert.deepEqual(checked(graderInput(grader, "task", run(`Pipeline review at 10:00 (${htmlLink}).`, calendar))), ["https://www.google.com/calendar/event?eid=… — matches call 1"]);
 });
 
+test("a markdown link's target holding a | is cited whole, as a fetched page's links read it, and matches that page", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://maps.example/guide.md";
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: "# Stops\n\n[the route](https://maps.example/?markers=a|b)\n" }], default: { error: "fetch failed" } } };
+  const fetched = { tool: "web_fetch", name: "web_fetch", arguments: { url }, status: "success", result: JSON.stringify(await fakeFetch(fixture, url)) };
+  assert.deepEqual(checked(graderInput(grader, "task", run("Follow [the route](https://maps.example/?markers=a|b).", fetched))), ["https://maps.example/?markers=… — matches call 1"]);
+});
+
+test("a tool other than the web's whose result the read cut is named on a cited link that matches nothing, as a page whose links were cut is", async () => {
+  const { cut, CALL_RESULT_CHARS } = await import("../dist/timeline/index.js");
+  const [first, later] = ["https://www.google.com/calendar/event?eid=Zmlyc3Q", "https://www.google.com/calendar/event?eid=bGF0ZXI"];
+  const events = [{ summary: "Standup", htmlLink: first }, ...Array.from({ length: 200 }, (_, i) => ({ summary: `Event ${i}`, description: "words ".repeat(10) })), { summary: "Retro", htmlLink: later }];
+  const result = cut(JSON.stringify({ events }), CALL_RESULT_CHARS);
+  assert.ok(result.includes(first) && !result.includes(later));
+  const calendar = { tool: "calendar_list_events", name: "calendar_list_events", arguments: {}, status: "success", result };
+  assert.deepEqual(checked(graderInput(grader, "task", run(`Standup: ${first}\nRetro: ${later}`, calendar))), [
+    "https://www.google.com/calendar/event?eid=… — matches call 1",
+    "https://www.google.com/calendar/event?eid=… — no matching call (call 1's links were cut)",
+  ]);
+  // A result the read did not cut names no cut.
+  const whole = { ...calendar, result: JSON.stringify({ events: [events[0]] }) };
+  assert.deepEqual(checked(graderInput(grader, "task", run(`Retro: ${later}`, whole))), ["https://www.google.com/calendar/event?eid=… — no matching call"]);
+});
+
 test("cited links come from the answer's text and every string of its JSON, each once, shown with no query value, fragment or userinfo", () => {
   const key = ["not-a-secret", "cited", "0123456789"].join("-");
   const json = JSON.stringify({ sources: [{ url: "https://vendor.example/report" }, { url: `https://api.example/data?token=${key}&q=x` }], note: "see https://vendor.example/report#p2" }).replaceAll("/", "\\/");
