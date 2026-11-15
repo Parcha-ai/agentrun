@@ -11,9 +11,11 @@
 // - Making a trigger goes in order, subscription, instance, save, and a failure undoes what came before it. Pausing,
 //   resuming and deleting follow on Composio once the change holds here, and so does the server turning a trigger off
 //   itself (triggers.ts); what Composio could not do is said, with what to do by hand.
+// - One project's steps run one at a time (serial): a create's setup, its save here and its undo, a pause, a delete. Each
+//   reads the triggers holding what it would undo or turn off as they are then, so it never removes what another holds.
 // No public address (AGENTRUN_PUBLIC_URL): Composio can't reach this server, so making one is refused before Composio is
 // asked anything.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
@@ -32,6 +34,8 @@ const MAX_PAGES = 10;
 
 /** A saved Composio server's key, the Composio user its address names, and its toolkit. */
 export type ComposioCredential = { key: string; user: string; toolkit: string };
+/** What an instance comes to once a trigger no longer holds it (leftWith). */
+type Left = "delete" | "off" | "keep";
 /** A trigger of kind composio, as the engine keeps it. */
 type Holder = { id: string; name: string; enabled: boolean; source: Source };
 type Sealed = { get(scope: string, field: string): string | undefined; set(scope: string, field: string, value: string, as?: "utf8"): Promise<void>; remove(scope: string): Promise<void> };
@@ -78,43 +82,43 @@ function onField(error: unknown, field: string): unknown {
 }
 
 export class ComposioTriggers implements TriggerUpstream {
+  /** Each project's last step queued (serial), by a digest of its key. */
+  private readonly queues = new Map<string, Promise<void>>();
+
   constructor(private readonly deps: ComposioTriggerDeps) {}
 
   // ---- the trigger engine's (TriggerUpstream) ----------------------------------------------------------------------------
 
-  async make(source: Source, id: string, enabled: boolean): Promise<{ source: Source; undo(): Promise<void> }> {
+  async make<T>(source: Source, id: string, enabled: boolean, keep: (source: Source) => Promise<T>): Promise<T> {
     if (!this.deps.publicUrl) throw new ApiError("composio_no_public_url", "Composio can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL, the https address Composio sends events to), then make the trigger.");
     for (const field of ["instance_id", "hook"]) if (source[field] !== undefined) throw invalid([{ field: `source.${field}`, reason: "not_allowed", message: `${field} is set by this server when it makes the trigger on Composio: leave it out.` }]);
     const server = String(source.server);
     const credential = await this.deps.credential(server, "field");
-    const ask = this.ask(credential, "nothing was saved");
-    const undo: (() => Promise<void>)[] = [];
-    const undoAll = async () => {
-      for (const step of undo.splice(0).reverse()) await step().catch((error: unknown) => this.deps.say({ condition: "composio_undo_failed", trigger: id, error: String((error as Error)?.message ?? error) }));
-    };
-    try {
-      // The account first: a read, so a server not connected yet leaves nothing made on Composio.
-      const account = await this.accountOf(ask, credential, server);
-      const hook = await this.subscribe(ask, source[MOVE_FIELD] === true, undo);
-      const event = String(source.event);
-      const made = await ask(`turning on ${event} on Composio`, "POST", `/api/v3/trigger_instances/${enc(event)}/upsert`, { connected_account_id: account, user_id: credential.user, trigger_config: source.config }, `Composio has no event ${event} for ${credential.toolkit}: pick one from the server's events.`).catch((error: unknown) => {
-        throw onField(onField(error, "source.config"), "source.event");
-      });
-      const instance = text(made.trigger_id);
-      if (!instance) throw new ApiError("upstream_failed", "Composio made no trigger instance: nothing was saved.");
-      // Composio's one instance per server, event and config: the triggers already holding it keep it.
-      const shared = (await this.deps.holders()).filter((h) => h.id !== id && h.source.instance_id === instance);
-      const manage = `/api/v3/trigger_instances/manage/${enc(instance)}`;
-      if (!shared.length) undo.push(async () => void (await ask("deleting the trigger instance it made", "DELETE", manage)));
-      // The upsert turns on an instance its holders had all turned off: off again, when this trigger is not kept or not on.
-      else if (!shared.some((h) => h.enabled)) undo.push(async () => void (await ask("turning the trigger instance off again", "PATCH", manage, { status: "disable" })));
-      if (!enabled && !shared.some((h) => h.enabled)) await ask("turning the trigger instance off", "PATCH", manage, { status: "disable" });
-      const { [MOVE_FIELD]: _moved, ...kept } = source;
-      return { source: { ...kept, instance_id: instance, hook }, undo: undoAll };
-    } catch (error) {
-      await undoAll();
-      throw error;
-    }
+    // Made, saved here, and undone when not saved, alone among the project's steps.
+    return this.serial(credential.key, async () => {
+      const ask = this.ask(credential, "nothing was saved");
+      const undo: (() => Promise<void>)[] = [];
+      try {
+        // The account first: a read, so a server not connected yet leaves nothing made on Composio.
+        const account = await this.accountOf(ask, credential, server);
+        const hook = await this.subscribe(ask, source[MOVE_FIELD] === true, undo);
+        const event = String(source.event);
+        const made = await ask(`turning on ${event} on Composio`, "POST", `/api/v3/trigger_instances/${enc(event)}/upsert`, { connected_account_id: account, user_id: credential.user, trigger_config: source.config }, `Composio has no event ${event} for ${credential.toolkit}: pick one from the server's events.`).catch((error: unknown) => {
+          throw onField(onField(error, "source.config"), "source.event");
+        });
+        const instance = text(made.trigger_id);
+        if (!instance) throw new ApiError("upstream_failed", "Composio made no trigger instance: nothing was saved.");
+        // Composio's one instance per server, event and config: the triggers already holding it keep it. Not kept, this
+        // trigger leaves it as the triggers holding it then would (the upsert turned it on): deleted, off, or as it is.
+        undo.push(async () => this.leave(ask, instance, await this.leftWith(instance, id)));
+        if (!enabled && (await this.leftWith(instance, id)) !== "keep") await ask("turning the trigger instance off", "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: "disable" });
+        const { [MOVE_FIELD]: _moved, ...kept } = source;
+        return await keep({ ...kept, instance_id: instance, hook });
+      } catch (error) {
+        for (const step of undo.splice(0).reverse()) await step().catch((undone: unknown) => this.deps.say({ condition: "composio_undo_failed", trigger: id, error: String((undone as Error)?.message ?? undone) }));
+        throw error;
+      }
+    });
   }
 
   patched(was: Source, given: Source): Source {
@@ -127,11 +131,13 @@ export class ComposioTriggers implements TriggerUpstream {
 
   async turned(source: Source, id: string, on: boolean): Promise<Json | undefined> {
     const instance = instanceOf(source);
-    // Off only once every trigger holding it is off.
-    if (!on && (await this.deps.holders()).some((h) => h.id !== id && h.enabled && h.source.instance_id === instance)) return undefined;
     try {
-      const ask = this.ask(await this.deps.credential(String(source.server), "field"));
-      await ask(`turning the trigger instance ${on ? "on" : "off"}`, "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: on ? "enable" : "disable" });
+      const credential = await this.deps.credential(String(source.server), "field");
+      await this.serial(credential.key, async () => {
+        // Off only once every trigger holding it is off.
+        if (!on && (await this.leftWith(instance, id)) === "keep") return;
+        await this.ask(credential)(`turning the trigger instance ${on ? "on" : "off"}`, "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: on ? "enable" : "disable" });
+      });
       return undefined;
     } catch (error) {
       this.deps.say({ condition: "composio_instance_not_turned", trigger: id, instance, on: String(on), error: String((error as Error)?.message ?? error) });
@@ -141,16 +147,19 @@ export class ComposioTriggers implements TriggerUpstream {
 
   async removed(source: Source, id: string): Promise<Json | undefined> {
     const instance = instanceOf(source);
-    // Kept while another trigger holds it.
-    if ((await this.deps.holders()).some((h) => h.id !== id && h.source.instance_id === instance)) return undefined;
+    let left = "delete" as Left;
     try {
-      const ask = this.ask(await this.deps.credential(String(source.server), "field"));
-      await ask("deleting the trigger instance", "DELETE", `/api/v3/trigger_instances/manage/${enc(instance)}`, undefined, "gone");
+      // Kept while another trigger holds it, and off once none of those is on, as a pause leaves it.
+      const credential = await this.deps.credential(String(source.server), "field");
+      await this.serial(credential.key, async () => this.leave(this.ask(credential), instance, (left = await this.leftWith(instance, id))));
       return undefined;
     } catch (error) {
-      // Composio's 404: already gone.
-      if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") return undefined;
-      this.deps.say({ condition: "composio_instance_not_removed", trigger: id, instance, error: String((error as Error)?.message ?? error) });
+      const said = String((error as Error)?.message ?? error);
+      if (left === "off") {
+        this.deps.say({ condition: "composio_instance_not_turned", trigger: id, instance, on: "false", error: said });
+        return { composio: { done: false, note: `Composio didn't turn the trigger instance ${instance} off, and no trigger left that holds it is on: turn it off there yourself: ${DASHBOARD}` } };
+      }
+      this.deps.say({ condition: "composio_instance_not_removed", trigger: id, instance, error: said });
       return { composio: { done: false, note: `Composio didn't delete the trigger instance ${instance}: remove it there yourself: ${DASHBOARD}` } };
     }
   }
@@ -162,16 +171,10 @@ export class ComposioTriggers implements TriggerUpstream {
     const credential = await this.deps.credential(name, "route");
     const ask = this.ask(credential);
     const events: ComposioEvent[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const listed = await ask("listing the toolkit's events", "GET", `/api/v3/triggers_types?toolkit_slugs=${enc(credential.toolkit)}&limit=${PAGE}${cursor ? `&cursor=${enc(cursor)}` : ""}`);
-      for (const item of Array.isArray(listed.items) ? listed.items : []) {
-        if (!isObject(item) || !text(item.slug)) continue;
-        const config = isObject(item.config) ? item.config : { type: "object", properties: {} };
-        events.push({ slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description), ...(text(item.instructions) ? { instructions: text(item.instructions) } : {}), config, polled: item.type === "poll" });
-      }
-      cursor = text(listed.next_cursor) || undefined;
-      if (!cursor) break;
+    for (const item of await this.every(ask, "listing the toolkit's events", `/api/v3/triggers_types?toolkit_slugs=${enc(credential.toolkit)}`)) {
+      if (!isObject(item) || !text(item.slug)) continue;
+      const config = isObject(item.config) ? item.config : { type: "object", properties: {} };
+      events.push({ slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description), ...(text(item.instructions) ? { instructions: text(item.instructions) } : {}), config, polled: item.type === "poll" });
     }
     return { server: name, toolkit: credential.toolkit, events };
   }
@@ -190,9 +193,10 @@ export class ComposioTriggers implements TriggerUpstream {
       subscription = sub ? { ours: this.oursOf(sub.webhook_url) !== undefined, webhook_url: sub.webhook_url } : null;
       const ids = [...new Set(mine.map((h) => instanceOf(h.source)))];
       states = new Map();
-      if (ids.length) {
-        const listed = await ask("reading the trigger instances", "GET", `/api/v3/trigger_instances/active?trigger_ids=${ids.map(enc).join(",")}&show_disabled=true&limit=${PAGE}`);
-        for (const item of Array.isArray(listed.items) ? listed.items : []) if (isObject(item) && text(item.id)) states.set(text(item.id), item.disabled_at ? "off" : "on");
+      // A page's worth of ids asked at a time, each answer read to its last page.
+      for (let i = 0; i < ids.length; i += PAGE) {
+        const listed = await this.every(ask, "reading the trigger instances", `/api/v3/trigger_instances/active?trigger_ids=${ids.slice(i, i + PAGE).map(enc).join(",")}&show_disabled=true`);
+        for (const item of listed) if (isObject(item) && text(item.id)) states.set(text(item.id), item.disabled_at ? "off" : "on");
       }
     } catch (error) {
       failed = String((error as Error)?.message ?? error);
@@ -234,6 +238,49 @@ export class ComposioTriggers implements TriggerUpstream {
   }
 
   // ---- its steps ---------------------------------------------------------------------------------------------------------
+
+  /** `step` run once the steps queued before it for the project of key `key` are done (failed or not), and before any
+   *  queued after it. The key is digested, never kept as it is. */
+  private serial<T>(key: string, step: () => Promise<T>): Promise<T> {
+    const project = createHash("sha256").update(key).digest("hex");
+    const ran = (this.queues.get(project) ?? Promise.resolve()).then(step);
+    const done = ran.then(() => undefined, () => undefined);
+    this.queues.set(project, done);
+    void done.then(() => {
+      if (this.queues.get(project) === done) this.queues.delete(project);
+    });
+    return ran;
+  }
+
+  /** Every item a listing answers at `path` (with a query already), page after page by next_cursor, up to MAX_PAGES. */
+  private async every(ask: Ask, step: string, path: string): Promise<unknown[]> {
+    const items: unknown[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const listed = await ask(step, "GET", `${path}&limit=${PAGE}${cursor ? `&cursor=${enc(cursor)}` : ""}`);
+      items.push(...(Array.isArray(listed.items) ? listed.items : []));
+      cursor = text(listed.next_cursor) || undefined;
+      if (!cursor) break;
+    }
+    return items;
+  }
+
+  /** What instance `instance` comes to once trigger `id` no longer holds it, by the triggers holding it now: deleted when
+   *  none does; off when none of them is on, so Composio stops polling for it; else kept as it is. */
+  private async leftWith(instance: string, id: string): Promise<Left> {
+    const others = (await this.deps.holders()).filter((h) => h.id !== id && h.source.instance_id === instance);
+    return !others.length ? "delete" : others.some((h) => h.enabled) ? "keep" : "off";
+  }
+
+  /** Instance `instance` deleted on Composio or turned off, as `left` says; Composio's 404 to the delete: already gone. */
+  private async leave(ask: Ask, instance: string, left: Left): Promise<void> {
+    const manage = `/api/v3/trigger_instances/manage/${enc(instance)}`;
+    if (left === "off") await ask("turning the trigger instance off", "PATCH", manage, { status: "disable" });
+    if (left !== "delete") return;
+    await ask("deleting the trigger instance", "DELETE", manage, undefined, "gone").catch((error: unknown) => {
+      if (!(error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found")) throw error;
+    });
+  }
 
   /** Composio asked with the server's key; a failure's words end with what it left (`outcome`). */
   private ask(credential: ComposioCredential, outcome = "nothing was changed"): Ask {
@@ -292,11 +339,14 @@ export class ComposioTriggers implements TriggerUpstream {
         return undefined;
       });
       if (made) {
-        await this.keep(hook, text(made.secret));
+        // Its undo first, so one whose secret can't be kept here is deleted at Composio all the same; not while a
+        // trigger uses its hook, read then.
         undo.push(async () => {
+          if ((await this.deps.holders()).some((h) => h.source.hook === hook)) return;
           await ask("deleting the webhook subscription it made", "DELETE", `/api/v3/webhook_subscriptions/${enc(text(made.id))}`);
           await this.deps.sealed.remove(hook);
         });
+        await this.keep(hook, text(made.secret));
         this.deps.say({ condition: "composio_subscription_made", hook });
         return hook;
       }

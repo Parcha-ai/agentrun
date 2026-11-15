@@ -815,7 +815,9 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   const [rest, setRest] = useState<string[]>([]);
   // A refusal's way on: the link to connect the server's account, or the address the project's subscription is at.
   const [connect, setConnect] = useState<string | null>(null);
-  const [elsewhere, setElsewhere] = useState<string | null>(null);
+  // The move is asked about the create Composio refused, kept with it: "Move it here" sends that one, and any edit to the
+  // form withdraws the question (another server is another project).
+  const [elsewhere, setElsewhere] = useState<{ url: string; body: TriggerCreate } | null>(null);
   const [saving, setSaving] = useState(false);
   // A create sent again unchanged reuses its Idempotency-Key; an edited one (a move asked) gets a new key.
   const keys = useRef(keeper()).current;
@@ -843,10 +845,12 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
     return () => { live = false; };
   }, [v2, draft.server, eventTries]);
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
-  const set = <K extends keyof ComposioDraft>(k: K) => (value: ComposioDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
+  // An edit: the move asked about the create as it was is withdrawn.
+  const edit = (next: (d: ComposioDraft) => ComposioDraft) => { setElsewhere(null); setDraft(next); };
+  const set = <K extends keyof ComposioDraft>(k: K) => (value: ComposioDraft[K]) => edit((d) => ({ ...d, [k]: value }));
   // Another server or event starts its config and filter afresh.
-  const pickServer = (server: string) => setDraft((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] }));
-  const pickEvent = (event: string) => { setDraft((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
+  const pickServer = (server: string) => edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] }));
+  const pickEvent = (event: string) => { edit((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
   const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
   const fields: ConfigField[] = configFieldsOf(event?.config);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
@@ -859,7 +863,7 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       if (open.current) go(hashOf(made.id));
       return;
     } catch (err) {
-      if (err instanceof ClientError && err.code === "composio_subscription_elsewhere") setElsewhere(typeof err.details?.webhook_url === "string" ? err.details.webhook_url : "another address");
+      if (err instanceof ClientError && err.code === "composio_subscription_elsewhere") setElsewhere({ url: typeof err.details?.webhook_url === "string" ? err.details.webhook_url : "another address", body });
       else if (err instanceof ClientError && err.code.startsWith("composio_")) {
         // Composio's refusals are said in the server's words: what stops it, and how to go on.
         setRest([err.message]);
@@ -880,11 +884,11 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
     if (!body) { setIssues(missing ?? {}); return; }
     void send(body);
   };
-  // The person said to move the project's subscription here: the same create, asking for the move.
+  // The person said to move the project's subscription here: the create Composio refused, asking for the move.
   const move = () => {
-    const { body } = bodyNow();
+    const asked = elsewhere;
     setElsewhere(null);
-    if (body) void send({ ...body, source: { ...body.source, move_subscription: true } } as TriggerCreate);
+    if (asked) void send({ ...asked.body, source: { ...asked.body.source, move_subscription: true } } as TriggerCreate);
   };
   const back = <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
   const title = <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Blocks className="size-5 text-primary-text" aria-hidden />New app trigger</h1>;
@@ -933,7 +937,7 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
               <Said issues={issues} field="source.config" />
               {!fields.length ? <p className="text-small text-muted-foreground">This event takes no config.</p> : (
                 <div className="space-y-4">
-                  {fields.map((f) => <ConfigInput key={`${event.slug}:${f.name}`} field={f} value={draft.config[f.name] ?? f.initial} issue={issues[`source.config.${f.name}`]} onChange={(v) => setDraft((d) => ({ ...d, config: { ...d.config, [f.name]: v } }))} />)}
+                  {fields.map((f) => <ConfigInput key={`${event.slug}:${f.name}`} field={f} value={draft.config[f.name] ?? f.initial} issue={issues[`source.config.${f.name}`]} onChange={(v) => edit((d) => ({ ...d, config: { ...d.config, [f.name]: v } }))} />)}
                 </div>
               )}
             </fieldset>
@@ -953,7 +957,7 @@ function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       </div>
       {elsewhere && (
         <div role="alertdialog" aria-label="Move the subscription here?" className="mt-6 space-y-3 border border-warning/50 p-4 text-body">
-          <p>This Composio project's webhook subscription sends its events to <code className="break-all font-mono text-small">{elsewhere}</code>, not to this server.</p>
+          <p>This Composio project's webhook subscription sends its events to <code className="break-all font-mono text-small">{elsewhere.url}</code>, not to this server.</p>
           <p>Moving it here sends every event of the project to this server instead: whatever listens at that address stops getting them.</p>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" variant="solid" onClick={move}>Move it here</Button>

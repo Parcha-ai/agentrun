@@ -80,9 +80,10 @@ const RUN_DELETED = "its run was deleted";
  *  the server turns it off itself: offThere), removed after it. What it could not do there is answered beside the change (`said`, by its source's name: `{composio: {done:
  *  false, note}}`), and the change here holds. */
 export type TriggerUpstream = {
-  /** A trigger `id` of `source` being made (on or not): what it needs there made, the source to keep (with what was made
-   *  named in it), and how to undo it when the trigger is not kept. Throws the refusal when it can't be made. */
-  make(source: Source, id: string, enabled: boolean): Promise<{ source: Source; undo(): Promise<void> }>;
+  /** A trigger `id` of `source` being made (on or not): what it needs there made, then `keep` (the trigger's save here)
+   *  given the source to keep, with what was made named in it; what `keep` answers is answered. When `keep` throws, what
+   *  was made is undone and its refusal thrown. Throws the refusal when it can't be made. */
+  make<T>(source: Source, id: string, enabled: boolean, keep: (source: Source) => Promise<T>): Promise<T>;
   /** A PATCH's source for the trigger that keeps `was`: the source to keep, or the refusal (thrown) of a change to what
    *  was made there. */
   patched(was: Source, given: Source): Source;
@@ -335,20 +336,21 @@ export class Triggers {
     if (enabled) await this.needAgentOn(agentId);
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
-    // What its sender keeps of it is made first (Composio's instance), and undone when the trigger is not kept.
-    const made = await this.deps.upstream?.(source.kind)?.make(source, id, enabled);
-    const kept = made?.source ?? source;
     const name = typeof body.name === "string" ? body.name.trim() : id;
-    let row: TriggerRow;
-    let minted: Record<string, string>;
-    try {
-      // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
-      minted = await this.mint(kept, id);
-      row = await this.store.triggers.create({ id, agentId, name, enabled, source: kept, target, nextAt: enabled ? nextAfter(this.adapter(kept), kept, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(kept));
-    } catch (error) {
-      await made?.undo().catch((undone: unknown) => this.deps.say({ condition: "trigger_upstream_undo_failed", trigger: id, error: String((undone as Error)?.message ?? undone) }));
-      throw (await this.scopeTaken(error, kept, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
-    }
+    const keep = async (kept: Source): Promise<{ row: TriggerRow; minted: Record<string, string> }> => {
+      try {
+        // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
+        const minted = await this.mint(kept, id);
+        const row = await this.store.triggers.create({ id, agentId, name, enabled, source: kept, target, nextAt: enabled ? nextAfter(this.adapter(kept), kept, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(kept));
+        return { row, minted };
+      } catch (error) {
+        throw (await this.scopeTaken(error, kept, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
+      }
+    };
+    // What its sender keeps of it is made first (Composio's instance), the trigger saved after, and what was made undone
+    // there when it is not saved (the sender's own steps, one project's at a time).
+    const upstream = this.deps.upstream?.(source.kind);
+    const { row, minted } = upstream ? await upstream.make(source, id, enabled, keep) : await keep(source);
     // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
     await this.arm();
     // What it minted, shown this once, by field: a webhook's `secret`.
