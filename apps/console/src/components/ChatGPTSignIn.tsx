@@ -54,13 +54,16 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   const pending = v.state === "pending";
   useEffect(() => {
     if (!pending) return;
+    // One read at a time: a tick while one is out waits for the next, so a read slower than the poll still lands.
+    let reading = false;
     const read = () => {
-      if (document.visibilityState !== "visible") return;
+      if (reading || document.visibilityState !== "visible") return;
+      reading = true;
       const n = ++asked.current;
       v2.chatGPT().then((body) => {
         const next = chatGPTView(body);
         if (n === asked.current && next && next.state !== "pending") set(next);
-      }, () => {});
+      }, () => {}).finally(() => { reading = false; });
     };
     const timer = setInterval(read, POLL_MS);
     const shown = () => { if (document.visibilityState === "visible") read(); };
