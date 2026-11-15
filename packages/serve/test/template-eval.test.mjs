@@ -258,7 +258,8 @@ test("an llm grader sees each call's whole arguments, a web_fetch's URL with its
   // A secret-shaped header and api_key (an sk- key, a GitHub token): the run's own redaction takes them out of what is
   // served, so neither the grader's prompt nor the report holds them. The URL's query is no secret, and is shown whole.
   const url = "https://pricing.example.test/plans?tier=enterprise&seats=50";
-  const bearer = "sk-evalargs0123456789abcdefghijklmn";
+  // Both are built at run time, so no key-shaped literal sits in the source.
+  const bearer = `sk-${"evalargs0123456789".repeat(2)}`;
   const github = `ghp_${"Ab1".repeat(12)}`;
   // The faux fills them into its call from the environment, so the run's input (the grader's <task>) never holds them.
   withEnv(t, { EVAL_ARGS_BEARER: bearer, EVAL_ARGS_GITHUB: github });
