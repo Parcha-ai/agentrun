@@ -314,7 +314,11 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   };
   const params = form.fields;
   // Issues the form has no place for (a trigger's, an override's) show above the button, in the server's words.
-  const placed = (i: FieldIssue) => /^(parameters|secrets|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length);
+  // A choice's keys beyond the package's own: shown under that choice when it is the one picked.
+  const choiceKeys = (secrets: readonly string[]) => secrets.filter((s) => !t.secrets.includes(s));
+  const picked = t.model?.choices?.find((c) => c.id === choice);
+  const placed = (i: FieldIssue) => /^(parameters|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length)
+    || (i.field.startsWith("secrets.") && [...t.secrets, ...choiceKeys(picked?.secrets ?? [])].includes(i.field.slice("secrets.".length)));
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
@@ -457,12 +461,14 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 is no choice's. */}
             {[{ id: "", label: `Your default: ${t.model.tier} on ${!t.harness?.length ? "this server's default harness" : t.harness.length === 1 ? t.harness[0] : `the first of ${t.harness.join(", ")} this server runs`}`, warning: null, note: null }, ...t.model.choices].map((c) => (
               <label key={c.id || "(default)"} data-choice={c.id || "(default)"} className="flex items-start gap-3 px-4 py-3">
-                <input type="radio" name="model-choice" value={c.id} className="mt-1 accent-primary" checked={choice === c.id} onChange={() => { setChoice(c.id); setIssues((was) => was.filter((i) => i.field !== "overrides.choice")); }} />
+                <input type="radio" name="model-choice" value={c.id} className="mt-1 accent-primary" checked={choice === c.id} onChange={() => { setChoice(c.id); setIssues((was) => was.filter((i) => i.field !== "overrides.choice" && !(i.field.startsWith("secrets.") && !t.secrets.includes(i.field.slice("secrets.".length))))); }} />
                 <span className="min-w-0">
                   <span className="font-mono text-body" data-choice-label>{c.label}</span>
                   {"model" in c && <span className="block font-mono text-label text-muted-foreground">{c.model} on {c.harness}</span>}
                   {c.warning && <span className="mt-1 block text-small text-warning-text" data-choice-warning={c.id}>{c.warning}</span>}
                   {c.note && <span className="mt-1 block text-small text-muted-foreground" data-choice-note={c.id}>{c.note}</span>}
+                  {/* A key the picked choice alone needs, refused at apply: its words and fix here, under the choice. */}
+                  {"secrets" in c && choice === c.id && <span data-choice-keys={c.id}><Issues issues={choiceKeys(c.secrets).flatMap((s) => at(`secrets.${s}`))} /></span>}
                 </span>
               </label>
             ))}

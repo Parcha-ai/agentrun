@@ -16,6 +16,7 @@ import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
+import { harnessModel } from "./runnable.js";
 import { isPinKeys, type PinKeys, type PinScalar, type PinValue } from "./tool-gate.js";
 import { formatToolName, isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
@@ -957,31 +958,33 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
 }
 
 /** Why this server can't run a package's `prefer` on `harness`, and what the owner does about it, as `{why, fix}` in
- *  words; undefined when it can. A missing key names its provider and Settings → Model keys; a model no catalog here
+ *  words; undefined when it can. Asked as a save and a run ask it (runnable.ts harnessModel), on the harness's own
+ *  route: codex reaches an OpenAI model through OpenRouter's key alone. A missing key names its provider and Settings → Model keys; a model no catalog here
  *  lists, or one the harness does not run, only another model: overrides.model, or a model choice where the package
  *  has them (`choices`). */
 async function preferUnrunnable(env: NodeJS.ProcessEnv, prefer: string, harness: string, choices: boolean): Promise<{ why: string; fix: string } | undefined> {
   const other = `apply with overrides.model${choices ? " or one of the package's model choices (overrides.choice)" : ""}.`;
   const another = `${other[0]!.toUpperCase()}${other.slice(1)}`;
   if (!harnessRuns(env, prefer, harness)) return { why: `${harness} does not run it`, fix: another };
-  const chosen = await chooseModel(env, prefer, "default", harness);
-  if (!("why" in chosen)) return undefined;
-  if (chosen.needs === "model") return { why: "no model catalog here lists it", fix: another };
+  const chosen = await harnessModel(env, harness, prefer, true);
+  if (chosen && "model" in chosen) return undefined;
+  if (chosen && "why" in chosen && chosen.needs === "model") return { why: "no model catalog here lists it", fix: another };
   const row = MODEL_KEYS.find((one) => one.id === prefer.slice(0, prefer.indexOf("/")));
-  if (row && !env[row.field]) return { why: `no ${row.label} key is saved here`, fix: `Save ${/^[AEIOU]/.test(row.label) ? "an" : "a"} ${row.label} key in Settings → Model keys, or ${other}` };
-  return { why: chosen.why.replace(/\.$/, ""), fix: another };
+  if (chosen && "why" in chosen && chosen.needs === "key" && row && !env[row.field]) return { why: `no ${row.label} key is saved here`, fix: `Save ${/^[AEIOU]/.test(row.label) ? "an" : "a"} ${row.label} key in Settings → Model keys, or ${other}` };
+  return { why: (chosen === undefined ? `${harness} does not run here` : "refused" in chosen ? chosen.refused : chosen.why).replace(/\.$/, ""), fix: another };
 }
 
 /** Why this server can't run a model choice's model on its harness, in words; undefined when it can. As with `prefer`
  *  (packageModel), a choice is never swapped for the tier's model: the owner who picked it gets it, or apply refuses. The
- *  harness is the server's offer of it (`offer`, capabilities' harnesses): one not available here runs nothing. A gateway
+ *  harness is the server's offer of it (`offer`, capabilities' harnesses): one not available here runs nothing. The model
+ *  is asked of the harness's own route, as a save and a run ask it (runnable.ts harnessModel). A gateway
  *  (AGENT_MODEL_BASE_URL) never said it serves the model, so a choice is refused there, as `prefer` is skipped. */
 export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoice, offer: { available: boolean; reason?: string } | undefined): Promise<string | undefined> {
   if (!offer?.available) return `${choice.harness} is not available here${offer?.reason ? `: ${offer.reason.replace(/\.$/, "")}` : ""}`;
   if (env.AGENT_MODEL_BASE_URL) return "this server reaches its models through a gateway, which has not said it serves that model; overrides.model picks one it serves";
   if (!harnessRuns(env, choice.model, choice.harness)) return `${choice.harness} does not run that model here`;
-  const chosen = await chooseModel(env, choice.model, "default", choice.harness);
-  return "why" in chosen ? chosen.why : undefined;
+  const chosen = await harnessModel(env, choice.harness, choice.model, true);
+  return chosen === undefined ? `${choice.harness} does not run here` : "refused" in chosen ? chosen.refused : "why" in chosen ? chosen.why : undefined;
 }
 
 /** A computer setting as a definition names it (`definition.computer`). */

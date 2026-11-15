@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { choiceUnrunnable, PackageError, readPackage } from "../dist/templates.js";
+import { choiceUnrunnable, PackageError, packageModel, readPackage } from "../dist/templates.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
@@ -100,6 +100,11 @@ test("a choice runs only where its harness is available, its model in that harne
   assert.match(await choiceUnrunnable({}, free, up), /No OpenRouter key here for/);
   assert.match(await choiceUnrunnable({ ...env, AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENT_MODEL_API_KEY: "fake-test-key" }, free, up), /through a gateway, which has not said it serves that model/);
   assert.match(await choiceUnrunnable(env, { ...free, harness: "claude-agent" }, up), /claude-agent does not run that model here/);
+  // Checked on the harness's own route, as a save and a run are: codex reaches an OpenAI model through OpenRouter's key
+  // alone, and claude-agent an Anthropic one, with no OpenAI or Anthropic key here.
+  assert.equal(await choiceUnrunnable(env, { ...free, model: "openai/gpt-6.1-sol", harness: "codex" }, up), undefined);
+  assert.equal(await choiceUnrunnable(env, { ...free, model: "anthropic/claude-sonnet-5.5", harness: "claude-agent" }, up), undefined);
+  assert.deepEqual(await packageModel(env, { tier: "balanced", prefer: "openai/gpt-6.1-sol" }, "codex"), { model: "openai/gpt-6.1-sol" }, "a package's prefer, the same");
 });
 
 /** A server with an OpenRouter key alone (no other model key, no gateway), serving the inbox package. */
