@@ -196,6 +196,9 @@ export function script(spec, session = {}) {
   // answer (<how>: an error status, our stop after it streamed, a lost connection); the client sends it again, answered.
   const carrierUnanswered = /Wrap up with the carrier unanswered \((status|stopped|lost)\)\./.exec(text)?.[1];
   if (carrierUnanswered) return [{ unanswered: carrierUnanswered, inputTokensMax: 1_000 }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // A request lost once it left (no cost came back), one our side stopped part way, then an answer reported at $0 (a
+  // free model's, whose every token is $0).
+  if (/Answer at \$0 after a lost and a stopped request\./.test(text)) return [{ unanswered: "lost" }, { unanswered: "stopped" }, { say: "Answered.", usd: 0 }];
   // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that its host refuses (its
   // start mark fails, under the tests' START_MARK_FAIL_ENV); the client sends another, answered.
   if (/Wrap up with the carrier refused\./.test(text)) return [{ say: "First.", inputTokensMax: 1_000, usd: 0.01, onRefused: "next" }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
