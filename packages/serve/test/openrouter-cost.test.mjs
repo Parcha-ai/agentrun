@@ -51,17 +51,18 @@ function upstream(body) {
   return { fetch, asked };
 }
 
-/** One side request through `route`'s proxy (a tier's, as pi's session reaches it), and what the proxy booked for it. */
-async function bookedOn(t, route) {
+/** One side request through `route`'s proxy (a tier's, as pi's session reaches it), and what the proxy booked for it.
+ *  `tools`: the session's tools, offered on the request too (a text-tools model then takes them as text). */
+async function bookedOn(t, route, tools = []) {
   const booked = [];
   const hooks = { beforeRequest: async () => ({ turn: 1 }), afterRequest: async (usage, _ticket, ended) => void booked.push({ usage, ended }) };
-  const tiers = await openTierProxies(new Map([["fast", route]]), hooks);
+  const tiers = await openTierProxies(new Map([["fast", route]]), hooks, undefined, tools.map((tool) => tool.name));
   t.after(() => tiers.close());
   const port = tiers.port("side", "fast");
   const response = await fetch(`${port.url}/v1/messages`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${port.key}`, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: port.model, max_tokens: 1_000, stream: true, messages: [{ role: "user", content: "Say hello." }] }),
+    body: JSON.stringify({ model: port.model, max_tokens: 1_000, stream: true, messages: [{ role: "user", content: "Say hello." }], ...(tools.length ? { tools } : {}) }),
   });
   const text = await response.text();
   for (const end = Date.now() + 10_000; booked.length === 0; await new Promise((resolve) => setTimeout(resolve, 5))) {
@@ -151,4 +152,40 @@ test("a rate limit inside OpenRouter's 200 stream is booked as refused at $0, in
   assert.deepEqual(ended, { end: "nothing", label: "refused", reason: LIMITED });
   assert.match(text, /rate_limit_error/, "the client reads a rate limit, as Messages writes one");
   assert.match(text, /Rate limit exceeded: free-models-per-min/, "in the provider's words");
+});
+
+// An error with no usage is refused at $0 only when the provider generated nothing. The route's translation holds some of
+// what the model generates before it sends it (a text-tools model's whole reply, a thinking block until its end): an
+// error that comes while it holds some must not read as "nothing generated" to the proxy. The model ran; its cost is
+// unknown (the cap's hold), with the provider's words.
+const TEXT_TOOLS = "openrouter/particle-ai/particle-1";
+const READ_TOOL = [{ name: "read", description: "Read a file.", input_schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }];
+const reasoningChunk = () => chunk({ choices: [{ index: 0, delta: { role: "assistant", content: null, reasoning: "Let me think" }, finish_reason: null }] });
+const unknownWithWords = (booked, what) => {
+  assert.notEqual(booked.ended.end, "nothing", `${what}: the model ran, so it is not refused: ${JSON.stringify(booked.ended)}`);
+  assert.equal(booked.usage.usd, null, `${what}: an unknown cost, never $0: ${JSON.stringify(booked.usage)}`);
+  assert.deepEqual({ end: booked.ended.end, usd: booked.ended.usd, label: booked.ended.label }, { end: "answered", usd: null, label: "error" }, `${what}: ${JSON.stringify(booked.ended)}`);
+  assert.match(booked.ended.reason, /Provider disconnected/, `${what}: in the provider's words`);
+};
+
+test("a text-tools model's reply that ends in an error with no usage after it wrote content is booked unknown, never $0 refused", async (t) => {
+  const route = await routeOf(TEXT_TOOLS, OR_ALONE, "default", undefined, upstream(contentChunk() + failedChunk() + "data: [DONE]\n\n").fetch);
+  const booked = await bookedOn(t, route, READ_TOOL);
+  unknownWithWords(booked, "content, then the error");
+  assert.match(booked.text, /api_error/, "the client still reads the provider's error");
+  // Nothing generated before the error: refused at $0, as for any model.
+  const first = await bookedOn(t, await routeOf(TEXT_TOOLS, OR_ALONE, "default", undefined, upstream(failedChunk() + "data: [DONE]\n\n").fetch), READ_TOOL);
+  assert.deepEqual({ usd: first.usage.usd, end: first.ended.end, label: first.ended.label }, { usd: 0, end: "nothing", label: "refused" }, JSON.stringify(first.ended));
+});
+
+test("a text-tools model's reply that ends in an error after thinking alone, no usage, is booked unknown too", async (t) => {
+  const route = await routeOf(TEXT_TOOLS, OR_ALONE, "default", undefined, upstream(reasoningChunk() + failedChunk() + "data: [DONE]\n\n").fetch);
+  unknownWithWords(await bookedOn(t, route, READ_TOOL), "thinking, then the error");
+});
+
+test("an error before a thinking block's end, no usage, is booked unknown: the thinking the model wrote reaches the client", async (t) => {
+  const route = await routeOf(MODEL, OR_ALONE, "default", undefined, upstream(reasoningChunk() + failedChunk() + "data: [DONE]\n\n").fetch);
+  const booked = await bookedOn(t, route);
+  unknownWithWords(booked, "thinking, then the error");
+  assert.match(booked.text, /"thinking_delta","thinking":"Let me think"/, "the thinking it held, sent before the error");
 });

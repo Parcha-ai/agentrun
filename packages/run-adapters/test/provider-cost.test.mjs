@@ -214,6 +214,24 @@ test("an error once the model's content streamed with no usage reported is not r
   assert.deepEqual(bookRequest(after[0].ended, { hold: 0.05 }), { usd: 0.05, rule: 'answered:error' });
 });
 
+// Missing content is not proof the provider refused: a stream that shows the model began its output (a Messages block it
+// opened, a Responses output item, a Chat Completions delta with something in it) ran, even where none of its content
+// streamed (hidden reasoning, a block a translation held). An error after that with nothing reported is unknown.
+const BEGAN = {
+  'a Messages block opened': stream(`event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":0}}}`, `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`, OVERLOADED),
+  'a Responses output item (hidden reasoning)': stream(`event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning', id: 'rs_1', summary: [] } })}`, `event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', response: { status: 'failed', error: { code: 'server_error', message: 'Overloaded' } } })}`),
+  'a Chat Completions reasoning delta': stream(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning: 'Let me think' } }] })}`, `data: ${JSON.stringify({ error: { code: 502, message: 'Overloaded' }, choices: [{ index: 0, delta: { content: '' }, finish_reason: 'error' }] })}`),
+};
+
+for (const [began, body] of Object.entries(BEGAN)) {
+  test(`an error with nothing reported once the model began its output (${began}) is not refused: an unknown cost, with its words`, async (t) => {
+    const { p, after } = await proxy(t, { fetch: answering(body) });
+    await send(p.url);
+    await until(() => after.length === 1, 'the booking');
+    assert.deepEqual(after[0].ended, { end: 'answered', usd: null, label: 'error', reason: 'Overloaded' });
+  });
+}
+
 test("the run's books keep both: the reported figure with the table's beside it, and a refusal at $0 with its words", async (t) => {
   const store = memorySessionStore();
   const key = 'chat:provider-cost';

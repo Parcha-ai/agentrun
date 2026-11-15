@@ -785,6 +785,32 @@ export function streamErrorOf(text: string): StreamError | undefined {
   return undefined;
 }
 
+/** Whether a stream shows the model began its output, read from each event's data by its fields, never its words: a
+ *  Messages block it opened (`content_block_start`), a Responses output item (`response.output_item.added`) or a
+ *  Responses delta with something in it, a Chat Completions chunk whose delta holds content, reasoning, a refusal or a
+ *  tool call. Its content need not have streamed: a model's hidden reasoning (a Responses reasoning item) shows none, and
+ *  neither does a block a translation held until its end. An empty delta (a first chunk's `content: ""`, the one a
+ *  mid-stream error comes in) is no output. */
+export function outputBeganIn(text: string): boolean {
+  const filled = (value: unknown) => (typeof value === "string" && value.length > 0) || (Array.isArray(value) && value.length > 0);
+  for (const raw of text.replace(/\r\n|\r/g, "\n").split("\n\n")) {
+    const data = raw.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n").trim();
+    if (!data.startsWith("{")) continue;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const type = event.type;
+    if (type === "content_block_start" || type === "response.output_item.added") return true;
+    if (typeof type === "string" && type.startsWith("response.") && type.endsWith(".delta") && filled(event.delta)) return true;
+    const choices = Array.isArray(event.choices) ? (event.choices as { delta?: Record<string, unknown> }[]) : [];
+    if (choices.some((choice) => ["content", "reasoning", "reasoning_content", "reasoning_text", "refusal", "tool_calls"].some((field) => filled(choice?.delta?.[field])))) return true;
+  }
+  return false;
+}
+
 export class ProxyRefusal extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "ProxyRefusal"; }
 }
@@ -1657,9 +1683,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         unread = true;
         // A stream that ends in the provider's error with no tokens and no cost reported (a 200 the provider sent before
         // the model's first token, then a rate limit or an overload as an error event): refused, never run, so it cost
-        // nothing. Never once the model's content streamed with no usage said: that was run, and is booked at an unknown
-        // cost as any answer cut short.
-        if (failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0)) {
+        // nothing. Never once the model's content streamed with no usage said, nor once the stream shows it began its
+        // output with none of it streamed (outputBeganIn: hidden reasoning, a block a translation held): that was run,
+        // and is booked at an unknown cost as any answer cut short. Missing content is no proof of a refusal.
+        if (failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0) && !outputBeganIn(kept)) {
           refusedIn = wordsOf(failed.words);
           say(`model proxy (${policy.id}): the provider refused the request inside its answer (${failed.rateLimit ? "a rate limit" : "an error"}); booked at nothing`);
         }

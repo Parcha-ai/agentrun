@@ -205,7 +205,9 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         // before it (`used`, its stated `cost` too) as the message's, so the proxy books it by its one rule for an error in a
         // stream: those tokens at list (or that cost), else refused at nothing. Its top-level `message` is the same words,
         // which pi-ai's Messages client reads as the request's error. A failure with no such event (a transport error, a
-        // status) goes as its words alone: the proxy books that as an answer cut short, at an unknown cost.
+        // status) goes as its words alone: the proxy books that as an answer cut short, at an unknown cost. Whatever the
+        // model wrote that this translation held is sent before either (sendHeld), so an error with no usage after the
+        // model began is never read as a refusal.
         const sendError = (words: string, used?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }, cost?: number) => {
           const failed = tap ? streamErrorOf(tap.kept()) : undefined;
           if (failed === undefined) return sendWords(words);
@@ -223,12 +225,45 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         const blockOf = new Map<number, number>();
         const sentJson = new Set<number>();
         let blocks = 0;
-        // The thinking of the block being streamed, gathered so its whole text is redacted at once (its deltas are not sent).
+        // The thinking of the block being streamed, gathered so its whole text is redacted at once (its deltas are not sent),
+        // and that block's index while it is open.
         let thinking = "";
+        let thinkingAt: number | undefined;
         const open = (at: number | undefined) => {
           const index = blocks++;
           blockOf.set(at ?? -1, index);
           return index;
+        };
+        // The thinking block held open, sent as it ends: its whole text through the run's one redactor, then its stop.
+        const endThinking = () => {
+          if (thinkingAt === undefined) return;
+          send({ type: "content_block_delta", index: thinkingAt, delta: { type: "thinking_delta", thinking: redact(thinking) } });
+          send({ type: "content_block_stop", index: thinkingAt });
+          thinkingAt = undefined;
+        };
+        // What the model wrote that this translation held back when its request fails (a thinking block before its end; a
+        // text-tools reply, read whole at its end, here the failed reply's parts): sent before the error, as a provider
+        // that streams it would have sent it. The model ran, and the proxy must not read the error as one before anything
+        // was generated (a refusal at $0): what it wrote shows it did. A text-tools reply that began with no part pi-ai
+        // kept goes as an empty text block, which still shows the model began.
+        const sendHeld = (reply?: { began: boolean; message: PiMessage }) => {
+          endThinking();
+          if (!reply?.began) return;
+          const parts = reply.message.content ?? [];
+          const thought = parts.filter((each) => each.type === "thinking").map((each) => each.thinking ?? "").join("");
+          const text = parts.filter((each) => each.type === "text").map((each) => each.text ?? "").join("");
+          if (thought) {
+            const index = blocks++;
+            send({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "", signature: "" } });
+            send({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: redact(thought) } });
+            send({ type: "content_block_stop", index });
+          }
+          if (text || !thought) {
+            const index = blocks++;
+            send({ type: "content_block_start", index, content_block: { type: "text", text: "" } });
+            if (text) send({ type: "content_block_delta", index, delta: { type: "text_delta", text } });
+            send({ type: "content_block_stop", index });
+          }
         };
         try {
           for await (const event of asText ? [] : events) {
@@ -236,15 +271,15 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             if (event.type === "text_start") send({ type: "content_block_start", index: open(at), content_block: { type: "text", text: "" } });
             else if (event.type === "thinking_start") {
               thinking = "";
-              send({ type: "content_block_start", index: open(at), content_block: { type: "thinking", thinking: "", signature: "" } });
+              thinkingAt = open(at);
+              send({ type: "content_block_start", index: thinkingAt, content_block: { type: "thinking", thinking: "", signature: "" } });
             } else if (event.type === "thinking_delta") thinking += event.delta ?? "";
             else if (event.type === "thinking_end") {
               // The whole thinking at its end, through the run's one redactor, in one delta: a held key the model quoted is
               // cut before pi's session journals it even where it spans two deltas (a cut per delta could miss a key split
               // across them).
-              const index = blockOf.get(at ?? -1);
-              send({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: redact(thinking) } });
-              send({ type: "content_block_stop", index });
+              thinkingAt = blockOf.get(at ?? -1);
+              endThinking();
             }
             else if (event.type === "text_delta") send({ type: "content_block_delta", index: blockOf.get(at ?? -1), delta: { type: "text_delta", text: event.delta ?? "" } });
             else if (event.type === "toolcall_start") {
@@ -269,6 +304,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             else if (event.type === "done" || event.type === "error") {
               const message = (event.type === "done" ? event.message : event.error) ?? {};
               if (event.type === "error") {
+                sendHeld();
                 sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"), message.usage, reportedOf(message.usage));
                 break;
               }
@@ -294,10 +330,16 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             let nextTokens = 0;
             for (let attempt = 1; ; attempt++) {
               let again = false;
+              // Whether this try's reply began: any of its content's events (pi-ai's `start` is the request's own).
+              let began = false;
               for await (const event of replies) {
-                if (event.type !== "done" && event.type !== "error") continue;
+                if (event.type !== "done" && event.type !== "error") {
+                  if (event.type !== "start") began = true;
+                  continue;
+                }
                 const message = (event.type === "done" ? event.message : event.error) ?? {};
                 if (event.type === "error") {
+                  sendHeld({ began: began || (message.content ?? []).length > 0, message });
                   // The tries so far were paid, and this one's usage too: their sum, with their stated cost while each
                   // try that reported tokens stated one.
                   const given = message.usage;
@@ -360,6 +402,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
             }
           }
         } catch (error) {
+          sendHeld();
           sendError(redact((error as Error)?.message ?? String(error)));
         }
         controller.close();
