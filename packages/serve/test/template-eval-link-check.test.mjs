@@ -97,6 +97,16 @@ test("a URL that ends in punctuation or holds an apostrophe matches whole; punct
     "https://vendor.example/zz — no matching call",
     "https://en.example/wiki/O'Reilly_Media — matches call 1",
   ]);
+  // A JSON field that is one URL, and a markdown link's target, are taken whole: a different path never matches.
+  const exact = checked(graderInput(grader, "task", run("See [the report](https://vendor.example/a!).", calls)));
+  assert.deepEqual(exact, ["https://vendor.example/a! — no matching call"]);
+  const fielded = checked(graderInput(grader, "task", run(JSON.stringify({ url: "https://vendor.example/a." }), calls)));
+  assert.deepEqual(fielded, ["https://vendor.example/a. — no matching call"]);
+  // An apostrophe before the query never lets a value through.
+  const key = ["not-a-secret", "quoted", "0123456789"].join("-");
+  const quoted = graderInput(grader, "task", run(`https://vendor.example/O'Reilly?token=${key}`, calls));
+  assert.deepEqual(checked(quoted), ["https://vendor.example/O'Reilly?token=… — no matching call"]);
+  assert.equal(quoted.slice(quoted.indexOf("<link-check")).includes(key), false);
 });
 
 test("a run with no web_search or web_fetch call is graded on the prompt it always was, with no link check", () => {
