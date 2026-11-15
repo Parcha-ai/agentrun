@@ -110,7 +110,9 @@ describe("CostChart", () => {
     expect(text(host)).toContain("Before takeover $0.890");
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
-    expect(text(host)).toContain("1 run's cost is not known: left out.");
+    expect(text(host)).not.toContain("cost is not known");
+    act(() => root?.unmount());
+    expect(text(draw(unknownRun))).toContain("1 run's cost is not known: left out.");
   });
   it("the hand-back rate is the server's, over every run since the takeover, never the latest runs the chart read", () => {
     // The chart read only runs it answered alone; the summary counts the hand-backs before them.
