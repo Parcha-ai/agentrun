@@ -540,6 +540,38 @@ test("a create that lands after an abort is deleted as it lands", async () => {
 	await nothingLeft(fake, "a late create");
 });
 
+test("a create given up on that then fails sweeps its name only where it may have made a machine: a refusal, exists among them, leaves the name's machine alone", async () => {
+	const cases = [
+		// Refused: the vendor made nothing, so the machine under the name is another instance's (or caller's) for this request.
+		["exists", new HostError("exists", "409: a machine with that name exists"), false],
+		["limit", new HostError("limit", "429: too many machines"), false],
+		// Failed otherwise, or the host's own client gave up: the create may have made it, so the name is swept, as today.
+		["a vendor failure", new Error("502: Bad Gateway"), true],
+		["the host's own timeout", new HostError("timeout", "POST /v1/instances did not answer within 300 s"), true],
+	];
+	for (const [what, error, swept] of cases) {
+		const { provider, fake } = setup({}, { create: "hold" });
+		const requestId = `late-${what}`;
+		const controller = new AbortController();
+		const pending = provider.create(SPEC, { requestId, signal: controller.signal });
+		await new Promise((done) => setTimeout(done, 10));
+		controller.abort();
+		assert.equal((await pending).error?.code, "aborted", what);
+		// Meanwhile a create of the same request on another instance made its machine under the name.
+		const other = fake.add({ labels: { [COMPUTER]: "1", [NAME]: nameOf(requestId), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" } });
+		const before = fake.calls.length;
+		await fake.release(error);
+		if (swept) {
+			for (let i = 0; i < 100 && !other.deleted; i++) await new Promise((done) => setTimeout(done, 10));
+			assert.equal(other.deleted, true, `${what}: the machine under the name is swept`);
+		} else {
+			// The sweep's first step is the listing by the name, which the late failure reaches before release returns.
+			assert.deepEqual(fake.calls.slice(before).filter(([name]) => name === "list" || name === "delete"), [], `${what}: no listing or delete by the name`);
+			assert.equal(other.deleted, false, `${what}: the other instance's machine is left running`);
+		}
+	}
+});
+
 test("nothing left behind: a failure or an abort at any step after the machine exists deletes it and waits until it is gone", async () => {
 	const cases = [
 		["an installed sha256 that does not match", { sha: "lie" }, /uploaded sha256/],

@@ -185,6 +185,14 @@ const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 const alive = (state: Machine["state"]) => state !== "gone";
+/** The codes of a create the vendor refused, which made nothing. */
+const REFUSED_CREATE: ReadonlySet<ComputerError["code"]> = new Set(["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"]);
+/**
+ * Whether a create that failed with code may have made a machine, so the request's name is swept. A refusal made
+ * nothing: a machine under the name then is another's (exists: another instance's create of the request), never
+ * deleted. Any other failure (the vendor's, a timeout) may have made one, answered in time or after create gave up.
+ */
+const mayHaveMade = (code: ComputerError["code"]) => !REFUSED_CREATE.has(code);
 
 /** An ISO time a label holds, or undefined when it is missing or not the ISO time create writes. */
 export function isoOf(written: string | undefined): Date | undefined {
@@ -641,9 +649,9 @@ export class HostedProvider implements ComputerProvider {
 		};
 		const { createMs } = this.#timeouts;
 		// Never signalled, only raced: an aborted call could leave a machine made whose id never came back. One that lands
-		// after this gave up is deleted by its id; one whose answer never comes, by its name.
+		// after this gave up is deleted by its id; one that fails after it, by its name where it may have made one.
 		const created = await hostCall(this.host, `${this.#label}'s create`, (ctx) => this.host.create(request, { timeoutMs: ctx.timeoutMs }), createMs, signal, (made) =>
-			made.ok ? this.#kill(made.value.id) : this.#deleteNamed(name),
+			made.ok ? this.#kill(made.value.id) : mayHaveMade(made.error.code) ? this.#deleteNamed(name) : undefined,
 		);
 		if (!created.ok) {
 			const { code, message } = created.error;
@@ -651,8 +659,7 @@ export class HostedProvider implements ComputerProvider {
 				this.#end(name);
 				return this.#fail(code, `${message}; a machine it makes after this is deleted as it lands, and ${this.#label} ends it by ${deadline} either way`);
 			}
-			// A create the vendor refused made nothing. One that failed otherwise may have: it goes by its name.
-			if (["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"].includes(code)) return created;
+			if (!mayHaveMade(code)) return created;
 			this.#end(name);
 			const swept = await this.#deleteNamed(name);
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
@@ -677,7 +684,8 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Every machine carrying a name create gave, deleted and read back gone: for a create whose answer never came. The
+	 * Every machine carrying a name create gave, deleted and read back gone: for a create that may have made one whose
+	 * id never came (mayHaveMade), never after a refusal, where a machine under the name is another's. The
 	 * listing shows a new machine a moment after the vendor makes it, so it is read for the name until one shows or
 	 * listedMs passes. Best effort, in words.
 	 */
