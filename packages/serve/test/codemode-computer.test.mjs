@@ -464,7 +464,9 @@ function codexScript(calls) {
   };
 }
 
-test("on Codex, a script's computer_op calls sit under the script's own call on the timeline as on every other harness: the exec has its own rows, and each nested row names it as its parent", async (t) => {
+/** A desktop run on Codex (its stand-in app server) whose one code-mode `exec` runs `calls` (codexScript): its computer and
+ *  the server's store. */
+async function codexRun(t, calls) {
   const { resolveHarness } = await import("../dist/runner/adapters/index.js");
   const standIn = new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url).pathname;
   const saved = process.env.AGENTRUN_CODEX_STANDIN;
@@ -474,9 +476,14 @@ test("on Codex, a script's computer_op calls sit under the script's own call on 
   dirs.push(sessionsDir);
   const { computer, run, tools } = await desktop({ more: VENDOR });
   const harness = resolveHarness("codex");
-  const fetch = codexScript([{ tool: "computer_op", args: { op: "apps.list", args: {} } }, { tool: "computer_op", args: { op: "files.write", args: { path: "/workspace/notes.txt", data: "Pears: 41" } } }]);
+  const fetch = codexScript(calls);
   const adapterOf = (run_) => harness.adapter({ run: run_, model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "not-a-secret" }, price: () => 0, sessionsDir, fetch }, { standIn: { command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "responses" } } });
   const { server } = await codemodeRun(t, [], tools, () => "allow", undefined, { computer: run.computer, adapterOf, record: harness.record });
+  return { computer, server };
+}
+
+test("on Codex, a script's computer_op calls sit under the script's own call on the timeline as on every other harness: the exec has its own rows, and each nested row names it as its parent", async (t) => {
+  const { computer, server } = await codexRun(t, [{ tool: "computer_op", args: { op: "apps.list", args: {} } }, { tool: "computer_op", args: { op: "files.write", args: { path: "/workspace/notes.txt", data: "Pears: 41" } } }]);
   assert.deepEqual(methodsOf(computer).filter((method) => method === "apps.list" || method === "files.write"), ["apps.list", "files.write"], "each call reached the computer once");
   const rows = await runTimeline(server, "run-1", ctx);
   const seen = JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.tool_use_id, row.parent_tool_use_id]));
@@ -490,6 +497,21 @@ test("on Codex, a script's computer_op calls sit under the script's own call on 
   assert.equal(nested.length, 4, seen);
   assert.deepEqual(nested.map((row) => [row.kind, row.parent_tool_use_id]), [["tool_use", "call_exec"], ["tool_result", "call_exec"], ["tool_use", "call_exec"], ["tool_result", "call_exec"]], `every nested row names the script's call: ${seen}`);
   assert.ok(rows.indexOf(outer) < rows.indexOf(nested[0]), `the script's row comes first: ${seen}`);
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "call_exec");
+  assert.equal(result.tool_status, "success", `a script that ended well reads ok: ${result.summary}`);
+});
+
+test("on Codex, a script that failed reads failed on its exec's result row, as a failed script's row does on every other harness, never ok", async (t) => {
+  const { computer, server } = await codexRun(t, [{ tool: "computer_op", args: { op: "apps.list", args: {} } }, { throw: "pears is not defined" }]);
+  assert.deepEqual(methodsOf(computer).filter((method) => method === "apps.list"), ["apps.list"], "the call before the error reached the computer");
+  const rows = await runTimeline(server, "run-1", ctx);
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "call_exec");
+  assert.ok(result, `the exec has its result row: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.tool_use_id]))}`);
+  assert.equal(result.tool_status, "failed", `a failed script's row says so: ${result.summary}`);
+  assert.match(result.summary, /^Using tool: exec failed: /, "its summary says it failed");
+  assert.match(result.tool_result_preview ?? "", /pears is not defined/, "and its result says why");
+  const nested = rows.find((row) => row.kind === "tool_result" && row.tool_name === "computer_op");
+  assert.equal(nested?.tool_status, "success", "the call that ran before the error still reads ok");
 });
 
 test("a desktop run whose codemode is set to deny, under surface code too, lists the step tools and computer_op: with no script to call them, the computer stays in the model's reach", async (t) => {
