@@ -36,11 +36,15 @@ function refusal(e: unknown): string {
   return e instanceof ClientError && e.status < 500 && p.said ? p.said : `${p.why} ${p.next}`;
 }
 
-/** What came of the grade, in words: the round it opened (`feedback`, running or done), or that it was kept with none
+/** What a round says when its run ended before it took the grade's words (`feedback_status` `not_run`). */
+export const NOT_RUN = "The review could not run.";
+
+/** What came of the grade, in words: the round it opened (`feedback`, running, done or never run), or that it was kept with none
  *  (the form's NO_WORDS says before sending that a wrong grade without words opens none). A finished `revise` round says
  *  "revised" only when the run's learning kept the workflow's revision (its newest round merged with that workflow); a
  *  draft that failed its checks, a `No change.` or a grader that kept nothing of it changed nothing. */
 function outcome(graded: RunGraded, reviewing: boolean, learning: Run["learning"]): string {
+  if (graded.feedback && graded.feedback_status === "not_run") return NOT_RUN;
   if (graded.feedback === "look_back") return reviewing ? "The agent is looking back on your words." : "The agent looked back on your words.";
   if (graded.feedback === "revise") {
     if (reviewing) return "The learned workflow that answered is being revised with your grade.";
@@ -53,7 +57,7 @@ function outcome(graded: RunGraded, reviewing: boolean, learning: Run["learning"
 
 export type RunGradeProps = {
   run: Pick<Run, "status" | "learning">;
-  /** The run's grade as its learning read gives it back (`graded`, with the round it opened and whether that ended), a
+  /** The run's grade as its learning read gives it back (`graded`, with the round it opened and how that stands), a
    *  grade this page sent taken into it: null when it has none, or before the read. */
   graded: RunGraded | null;
   /** Sends the grade (PUT /v2/runs/{id}/grade), reads the run again and takes the answer into the learning read; rejects
@@ -77,10 +81,13 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
   // Held outside React's state, so two clicks in the same tick are still one grade.
   const sending = useRef(false);
   const ended = runEnded(run.status);
-  // The round the grade opened runs until the learning read says it ended (`feedback_ended`, from the run's journal) and
-  // the run's learning settled. Never the API server's `graded_at` against the runner's `ended_at`: two hosts' clocks. A
-  // grade this page sent says running until a read after it says otherwise, so a read that failed never shows it ended.
-  const reviewing = !!graded?.feedback && (!graded.feedback_ended || underWay(run.learning ?? undefined));
+  // The round the grade opened runs until the learning read says it settled (`feedback_status`, from the run's journal and
+  // its steer's row): `ended` once the run's learning settled too; `not_run` at once (its run ended before it took the
+  // words, so no learning of it is under way). Never the API server's `graded_at` against the runner's `ended_at`: two
+  // hosts' clocks. A grade this page sent says running until a read after it says otherwise, so a read that failed never
+  // shows it ended.
+  const status = graded?.feedback ? graded.feedback_status : null;
+  const reviewing = status === "running" || (status === "ended" && underWay(run.learning ?? undefined));
   if (!gradable(run) || (!ended && !graded)) return null;
   const form = open === "auto" ? (graded ? "closed" : "choose") : open;
   const canGrade = ended && !reviewing;

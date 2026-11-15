@@ -51,7 +51,8 @@ export interface Grade {
    *  once the round opened, so a kept grade never names a round that didn't. */
   readonly feedback?: FeedbackRound | null;
   /** The steer command that round opened the run again on (store.runs.reopen's id), set with `feedback`: the run's journal
-   *  says when that round ended (runner/feedback-round.ts feedbackEnded), never a clock. Not in the API's view. */
+   *  and that steer's row say how that round stands (runner/feedback-round.ts feedbackStatus), never a clock. Not in the
+   *  API's view. */
   readonly feedbackCommand?: number;
 }
 

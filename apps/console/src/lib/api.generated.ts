@@ -2242,7 +2242,7 @@ export interface operations {
         workflow: string | null;
         workflow_digest: string | null;
         feedback: "revise" | "look_back" | null;
-        feedback_ended: boolean;
+        feedback_status: "running" | "ended" | "not_run" | null;
       };
     } | null;
   };

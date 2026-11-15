@@ -16,7 +16,7 @@
 import { type Grade, markGradeRound, putGrade } from "../learn/promote.js";
 import type { RunPath } from "../learning-cost.js";
 import { readLaunchBody } from "../run-launch.js";
-import { RunFinal, type Store } from "../store/store.js";
+import { type Command, RunFinal, type Store } from "../store/store.js";
 import { KINDS } from "./journal-kinds.js";
 import { commandRequest } from "./loop.js";
 import { servedAnswerText } from "./workflow-first.js";
@@ -74,17 +74,29 @@ export function feedbackAsk(feedback: FeedbackData, seen?: { readonly job: strin
   return [...(seen ? [seen.job, servedAnswerText(seen.served.workflow, seen.served.answer)] : []), graded, "", feedback.text].join("\n\n").replace(/\n{3,}/g, "\n\n");
 }
 
-/** Whether the feedback round opened on steer command `command` (store.runs.reopen's id) ended, read from its run's root
- *  `entries` in journal order: the FEEDBACK entry that took that steer (its requestId names the command) has the run's
- *  end entry after it. One writer orders both (the run's runner), so no clock is compared: a round whose steer no runner
- *  took yet, or whose run has not ended since, is running (false). */
-export function feedbackEnded(entries: readonly { readonly kind: string; readonly data?: unknown }[], command: number): boolean {
-  const request = commandRequest(command);
+/** How a feedback round stands (GET /runs/{id}/learning `graded.feedback_status`): `running` until it settles; `ended`,
+ *  its run took the grade's words and ended after them; `not_run`, its run ended before it took them. */
+export const FEEDBACK_STATUSES = ["running", "ended", "not_run"] as const;
+export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
+
+/** How the feedback round opened on steer `command` (store.runs.reopen's row, read now) stands, never by a clock:
+ *  - `ended`: in its run's root `entries`, the FEEDBACK entry that took the steer (its requestId names the command) has
+ *    the run's end entry after it, both in journal order (one writer, the run's runner);
+ *  - `not_run`: no FEEDBACK entry took it and the row is refused. A runner writes nothing for the steer before that entry,
+ *    so a reopened run that ends first (its claim refused, an end with nothing sent) leaves no trace of the round in its
+ *    journal: its end's own commit refuses the row (the store's refuseLeftovers), in the same transaction as that end;
+ *  - else `running`: the steer untaken (no runner took it yet; an end that left it so opened the run again with it), or
+ *    taken with no end since, or a row that can't be read. */
+export function feedbackStatus(entries: readonly { readonly kind: string; readonly data?: unknown }[], command: Pick<Command, "id" | "refused"> | undefined): FeedbackStatus {
+  if (!command) return "running";
+  const request = commandRequest(command.id);
   const at = entries.findIndex((entry) => entry.kind === KINDS.feedback && (entry.data as { requestId?: unknown } | undefined)?.requestId === request);
-  return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === KINDS.end);
+  if (at >= 0) return entries.slice(at + 1).some((entry) => entry.kind === KINDS.end) ? "ended" : "running";
+  return command.refused !== null ? "not_run" : "running";
 }
 
-/** A feedback round opened: the round, and the steer command it opened the run again on (feedbackEnded reads its end). */
+/** A feedback round opened: the round, and the steer command it opened the run again on (feedbackStatus reads how it
+ *  stands). */
 export interface OpenedRound {
   readonly round: FeedbackRound;
   readonly command: number;

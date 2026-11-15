@@ -14,7 +14,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
-import { feedbackEnded } from "../runner/feedback-round.js";
+import { feedbackStatus } from "../runner/feedback-round.js";
 import { PAST_RUNS, type PastRun, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
@@ -649,9 +649,13 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const grade = row ? (await gradesOf(store.settings, row.agentId).catch(() => [])).find((one) => one.run === runId) : undefined;
   if (!grade) return body;
   const { expected: _, ...graded } = gradeView(grade);
-  // Whether that round ended, from the run's journal (feedbackEnded: its steer taken, then the run's end), never the API
-  // server's `graded_at` against the runner's `ended_at`. A journal that can't be read says running.
+  // How that round stands, from the run's journal and its steer's row (feedbackStatus: its words taken, then the run's
+  // end; or the steer refused by an end that came first), never the API server's `graded_at` against the runner's
+  // `ended_at`. A journal or a row that can't be read says running. null for a grade that opened none.
   const command = grade.feedback ? grade.feedbackCommand : undefined;
-  const ended = command !== undefined && feedbackEnded(used ? entries : await runEntries(store, runId, BACKGROUND_CONTEXT).catch(() => []), command);
-  return { ...body, graded: { ...graded, workflow: graded.workflow === null ? null : shown.name(graded.workflow), feedback_ended: ended } };
+  const status = command === undefined ? null : feedbackStatus(
+    used ? entries : await runEntries(store, runId, BACKGROUND_CONTEXT).catch(() => []),
+    await store.commands(runId, command - 1).then((rows) => rows.find((one) => one.id === command), () => undefined),
+  );
+  return { ...body, graded: { ...graded, workflow: graded.workflow === null ? null : shown.name(graded.workflow), feedback_status: status } };
 }
