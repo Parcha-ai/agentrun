@@ -1,7 +1,9 @@
 // A server with no model key, signed in to a person's ChatGPT plan (OpenAI's Sign in with ChatGPT, through pi-ai's own
 // flow), runs codex and pi on it. OpenAI is a fake in this process: the global fetch, which pi-ai's sign-in and the model
 // proxy both send with, answers auth.openai.com and api.openai.com here (its token endpoint with rotating refresh tokens,
-// its model list, its Responses API), and lets every other request through. Nothing reaches the network.
+// its model list, its Responses API), and lets every other request through. Nothing reaches the network. Its sign-ins
+// listen for the loopback callback on a loopback address of this process's own (loopback-callback-host.mjs, first).
+import { CALLBACK_HOST } from "./loopback-callback-host.mjs";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -603,6 +605,20 @@ test("a second sign-in revokes the first before it takes its place", { timeout: 
   assert.equal(openai.revocationsOf(first.refresh), 1, "the first sign-in is revoked");
   assert.equal(openai.revocationsOf(second.refresh), 0, "the second is kept");
   assert.equal(await plan.token(), second.access);
+});
+
+test("a sign-in waiting listens for its loopback callback on this test process's own loopback address (pi-ai's PI_OAUTH_CALLBACK_HOST), port 1455", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { createConnection } = await import("node:net");
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  if (process.platform === "linux") assert.notEqual(CALLBACK_HOST, "127.0.0.1", "on Linux, a 127.x.y.z of its own");
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32) });
+  t.after(() => plan.close());
+  await plan.startSignIn();
+  await new Promise((resolve, reject) => {
+    const socket = createConnection({ host: CALLBACK_HOST, port: 1455 }, () => (socket.destroy(), resolve()));
+    socket.once("error", reject);
+  });
 });
 
 test("the plan's reader prints its state alone: util.inspect of a run's environment and of the reader shows no token, and revocation goes to auth.openai.com alone", { timeout: 30_000 }, async (t) => {
