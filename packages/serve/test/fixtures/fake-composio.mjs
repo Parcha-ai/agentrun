@@ -87,6 +87,8 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   const instances = new Map();
   const accountOf = (kit) => (active.includes(kit) ? { id: `ca_fake_${kit}`, status: "ACTIVE" } : undefined);
   const fails = (Array.isArray(fail) ? fail : fail ? [fail] : []);
+  /** The answers held back (hold): each the next call it matches, answered as it stood then once released. */
+  const holds = [];
   const instanceView = (i) => ({ id: i.id, uuid: `uuid-${i.id}`, connected_account_id: i.connected_account_id, connected_account_uuid: `uuid-${i.connected_account_id}`, user_id: i.user_id, trigger_name: i.trigger_name, trigger_config: i.trigger_config, version: "20260101_00", type: "webhook", fallback_reason: null, polling_interval: null, egress_url: null, state: {}, updated_at: at(), disabled_at: i.disabled_at });
   const http = createServer(async (req, res) => {
     const chunks = [];
@@ -98,7 +100,17 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     let body;
     try { body = text ? JSON.parse(text) : undefined; } catch { body = text; }
     calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, keyOk: req.headers["x-api-key"] === apiKey });
-    const reply = (status, value) => (res.writeHead(status, { "content-type": "application/json" }), res.end(JSON.stringify(value)));
+    const reply = async (status, value) => {
+      const answer = JSON.stringify(value);
+      const held = holds.find((h) => !h.used && (!h.method || h.method === req.method) && url.pathname.endsWith(h.path));
+      if (held) {
+        held.used = true;
+        held.reach();
+        await held.wait;
+      }
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(answer);
+    };
     if (req.headers["x-api-key"] !== apiKey) return reply(401, { error: { message: "Invalid API key" } });
     const failing = fails.find((f) => (f.times === undefined || (f.used ?? 0) < f.times) && (!f.method || f.method === req.method) && (typeof f.path === "function" ? f.path(url.pathname) : url.pathname.endsWith(f.path)));
     if (failing) {
@@ -200,6 +212,16 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     instances,
     /** The fake MCP server's log of the requests on its endpoint (a stray on another path is not one). */
     get mcpLog() { return mcp.log.filter((entry) => new URL(entry.path, "http://x").pathname === `/v3/mcp/${id}/mcp`); },
+    /** The next call whose path ends in `path` (and of `method`, given) is done as usual, but its answer, as it stood then,
+     *  is sent only once `release` is called: `reached` settles when that call has come. */
+    hold: (path, method) => {
+      let reach;
+      let release;
+      const reached = new Promise((resolve) => (reach = resolve));
+      const wait = new Promise((resolve) => (release = resolve));
+      holds.push({ path, method, reach, wait, used: false });
+      return { reached, release };
+    },
     /** The calls to `path` (the Composio API's, exact), in order. */
     to: (path, method) => calls.filter((call) => call.path === path && (!method || call.method === method)),
     close: async () => { await mcp.close(); await new Promise((resolve) => (http.close(resolve), http.closeAllConnections())); },

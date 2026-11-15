@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { ComposioTriggers } from "../dist/composio-triggers.js";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { secretWritePath, serve } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
@@ -307,6 +308,76 @@ test("a saved server's triggers read each instance's state on Composio past its 
   assert.equal(listed.status, 200, JSON.stringify(listed.body));
   assert.equal(listed.body.triggers.length, 3);
   assert.deepEqual(listed.body.triggers.map((x) => x.on_composio), ["on", "on", "on"], JSON.stringify(listed.body.triggers));
+});
+
+test("a pause that takes the project's turn after a later resume leaves the instance as the trigger now stands: on", async (t) => {
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, active: ["github"] });
+  t.after(() => composio.close());
+  const kept = new Map();
+  const sealed = { get: (scope, field) => kept.get(`${scope}/${field}`), set: async (scope, field, value) => void kept.set(`${scope}/${field}`, value), remove: async (scope) => void [...kept.keys()].filter((k) => k.startsWith(`${scope}/`)).forEach((k) => kept.delete(k)) };
+  let holders = [];
+  const triggers = new ComposioTriggers({ control: { baseUrl: composio.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => ({ key: composio.apiKey, user: "agentrun-qa", toolkit: "github" }), holders: async () => holders, say: () => {} });
+  const source = { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } };
+  const made = await triggers.make(source, "trg_a", true, async (s) => s);
+  const instance = made.instance_id;
+  // Another create holds the project's turn while the pause, then the resume, are saved here: the trigger is on.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const other = triggers.make({ ...source, config: { owner: "many-drop", repo: "other" } }, "trg_b", true, async (s) => (await held, s));
+  holders = [{ id: "trg_a", name: "a", enabled: true, source: made }];
+  // The resume's step takes the turn first, the pause's last.
+  const resumed = triggers.turned(made, "trg_a", true);
+  const paused = triggers.turned(made, "trg_a", false);
+  release();
+  await other;
+  await Promise.all([resumed, paused]);
+  assert.equal(composio.instances.get(instance).disabled_at, null, "on at Composio: the trigger is on here");
+});
+
+test("deleting the project's subscription while a create waits on its instance is refused once the create holds it; the create keeps it", async (t) => {
+  const s = await setup(t);
+  const upsert = s.composio.hold("/upsert", "POST");
+  const create = s.api("POST", "/triggers", issueTrigger());
+  await upsert.reached;
+  const forget = s.api("DELETE", "/settings/mcp-servers/gh/composio/subscription");
+  // Deleted before the create answers, or waits for it: either way, the create answers after.
+  await Promise.race([forget, new Promise((r) => setTimeout(r, 1500))]);
+  upsert.release();
+  const [made, forgot] = await Promise.all([create, forget]);
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal(s.composio.subscriptions.length, 1, "the subscription the create uses is at Composio");
+  assert.equal(forgot.status, 409, JSON.stringify(forgot.body));
+  assert.equal(forgot.body.error.code, "composio_in_use");
+  const fired = await deliver(s.baseUrl, made.body.source.hook, delivery(made.body.source.instance_id), s.composio.subscriptions[0].secret);
+  assert.equal(fired.status, 202, `its secret is kept here: ${JSON.stringify(fired.body)}`);
+});
+
+test("a rotate while a create holds an older read of the subscription keeps the new secret here", async (t) => {
+  const s = await setup(t);
+  const first = await s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo: "a" }));
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  // The next create's read of the subscription answers the secret as it is now, and arrives late.
+  const read = s.composio.hold("/api/v3/webhook_subscriptions", "GET");
+  const create = s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo: "b" }));
+  await read.reached;
+  const rotate = s.api("POST", "/settings/mcp-servers/gh/composio/rotate-secret");
+  await Promise.race([rotate, new Promise((r) => setTimeout(r, 1500))]);
+  read.release();
+  const [made, rotated] = await Promise.all([create, rotate]);
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
+  const now = s.composio.subscriptions[0].secret;
+  const fired = await deliver(s.baseUrl, hookOf(s), delivery(made.body.source.instance_id), now);
+  assert.equal(fired.status, 202, `the secret kept here is Composio's new one: ${JSON.stringify(fired.body)}`);
+});
+
+test("a failed read of the instances leaves every trigger's state at Composio unknown, never missing", async (t) => {
+  const s = await setup(t, { composio: { fail: { path: "/api/v3/trigger_instances/active", method: "GET", status: 500 } } });
+  for (const repo of ["a", "b"]) assert.equal((await s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo }))).status, 201);
+  const listed = await s.api("GET", "/settings/mcp-servers/gh/composio/triggers");
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.ok(listed.body.composio_error, "said");
+  assert.deepEqual(listed.body.triggers.map((x) => x.on_composio), ["unknown", "unknown"], JSON.stringify(listed.body.triggers));
 });
 
 test("a trigger the server turns off itself (its agent archived, a failure streak) is off on Composio too, as a pause is", async (t) => {
