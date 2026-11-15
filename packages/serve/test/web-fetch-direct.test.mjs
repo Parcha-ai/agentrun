@@ -125,6 +125,9 @@ test("an Atom feed lists its entries' links: an attribute's URL, and its escaped
   const url = "http://public.example/vitejs/vite/releases.atom";
   const page = await fetchPage(url, serving(url, "application/atom+xml; charset=utf-8", RELEASES_ATOM));
   assert.equal(page.ok, true, JSON.stringify(page));
+  // A single-quoted attribute ends at its quote too, and an entity in it is undone.
+  const { linksOf } = await import("../dist/web-fetch-direct.js");
+  assert.deepEqual([...linksOf("<feed><link href='https://example.com/release'/><link href = 'https://example.com/a?x=1&amp;y=O&apos;Reilly'/></feed>")], ["https://example.com/release", "https://example.com/a?x=1&y=O%27Reilly"], "an apostrophe in a query, as the URL standard writes it");
   // Every URL the body writes out: its namespace's and the one in its tag URI's id too, as the text holds them.
   assert.deepEqual(page.links, ["http://www.w3.org/2005/Atom", "https://github.com/vitejs/vite/releases", "https://github.com/vitejs/vite/releases?q=v8&expanded=true", "https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md"]);
 });

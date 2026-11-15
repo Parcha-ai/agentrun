@@ -148,6 +148,8 @@ const LINK_AT = new RegExp(`\\]\\(|${TEXT_URL.source}`, "gi");
 /** The five entities XML names, and its numeric references: an XML body's URLs are read with them undone. */
 const XML_ENTITY = /&(?:(quot|amp|lt|gt|apos)|#(\d{1,7})|#x([0-9a-f]{1,6}));/gi;
 const NAMED: Record<string, string> = { quot: '"', amp: "&", lt: "<", gt: ">", apos: "'" };
+/** An XML attribute's value in single quotes. */
+const SINGLE_QUOTED = /=\s*'([^'<]*)'/g;
 
 /** Where a markdown link's target (the text after its "](") ends: at whitespace or at the ")" that closes the link, so
  *  parentheses it holds in pairs (a wiki title's) stay. */
@@ -184,7 +186,9 @@ function* hrefsIn(text: string): Generator<string> {
  *  feed's content ends its URL at the quote. Any other text as it is. One pass, so `&amp;lt;` is `&lt;`. */
 function xmlUndone(text: string): string {
   if (!/^\s*<[?!A-Za-z]/.test(text)) return text;
-  return text.replace(XML_ENTITY, (entity, name: string | undefined, decimal: string | undefined, hex: string | undefined) => {
+  // A single-quoted attribute (`href='https://a/b'`) ends at its quote as a double-quoted one does: its value holds no
+  // "'" or "<" (XML writes them as entities), so it is requoted whole, before its entities are undone.
+  return text.replace(SINGLE_QUOTED, '="$1"').replace(XML_ENTITY, (entity, name: string | undefined, decimal: string | undefined, hex: string | undefined) => {
     if (name) return NAMED[name.toLowerCase()]!;
     const code = Number.parseInt(decimal ?? hex!, decimal ? 10 : 16);
     return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
