@@ -75,6 +75,29 @@ test("a URL on a port other than 80 or 443 is refused before its host is looked 
   assert.deepEqual(looked, [], "no lookup for a port it refuses");
 });
 
+/** The fake network, with `body` served as `type` at `url`. */
+function serving(url, type, body) {
+  const net = network();
+  return { ...net, fetchImpl: async (asked, init) => (asked.href === url ? new Response(body, { status: 200, headers: { "content-type": type } }) : net.fetchImpl(asked, init)) };
+}
+
+test("a page that is not HTML lists the absolute URLs its text holds: a JSON body's string values, a text body's URLs", async () => {
+  const incidents = JSON.stringify({ page: { url: "https://www.githubstatus.com" }, incidents: [{ name: "Degraded Actions", shortlink: "https://stspg.io/abc", note: "see https://www.githubstatus.com/incidents/x1#update and mailto:help@github.example", relative: "/incidents/x1" }] });
+  const json = await fetchPage("http://public.example/api/v2/incidents.json", serving("http://public.example/api/v2/incidents.json", "application/json", incidents));
+  assert.equal(json.ok, true, JSON.stringify(json));
+  assert.deepEqual(json.links, ["https://www.githubstatus.com/", "https://stspg.io/abc", "https://www.githubstatus.com/incidents/x1"], "each once, in the body's order, without its fragment; no mailto or relative path");
+  assert.equal(json.text, incidents, "the text is the body as it came");
+  const notes = "Status: https://status.example/a, then (https://en.wikipedia.org/wiki/Foo_(bar)) and 'https://b.example/O'Reilly'.";
+  const text = await fetchPage("http://public.example/status.txt", serving("http://public.example/status.txt", "text/plain", notes));
+  assert.deepEqual(text.links, ["https://status.example/a", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/O'Reilly"], "a sentence's punctuation, an unopened bracket and a closing quote stay outside a URL");
+});
+
+test("an HTML page's links stay its link targets alone, as before: a URL written in its text is not one", async () => {
+  const html = `<html><head><title>Public page</title></head><body><p>Mirror: https://bare.example/x</p><a href="/about">About</a> <a href="https://other.example/x#part">Other</a></body></html>`;
+  const page = await fetchPage("http://public.example/", serving("http://public.example/", "text/html; charset=utf-8", html));
+  assert.equal(JSON.stringify(page.links), '["http://public.example/about","https://other.example/x"]');
+});
+
 /** What each web_fetch call of run `runId` was answered, parsed, from its journal in the store (support.mjs journalOf). */
 function pagesOf(data, runId) {
   return journalOf(data, runId)

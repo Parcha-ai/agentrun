@@ -54,6 +54,13 @@ test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, 
   assert.deepEqual(page.links, ["https://en.wikipedia.org/wiki/Function_(mathematics)", "https://other.example/y"]);
 }));
 
+test("a page Parallel reads lists the URLs written in its markdown as well as its link targets, in the page's order", inCall(async () => {
+  const full_content = "```json\n{\"shortlink\":\"https://stspg.io/abc\"}\n```\nSee [https://a.example/x](https://a.example/x), <https://b.example/y> and **https://c.example/z**.";
+  const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  const page = await parallelExtract(CANARY, send).read(PUBLIC);
+  assert.deepEqual(page.links, ["https://stspg.io/abc", "https://a.example/x", "https://b.example/y", "https://c.example/z"], "a link written as its own text is one link");
+}));
+
 test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();

@@ -68,6 +68,15 @@ test("a fetch's asked url, its final url and its page's links all match; a page 
   assert.deepEqual(twice, ["https://elsewhere.example/x — no matching call (calls 1 and 3's links were cut)"]);
 });
 
+test("a link a fetched JSON page holds (a Statuspage incident's shortlink) matches when the answer cites it, that fetch the only call", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://www.githubstatus.com/api/v2/incidents.json";
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: JSON.stringify({ incidents: [{ name: "Degraded Actions", shortlink: "https://stspg.io/abc" }] }) }], default: { error: "fetch failed" } } };
+  const page = await fakeFetch(fixture, url);
+  const fetched = { tool: "web_fetch", name: "web_fetch", arguments: { url }, status: "success", result: JSON.stringify(page) };
+  assert.deepEqual(checked(graderInput(grader, "task", run("GitHub Actions is degraded: https://stspg.io/abc.", fetched))), ["https://stspg.io/abc — matches call 1"]);
+});
+
 test("cited links come from the answer's text and every string of its JSON, each once, shown with no query value, fragment or userinfo", () => {
   const key = ["not-a-secret", "cited", "0123456789"].join("-");
   const json = JSON.stringify({ sources: [{ url: "https://vendor.example/report" }, { url: `https://api.example/data?token=${key}&q=x` }], note: "see https://vendor.example/report#p2" }).replaceAll("/", "\\/");

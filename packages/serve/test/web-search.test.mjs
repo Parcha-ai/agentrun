@@ -576,3 +576,11 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   const local = await fakeFetch(fixture, "http://127.0.0.1/admin");
   assert.equal(local.ok, false, "the guard's own checks run on a faked fetch too");
 });
+
+test("a template eval's faked JSON page lists the URLs its body holds, as the same body fetched live does", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://www.githubstatus.com/api/v2/incidents.json";
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: JSON.stringify({ incidents: [{ name: "Degraded Actions", shortlink: "https://stspg.io/abc" }] }) }], default: { error: "fetch failed" } } };
+  const page = await fakeFetch(fixture, url);
+  assert.deepEqual([page.ok, page.links], [true, ["https://stspg.io/abc"]], JSON.stringify(page));
+});
