@@ -73,8 +73,9 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
-            {/* A run on the ChatGPT plan says so, with where its usage is managed: ChatGPT's settings, in a new tab. */}
-            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}{onPlan && <> · <ManageUsage /></>}</span>
+            {/* A run on the ChatGPT plan says so, with where its usage is managed: ChatGPT's settings, in a new tab. The
+                graph's totals are dollars alone, so a workflow on the plan reads its run's cost (tokens, the plan). */}
+            {costText !== undefined && !onPlan ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
               : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{onPlan && <> · <ManageUsage /></>}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
