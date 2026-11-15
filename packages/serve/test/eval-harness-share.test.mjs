@@ -3,37 +3,19 @@
 // after it, each on a data directory of its own, gets a link to that install, never a copy. The install's own checks
 // (the entry's `lacking`) take the link as it is. A stand-in install, no npm and no network.
 import assert from "node:assert/strict";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { PINS, standIn } from "./fixtures/eval-harness-stand-in.mjs";
 import { scratch } from "./support.mjs";
 
 const { claimInstallsStopped, HARNESS_INSTALLS, HarnessInstall, installDirOf, installForClaim, sharedInstaller } = await import("../dist/harness-install.js");
 
 const CLAUDE = HARNESS_INSTALLS["claude-agent"];
-const PINS = { version: "0.3.286", platform: `${process.platform}-${process.arch}` };
-
-/** A stand-in for npmInstall: a tree the Claude entry's `lacking` takes as whole (the SDK at the pin, this platform's CLI,
- *  the MCP library's server and types), written beside `dir` and renamed into place, as npmInstall lands an install.
- *  `installs` counts its calls; each takes `ms`, so two evals at once overlap. */
-function standIn(ms = 0) {
-  const installs = [];
-  const install = async (_entry, dir, pins) => {
-    installs.push(dir);
-    await new Promise((resolve) => setTimeout(resolve, ms));
-    const staging = `${dir}.staging`;
-    const file = (path, text) => (mkdirSync(join(staging, "node_modules", path, ".."), { recursive: true }), writeFileSync(join(staging, "node_modules", path), text));
-    file("@anthropic-ai/claude-agent-sdk/package.json", JSON.stringify({ name: "@anthropic-ai/claude-agent-sdk", version: pins.version, exports: { ".": "./sdk.mjs" } }));
-    file("@anthropic-ai/claude-agent-sdk/sdk.mjs", "export {};\n");
-    file(`@anthropic-ai/claude-agent-sdk-${pins.platform}/package.json`, "{}");
-    file(`@anthropic-ai/claude-agent-sdk-${pins.platform}/${process.platform === "win32" ? "claude.exe" : "claude"}`, "#!/bin/sh\n");
-    file("@modelcontextprotocol/sdk/package.json", JSON.stringify({ name: "@modelcontextprotocol/sdk", version: "1.0.0", exports: { "./server/mcp.js": "./server/mcp.js", "./types.js": "./types.js" } }));
-    file("@modelcontextprotocol/sdk/server/mcp.js", "export {};\n");
-    file("@modelcontextprotocol/sdk/types.js", "export {};\n");
-    renameSync(staging, dir);
-  };
-  return { installs, install };
-}
+const CHILD = fileURLToPath(new URL("./fixtures/eval-harness-child.mjs", import.meta.url));
 
 /** The regular files under `dir`, no link followed. */
 const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((one) => (one.isDirectory() ? filesUnder(join(dir, one.name)) : one.isFile() ? [join(dir, one.name)] : []));
@@ -62,6 +44,31 @@ test("two local evals at once install once, and neither reads the install before
   await Promise.all([first, second].map((data) => evalServer(data, sharedInstaller(root, install)).ensure()));
   assert.equal(installs.length, 1, "one install for both");
   for (const data of [first, second]) assert.equal(CLAUDE.lacking(installDirOf(data, CLAUDE.id), PINS), undefined, "each eval's harness is whole once its install resolves");
+});
+
+test("two evals started at once, each in a process of its own, share one install by the server's own hold, and both are whole", async (t) => {
+  const [root, first, second, logs] = [await scratch(t), await scratch(t), await scratch(t), await scratch(t)];
+  const log = join(logs, "installs.log");
+  writeFileSync(log, "");
+  // Whichever installs holds its install until the other has started its own, so the two always meet at the hold.
+  const run = (data, peer) => promisify(execFile)(process.execPath, [CHILD, root, data, peer, log]);
+  const said = await Promise.all([run(first, second), run(second, first)]);
+  assert.deepEqual(said.map((one) => one.stdout.trim()), ["whole", "whole"]);
+  assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [installDirOf(root, `${CLAUDE.id}@${PINS.version}-${PINS.platform}`)], "one install, into the shared root");
+});
+
+test("what an install cut short left beside the shared install is swept by the next eval, under the install's hold", async (t) => {
+  const [root, first, second] = [await scratch(t), await scratch(t), await scratch(t)];
+  const { installs, install } = standIn();
+  await evalServer(first, sharedInstaller(root, install)).ensure();
+  // An eval killed while npm wrote its staging directory beside the shared install.
+  const left = join(root, "harnesses", `.${CLAUDE.id}@${PINS.version}-${PINS.platform}-cut`);
+  mkdirSync(join(left, "node_modules"), { recursive: true });
+  writeFileSync(join(left, "node_modules", "half"), "");
+  await evalServer(second, sharedInstaller(root, install)).ensure();
+  await claimInstallsStopped();
+  assert.equal(installs.length, 1, "nothing installed again");
+  assert.ok(!existsSync(left), "the leftover is swept");
 });
 
 test("a shared root another user could write to is never read: the eval installs into its own data, as before", async (t) => {
