@@ -60,7 +60,7 @@ const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "learning", "now"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
-  tool_used: ["type", "tool", "tools", "expect", "count", "args"],
+  tool_used: ["type", "tool", "tools", "expect", "count", "at_least", "args"],
   file_exists: ["type", "path"],
 };
 /** A target: a field of the answer's JSON, dotted for a nested one. */
@@ -77,7 +77,7 @@ export const runInput = (content: string, fields?: Json): Json => ({ ...(content
 export type Grader =
   | { file: string; type: "llm"; rubric: string; target?: string }
   | { file: string; type: "regex"; pattern: string; flags: string; expect: "match" | "no_match"; target?: string }
-  | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; args?: Json }
+  | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; args?: Json }
   | { file: string; type: "file_exists"; path: string };
 /** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
  *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
@@ -228,10 +228,15 @@ function graderOf(p: Package, file: string, text: string, bad: (message: string)
       const count = data.count;
       if (count !== undefined && !(Number.isSafeInteger(count) && (count as number) >= 0)) return bad(`${file}: count is a whole number of calls, 0 or more`), undefined;
       if (count !== undefined && ((data.expect === "called" && count === 0) || (expect === "not_called" && (count as number) > 0))) bad(`${file}: expect ${expect as string} and count ${count as number} say different things`);
+      // at_least: that many matching calls or more (a run that searched once more than the case needs still passes).
+      const atLeast = data.at_least;
+      if (atLeast !== undefined && !(Number.isSafeInteger(atLeast) && (atLeast as number) >= 1)) return bad(`${file}: at_least is a whole number of calls, 1 or more`), undefined;
+      if (atLeast !== undefined && count !== undefined) return bad(`${file}: count is an exact number of calls and at_least a least one: give one, not both`), undefined;
+      if (atLeast !== undefined && expect === "not_called") bad(`${file}: expect not_called and at_least ${atLeast as number} say different things`);
       // Any call's arguments are known: a faked MCP tool's from its fake's log, any other's from the run's timeline read
       // with calls=whole (each string through the run's redaction and cut at CAPS.text).
       if (data.args !== undefined && !isObject(data.args)) bad(`${file}: args is a mapping of the arguments a call must carry`);
-      return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}) };
+      return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(atLeast !== undefined ? { atLeast: atLeast as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}) };
     }
     case "file_exists":
       if (typeof data.path !== "string" || !data.path.trim() || data.path.startsWith("/") || data.path.split("/").includes("..")) return bad(`${file}: a file_exists grader names a path in the run's work folder`), undefined;
@@ -492,6 +497,7 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
       const what = `${grader.tools.join(" or ")}${grader.args ? ` with ${JSON.stringify(grader.args)}` : ""}`;
       const said = `${calls.length} call${calls.length === 1 ? "" : "s"} of ${what}`;
       if (grader.count !== undefined) return { pass: calls.length === grader.count, reason: `${said}; the grader expects exactly ${grader.count}` };
+      if (grader.atLeast !== undefined) return { pass: calls.length >= grader.atLeast, reason: `${said}; the grader expects at least ${grader.atLeast}` };
       const pass = grader.expect === "called" ? calls.length > 0 : calls.length === 0;
       return { pass, reason: `${said}; the grader expects ${grader.expect === "called" ? "at least one" : "none"}` };
     }
