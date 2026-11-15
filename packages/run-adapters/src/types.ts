@@ -39,6 +39,15 @@ export const HOST_RESULT_MAX_CHARS = 120_000;
  */
 export const CONTENT_FILTERED = "content_filter: the model provider stopped this answer";
 
+/**
+ * What a run on a person's ChatGPT plan ends with once the plan's limit is reached (its 429): the plan's own limit, never
+ * the run's spend cap, so nothing here can raise it and nothing tries again. A harness's model proxy answers its client
+ * these words (`ProviderPolicy.finalError`) and the harness halts the turn with them; a host shows them as they are.
+ */
+export const PLAN_LIMIT_WORDS = "Your ChatGPT plan's limit is reached. Manage usage in your ChatGPT settings, then run it again.";
+/** The code the proxy's answer carries beside PLAN_LIMIT_WORDS. */
+export const PLAN_LIMIT_CODE = "plan_limit_reached";
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;
@@ -168,8 +177,6 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
-  /** Its `inputTokensMax` is its provider's count, not its bytes (ProxyRequest.inputTokensCounted). */
-  inputTokensCounted?: true;
   /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
@@ -192,7 +199,7 @@ export interface ModelRequest {
    *  host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
-   *  never one of the session's recent requests for the cap's expected pricing, read or kept. */
+   *  no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */

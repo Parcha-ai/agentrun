@@ -126,6 +126,28 @@ const SOCKETS_SCRIPT = [
 	"exit $failed",
 ].join("\n");
 
+/**
+ * Makes each path ($@) root's alone, as root, and for a directory everything under it (no link is followed): root owns
+ * every entry (a link itself, `chown -h`), and no group or other user may write one. Only the entries that need it are
+ * changed. Then it reads them back: an entry not root's alone fails the script, and create then refuses the computer.
+ * An owner who is not root could give write back with chmod, so the owner is made root as well as the mode. A path the
+ * image lacks is skipped. For a host whose image leaves places root runs or reads open to other users
+ * (HostFacts.rootOnly); it runs before the daemon's upload. Root is the user `$p` runs as, read by `id -u`.
+ */
+const ROOT_ONLY_SCRIPT = [
+	"# agentrun-computer: root-only",
+	ROOT,
+	'r=$($p id -u) || { echo "running a command as root failed"; exit 5; }',
+	'for f in "$@"; do',
+	'\t[ -e "$f" ] || [ -L "$f" ] || continue',
+	'\t[ ! -L "$f" ] || { echo "$f is a symbolic link"; exit 6; }',
+	'\t$p find "$f" ! -user "$r" -exec chown -h "$r" {} + || { echo "making root the owner of $f failed"; exit 5; }',
+	'\t$p find "$f" ! -type l -perm /022 -exec chmod go-w {} + || { echo "taking write off $f failed"; exit 5; }',
+	'\tw=$($p find "$f" \\( ! -user "$r" -o ! -type l -perm /022 \\) -print 2>/dev/null | head -n 1)',
+	'\t[ -z "$w" ] || { echo "$w is not root\'s alone"; exit 5; }',
+	"done",
+].join("\n");
+
 /** The sockets the sockets script closed, from its `closed <path>` lines. */
 export function closedSocketsOf(output: string): string[] {
 	return output.split("\n").flatMap((line) => (line.startsWith("closed ") ? [line.slice("closed ".length).trim()] : []));
@@ -179,6 +201,8 @@ export interface HostedCommands {
 	start: string[];
 	/** child: the session buses in /tmp (SESSION_BUSES) closed to others, run before start. */
 	sockets: string[];
+	/** Write taken off every user but root on the host's rootOnly paths, run before the daemon's upload. */
+	rootOnly: string[];
 	stdio: string[];
 	log: string[];
 	/** pid1: the machine's command. */
@@ -190,7 +214,8 @@ export interface HostedCommands {
  * always, the display and the most deadline.extend may move the deadline to when given. waitS bounds a pid1 entrypoint's
  * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
  * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for. sockets are
- * the patterns a child's sockets command closes (default SESSION_BUSES).
+ * the patterns a child's sockets command closes (default SESSION_BUSES); rootOnly the paths its root-only command takes
+ * others' write off (default none).
  */
 export function hostedCommands({
 	staging = "",
@@ -204,7 +229,8 @@ export function hostedCommands({
 	sha256 = "",
 	nonce = "",
 	sockets = SESSION_BUSES,
-}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[] } = {}): HostedCommands {
+	rootOnly = [],
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[]; rootOnly?: readonly string[] } = {}): HostedCommands {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
 	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
@@ -214,6 +240,7 @@ export function hostedCommands({
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
 		sockets: argvOf(SOCKETS_SCRIPT, sockets),
+		rootOnly: argvOf(ROOT_ONLY_SCRIPT, rootOnly),
 		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, nonce, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
 	};
 }

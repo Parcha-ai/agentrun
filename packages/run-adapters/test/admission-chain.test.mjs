@@ -19,8 +19,8 @@ test('two requests asked for at once (a side call and the main one): each reques
       log.push(`admit ${request.side ? 'side' : 'main'}`);
       // The host's check takes a while (a slow write, a sync): time for another admission to land, were it allowed to.
       await new Promise((resolve) => setTimeout(resolve, 30));
-      slot = { side: request.side === true, boundUsd: request.side ? 0.01 : 0.5 };
-      return { holdUsd: slot.boundUsd };
+      slot = { side: request.side === true, holdUsd: request.side ? 0.01 : 0.5 };
+      return { holdUsd: slot.holdUsd };
     },
     onEvent: async (event) => {
       if (event.type !== 'request_start') return;
@@ -36,6 +36,6 @@ test('two requests asked for at once (a side call and the main one): each reques
   const main = port.models.beforeRequest({ model: 'main', inputTokensMax: 100 });
   const [sideTicket, mainTicket] = await Promise.all([side, main]);
   assert.deepEqual(log, ['admit side', 'start 1', 'admit main', 'start 2'], `${WHY}: ${JSON.stringify(log)}`);
-  assert.deepEqual(started.get(sideTicket.turn), { side: true, boundUsd: 0.01 }, `${WHY}: the side call's start read ${JSON.stringify(started.get(sideTicket.turn))}`);
-  assert.deepEqual(started.get(mainTicket.turn), { side: false, boundUsd: 0.5 }, `${WHY}: the main request's start read ${JSON.stringify(started.get(mainTicket.turn))}`);
+  assert.deepEqual(started.get(sideTicket.turn), { side: true, holdUsd: 0.01 }, `${WHY}: the side call's start read ${JSON.stringify(started.get(sideTicket.turn))}`);
+  assert.deepEqual(started.get(mainTicket.turn), { side: false, holdUsd: 0.5 }, `${WHY}: the main request's start read ${JSON.stringify(started.get(mainTicket.turn))}`);
 });

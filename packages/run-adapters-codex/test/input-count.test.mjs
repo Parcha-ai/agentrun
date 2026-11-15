@@ -1,9 +1,10 @@
 // A Codex request's input bound. Through any route it is the body's bytes less the escapes JSON adds to the text the
 // model reads as it is (a tool's output, a message, a call's arguments), every other byte counted as sent. On a route
 // straight to OpenAI (`https://api.openai.com`) it is also OpenAI's own count of it (POST /v1/responses/input_tokens)
-// when that is lower, asked with only the credential's headers; through a gateway (OpenRouter) or any other base the
-// byte bound stands, and a count that fails, times out or answers anything else leaves the byte bound too. No network:
-// OpenAI is a scripted fetch.
+// when that is lower, asked with only the credential's headers. Through a gateway (OpenRouter) or any other base OpenAI
+// is never asked, and the bound is the kernel's local count (o200k_base and its margin) when that is lower; a count that
+// fails, times out or says no count falls to the local count too. A count above the bytes leaves the byte bound. No
+// network: OpenAI is a scripted fetch.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
@@ -11,7 +12,7 @@ import { test } from 'node:test';
 import * as host from '@parcha/agentrun-kernel/host';
 import { codexPolicy } from '../dist/host/policy.js';
 
-const { startModelProxy, responsesEscapedBytes } = host;
+const { startModelProxy, responsesEscapedBytes, responsesLocalInputTokens } = host;
 const { inputTokensMaxOf } = await import('@parcha/agentrun-kernel/testing');
 const KEY = 'session-key-for-tests';
 const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
@@ -113,7 +114,8 @@ test("straight to OpenAI, a Codex request's input bound is OpenAI's count of it,
   const { p, counts, asked, sent } = await proxyOn(t, 'https://api.openai.com', { headers: { 'OpenAI-Project': 'proj_test' } });
   assert.equal((await send(p.url, codeMode)).status, 200);
   assert.equal((await send(p.url, codeMode)).status, 200);
-  assert.deepEqual(asked.map((r) => [r.inputTokensMax, r.inputTokensCounted]), [[2_000, true], [2_000, true]], 'each answer request is counted, and marked so');
+  assert.deepEqual(asked.map((r) => r.inputTokensMax), [2_000, 2_000], 'each answer request is counted');
+  assert.ok(asked.every((r) => !('inputTokensCounted' in r)), 'and not marked: the cap prices every input uncached, however it was bounded');
   assert.deepEqual(sent, ['https://api.openai.com/v1/responses', 'https://api.openai.com/v1/responses'], 'each request went on');
   assert.equal(counts.length, 2);
   assert.equal(counts[0].url, 'https://api.openai.com/v1/responses/input_tokens');
@@ -124,9 +126,11 @@ test("straight to OpenAI, a Codex request's input bound is OpenAI's count of it,
   assert.deepEqual(counts[0].body.input, shaped(codeMode).input, 'the input as the request sends it');
 });
 
-test("a count that fails, says no count, answers in another shape, or is above the bytes leaves the byte bound; the request still goes", async (t) => {
+test("a count that fails, says no count or answers in another shape falls to the local count; one above the bytes leaves the byte bound; the request still goes", async (t) => {
   const body = shaped(codeMode);
   const byteBound = inputTokensMaxOf(policy, body, JSON.stringify(body));
+  const local = await responsesLocalInputTokens(body);
+  assert.ok(local < byteBound, `the local count ${local} is below the bytes' ${byteBound}`);
   const answers = {
     'a 500': async () => new Response('{"error":{"message":"no"}}', { status: 500 }),
     'a refused fetch': async () => { throw new Error('connection refused'); },
@@ -140,26 +144,35 @@ test("a count that fails, says no count, answers in another shape, or is above t
     const { p, asked, sent, counts } = await proxyOn(t, 'https://api.openai.com', { count });
     assert.equal((await send(p.url, codeMode)).status, 200, name);
     assert.equal(counts.length, 1, `${name}: asked once`);
-    assert.deepEqual([asked[0].inputTokensMax, asked[0].inputTokensCounted, sent.length], [byteBound, undefined, 1], `${name}: the byte bound, and the request went`);
+    const expected = name === 'a count above its bytes' ? byteBound : local;
+    assert.deepEqual([asked[0].inputTokensMax, sent.length], [expected, 1], `${name}: ${expected === local ? 'the local count' : 'the byte bound'}, and the request went`);
   }
 });
 
-test("a count that takes longer than its timeout leaves the byte bound", async (t) => {
+test("a count that takes longer than its timeout falls to the local count", async (t) => {
   const body = shaped(codeMode);
   const { p, asked } = await proxyOn(t, 'https://api.openai.com', {
     count: (init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true })),
   });
   assert.equal((await send(p.url, codeMode)).status, 200);
-  assert.deepEqual([asked[0].inputTokensMax, asked[0].inputTokensCounted], [inputTokensMaxOf(policy, body, JSON.stringify(body)), undefined]);
+  assert.equal(asked[0].inputTokensMax, await responsesLocalInputTokens(body));
 });
 
-test("through a gateway (OpenRouter) or any other base the request is never counted: the key and the body go nowhere the request does not", async (t) => {
+test("through a gateway (OpenRouter) or any other base OpenAI is never asked, so the key and the body go nowhere the request does not: the bound is the local count", async (t) => {
   const body = shaped(codeMode);
+  const local = await responsesLocalInputTokens(body);
+  assert.ok(local < inputTokensMaxOf(policy, body, JSON.stringify(body)));
   for (const origin of ['https://openrouter.ai/api', 'https://api.openai.com.example', 'https://gateway.example/openai', 'http://api.openai.com']) {
     const { p, counts, asked } = await proxyOn(t, origin);
     assert.equal((await send(p.url, codeMode)).status, 200, origin);
-    assert.deepEqual([counts.length, asked[0].inputTokensMax, asked[0].inputTokensCounted], [0, inputTokensMaxOf(policy, body, JSON.stringify(body)), undefined], origin);
+    assert.deepEqual([counts.length, asked[0].inputTokensMax], [0, local], origin);
   }
+});
+
+test("a plan request is never counted, locally or by OpenAI: it is held at $0", () => {
+  const plan = codexPolicy({ ...options, plan: true });
+  assert.equal(plan.countInputLocally, undefined);
+  assert.equal(plan.countInput, undefined);
 });
 
 test("a body that offers Codex's live web search has no input bound, and is never counted into one", async (t) => {
@@ -168,5 +181,5 @@ test("a body that offers Codex's live web search has no input bound, and is neve
   const { p, counts, asked } = await proxyOn(t, 'https://api.openai.com', { policyNow: searching });
   const reply = await send(p.url, live);
   assert.equal(asked.length, 1, reply.text);
-  assert.deepEqual([asked[0].inputTokensMax, asked[0].inputTokensCounted, counts.length], [undefined, undefined, 0]);
+  assert.deepEqual([asked[0].inputTokensMax, counts.length], [undefined, 0]);
 });

@@ -90,7 +90,9 @@ class E2BHost implements MachineHost {
 `daemon: "child"` means your own agent runs first and starts processes; with `"pid1"`, the machine's main process is
 the command AgentRun passes to create. `lifetime: "vendor"` means your timer ends a machine at its deadline; with
 `"janitor"`, AgentRun ends it by label. `vendorAgentPorts` are the ports your agent listens on inside the machine.
-`HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
+If your image leaves system paths that root runs or reads with permissions wider than root's, list them in `rootOnly`:
+create makes them root's alone (root the owner, no write by group or other users) before anything else, and the Core case `isolation.root-runs` checks
+that the computer's user can write nothing root runs. `HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
 
 `maxLifetimeMs` in `facts` is the longest any of your plans keeps a machine. For E2B that's Pro's 24 hours
 (`PRO_MAX_MS`). Your provider's `maxLifetimeMs` option is the cap a user gets, and it may only lower the fact. Default

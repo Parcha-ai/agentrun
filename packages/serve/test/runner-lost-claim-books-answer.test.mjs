@@ -21,7 +21,6 @@ const LEASE = 10_000;
 const SESSION = "run";
 const MODEL = "claude-opus-5-5";
 const HOLD = 0.5;
-const BOUND = 1;
 const CAP = 5;
 const TOKENS = { input: 3000, output: 25000, cacheRead: 0 };
 const near = (a, b) => typeof a === "number" && Math.abs(a - b) < 1e-9;
@@ -41,7 +40,7 @@ async function bookingOn(store, claim, events) {
   const harness = await Harness.open(store.journal(claim), { registry: createRegistry(), models: createModels() }, ctx);
   const sessions = journalSessions(harness, ctx, { flush: () => store.flush(), claim });
   const writer = await sessions.open(SESSION);
-  const booking = await modelPortFor(writer, { key: SESSION, label: SESSION, beforeRequest: () => ({ holdUsd: HOLD, boundUsd: BOUND }), onEvent: (event) => void events.push(event) });
+  const booking = await modelPortFor(writer, { key: SESSION, label: SESSION, beforeRequest: () => ({ holdUsd: HOLD }), onEvent: (event) => void events.push(event) });
   return { sessions, booking };
 }
 
@@ -86,12 +85,12 @@ test("a request whose price is unknown stays unpriced on the run's next claim an
   const read = sessionSpendOf(records);
   assert.equal(read.cost.usd, null, "the run's cost is unknown, never $0");
   assert.equal(read.cost.unpriced, 1, "one request is not metered");
-  assert.ok(typeof read.spentUsd === "number" && read.spentUsd <= HOLD + BOUND && read.spentUsd < CAP, `the cap counts it at its hold, never all of the cap: ${read.spentUsd}`);
+  assert.ok(typeof read.spentUsd === "number" && read.spentUsd <= HOLD && read.spentUsd < CAP, `the cap counts it at its hold, never all of the cap: ${read.spentUsd}`);
 });
 
-test("another runner that takes the run takes nothing the lost runner kept: the request is booked cut, at its hold and bound", async (t) => {
+test("another runner that takes the run takes nothing the lost runner kept: the request is booked cut, at its hold (its worst case)", async (t) => {
   const { records, turns } = await lostAndTakenAgain(t, "run-other", await knownUsd(), "runner-b");
   assert.equal(turns.length, 1, `booked once: ${JSON.stringify(turns)}`);
   assert.equal(turns[0].data.cut, true, `cut, as a dead runner's request is: ${JSON.stringify(turns[0])}`);
-  assert.ok(near(sessionSpendOf(records).spentUsd, HOLD + BOUND), "counted for the cap at its hold and bound");
+  assert.ok(near(sessionSpendOf(records).spentUsd, HOLD), "counted for the cap at its hold, the most it can have cost");
 });

@@ -62,7 +62,7 @@ import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
-import { piShaped } from "../store-reads/journal.js";
+import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
 import { laidFor, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
@@ -214,8 +214,9 @@ export function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
-  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
+  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead). A ChatGPT plan's route is
+  // billed to the plan: its requests cost the run no dollars (CapModel.plan), never an unknown price.
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.provider.plan ? { plan: true } : {}) };
 }
 
 /** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
@@ -564,7 +565,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
-    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
   };
@@ -706,8 +706,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         // A tier with no model of its own (no model_tiers, no AGENT_MODEL_<TIER>): the agent's own model.
         const at = tierRoutes.get(subagentRoute(tier));
         if (!at) return { ref: { provider: PORT_PROVIDER, modelId: route.model } };
-        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on.
-        if (at.unpriced && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
+        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on. A
+        // ChatGPT plan's tier is not unpriced: it costs the run no dollars (capModelOf).
+        if (at.unpriced && !at.provider.plan && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
         return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
       preamble: environmentLine(),
@@ -803,9 +804,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const total = runEndCost({ model: booked.usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
+      // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
+      const catalog = await hashedMcpOf(deps.store, claim.runId);
       const { metrics } = servedOf(entries as never)
-        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model }) }
-        : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model, catalog }) }
+        : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), catalog });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
       return { costUsd: total, metrics: { ...metrics, ...path } };
     },

@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
+import { type HostTool, PLAN_LIMIT_WORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, installDirOf, installForClaim, installingWords } from "../harness-install.js";
@@ -65,12 +65,13 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
 import { laidFor, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
-import { planBeforeRun } from "../chatgpt-plan.js";
+import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
@@ -122,8 +123,10 @@ async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string
 
 /** The model a CLI run is capped at: the catalog entry that bills it (its entry's priceModel), its cost WITH TIERS (the
  *  money rule: a request past a tier is held and booked at it, as main's calculateCost does), on the harness's wire. A
- *  model the catalog does not price is held at no price: its requests are unknown, never $0. */
-function capModelOf(id: string, wire: string, listed: { cost?: Partial<CapPrice>; maxTokens?: number } | undefined, unpriced: boolean): CapModel {
+ *  model the catalog does not price is held at no price: its requests are unknown, never $0. A ChatGPT plan's model
+ *  (`plan`) is billed to the plan: its requests cost the run no dollars (CapModel.plan). */
+function capModelOf(id: string, wire: string, listed: { cost?: Partial<CapPrice>; maxTokens?: number } | undefined, unpriced: boolean, plan = false): CapModel {
+  if (plan) return { id, api: wire, price: null, outputCeiling: typeof listed?.maxTokens === "number" ? listed.maxTokens : null, plan: true };
   const cost = listed?.cost;
   const price = !unpriced && cost && typeof cost.input === "number" && typeof cost.output === "number"
     ? {
@@ -455,7 +458,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       return Object.assign(session, {
         turnEnd: async () => {
           const end = await turnEnd();
-          return end.error ? { ...end, error: `${name}: ${end.error}` } : end;
+          // A ChatGPT plan's limit reached is said as it is: it is the plan's, not the harness's.
+          return end.error && end.error !== PLAN_LIMIT_WORDS ? { ...end, error: `${name}: ${end.error}` } : end;
         },
         close: async () => {
           await close();
@@ -474,7 +478,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // model that bills the run, and what a refusal does to the run, with the kernel's raise rule.
   const priced = entry.priceModel(env, chosen.model);
   const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
-  const capModel = capModelOf(priced.modelId, facts.wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined);
+  const capModel = capModelOf(priced.modelId, facts.wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER);
   const capUsd = launch.maxCostUsd;
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped), the model that bills this CLI run priced WITH tiers, strict where the launch says. The loop builds the
@@ -490,7 +494,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const tierRoute = tierRoutes.get(by as Tier);
       return tierRoute && tierRoute.model === id ? capModelOfRoute(tierRoute) : undefined;
     },
-    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
   };
@@ -679,7 +682,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // are the run's cost (runEndCost: unknown when any part is), as the pi spec's.
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const booked = bookedSpend(all, "model");
-      const metrics = cliRunMetrics(entries as never, booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      // Its tools from its record read as pi's entries (piShaped: the CLI's calls and results are its own kinds, which no
+      // count reads as they are), an MCP tool called by a hashed wire name under its catalog name, as its timeline reads.
+      const metrics = cliRunMetrics(piShaped(entries as never), booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}`, catalog: await hashedMcpOf(deps.store, claim.runId) });
       // A run whose model answered or called a tool with no request booked (its requests went past its model proxy) spent
       // what no booking read: unknown, never the $0 an empty booking sums to.
       const model = booked.requests === 0 && cliModelWorked(entries as never) ? null : booked.usd;

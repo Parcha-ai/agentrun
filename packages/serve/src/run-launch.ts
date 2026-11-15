@@ -35,7 +35,6 @@ export interface RunLaunch {
   readonly model?: { readonly provider: string; readonly modelId: string };
   readonly effort?: string;
   readonly maxCostUsd?: number;
-  readonly capMode?: string;
   /** The tool plane as the server resolved it at start (tool-plane.ts). */
   readonly plane?: Plane;
   /** Whether a person can answer a tool call's approval for this run. */
@@ -155,7 +154,6 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.model ? { model: launch.model } : {}),
     ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
     ...(launch.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}),
-    ...(launch.capMode !== undefined ? { cap_mode: launch.capMode } : {}),
     ...(launch.plane ? { plane: launch.plane } : {}),
     ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
@@ -208,7 +206,6 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(model ? { model } : {}),
     ...(typeof stored.effort === "string" ? { effort: stored.effort } : {}),
     ...(typeof stored.max_cost_usd === "number" ? { maxCostUsd: stored.max_cost_usd } : {}),
-    ...(typeof stored.cap_mode === "string" ? { capMode: stored.cap_mode } : {}),
     ...(isObject(stored.plane) ? { plane: stored.plane as Plane } : {}),
     ...(typeof stored.approvers === "boolean" ? { approvers: stored.approvers } : {}),
     ...(typeof stored.documents === "string" ? { documents: stored.documents } : {}),

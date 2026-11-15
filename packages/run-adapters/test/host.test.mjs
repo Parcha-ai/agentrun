@@ -825,6 +825,21 @@ test("a provider's error answer costs nothing, whatever cost its headers name", 
   assert.deepEqual(hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }]);
 });
 
+test("an error answer the policy ends the run on (a plan's limit reached) is answered in the policy's words and keeps the provider's request ids for its records", async (t) => {
+  const finalError = (status, text) => (status === 429 && /usage_limit_exceeded/.test(text) ? { message: 'The plan limit is reached.', code: 'plan_limit_reached' } : undefined);
+  const ids = { 'x-request-id': 'req_plan_1', 'openai-request-id': 'req-openai-1' };
+  const { p, hooks } = await proxy(t, {
+    policy: { ...policy, finalError },
+    fetch: async () => new Response('{"error":{"code":"usage_limit_exceeded"}}', { status: 429, headers: { 'content-type': 'application/json', ...ids, 'set-cookie': 'session=provider-secret' } }),
+  });
+  const r = await send(p.url, { path: '/v1/test?beta=true' });
+  assert.equal(r.status, 400, 'answered at the refused status, which no client asks again on');
+  assert.deepEqual(JSON.parse(r.text), { error: { message: 'The plan limit is reached.', type: 'agentrun_proxy', code: 'plan_limit_reached' } });
+  await until(() => hooks.after.length === 1, "the request's booking");
+  assert.deepEqual(hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: 0, providerIds: ids }], 'booked at nothing, with the ids the provider gave it');
+  assert.equal(r.headers['set-cookie'], undefined, "nothing else of the provider's headers reaches the client");
+});
+
 test("the run's books keep each turn's figure and where it came from: the gateway's, with the table's beside it, or the table's, estimated", async (t) => {
   const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-kernel');
   const { memorySessionStore } = await import('@parcha/agentrun-kernel/testing');

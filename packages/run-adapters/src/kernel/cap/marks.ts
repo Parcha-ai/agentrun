@@ -3,14 +3,13 @@
 // booked at, before its result is given back. Every mark is keyed by its step's id, so a reopened run counts an end
 // against its own step, never another (recover.ts).
 
-/** A step's start: what it is held at (null: no figure, as an older store kept none), and its bound (what a cache miss
- *  can add). `refused`: the cap refused it, and it never left. `tool`: a paid call's name. */
+/** A step's start: what it is held at (null: no figure, as an older store kept none). `refused`: the cap refused it, and
+ *  it never left. `tool`: a paid call's name. */
 export type StartMark = {
   readonly kind: "start";
   readonly id: string;
   readonly at: number;
   readonly heldUsd: number | null;
-  readonly boundUsd?: number;
   /** A model request's model: the wrap-up's typical cost counts the run's own model's answers only. */
   readonly model?: string;
   readonly side?: true;

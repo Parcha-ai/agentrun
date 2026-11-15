@@ -43,6 +43,7 @@ __all__ = [
     "CancelRunResponse",
     "Capabilities",
     "CapabilitiesHarnessesItem",
+    "CapabilitiesHarnessesItemFreeModelsItem",
     "CapabilitiesHome",
     "CapabilitiesLearning",
     "CapabilitiesLinks",
@@ -862,7 +863,6 @@ class Definition(_DefinitionRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
-    cap_mode: Literal["expected", "strict"]
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
@@ -1231,7 +1231,6 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
-    cap_mode: Literal["expected", "strict"]
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -1867,7 +1866,6 @@ class Cost(_CostRequired, total=False):
     cap_usd: float | None
     so_far_usd: float
     unpriced: int
-    overshoot_bound_usd: float
     plan: CostPlan
 
 
@@ -2052,7 +2050,6 @@ class RunSummaryPending3(_RunSummaryPending3Required, total=False):
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
-    overshoot_bound_usd: float
     node: str | None
 
 
@@ -3893,7 +3890,6 @@ class RunCreateInline(_RunCreateInlineRequired, total=False):
     max_cost_usd: float
     quote_id: str
     mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
-    cap_mode: Literal["expected", "strict"]
     workflow_first: bool
     learning: Literal["use"]
     repo: str
@@ -3946,7 +3942,6 @@ class Run(_RunRequired, total=False):
     native: RunNative
     console_url: str
     approvals: Literal["ask", "never"]
-    cap_mode: Literal["expected", "strict"] | None
     last_progress_at: str | None
     input: dict[str, Any] | None
     file_ids: list[str]
@@ -4140,7 +4135,6 @@ class RunPending3(_RunPending3Required, total=False):
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
-    overshoot_bound_usd: float
     node: str | None
 
 
@@ -4566,7 +4560,6 @@ class RunCreate(_RunCreateRequired, total=False):
     max_cost_usd: float
     quote_id: str
     mcp_auth: dict[str, RunCreateMcpAuthValue]
-    cap_mode: Literal["expected", "strict"]
     workflow_first: bool
     learning: Literal["use"]
     repo: str
@@ -5012,6 +5005,7 @@ class CapabilitiesPlacesDefaultPlace2(TypedDict):
 class _CapabilitiesHarnessesItemRequired(TypedDict):
     id: Literal["pi", "claude-agent", "codex", "opencode"]
     available: bool
+    free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
     run_memory_mib: int
     max_concurrent_runs: int
@@ -5023,6 +5017,11 @@ class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False)
     reason: str
     needs: list[Literal["key", "chatgpt"]]
     installs: Literal["on_first_use"]
+
+
+class CapabilitiesHarnessesItemFreeModelsItem(TypedDict):
+    id: str
+    context_window: int
 
 
 class _CapabilitiesToolsItemRequired(TypedDict):
