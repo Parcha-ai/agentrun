@@ -6,7 +6,7 @@ import type { Client } from "@/lib/client";
 import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine } from "@/lib/learningLoop";
+import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // An agent's cost per run, run after run (GET /v2/agents/{id}/learning/cost): every run's all-in $ (its own cost and what
@@ -407,6 +407,7 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
 function shortOf(data: LearningCost, on: boolean): string[] {
   const s = data.summary;
   if (!s.takeover) return [on ? "No learned workflow has finished a run alone yet. Keep running the same job: once one does, a marker shows where, and the level after it." : HOW];
+  if (s.withheld) return [`${withheldWords(s.withheld)}: ${WITHHELD_NEXT}.`];
   if (s.times_cheaper === null && s.after) return [`${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} since the workflow took over: how many times cheaper it is shows after 20.`];
   return [];
 }

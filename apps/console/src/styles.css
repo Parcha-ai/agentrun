@@ -8,7 +8,7 @@
 @tailwind utilities;
 
 /* The AgentRun look: light or dark as the OS is or as the person picked (lib/theme.ts puts .dark or .light on <html>),
-   an orange primary, a 1px border on everything, and no rounded corners. Every value is a token in tokens.css;
+   an orange primary, 1px borders, rounded action buttons, and square fields and surfaces. Every value is a token in tokens.css;
    docs/console-design-system.md is the guide. */
 @layer base {
   * { @apply border-border; border-radius: var(--radius) !important; }

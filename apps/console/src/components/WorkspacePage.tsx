@@ -1,3 +1,4 @@
+import { pasteFromClipboard } from "@/lib/paste";
 import { HardDrive } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
@@ -146,7 +147,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
             {/* The key sits with the settings it saves with; SecretRow's buttons never submit this form. */}
             <ul>
               <SecretRow field={view.secret} label={KEY} writable={writable && !pasting && !removingKey}
-                onPaste={() => setPasting(true)} onRemove={() => setRemovingKey(true)} />
+                onPaste={() => void pasteFromClipboard(() => setPasting(true), () => form.current?.elements.namedItem(KEY) as HTMLInputElement | null)} onRemove={() => setRemovingKey(true)} />
             </ul>
             {writable && removingKey && (
               <div data-confirm-key className="flex flex-wrap items-center gap-3 border bg-card p-3">
