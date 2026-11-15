@@ -332,6 +332,23 @@ export interface SessionIO {
    *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
    *  keeps no record of calls, and the tool runs as it is. */
   hostTool?(tool: HostTool): HostTool;
+  /** The host's record of a call of the harness's own that runs host tools inside it (Codex's code-mode `exec`): its row,
+   *  and each host tool call it makes nested under it, as a host tool that `nests` (codemode) has its calls on every other
+   *  harness. Absent: the host keeps no record of calls. */
+  ownCalls?: OwnCalls;
+}
+
+/** The record of a call of the harness's own that host tool calls nest in (SessionIO.ownCalls). Each is said from what the
+ *  harness's own stream holds (the call's id, its input, its output), never a made-up id. */
+export interface OwnCalls {
+  /** The call started, `input` what it was given (once per call id: a second says nothing). */
+  opened(callId: string, name: string, input: unknown): Promise<void>;
+  /** The host tool call `callId` runs inside the harness's call `parent`: said before the call reaches the gate, so its
+   *  row (a refused or parked one's too) names its parent. */
+  nestedIn(callId: string, parent: string): void;
+  /** The call ended with `output`, `failed` when the harness's stream says it did not do its work (Codex's "Script failed"),
+   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). */
+  ended(callId: string, output: string, failed: boolean): Promise<void>;
 }
 
 /** `tool`, a tool the adapter adds of its own, made the host's (SessionIO.hostTool). */

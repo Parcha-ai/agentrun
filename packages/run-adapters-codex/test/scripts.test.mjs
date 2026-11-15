@@ -23,6 +23,17 @@ function read(...lines) {
   return { scripts, logged, tie: (announced) => scripts.tie(announced, (id) => logged.has(id)) };
 }
 
+test("a finished script says whether it failed, as Codex's status header says, on its own output or its wait's, never from what it printed", () => {
+  const finished = (...lines) => {
+    const scripts = new Scripts();
+    return lines.map((l) => scripts.note(l)).filter((said) => said?.kind === 'finished');
+  };
+  assert.deepEqual(finished(exec('call_a'), execDone('call_a')).map((said) => said.failed), [false]);
+  assert.deepEqual(finished(exec('call_a'), execDone('call_a', 'Script failed\nWall time 0.1 seconds\nScript error:\nReferenceError: pears is not defined')).map((said) => said.failed), [true]);
+  assert.deepEqual(finished(exec('call_a'), execYielded('call_a'), wait('call_w'), waited('call_w', 'Script failed\nScript error:\nexec cell 1 not found')).map((said) => said.failed), [true], "a wait's failed end");
+  assert.deepEqual(finished(exec('call_a'), line({ type: 'custom_tool_call_output', call_id: 'call_a', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: 'Script failed' }] })).map((said) => said.failed), [false], 'a script that printed the phrase did not fail');
+});
+
 test("a nested call's id is the one Codex gives a script's host tool call, and a model's call id is not", () => {
   assert.ok(NESTED_CALL.test('exec-0e41febd-a273-40e5-8b2a-44fb79a552ae'));
   for (const id of ['call_ZbDRvcBcuhSOo7QpT3R8LDV7', 'exec-1', 'exec-0e41febd-a273-40e5-8b2a-44fb79a552ae-x', '']) assert.ok(!NESTED_CALL.test(id), id);
