@@ -1997,6 +1997,39 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "Observations",
+      "get-observations"
+    ],
+    "operationId": "getObservations",
+    "method": "GET",
+    "path": "/observations",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "days",
+        "type": "integer",
+        "required": false,
+        "description": "UTC calendar days including today; session details remain visible for their full retention period."
+      },
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read activity and token usage reported by externally running agents"
+  },
+  {
+    "command": [
       "revisions",
       "list"
     ],

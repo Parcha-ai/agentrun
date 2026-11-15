@@ -344,6 +344,14 @@ __all__ = [
     "GetNativeResponseNativeConfigurationItem",
     "GetNativeResponseNativeRemote",
     "GetNativeResponseNativeSelector",
+    "GetObservationsResponse",
+    "GetObservationsResponseConnectorsItem",
+    "GetObservationsResponseLimits",
+    "GetObservationsResponseSessionsItem",
+    "GetObservationsResponseSessionsItemUsage",
+    "GetObservationsResponseUsage",
+    "GetObservationsResponseUsageDailyItem",
+    "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
     "GetRunGraphResponse",
     "GetRunGraphResponseDecisionsItem",
@@ -606,6 +614,7 @@ __all__ = [
     "Meter",
     "NextAction",
     "OPERATIONS",
+    "ObservationsResource",
     "PauseRunResponse",
     "PersonAction",
     "PollRemoteConnectorBody",
@@ -4463,6 +4472,94 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class GetObservationsResponse(TypedDict):
+    connectors: list[GetObservationsResponseConnectorsItem]
+    sessions: list[GetObservationsResponseSessionsItem]
+    usage: GetObservationsResponseUsage
+    limits: GetObservationsResponseLimits
+
+
+class GetObservationsResponseConnectorsItem(TypedDict):
+    id: str
+    display_name: str
+    connection_state: Literal["online", "offline", "disconnected"]
+    ingestion_mode: Literal["polling", "otlp"]
+    last_heartbeat_at: str | None
+    receipt_count: int
+    receipt_capacity: int
+    storage_full: bool
+
+
+class GetObservationsResponseSessionsItem(TypedDict):
+    id: str
+    connector_id: str
+    source_id: str
+    external_session_id: str
+    harness: Literal["claude", "codex"]
+    activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    reported_activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    connection_state: Literal["online", "offline", "disconnected"]
+    selection_active: bool
+    occurred_at: str
+    received_at: str
+    created_at: str
+    updated_at: str
+    sequence: int
+    display_name: str
+    models: list[str]
+    usage: GetObservationsResponseSessionsItemUsage
+    observation_only: Literal[True]
+
+
+class GetObservationsResponseSessionsItemUsage(TypedDict):
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["reported", "unavailable"]
+
+
+class GetObservationsResponseUsage(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["partial", "unavailable"]
+    models: list[GetObservationsResponseUsageModelsItem]
+    daily: list[GetObservationsResponseUsageDailyItem]
+
+
+class GetObservationsResponseUsageModelsItem(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    model: str
+
+
+class GetObservationsResponseUsageDailyItem(TypedDict):
+    date: str
+    total_tokens: int | None
+
+
+class GetObservationsResponseLimits(TypedDict):
+    max_receipts_per_connector: int
+    max_sessions_per_connector: int
+    receipt_retention: str
+    receipt_window_seconds: int
+    session_retention_days: int
+    usage_retention_days: int
+
+
 class ListRevisionsResponse(TypedDict):
     revisions: list[ListRevisionsResponseRevisionsItem]
     next_cursor: str | None
@@ -8016,6 +8113,7 @@ OPERATIONS: dict[str, Operation] = {
     "getMcpPrivateHosts": Operation(method="GET", path="/settings/mcp-servers/oauth/private-hosts", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "refreshMcpServer": Operation(method="POST", path="/settings/mcp-servers/{name}/refresh", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveMcpServer": Operation(method="PUT", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "auth.type"), tagged=False),
+    "getObservations": Operation(method="GET", path="/observations", path_params=(), multi_segment=(), query=("days", "session_id"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRevisions": Operation(method="GET", path="/agents/{agent_id}/revisions", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setCurrent": Operation(method="POST", path="/agents/{agent_id}/current", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "archiveRun": Operation(method="POST", path="/runs/{run_id}/archive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8435,6 +8533,14 @@ class McpServersResource(Group):
         return self._call("saveMcpServer", (name,), body, None, timeout=timeout)
 
 
+class ObservationsResource(Group):
+    """client.observations: one method per operation."""
+
+    def get_observations(self, *, days: int | None = None, session_id: str | None = None, timeout: float | None = None) -> GetObservationsResponse:
+        """Read activity and token usage reported by externally running agents (GET /observations)."""
+        return self._call("getObservations", (), None, {"days": days, "session_id": session_id}, timeout=timeout)
+
+
 class RevisionsResource(Group):
     """client.revisions: one method per operation."""
 
@@ -8721,6 +8827,7 @@ class Resources:
     learning: LearningResource
     local: LocalResource
     mcp_servers: McpServersResource
+    observations: ObservationsResource
     revisions: RevisionsResource
     sdk_runs: SdkRunsResource
     server: ServerResource
@@ -8740,6 +8847,7 @@ class Resources:
         self.learning = LearningResource(call)
         self.local = LocalResource(call)
         self.mcp_servers = McpServersResource(call)
+        self.observations = ObservationsResource(call)
         self.revisions = RevisionsResource(call)
         self.sdk_runs = SdkRunsResource(call)
         self.server = ServerResource(call)
