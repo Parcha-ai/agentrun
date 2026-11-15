@@ -63,6 +63,9 @@ export type EmailFaux = {
   commands(): string[];
   /** On: every sign-in, IMAP and SMTP, is refused as a wrong password is. */
   refuseLogin(on: boolean): void;
+  /** The next IMAP command whose logged line `pattern` takes is answered only once the returned release is called: a
+   *  mail server that is slow at one step (a trigger's start, held while the trigger is edited). */
+  hold(pattern: RegExp): () => void;
   /** INBOX's UIDVALIDITY set to `n`: its uids start again from 1, as a mailbox the provider rebuilt. */
   setUidValidity(n: number, mailbox?: string): void;
   close(): Promise<void>;
@@ -243,6 +246,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
   const password = `faux-${randomBytes(9).toString("hex")}`;
   let refusing = false;
   const commandLog: string[] = [];
+  const holds: { pattern: RegExp; gate: Promise<void> }[] = [];
   const delivered: FauxSent[] = [];
   const gmail = options.layout === "gmail";
   const capabilities = gmail ? GMAIL_CAPABILITIES : CAPABILITIES;
@@ -507,11 +511,17 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       const command = word(tokens[0]);
       const shown = command.toUpperCase() === "LOGIN" ? `LOGIN ${word(tokens[1])} ***` : `${command}${rest.slice(command.length).replace(/\u0000\d+\u0000/g, "{literal}")}`;
       commandLog.push(shown);
-      try {
-        run(tag, command, tokens.slice(1));
-      } catch (error) {
-        send(`${tag} BAD ${(error as Error).message}`);
-      }
+      const answer = () => {
+        try {
+          run(tag, command, tokens.slice(1));
+        } catch (error) {
+          send(`${tag} BAD ${(error as Error).message}`);
+        }
+      };
+      const held = holds.findIndex((h) => h.pattern.test(shown));
+      if (held < 0) return answer();
+      const [entry] = holds.splice(held, 1);
+      void entry!.gate.then(answer);
     };
 
     socket.on("data", (chunk: string) => {
@@ -672,6 +682,11 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     mailboxes: () => boxes.map((box) => box.name),
     sent: () => delivered.map((m) => ({ ...m, to: [...m.to] })),
     commands: () => [...commandLog],
+    hold(pattern) {
+      let release!: () => void;
+      holds.push({ pattern, gate: new Promise<void>((done) => (release = done)) });
+      return () => release();
+    },
     refuseLogin(on) {
       refusing = on;
     },
