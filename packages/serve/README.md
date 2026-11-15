@@ -1066,7 +1066,8 @@ length, and no `original_chars`, its text is the start of the page, and the last
 plain text, its conversion to markdown having run out of time. A page is read to its first 1,000,000 characters: an
 `offset` at or past them is refused, and the last part a read reaches of a longer page has `beyond_read`. The links,
 absolute http(s) only, each once without its fragment, are the page's link targets and the URLs written out in its
-text (a JSON body's: those of its string values, so an API's `url` or `shortlink` field is one); an HTML page fetched
+text (a JSON body's: those of its string values, so an API's `url` or `shortlink` field is one; an XML body's, an Atom
+or RSS feed's, read with its entities undone, so an entry's `<link href>` is one); an HTML page fetched
 directly gives its link targets alone. They come with the part at offset 0: at most 200, in 20,000 characters, with
 `links_omitted` counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
 run keeps what it read of its last 8 pages by the URL asked for: every later part of that URL comes from it, with no

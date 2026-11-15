@@ -14,6 +14,7 @@
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "typebox";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
+import { TEXT_URL, urlEnd } from "./timeline/util.js";
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
@@ -141,51 +142,53 @@ export function linksWithin(links: Iterable<string>): Pick<Page, "links" | "link
   return { links: kept, ...(omitted ? { links_omitted: omitted } : {}) };
 }
 
-/** Where a link might start: a markdown link's target (after its "]("), or a URL written out. */
-const LINK_AT = /\]\(|https?:\/\//gi;
-/** What ends a URL written out in text: whitespace, a quote, an angle bracket, a backtick or a backslash. */
-const URL_END = /[\s"`<>\\]/;
-/** The punctuation a sentence ends a URL written out with, left off it; a closing bracket the URL opened stays. */
-const TRAILING = ".,;:!?*)]}'";
-const OPENER: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
-/** A JSON string that is one URL whole: a field holding a link means all of it, its last character too. */
-const WHOLE_URL = /^https?:\/\/\S+$/i;
+/** Where a link starts: a markdown link's target (after its "]("), or a URL written out, as the timeline finds one
+ *  (TEXT_URL, the same pattern, not a copy of it). */
+const LINK_AT = new RegExp(`\\]\\(|${TEXT_URL.source}`, "gi");
+/** The five entities XML names, and its numeric references: an XML body's URLs are read with them undone. */
+const XML_ENTITY = /&(?:(quot|amp|lt|gt|apos)|#(\d{1,7})|#x([0-9a-f]{1,6}));/gi;
+const NAMED: Record<string, string> = { quot: '"', amp: "&", lt: "<", gt: ">", apos: "'" };
 
-/** A URL written out in text, less the punctuation that ends a sentence after it: `)`, `]` or `}` stays where the URL
- *  opened as many as it closes (a wiki title's). One count, then one walk back, so a long run of them stays linear. */
-function trimmed(url: string): string {
-  const count: Record<string, number> = { "(": 0, ")": 0, "[": 0, "]": 0, "{": 0, "}": 0 };
-  for (const char of url) if (char in count) count[char]! += 1;
-  let end = url.length;
-  for (; end > 0 && TRAILING.includes(url[end - 1]!); end--) {
-    const char = url[end - 1]!;
-    const opener = OPENER[char];
-    if (opener && count[opener]! >= count[char]!) break;
-    if (opener) count[char]! -= 1;
+/** Where a markdown link's target (the text after its "](") ends: at whitespace or at the ")" that closes the link, so
+ *  parentheses it holds in pairs (a wiki title's) stay. */
+function targetEnd(text: string, from: number, to: number): number {
+  let end = from;
+  for (let depth = 0; end < to && !/\s/.test(text[end]!); end++) {
+    if (text[end] === "(") depth++;
+    else if (text[end] === ")" && depth-- === 0) break;
   }
-  return url.slice(0, end);
+  return end;
 }
 
-/** Every link `text` holds, in order, as written: a markdown link's target (`[text](url)`), which ends at whitespace or at
- *  the ")" that closes the link, so parentheses it holds in pairs stay; and a URL written out, which ends at URL_END or
- *  at a "](" (a link written as its own text), trimmed. Each is looked for from where the last one ended, so no character
- *  is scanned twice: one pass, however many unclosed "](" a hostile page holds. */
+/** Every link `text` holds, in order, as written: a markdown link's target (`[text](url)`, targetEnd), and a URL written
+ *  out (TEXT_URL), less its tail (urlEnd, the timeline's). A URL written out that runs into a "](" is a link written as
+ *  its own text (`[https://a](https://a)`): what follows each "](" in it is a target. Each link is looked for from where
+ *  the last one ended, so no character is scanned twice: one pass, however many unclosed "](" a hostile page holds. */
 function* hrefsIn(text: string): Generator<string> {
   const at = new RegExp(LINK_AT.source, "gi");
   for (let found = at.exec(text); found; found = at.exec(text)) {
-    let end = found.index + found[0].length;
     if (found[0] === "](") {
-      for (let depth = 0; end < text.length && !/\s/.test(text[end]!); end++) {
-        if (text[end] === "(") depth++;
-        else if (text[end] === ")" && depth-- === 0) break;
-      }
+      const end = targetEnd(text, found.index + 2, text.length);
       yield text.slice(found.index + 2, end);
-    } else {
-      while (end < text.length && !URL_END.test(text[end]!) && !text.startsWith("](", end)) end++;
-      yield trimmed(text.slice(found.index, end));
+      at.lastIndex = end;
+      continue;
     }
-    at.lastIndex = end;
+    const [written, ...targets] = found[0].split("](");
+    yield written!.slice(0, urlEnd(written!));
+    for (const target of targets) yield target.slice(0, targetEnd(target, 0, target.length));
   }
+}
+
+/** `text` with XML's entities undone, where it is XML (an Atom or RSS feed, a sitemap): an attribute's
+ *  `href="https://a/?x=1&amp;y=2"` is the URL `https://a/?x=1&y=2`, and an escaped `&lt;a href=&quot;…&quot;&gt;` in a
+ *  feed's content ends its URL at the quote. Any other text as it is. One pass, so `&amp;lt;` is `&lt;`. */
+function xmlUndone(text: string): string {
+  if (!/^\s*<[?!A-Za-z]/.test(text)) return text;
+  return text.replace(XML_ENTITY, (entity, name: string | undefined, decimal: string | undefined, hex: string | undefined) => {
+    if (name) return NAMED[name.toLowerCase()]!;
+    const code = Number.parseInt(decimal ?? hex!, decimal ? 10 : 16);
+    return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
 }
 
 /** A JSON body's links as written, in the body's order: each string value's (hrefsIn), one that is a URL whole taken as
@@ -204,7 +207,9 @@ function jsonHrefs(text: string): Iterable<string> | undefined {
     const stack = [body];
     while (stack.length) {
       const next = stack.pop();
-      if (typeof next === "string") yield* WHOLE_URL.test(next.trim()) ? [next.trim()] : hrefsIn(next);
+      // A string that is one URL whole is all of it, its last character too: a field holding a link means the link.
+      const whole = typeof next === "string" ? next.trim() : "";
+      if (typeof next === "string") yield* /^https?:\/\//i.test(whole) && !/\s/.test(whole) ? [whole] : hrefsIn(next);
       else if (typeof next === "object" && next !== null) {
         const values = Object.values(next);
         for (let i = values.length - 1; i >= 0; i--) stack.push(values[i]);
@@ -214,12 +219,13 @@ function jsonHrefs(text: string): Iterable<string> | undefined {
 }
 
 /** The absolute http(s) URLs a page's text holds, each once and without its fragment, in order (linksWithin keeps those
- *  within the caps and counts the rest): markdown link targets and URLs written out (hrefsIn), or, for a JSON body, those
- *  of its string values (jsonHrefs). A Parallel read's markdown and a direct fetch's body that is not HTML are read so;
- *  an HTML page's links are readPage's, its link targets. */
+ *  within the caps and counts the rest): markdown link targets and URLs written out (hrefsIn), an XML body's read with its
+ *  entities undone (an Atom entry's `<link href>`), or, for a JSON body, those of its string values (jsonHrefs). A
+ *  Parallel read's markdown and a direct fetch's body that is not HTML are read so; an HTML page's links are readPage's,
+ *  its link targets. */
 export function* linksOf(text: string): Generator<string> {
   const seen = new Set<string>();
-  for (const href of jsonHrefs(text) ?? hrefsIn(text)) {
+  for (const href of jsonHrefs(text) ?? hrefsIn(xmlUndone(text))) {
     const link = /^https?:\/\//i.test(href) ? URL.parse(href) : null;
     if (!link) continue;
     link.hash = "";
