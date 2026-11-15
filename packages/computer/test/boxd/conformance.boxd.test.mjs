@@ -1,5 +1,5 @@
 // The conformance suite on a real boxd machine, one test per case. It is skipped unless AGENTRUN_COMPUTER_LIVE_BOXD=1 and
-// COMPUTER_BOXD_API_KEY is in the environment: a key the lead has OKed by name, never set by a test or a script.
+// COMPUTER_BOXD_API_KEY is in the environment: your own key, never set by a test or a script.
 // BOXD_API_KEY never counts, and the provider never reads it. It also needs the @boxd-sh/sdk package installed where
 // Node finds it (a root devDependency), `npm run build` and `npm run build:daemon` (the daemon is uploaded into each
 // machine), and Go on PATH: the drift case builds a daemon of another version, and the screen and input cases a
@@ -21,7 +21,7 @@ const DAEMON = fileURLToPath(new URL("../../daemon", import.meta.url));
 
 describe(
 	`the conformance suite on a boxd ${process.env.COMPUTER_BOXD_KIND === "desktop" ? "desktop" : "sandbox"}`,
-	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_BOXD=1 with COMPUTER_BOXD_API_KEY (a key the lead OKed) to run on real boxd" },
+	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_BOXD=1 with COMPUTER_BOXD_API_KEY (your own key) to run on real boxd" },
 	() => {
 		let report;
 		let provider;

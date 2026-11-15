@@ -1,5 +1,5 @@
 // boxd for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider boxd [--image <snapshot>]`.
-// It makes real machines, so it runs only with AGENTRUN_COMPUTER_LIVE_BOXD=1 and a key the lead has OKed, under
+// It makes real machines, so it runs only with AGENTRUN_COMPUTER_LIVE_BOXD=1 and your own key, under
 // COMPUTER_BOXD_API_KEY. The provider reads no environment: this module reads its own COMPUTER_BOXD_* names (never
 // BOXD_API_KEY, which may hold another account's key) and passes each to create() as its option. The live switch is
 // checked first, before any other setting is read. The live sweep (sweep.ts, --provider boxd) reads the same names
@@ -79,7 +79,7 @@ export interface BoxdModuleOptions extends Pick<BoxdOptions, "Boxd" | "daemonPat
 }
 
 function live(env: Record<string, string | undefined>): void {
-	if (env[BOXD_ENV.live] !== "1") throw new Error(`the boxd conformance module makes real machines: set ${BOXD_ENV.live}=1, with a key the lead has OKed, to run it`);
+	if (env[BOXD_ENV.live] !== "1") throw new Error(`the boxd conformance module makes real machines: set ${BOXD_ENV.live}=1, with your own key, to run it`);
 }
 
 /** The image every computer of the run starts from: COMPUTER_BOXD_IMAGE, or boxd's own. */
