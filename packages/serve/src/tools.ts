@@ -164,8 +164,9 @@ export type ToolHost = {
    *  elsewhere is refused. Only the eval's own runner sets it (runner/beside.ts evalFakes). */
   emailFake?: EmailFake;
 };
-/** A fake mail account's servers, on loopback (email/email-faux.ts). */
-export type EmailFake = { readonly imap: { readonly host: string; readonly port: number }; readonly smtp: { readonly host: string; readonly port: number } };
+/** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
+ *  description says, which a loopback account saved as `other` would otherwise read as folders. */
+export type EmailFake = { readonly imap: { readonly host: string; readonly port: number }; readonly smtp: { readonly host: string; readonly port: number }; readonly kind: "gmail" | "folders" };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
 export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };

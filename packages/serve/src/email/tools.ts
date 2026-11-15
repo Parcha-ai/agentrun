@@ -384,9 +384,10 @@ export const emailEntry = (name: string, summary: string): ToolEntry => ({
   needs: [],
   nodes: false,
   bind: async (host): Promise<ToolBinding> => {
-    // email_file says the saved account's kind of server, read once at bind (no connection, never the password).
-    const kept = name === EMAIL_FILE && host.store ? await keptAccount(host.store) : undefined;
-    const registration = emailTool(name, host, kept ? (isGmailAccount(kept) ? "gmail" : "folders") : undefined);
+    // email_file says the saved account's kind of server, read once at bind (no connection, never the password); a
+    // template eval's fake account says the kind it plays.
+    const kept = name === EMAIL_FILE && !host.emailFake && host.store ? await keptAccount(host.store) : undefined;
+    const registration = emailTool(name, host, host.emailFake ? host.emailFake.kind : kept ? (isGmailAccount(kept) ? "gmail" : "folders") : undefined);
     const extension = defineExtension({ name: name.replaceAll("_", "-"), tools: [registration] });
     host.install(extension);
     return { tools: [registration], extensions: [extension] };

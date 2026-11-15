@@ -27,7 +27,9 @@ const REPLY = `${calls([
   ["email_read", { message_id: "<b1@example.com>" }],
   ["email_draft", { to: ["ana@example.com"], subject: "Re: Invoice 1042", text: "Invoice 1042 is attached again.", in_reply_to: "<a2@example.com>" }],
   ["email_file", { message_id: "<a2@example.com>", to: "Ignored", archive: true }],
-])}\nAnswer:\nREPLIED {{last-result}}`;
+])}\nAnswer:\nREPLIED {{last-result}}\nFILING {{describe:email_file}}`;
+/** The one line email_file's description says for each kind of server (email/tools.ts FILING). */
+const FILING = { folders: "On this server filing moves the message out of the inbox into the folder.", gmail: "On Gmail filing adds a label and keeps the message in the inbox; archive: true also removes it from the inbox." };
 /** The morning digest's run: a search of the other thread, which a schedule's run (no thread) finds. */
 const DIGEST = `${calls([["email_search", { subject: "Lunch on Friday" }]])}\nAnswer:\nDIGEST {{last-result}}`;
 
@@ -104,6 +106,10 @@ test("an email case's run is its trigger's on a fake mailbox, per layout: its gr
     assert.equal(read.length, 2, JSON.stringify(run.calls));
     assert.match(String(read[1].result), /outside this run's thread/, JSON.stringify(read[1]));
     assert.match(run.answer, /^REPLIED \{"filed":true,"message_id":"<a2@example\.com>","to":"Ignored","archived":true/, run.answer);
+    // email_file was described for the kind of server the fake plays, though it is saved as a loopback `other` account.
+    const filing = /^FILING (.*)$/m.exec(run.answer)?.[1] ?? "";
+    const other = run.layout === "gmail" ? "folders" : "gmail";
+    assert.ok(filing.includes(FILING[run.layout]) && !filing.includes(FILING[other]), `${run.layout}: ${filing}`);
     // The draft, as the account holds it after.
     const [draft] = run.mailbox_after.added;
     assert.deepEqual({ to: draft.to, cc: draft.cc, subject: draft.subject, in_reply_to: draft.in_reply_to, text: draft.text.trim() }, { to: ["ana@example.com"], cc: [], subject: "Re: Invoice 1042", in_reply_to: "<a2@example.com>", text: "Invoice 1042 is attached again." });
