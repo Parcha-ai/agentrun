@@ -11,13 +11,13 @@
 //   its row alone, said as an error by its name.
 // - A stopped end with nothing to withdraw keeps the row-only end when the journal refuses it, and a lost claim (Fenced)
 //   writes nothing, as before.
-// pi through the adapter loop, with a spec gate that asks about its one tool. Backoffs are read on the store's clock,
-// which the test moves (no wall-clock waits).
+// pi through the adapter loop, with a spec gate that asks about its one tool. Backoffs, leases and the runner's claim
+// deadline are read on the store's clock, which the test moves (no wall-clock waits).
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { queue, STEADY_LEASE, stores } from "./runner-support.mjs";
+import { fakeClock, queue, STEADY_LEASE, stores } from "./runner-support.mjs";
 
 const runnerModule = await import("../dist/runner/runner.js");
 const { startRunner } = runnerModule;
@@ -49,6 +49,9 @@ const wakers = new Set();
 let pulses = 0;
 // What the run in the test now under way looks like, for the hang guard's dump (set by runOf).
 let probe = async () => "no run opened";
+// A claim the runner lost for want of a renewal in the test now under way (reset by runOf). On the fixed clock its lease
+// never runs out, so the run's row keeps that runner and no wait on its release could end: a wait fails at once naming it.
+let notRenewed = null;
 const pulse = () => {
   pulses++;
   for (const wake of [...wakers]) wake();
@@ -64,6 +67,7 @@ async function upon(check, what) {
       const seen = pulses;
       const value = await check();
       if (value) return value;
+      if (notRenewed) throw new Error(`claim lost unrenewed (${notRenewed}) while waiting: ${what}\n${await probe().catch((error) => `dump failed: ${error}`)}`);
       if (hung) throw new Error(`hung (${HANG_MS} ms): ${what}\n${await probe().catch((error) => `dump failed: ${error}`)}`);
       if (pulses !== seen) continue;
       await new Promise((resolve) => {
@@ -110,6 +114,21 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
   const at = Date.now();
   const time = () => at;
   const opened = await stores({ runners: 1, time, busyTimeoutMs: HANG_MS });
+  // The runner's claim deadline (a claim not renewed by its lease less the margin is lost) reads the same clock as the
+  // store: on real time a starved box misses a renewal, the runner drops the claim, and the row keeps it under a lease
+  // that never lapses on the fixed store clock, so the run is never released. Moving `skewMs` moves both clocks.
+  const deadline = fakeClock(at);
+  const clock = {
+    get skewMs() {
+      return opened.clock.skewMs;
+    },
+    set skewMs(value) {
+      const by = value - opened.clock.skewMs;
+      opened.clock.skewMs = value;
+      deadline.advance(by);
+    },
+  };
+  notRenewed = null;
   await queue(opened.server, "run-1");
   if (before) await before(opened.server);
   const sent = [];
@@ -140,9 +159,10 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
     return JSON.stringify({
       runnersSpawned: names,
       storeNow: now(),
+      deadlineNow: deadline.now(),
       skewMs: opened.clock.skewMs,
       row,
-      leaseLeftMs: typeof row.leaseUntil === "number" ? row.leaseUntil - now() : "no leaseUntil on the row",
+      leaseLeftMs: row.claimedUntil === null ? null : row.claimedUntil - now(),
       backoffLeftMs: row.backoffUntil === null ? null : row.backoffUntil - now(),
       commands,
       beats: beats.count,
@@ -153,13 +173,18 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
   };
   const spawn = (name) => {
     names.push(name);
-    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, onEvent: (event) => (events.push(event), pulse()), onBeat: () => (beats.count++, (lastBeatAt = Date.now()), pulse()), ...TIMING });
+    const onEvent = (event) => {
+      if (event.type === "claim-lost" && event.why === "not-renewed") notRenewed = `${name}, ${event.runId}@${event.epoch}`;
+      events.push(event);
+      pulse();
+    };
+    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, clock: deadline, onEvent, onBeat: () => (beats.count++, (lastBeatAt = Date.now()), pulse()), ...TIMING });
     t.after(() => runner.close());
     return runner;
   };
   const runner = spawn("runner-a");
   if (parks) await upon(async () => (await opened.server.runs.get("run-1")).state === "parked", "the run parked on the call");
-  return { server: opened.server, runnerStore: opened.runners[0], runner, spawn, clock: opened.clock, now, sent, requests, events, starts, beats };
+  return { server: opened.server, runnerStore: opened.runners[0], runner, spawn, clock, deadline, now, sent, requests, events, starts, beats };
 }
 
 /** Closes `runner` as a test's "no runner holds the run now". A close that gives up on a loop slow to stop (a loaded box:
@@ -238,14 +263,16 @@ async function releasedAfter(server, tries) {
 const waitsSaid = (events) => events.filter((event) => event.type === "error" && event.runId === "run-1" && REFUSED.test(event.message)).map((event) => Number(REFUSED.exec(event.message)[2]));
 
 test("the stop fixture's retry clock stays fixed while real runner polls continue, and moves only on its explicit skew", { timeout: LONG_TEST_MS }, async (t) => {
-  const { server, clock, now, beats, requests, sent } = await runOf(t);
+  const { server, clock, deadline, now, beats, requests, sent } = await runOf(t);
   const [at, polled, asked] = [now(), beats.count, requests.length];
   await upon(() => beats.count >= polled + 2, "two actual runner polls after the parked call");
   assert.equal(now(), at, "observer scheduling cannot expire the first retry backoff");
   assert.equal(await server.sealedKeys.clock(), at, "the store and runner share that clock");
+  assert.equal(deadline.now(), at, "and so does the runner's claim deadline");
   clock.skewMs += BACKOFF_MS;
   assert.equal(now(), at + BACKOFF_MS);
   assert.equal(await server.sealedKeys.clock(), at + BACKOFF_MS);
+  assert.equal(deadline.now(), at + BACKOFF_MS);
   assert.equal(requests.length, asked);
   assert.deepEqual(sent, []);
 });
