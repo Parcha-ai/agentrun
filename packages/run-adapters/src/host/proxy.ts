@@ -19,6 +19,7 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Serv
 import { CONTENT_FILTERED, type NoteRequest } from "../types.js";
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 import { SPEND_CAP_REACHED } from "../kernel/cap/words.js";
+import type { BilledRequest } from "./overhead.js";
 
 /** Whether a request's admission refused it for the run's spend cap, read from the error's fields alone: the cap's own
  *  error (CapRefused, its `code`), or the runner's stop for the cap's verdict (HarnessRunError, its `refusal`: the
@@ -131,6 +132,11 @@ export interface ProviderPolicy {
    *  count that failed or said none. That request's input bound when it is below the byte bound. Undefined: the body has
    *  no local count (a model whose tokenizer the policy does not have), and keeps its byte bound. Absent: never counted. */
   countInputLocally?(body: Record<string, unknown>): Promise<number | undefined> | number | undefined;
+  /** The most input tokens the body `apply` returned can be billed for, from `earlier`, the session's last request on
+   *  the same model whose answer reported what its whole input billed (`messagesInputAfter`): for a request the provider
+   *  did not count, its input bound when it is below its other bounds. Undefined: the earlier request says nothing of this
+   *  one (they differ in more than what this one adds). Absent: never used. */
+  inputAfter?(earlier: BilledRequest, body: Record<string, unknown>): number | undefined;
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
@@ -1059,6 +1065,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
    *  incomplete stream) is never paid for, whether or not the harness's own stop beat it. */
   let stopTold: string | undefined;
   const inflight = new Set<AbortController>();
+  /** By model, the last request whose answer reported what its whole input billed: the body it was sent with and that
+   *  count (`policy.inputAfter` bounds a later request by it). */
+  const billed = new Map<string, BilledRequest>();
   /** The requests whose answer the provider stopped on its content filter, read on for their usage, each until booked. */
   const draining = new Map<AbortController, Promise<void>>();
   /** Set by close(): nothing is admitted or sent after it. */
@@ -1277,6 +1286,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const local = await localInputOf(policy, body, say);
       if (res.destroyed) return;
       if (local !== undefined && inputTokensMax !== undefined && local < inputTokensMax) inputTokensMax = local;
+    }
+    // A request its provider did not count that carries an earlier one the provider billed (a session's next step, on a
+    // model no local count reads: Claude through a gateway): its input bound is that bill and the bytes it adds
+    // (policy.inputAfter), when that is below its bound so far.
+    const earlier = billed.get(asked);
+    if (counted === undefined && !route.free && inputTokensMax !== undefined && earlier && policy.inputAfter) {
+      try {
+        const after = policy.inputAfter(earlier, body);
+        if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new Error(`not a token count: ${String(after).slice(0, 40)}`);
+        if (after !== undefined && after < inputTokensMax) inputTokensMax = after;
+      } catch (error) {
+        say(`model proxy (${policy.id}): the bound from the earlier billed request failed; the request keeps its bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
     }
     // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
     // session's model whose policy can place it takes it, once, now that it is measured as its admission reads it
@@ -1751,6 +1773,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // again. Booked as before, as any answer cut short; only its end says the error.
       const translated = failed === undefined ? wordsErrorOf(kept) : undefined;
       if (translated !== undefined) erredIn = wordsOf(translated);
+      // An answer of the client's own that reached it whole and reported its usage: what its whole input billed, kept
+      // with the body it was sent with, for the session's next request on its model (policy.inputAfter).
+      const billedInput = usage.input + usage.cacheRead + (usage.cacheWrite ?? 0);
+      if (answered?.ok && !stoppedByClient && !unread && failed === undefined && translated === undefined && refusedIn === undefined && host === undefined && Number.isSafeInteger(billedInput) && billedInput > 0) billed.set(asked, { body, inputTokens: billedInput });
       try {
         usd = refusedIn !== undefined ? 0 : unread ? null : options.price?.(asked, usage) ?? null;
         if (refusedIn !== undefined) own = true;
