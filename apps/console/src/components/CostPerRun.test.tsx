@@ -325,3 +325,17 @@ describe("the loop on the cost chart", () => {
     expect(path.split(/[ML]/).filter(Boolean)).toHaveLength(3);
   });
 });
+
+
+it.each(["native", "sdk"] as const)("%s cost guidance reports evidence without promising workflow takeover", execution => {
+  for (const runs of [[], [run(1, "agent", 1), run(2, "agent", 0.5)]]) {
+    const data = series(runs), host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(CostChart, { data, on: true, width: 900, execution })));
+    expect(text(host)).toContain(execution === "native" ? "Native run costs" : "SDK run costs");
+    expect(text(host)).not.toContain("takes the job over");
+    expect(text(host)).not.toContain("Keep running the same job: once one does");
+    if (runs.length) expect(host.querySelectorAll('tbody tr').length).toBe(2);
+    act(() => root!.unmount()); root = undefined; host.remove();
+  }
+});
