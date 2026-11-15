@@ -3,6 +3,7 @@ import { ArrowLeft, Bot, ChevronRight, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { LatestRun } from "@/components/LatestRun";
 import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
@@ -18,6 +19,8 @@ import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Tabs } from "@/components/ui/tabs";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
+import { backendSdkOf } from "@/lib/backendSdk";
+import { runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
@@ -211,6 +214,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
         ) : null}
         <SignIns agent={agent} v2={v2} onAgent={setAgent} poll={poll} refresh={afterForget} />
       </header>
+      {!agent.archived_at && <div className="px-5 pt-4 md:px-8"><CodingAgentAction label="Run agent" prompt={runAgentPrompt(location.origin, agent.agent_id, backendSdkOf(d)?.runtime)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} /></div>}
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} freeNote={workflow ? null : freeRequestsNote(d.model ?? fallback, d.harness ?? "pi", harnesses, limits?.free_model_requests)} />}
       <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
