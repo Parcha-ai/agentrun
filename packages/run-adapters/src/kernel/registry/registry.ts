@@ -1,14 +1,15 @@
 // The kernel's one registry of host tools: the model-visible definitions (defs.ts), each with its executor. read,
 // write and edit, and bash's own run, are the host's (pi's tools over the run's hands, until their semantics move
 // here); the kernel bounds bash and runs the five background tools itself. A desktop or a phone adds the computer's
-// tools after them (computer.ts), as its groups offer them, under its kind's settings key: observe, act and screenshot
-// run on the kernel's own executors over the hands' computer port; computer_script runs in the host's isolate, listed
-// only where the host gives it. A registry missing an executor for a tool the model sees is refused when it is built,
+// tools after them (computer.ts), as its groups offer them, under its kind's settings key: observe, act, screenshot,
+// computer_op (a codemode script's every other op) and the hand-over run on the kernel's own executors over the hands'
+// computer port. A registry missing an executor for a
+// tool the model sees is refused when it is built,
 // so a run never offers a tool it cannot run. A computer's tool the run does not have is refused in words that name
 // the setting.
 import { BACKGROUND_EXECUTORS, NEEDS_A_COMPUTER, NO_SHELL } from "./background.js";
 import { boundedBash } from "./bash.js";
-import { COMPUTER_TOOLS, computerExecutors, computerToolDefs, computerToolsFor, SCRIPT_TOOL } from "./computer.js";
+import { COMPUTER_TOOLS, computerExecutors, computerToolDefs, computerToolsFor } from "./computer.js";
 import { CAPABILITY_KINDS, hostToolDefs, type ShellPlace, type ToolDef } from "./defs.js";
 import { answerOf, type CapabilityKind, type Executor, type HostExecutors, needsKindWords, type ToolAnswer, type ToolCall } from "./hands.js";
 import { BACKGROUND_TOOLS } from "./limits.js";
@@ -42,10 +43,7 @@ export function createRegistry(options: { maxExecS: number; shell: ShellPlace; k
     const kernel = computerExecutors(kind);
     for (const def of computerToolDefs(kind, groups)) {
       if (!offered.includes(def.name)) continue;
-      const run = def.name === SCRIPT_TOOL ? executors.computer_script : kernel[def.name];
-      // The script is the host's to run (its isolate): a host that gives none lists none.
-      if (!run) continue;
-      runs.set(def.name, run);
+      runs.set(def.name, kernel[def.name]!);
       defs.push(def);
     }
   }

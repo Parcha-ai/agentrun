@@ -75,7 +75,8 @@ place: a token from the environment stays out of the logs. `DIR/.token`'s token 
 it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
 link carries a launch code this start made at random (`?launch=<code>`), never the token. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
-use it.
+use it. `AGENTRUN_FREE_MODEL_REQUESTS` (default 60) is the most requests on free models a run makes
+([a limit on free requests](#a-limit-on-free-requests)).
 
 ## Sandbox in 60 seconds
 
@@ -283,7 +284,9 @@ and a 200 says it can work, and the platforms here take one path.
 
 A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A runner that stops, or cannot renew in
 time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
-claim lapses another runner claims the run and resumes it from its journal. `agentrun-serve runner --check --data DIR --name N`
+claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
+runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
+timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) says whether the runner named `N` has a fresh heartbeat: it exits 0
 when it does and 1 when it does not, and 2 when no name is given. Name a runner you start yourself with
 `agentrun-serve runner --data DIR --name N`.
@@ -294,8 +297,8 @@ A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
 runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
 set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; a Daytona or Modal box is made with no network when a host list is set, and
-capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
+init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
@@ -626,7 +629,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -634,12 +637,18 @@ A desktop's and a phone's tools are one set over the computer's groups. With the
 the app window's elements as compact lines (`@e12 button "Save"`), and `computer_act` runs steps on them by ref (press,
 set, click, type, key, scroll, drag, nav), each step saying its route and whether a readback verified it, and the answer
 ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
-`computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
-network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
-declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. The computer's
-tools are the run's own, so a `codemode` script calls them as `tools.computer_act(...)` and the rest: each is a call of
-its own, held to the kind's setting and recorded with its computer calls, and it answers the tool's value. In Codex's
-code mode, a script's call of a computer tool answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+Scripts are the host's `codemode` (no network, no keys): a known sequence of steps is one script, and it returns only
+what the next decision needs. On a desktop or a phone its script has a typed `computer` object beside `tools`, whose
+declarations codemode's description gives for the computer's groups (`spec/computer/computer.d.ts`, generated from
+`packages/computer/src/surface/api.ts`). Every method of `computer` is a nested call of the script: observe, act and
+the screenshot are the tools of those names, and the rest (apps, the shell, files, processes, raw input) is
+`computer_op` (`{op, args}`), a tool bound for scripts alone. Each call is held to the run's gate and recorded on the
+timeline like a tool's, and a crash rerun of the script answers a call that already ran from its record: a shell
+command (`shell.run`) is held to the agent's `bash` setting, a started process to `bash_background`, a file written to
+`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A script's call
+of a computer tool answers the tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
+`computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
+JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
@@ -855,9 +864,12 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal, E2B or Agent37 sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
-vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
-only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
+Daytona, Modal, E2B or Agent37 sandbox reaches the same list through an egress proxy on the vendor's machine, outside its
+programs' network. An Orgo desktop has no network of its own (loopback only). A desktop (Docker's, Agent37's, E2B's) and
+Local Chrome are open to the public internet, through their egress proxy, unless this server sets `AGENTRUN_BOX_ALLOW`;
+then only those hosts (the default list, a sandbox's package registries, is no browsing policy). Either way the proxy
+refuses private, link-local and metadata addresses. A phone and a hosted browser are on their vendor's own network,
+whatever the list says. Under
 `AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
@@ -1056,8 +1068,11 @@ length, and no `original_chars`, its text is the start of the page, and the last
 1,000,000 characters of HTML before reading; the rest wasn't read.` `converted: "text"` says the text is the page's
 plain text, its conversion to markdown having run out of time. A page is read to its first 1,000,000 characters: an
 `offset` at or past them is refused, and the last part a read reaches of a longer page has `beyond_read`. The links,
-absolute http(s) only, come with the part at offset 0: at most 200, in 20,000 characters, with `links_omitted`
-counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
+absolute http(s) only, each once without its fragment, are the page's link targets and the URLs written out in its
+text (a JSON body's: those of its string values, so an API's `url` or `shortlink` field is one; an XML body's, an Atom
+or RSS feed's, read with its entities undone, so an entry's `<link href>` is one); an HTML page fetched
+directly gives its link targets alone. They come with the part at offset 0: at most 200, in 20,000 characters, with
+`links_omitted` counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
 run keeps what it read of its last 8 pages by the URL asked for: every later part of that URL comes from it, with no
 request, so a page's parts are always one read's. Through Parallel that is one billed extract a page a run, asked for
 its first 1,000,001 characters (the extract has no offset: its text always starts at the page's start). A refusal or a
@@ -3130,10 +3145,10 @@ base64's bytes, plus what the provider adds server-side (a tool-use prompt), fro
 claude-agent, codex and opencode uses; there the proxy measures each request's body. On codex and opencode (the
 Responses API) the text the model reads as it is (a message, a call's arguments, a tool's output, a reasoning summary)
 counts at its own bytes, not the JSON escapes around it (`\"`, `\n`), which no token is billed for; tool definitions and
-encrypted reasoning keep every byte. On a route straight to OpenAI (`https://api.openai.com`, codex and opencode), each
-answer request is also counted by OpenAI's own token count (`POST /v1/responses/input_tokens`, with only the credential
-and account headers, and never through a gateway or any other base), and its bound is that count when it is below the
-byte bound. On a route straight to Anthropic
+encrypted reasoning keep every byte. For a model whose tokenizer is o200k_base (gpt-4o and later, the o-series, on
+codex and opencode, and on pi and claude-agent through serve's translation), each request is also counted on the host
+with that vocabulary, plus a stated margin (10% of the count, 16 tokens an item, 256 a request), on every route and with
+nothing asked of the provider, and its bound is that count when it is below the byte bound. On a route straight to Anthropic
 (`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
 token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
 gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
@@ -3143,8 +3158,9 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 step is sent only when the run's spend plus that step's least (its whole input bound at the cache-write price, and a
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
-write, edit, the desktop's and `codemode`), five requests (four screenshots, then the answer), spending about $0.04 in
-all. Through a gateway the first request's byte bound is 11,496 tokens, so it needs $0.058 and the whole run $0.117;
+write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
+tokens, so it needs $0.052 and the whole run $0.110;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
 $0.030 and $0.083:
 
@@ -3155,7 +3171,10 @@ $0.030 and $0.083:
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the five-step figure parks before its last step by either route, its words naming that figure.
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the
+five-step figure does not get every step: straight to Anthropic it parks before its last step, its words naming that
+figure; through a gateway ($0.11, a fraction of a cent under the $0.110 it needs) the wrap-up refuses its last screenshot
+and it answers.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself
@@ -3254,6 +3273,22 @@ retry reads only an error's text, and takes "out of budget" as final whatever di
 refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
 request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
 the $0.15 left of the run's $0.50 cap could buy."
+
+### A limit on free requests
+
+A request on a free model costs $0, so no dollar cap can stop one: a free model is one whose catalog price is all zeros
+(an OpenRouter `:free` model and the like, as `harnesses[].free_models` lists them; an OpenRouter router is none, since
+it bills the model it picks), with no fee beside the request. Its provider's shared daily quota is what a looping run
+burns. So a run has a limit on those requests: 60, or `AGENTRUN_FREE_MODEL_REQUESTS` (a whole number above 0; anything
+else refuses the server's start and the runner's). ChatGPT-plan requests don't count. Capabilities'
+`limits.free_model_requests` says it, and the console says "free model: up to 60 requests" beside the cap of an agent
+on a free model. A run may make that many; the next is not sent, and the run ends `failed` as one its
+cap ends, its error `spend_cap_reached`: "Not sent: this run reached its 60-request limit for free models." (the number
+is the limit). No raise lifts it, and it holds capped or not, on every harness: pi, claude-agent, codex, opencode and a
+workflow's agent nodes. Every such request of the run counts, its own model's, its subagents', its side calls' (a
+compaction, a title), and one a crash cut, which is booked at $0, a known cost; a paid request, a paid tool call and a
+workflow's decision never count, and are never refused by it. The count is read from the run's booking records at each
+request, so a restart or a claim moved to another runner keeps it.
 
 ### A run paused at its cap
 

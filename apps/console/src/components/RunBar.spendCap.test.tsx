@@ -18,12 +18,12 @@ const agent = (definition: Partial<Agent["definition"]> = {}, kind: Agent["kind"
   definition: { version: 1, name: "Capper", instructions: "Answer.", harness: "pi", skills: [], tools: ["read"], ...definition },
 });
 
-function mount(a: Agent, refuse?: ClientError) {
+function mount(a: Agent, refuse?: ClientError, freeNote?: string | null) {
   const starts: Record<string, unknown>[] = [];
   const v2 = { startRun: async (_id: string, body: Record<string, unknown>) => { starts.push(body); if (refuse) throw refuse; return { run: { run_id: "r1" }, status: 202 }; } };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(RunBar, { agent: a, efforts: ["low", "high"], v2: v2 as never, go: () => {} })));
+  act(() => root!.render(createElement(RunBar, { agent: a, efforts: ["low", "high"], v2: v2 as never, go: () => {}, freeNote })));
   const set = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -37,6 +37,15 @@ function mount(a: Agent, refuse?: ClientError) {
 }
 
 describe("RunBar, the Spend cap box", () => {
+  it("says a free model's limit on requests under the box, and nothing for a paid one", () => {
+    const free = mount(agent(), undefined, "free model: up to 60 requests");
+    expect(free.host.querySelector('[data-note="free-requests"]')?.textContent).toBe("free model: up to 60 requests");
+    act(() => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+    expect(mount(agent()).host.querySelector('[data-note="free-requests"]')).toBeNull();
+  });
+
   it("sends a typed cap as the start's max_cost_usd", async () => {
     const m = mount(agent({ max_cost_usd: 0.5 }));
     expect(m.box()).not.toBeNull();

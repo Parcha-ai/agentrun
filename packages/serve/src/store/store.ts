@@ -162,7 +162,13 @@ export interface RunRow {
   readonly wakeAt: number | null;
   /** A parked run's backoff after a failed resume: its untaken commands wait for it, a stop and its wake_at do not. */
   readonly backoffUntil: number | null;
+  /** What the run cost, exactly: null when that is unknown, and null when its stored cost is only the most it can have
+   *  cost (`costAtMostUsd`). Every reader that sums, compares or shows spend reads this, so a bound never reads as spend. */
   readonly costUsd: number | null;
+  /** The most the run can have cost, set only when that is all its stored cost says (runs.cost_upper_bound): it counts a
+   *  request cut with no answer at what its cap held for it (runner.ts CUT_AT_HOLD). Read only where a figure can be said
+   *  "at most" (the run's view, the runs list); null otherwise, `costUsd` then the stored figure or null. */
+  readonly costAtMostUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
   /** How the run ended beside its state (RunOutcome), null for a plain completion, a failure, or a run not ended. */
@@ -182,6 +188,9 @@ export interface RunRow {
 export interface RunPatch {
   readonly state?: RunState;
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost (stored as runs.cost_upper_bound, read back as
+   *  RunRow.costAtMostUsd): read only with `costUsd`, which always writes it (absent: false). */
+  readonly costUpperBound?: boolean;
   readonly metrics?: unknown;
   readonly summary?: string | null;
   /** How the run ended (RunOutcome), set in its end commit; null clears it. */
@@ -241,6 +250,13 @@ export interface ImportRunInput {
   readonly startedAt: number;
   readonly endedAt?: number;
   readonly transcript: readonly (readonly StorageWrite[])[];
+  /** Internal authorization fences for an outbound historical import. These settings rows are locked and their
+   * named fields checked in the same transaction as the terminal run and journal, so a completed revocation or
+   * disconnect cannot be followed by another imported run. Ordinary local imports leave this absent. */
+  readonly settingsGuards?: readonly { readonly key: string; readonly fields: Readonly<Record<string, unknown>> }[];
+  /** Remote history is admitted only while its agent remains active. Lock and check the agent in the import's
+   * transaction, ordering the write against archive; ordinary local imports leave this guard absent. */
+  readonly requireActiveAgent?: true;
 }
 
 /** Rows written in the same commit as a run's update (runs.update, or a journal commit's staged patch): a channel post the
@@ -916,19 +932,22 @@ export interface Settings {
   get(key: string): Promise<unknown | undefined>;
   /** Saves `value` (JSON) under `key`, inserted or replaced in place. */
   put(key: string, value: unknown): Promise<void>;
-  /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
-   *  wins; the value saved under it after (this one, or the one there before). */
-  putIfAbsent(key: string, value: unknown): Promise<unknown>;
+  /** Saves `value` under `key` only when the key has no row yet; the value saved after (this one, or the one there before).
+   *  With `capacity`, count and insert share a namespace lock and transaction across store handles. Every raw key under
+   *  the exact prefix counts, without decoding values. An existing key wins even at capacity; undefined means a new key
+   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. */
+  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }): Promise<unknown>;
   /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
    *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
-   *  when the row changed since or is gone. */
-  replaceIf(key: string, was: unknown, value: unknown): Promise<boolean>;
+   *  when the row changed since or is gone. With `claim`, holds the run's shared row lock and checks its epoch/lease in
+   *  the same transaction as the setting update; a stale claim throws Fenced without changing the setting. */
+  replaceIf(key: string, was: unknown, value: unknown, claim?: Claim): Promise<boolean>;
   /** The key's row goes only while it still holds `was`, in one statement: true when it went. */
   removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
-  /** Every setting, by key. */
-  all(): Promise<SettingRow[]>;
+  /** Settings by key, optionally selecting a namespace and native connector owner before values are read. */
+  all(filter?: { readonly prefix: string; readonly connectorId?: string }): Promise<SettingRow[]>;
 }
 
 /** A sealed key as a row (store schema `sealed_keys`): its name and the bytes the server sealed (store/seal.ts, AAD

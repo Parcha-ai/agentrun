@@ -12,6 +12,8 @@
 // in place of each run's pin at its first claim (the mcp_pins table): a server open adds the column to a store an earlier
 // build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
 // Its monid endpoints are pinned beside them (revisions.monid_pin, REVISIONS_MONID_PIN), added at a server open the same way.
+// A run's cost says whether it is the most the run can have cost (runs.cost_upper_bound, RUNS_COST_UPPER_BOUND), added at a
+// server open the same way.
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index.
@@ -34,6 +36,9 @@ export const SCHEMA_VERSION = 11;
 /** One unrefused answer per approval of a run: an answer the runner refused (its run could not resume) holds no place, so
  *  the person can answer again. */
 export const ONE_ANSWER_INDEX = "commands_one_answer";
+/** The connector's own command rows, without parsing another connector's events on every heartbeat. */
+export const NATIVE_COMMANDS_INDEX = `CREATE INDEX IF NOT EXISTS settings_native_commands ON settings (connector_id, key) WHERE key >= 'native.remote.command.' AND key < 'native.remote.command/'`;
+
 export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS ${ONE_ANSWER_INDEX} ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
@@ -43,6 +48,13 @@ const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "
 export const REVISIONS_MCP_PIN = `ALTER TABLE revisions ADD COLUMN ${json("mcp_pin", true)}`;
 /** A revision's monid pin (JSON, null for none): in STORE_DDL, and added at a server open as REVISIONS_MCP_PIN is. */
 export const REVISIONS_MONID_PIN = `ALTER TABLE revisions ADD COLUMN ${json("monid_pin", true)}`;
+/** Whether a run's stored cost (cost_usd) is the most it can have cost, not its cost: 1 when it counts a request cut with
+ *  no answer at what its cap held for it (runner.ts CUT_AT_HOLD), written in the end's commit with the cost; 0 otherwise,
+ *  an unknown cost's included. */
+const COST_UPPER_BOUND = "cost_upper_bound INTEGER NOT NULL DEFAULT 0 CHECK (cost_upper_bound IN (0, 1))";
+/** The bound beside a run's cost: in STORE_DDL, and added at a server open to a store an earlier build of this version made,
+ *  as REVISIONS_MCP_PIN is (a run it ended reads 0: an exact cost or an unknown one, as it was read then). */
+export const RUNS_COST_UPPER_BOUND = `ALTER TABLE runs ADD COLUMN ${COST_UPPER_BOUND}`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -122,6 +134,7 @@ export const STORE_DDL: readonly string[] = [
     wake_at INTEGER,
     backoff_until INTEGER,
     cost_usd REAL,
+    ${COST_UPPER_BOUND},
     ${json("metrics", true)},
     summary TEXT,
     -- How the run ended beside its state (RunOutcome). An ended run: 'escalated' (it finished its work and waits for a
@@ -337,8 +350,10 @@ export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     ${json("value")},
+    connector_id TEXT,
     updated_at INTEGER NOT NULL
   ) STRICT`,
+  NATIVE_COMMANDS_INDEX,
   `CREATE TABLE IF NOT EXISTS sealed_keys (
     name TEXT PRIMARY KEY,
     sealed BLOB NOT NULL,

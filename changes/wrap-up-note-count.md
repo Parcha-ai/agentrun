@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-kernel, @parcha/agentrun-serve
+kind: fix
+---
+A capped run's wrap-up note now comes due on the same input count its request is admitted by. The model proxy counts a request (the provider's count, or the local count for a model whose tokenizer is o200k_base) before it asks for the note, so the note's least, its step-0 figure and the reserve it is checked against are priced on that count, never on the body's bytes. Before, the note was priced on the bytes while admission read the count: a $2 code review on pi with GPT-6.1 Sol through OpenRouter, whose script call was cut at the output ceiling, sent an answer request past 272,000 bytes that was told to "finish now" with $1.56 left (its least read as about $1.45 at the long-context rate, $0.25 on its count), and it answered with no review; a $1 run was told its budget was "enough for little work" on its first request. The noted request is bounded by that count plus the note's own bytes, and a client that goes while its request is counted no longer takes the note.

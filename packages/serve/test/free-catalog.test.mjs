@@ -5,6 +5,7 @@
 // zeros, read from the price and never from the id; OpenRouter's routers, whose catalog zeros are no price, are not.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { freeModel, ROUTERS } from "@parcha/agentrun-kernel/kernel/cap";
 import { ADDED_MODELS, isFree } from "../dist/local-models.js";
 import { catalogPrice, catalogPrices, chooseModel, runModels, unpricedModels } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
@@ -73,6 +74,27 @@ test("free is the price: all zeros, every tier too; a paid price, a tier above z
   assert.equal(isFree({ provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [{ inputTokensAbove: 1, input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }] } }), false);
   assert.equal(isFree({ provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [{ inputTokensAbove: 200_000, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }] } }), true, "a tier's threshold is no price");
   for (const id of ["openrouter/auto", "openrouter/free", "auto", "typesafe/jev-router"]) assert.equal(isFree({ provider: "openrouter", id, cost: ZERO }), false, id);
+});
+
+test("the picker's free mark is the kernel's freeModel: for every catalog entry, isFree says what a run on it books at $0", () => {
+  const tier = (inputTokensAbove, rates) => ({ inputTokensAbove, ...ZERO, ...rates });
+  const rows = [
+    ["all zeros", { provider: "openrouter", id: "x/y", cost: ZERO }, true],
+    ["a :free id at a price", { provider: "openrouter", id: "x/y:free", cost: { ...ZERO, output: 0.1 } }, false],
+    ["a priced tier", { provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [tier(1, { input: 1 })] } }, false],
+    ["a $0 tier past a threshold", { provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [tier(200_000, {})] } }, true],
+    ["no cost at all", { provider: "openrouter", id: "x/y" }, false],
+    ["a null cost", { provider: "openrouter", id: "x/y", cost: null }, false],
+    ["a router's id on another provider, at all zeros", { provider: "local", id: "auto", cost: ZERO }, false],
+    ["a tier that leaves out its input", { provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [{ inputTokensAbove: 1, output: 0, cacheRead: 0, cacheWrite: 0 }] } }, false],
+    ["a tier that leaves out its output", { provider: "openrouter", id: "x/y", cost: { ...ZERO, tiers: [{ inputTokensAbove: 1, input: 0, cacheRead: 0, cacheWrite: 0 }] } }, false],
+    ...[...ROUTERS].map((id) => [`the router ${id}`, { provider: "openrouter", id, cost: ZERO }, false]),
+  ];
+  const kernel = (entry) => freeModel({ id: entry.id, api: "openai-completions", price: entry.cost ?? null, outputCeiling: null });
+  assert.deepEqual(
+    rows.map(([what, entry]) => `${what}: isFree ${isFree(entry)}, freeModel ${kernel(entry)}`),
+    rows.map(([what, , free]) => `${what}: isFree ${free}, freeModel ${free}`),
+  );
 });
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];

@@ -1,8 +1,7 @@
 // An OpenCode request's input bound, on the recorded body of the pinned build: its bytes less the escapes JSON adds to the
 // text the model reads as it is (its system prompt, a call's arguments, a tool's output), every other byte as sent; and on
-// a route straight to OpenAI, OpenAI's own count (POST /v1/responses/input_tokens) when that is lower. Through a gateway,
-// or when the count fails, the kernel's local count (o200k_base and its margin) when that is lower. No network: OpenAI is a
-// scripted fetch.
+// every route, straight to OpenAI or through a gateway, the kernel's local count (o200k_base and its margin) when that is
+// lower, with no count asked of the provider. No network: OpenAI is a scripted fetch.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -63,21 +62,15 @@ async function proxyOn(t, origin, count) {
   return { p, counts, asked };
 }
 
-test("straight to OpenAI, an OpenCode request is counted by OpenAI with the credential alone; a failed count, or a gateway, falls to the local count", async (t) => {
+test("on every route, straight to OpenAI included, an OpenCode request's input bound is its local count, and no count is asked", async (t) => {
+  assert.equal(policy.countInput, undefined, "the policy names no provider count");
   const body = policy.apply(structuredClone(RECORDED), route);
   const byteBound = inputTokensMaxOf(policy, body, JSON.stringify(body));
   const local = await responsesLocalInputTokens(body);
   assert.ok(local < byteBound, `the local count ${local} is below the bytes' ${byteBound}`);
   const direct = await proxyOn(t, "https://api.openai.com", async () => Response.json({ object: "response.input_tokens", input_tokens: 900 }));
   assert.equal((await send(direct.p.url, RECORDED)).status, 200);
-  assert.equal(direct.asked[0].inputTokensMax, 900);
-  assert.equal(direct.counts[0].url, "https://api.openai.com/v1/responses/input_tokens");
-  assert.deepEqual(Object.keys(direct.counts[0].headers).map((n) => n.toLowerCase()).sort(), ["authorization", "content-type"]);
-  assert.deepEqual(Object.keys(direct.counts[0].body).sort(), ["input", "model", "tool_choice", "tools"]);
-
-  const failed = await proxyOn(t, "https://api.openai.com", async () => new Response("no", { status: 503 }));
-  assert.equal((await send(failed.p.url, RECORDED)).status, 200);
-  assert.equal(failed.asked[0].inputTokensMax, local);
+  assert.deepEqual([direct.counts.length, direct.asked[0].inputTokensMax], [0, local]);
 
   const gateway = await proxyOn(t, "https://openrouter.ai/api", async () => Response.json({ object: "response.input_tokens", input_tokens: 1 }));
   assert.equal((await send(gateway.p.url, RECORDED)).status, 200);

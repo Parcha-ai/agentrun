@@ -41,8 +41,10 @@ export const MODAL = defineProvider({
 	settings: [{ name: "modalApp", option: "app", default: "agentrun" }],
 	metered: true,
 	mounts: ["archil"],
-	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
-	network: ["none"],
+	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
+	// its network blocked. Open and a list: the sandbox's network is not blocked, and its programs' one way out is init's
+	// egress proxy, which reaches the public internet alone, and with a list its hosts alone (hosted/network.ts).
+	network: ["none", "open", "allow"],
 	// A linux computer, with GPUs when asked.
 	capabilities: [{ ...SANDBOX, gpu: MODAL_GPU }],
 	// No default image: every computer starts from the box image its prepareImage() answers.

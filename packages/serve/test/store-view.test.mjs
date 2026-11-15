@@ -118,6 +118,30 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
   assert.equal(moment.live, false);
 });
 
+test("a running learning detail includes the learned skills and workflows actually supplied to it", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  for (const [id, notes, skills, workflows, detail] of [
+    ["skill-only", 0, ["check-release"], [], "Started from 1 skill."],
+    ["workflow-only", 0, [], ["release-check"], "Started from 1 workflow."],
+    ["mixed", 2, ["check-release"], ["release-check"], "Started from 2 notes, 1 skill and 1 workflow."],
+    ["not-laid", 0, [], [], "Started with nothing learned yet."],
+  ]) {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: {
+      input: { content: "Check the release." }, place: { mode: "runner" },
+      learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: notes, skills: ["check-release", "not-installed"], workflows: ["release-check"] },
+    } });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    const journal = store.journal(claim);
+    await commitWrites(journal, [
+      { type: "conversation", value: { id: ROOT } },
+      { type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.learning.laid", data: { skills, workflows } } },
+    ], context);
+    assert.equal((await viewOverStore(store, id, deps)).learning.detail, detail, id);
+    assert.equal((await summaryOverStore(store, id, deps)).learning.detail, detail, `${id} summary`);
+  }
+});
+
 test("a working run reads working/working and live, its updated_at and last_progress_at advancing with the runner's tick", async (t) => {
   const { store, clock } = await storeOn(t);
   await agent(store);
@@ -280,8 +304,8 @@ test("a call priced by usage waits with \"priced by usage\" as its card's price"
 
 // The budget pending a parked run waits on, as its agentrun.budget entry holds it (the kernel cap's parkOf), with the raise
 // that would send its refused step. Both an agentic and a workflow run park the same way.
-const budgetEntry = (id, { cap_usd = 0.5, spent_usd = 0.3, needs_usd = 1, least_cap_usd = 1.3, suggested_cap_usd = 11, words = "Out of budget. Raise the cap to at least $1.30 to continue." } = {}) =>
-  ({ id, conversationId: ROOT, kind: "agentrun.budget", data: { pending: { kind: "budget", cap_usd, spent_usd, needs_usd, least_cap_usd, suggested_cap_usd }, words } });
+const budgetEntry = (id, { cap_usd = 0.5, spent_usd = 0.3, held_usd = 0.1, needs_usd = 1, least_cap_usd = 1.4, suggested_cap_usd = 11, words = "Out of budget. Raise the cap to at least $1.40 to continue." } = {}) =>
+  ({ id, conversationId: ROOT, kind: "agentrun.budget", data: { pending: { kind: "budget", cap_usd, spent_usd, held_usd, needs_usd, least_cap_usd, suggested_cap_usd }, words } });
 
 test("a run parked at its cap reads input_required with the budget pending card", async (t) => {
   const { store } = await storeOn(t);
@@ -300,7 +324,8 @@ test("a run parked at its cap reads input_required with the budget pending card"
   assert.equal(view.status, "input_required");
   assert.equal(view.state, "waiting");
   // One cap mode, the worst case: no overshoot bound on the card or the cost, and no cap_mode on the run.
-  assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, needs_usd: 1, least_cap_usd: 1.3, suggested_cap_usd: 11, said: "Out of budget. Raise the cap to at least $1.30 to continue.", at: iso(T0 + 1_000) });
+  // What it spent and what it held for steps still running, apart; the raise covers both (0.3 + 0.1 + 10 x 1, up).
+  assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, held_usd: 0.1, needs_usd: 1, least_cap_usd: 1.4, suggested_cap_usd: 11, said: "Out of budget. Raise the cap to at least $1.40 to continue.", at: iso(T0 + 1_000) });
   assert.deepEqual(view.cost, { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.5 });
   assert.equal("cap_mode" in view, false);
   assert.equal(view.result, null);
@@ -347,7 +372,7 @@ test("a workflow run parked at its cap reads input_required with the budget pend
   assert.equal(view.pending?.kind, "budget");
   assert.equal(view.pending?.cap_usd, 0.5);
   assert.equal(view.pending?.suggested_cap_usd, 11);
-  assert.equal(view.pending?.said, "Out of budget. Raise the cap to at least $1.30 to continue.");
+  assert.equal(view.pending?.said, "Out of budget. Raise the cap to at least $1.40 to continue.");
 });
 
 test("a run whose cap was raised is no longer parked: the budget card clears and it reads working", async (t) => {
@@ -415,7 +440,7 @@ test("the moment of a run parked at its cap reads paused with the pause words, s
 
   const moment = await momentOverStore(store, "run-1", deps);
   assert.equal(moment.paused, true);
-  assert.equal(moment.pausedWords, "Out of budget. Raise the cap to at least $1.30 to continue.");
+  assert.equal(moment.pausedWords, "Out of budget. Raise the cap to at least $1.40 to continue.");
   assert.equal(moment.maxCostUsd, 0.5);
   // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main, and names the
   // follow-up the runner sends for this pause: its budget entry's id (moment.pause).

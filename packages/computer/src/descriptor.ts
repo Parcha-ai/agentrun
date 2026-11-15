@@ -72,9 +72,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 */
 	readonly unmounted?: Unmounted;
 	/**
-	 * The network forms its computers make, as its providers' capabilities().network declare them: ["none"], a remote
-	 * computer whose programs run in a network of their own; ["open"], the vendor's own network, which no allowlist of
-	 * this server reaches; Docker's makes all three. A provider of several configurations declares every form they make.
+	 * The network forms its computers make and enforce, as its providers' capabilities().network declare them: ["none"],
+	 * a remote computer whose programs run in a network of their own and nothing else; ["open"], the vendor's own network,
+	 * which no allowlist of this server reaches; a hosted computer through init's egress proxy (hosted/network.ts) makes
+	 * all three, as Docker's does. A form not declared is refused at check, never widened or narrowed to another. A
+	 * provider of several configurations declares every form they make.
 	 */
 	readonly network: readonly NetworkForm[];
 	/**

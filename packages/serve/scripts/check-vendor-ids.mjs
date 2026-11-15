@@ -21,7 +21,7 @@ import ts from "typescript";
 export const BASELINE = {
 	// S7, DEL-03: the old box stack (its Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
 	"place.ts": { ids: { docker: 4, daytona: 1, modal: 1 }, why: "DEL-03 (S7): the old box stack's places" },
-	"place-offers.ts": { ids: { docker: 7, daytona: 5, modal: 4 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
+	"place-offers.ts": { ids: { docker: 7, daytona: 2, modal: 2 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
 	"server.ts": { ids: { docker: 1, browserbase: 4, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the browser plane's default vendor, Browserbase, for a run kept from before the pick" },
 	// The browser plane's default vendor, Browserbase (a run kept from before the pick, or a plane that names none); its
 	// vendors are the registry's browser providers that need a key. `kernel` in tool-plane.ts is web_fetch's guarded

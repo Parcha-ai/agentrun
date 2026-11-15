@@ -332,6 +332,9 @@ export function createSurface(client: ComputerClient, hello: HelloResult, { cwd 
 		if (!has("ui")) {
 			if (args.expect) throw new SurfaceError("unsupported", "this computer has no ui group, so it can't check an expect: take a screenshot to see the effect");
 			const actions = inputActionsOf(steps);
+			// Kept on every act that names an app, never skipped for the app this surface last brought in front: raw input
+			// goes to whatever has focus, and focus can move where the surface never sees it (a person's take-over, a window a
+			// program the agent started opens, a dialog), so typing could land in another app. An act that names none makes no call.
 			await inFront(args.app, signal);
 			return runInput(actions, Boolean(args.observe), signal);
 		}

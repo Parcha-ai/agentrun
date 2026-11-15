@@ -715,24 +715,23 @@ export type LearnedMcp = { readonly mcp?: boolean; readonly approvers?: boolean 
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom, options: LearnedMcp = {}): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom>; asked: string[] } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom, options: LearnedMcp = {}): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom> } => {
   const gated: Record<string, string> = {};
-  // The MCP tools offered because they ask: the ones a learned call's approval card names (#2424).
-  const asked: string[] = [];
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
   const deniedBy: Record<string, DenyFrom> = {};
   const tools = learnedWorkflowTools(granted, plane, options).filter((name) => {
     const setting = permission(name);
-    // An MCP tool set to ask is offered where someone can answer: its learned_workflow call asks once, naming its MCP
-    // tools, before any node runs (#2424). A table tool set to ask is not: its call node can't wait for an approval.
+    // An MCP tool set to ask is offered where someone can answer: its learned_workflow call's one card names each of its
+    // MCP actions set to ask (learned-workflow.ts learnedAskShown). A table tool set to ask is not: its call node can't
+    // wait for an approval.
     if (setting === "allow") return true;
-    if (setting === "ask" && options.approvers === true && mcpNameOf(name) !== undefined) return (asked.push(name), true);
+    if (setting === "ask" && options.approvers === true && mcpNameOf(name) !== undefined) return true;
     gated[name] = setting;
     // A deny comes from a layer or the default, never from approvals, which only ever allows.
     if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
     return false;
   });
-  return { tools, gated, deniedBy, asked };
+  return { tools, gated, deniedBy };
 };
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes

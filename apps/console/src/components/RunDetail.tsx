@@ -6,7 +6,7 @@ import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, listedFiles, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
-import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
+import { keptUntilOf, ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
@@ -88,9 +88,11 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
   // Paused at its spend cap: what it spent of its cap, from the served figures (without them, said without them).
   if (run.status === "input_required" && run.pending?.kind === "budget") {
     // Each figure only as served: a pause sent with its kind alone says so without an amount, as its banner does.
-    const { cap_usd: cap, spent_usd: spent } = run.pending;
+    // What it holds for steps still running is said beside what it spent, never as spend: each settles at what it cost.
+    const { cap_usd: cap, spent_usd: spent, held_usd: held } = run.pending;
     const capped = typeof cap === "number" && Number.isFinite(cap);
-    const words = capped && typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap.` : capped ? `Its ${capWords(cap)} cap is reached.` : "Its spend cap is reached.";
+    const holding = typeof held === "number" && held > 0 ? `, and holds ${capWords(held)} for steps still running` : "";
+    const words = capped && typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap${holding}.` : capped ? `Its ${capWords(cap)} cap is reached.` : "Its spend cap is reached.";
     return { title: "Paused at its spend cap", note: `${words} Raise the cap above to continue.`, spin: false };
   }
   // A tool call waiting on the owner's approval: the card above answers it, and a message below declines it.
@@ -250,7 +252,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
-          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered}
+          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" && machine ? keptUntilOf(rows, machine.kind) : undefined}
             onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}
         </div>
       </div>}

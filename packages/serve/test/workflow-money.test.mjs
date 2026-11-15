@@ -14,6 +14,7 @@ import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { sessionSpendOf } from "@parcha/agentrun-kernel";
+import { o200kTokens } from "@parcha/agentrun-kernel/host";
 import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -262,9 +263,23 @@ test("a workflow run's served cost is its booking, never the $0 its model nodes'
   assert.equal(eight(row.costUsd), booked, "the row's stored cost is the same booking");
 });
 
+/** `n` letters a to z, each after a space but the first, from a fixed sequence: o200k_base reads each as one token (a
+ *  run of one letter it reads as far fewer, about one in eight). */
+const spacedLetters = (n) => {
+  const out = [];
+  for (let i = 0, x = 1; i < n; i++) {
+    x = (x * 1103515245 + 12345) % 2147483648;
+    out.push(String.fromCharCode(97 + ((x >>> 16) % 26)));
+  }
+  return out.join(" ");
+};
+
 test("a tiered model past its threshold: the hold and the booking are the tier price, not the base price (#1861)", async (t) => {
-  const input = THRESHOLD + 128_000; // past the tier; the question's bytes bound the hold's input
-  const question = "A".repeat(input);
+  // Past the tier as o200k_base counts it: gpt-6.1-sol's request through a gateway on Messages is held on its local count
+  // (with its margin), not its bytes, so the question is text that count reads past the threshold.
+  const question = spacedLetters(THRESHOLD + 128_000);
+  const input = await o200kTokens(question);
+  assert.ok(input > THRESHOLD, `the question alone counts past the threshold: ${input} > ${THRESHOLD}`);
   const { server, store } = await worldWith(t, { capUsd: 20, question, usage: { input_tokens: input, output_tokens: 100 } });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
@@ -420,7 +435,11 @@ test("a person's stop whose request is still being booked when the node ends: th
   await acting;
   assert.equal(row.state, "stopped", `the person's stop ends the run: ${JSON.stringify(row)}`);
   assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), "the stopped request is booked at what streamed and 1,024 tokens, not at its $1 hold");
-  assert.equal(row.costUsd, eight((14 + 1024) * PER_TOKEN), "and the run's cost says so");
+  // The run's cost is its booking's, by the one rule a pi run's is (metrics.ts runCostOf): a request stopped while it
+  // streamed has no price of its own (the provider may bill what it streamed), so the cost is unknown, never the cap's
+  // estimate stored as a charge; the stored cost and the view say the same.
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual([row.costUsd, view?.cost?.usd], [null, null], `the stored cost and the view read it unknown alike: ${JSON.stringify(view?.cost)}`);
   assert.equal(closes[0], "after settle", `the run closed nothing before its bookings settled: ${JSON.stringify(closes)}`);
 });
 

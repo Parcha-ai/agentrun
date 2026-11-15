@@ -14,6 +14,11 @@ __all__ = [
     "AgentList",
     "AgentMcpPinValue",
     "AgentMcpPinValueToolsItem",
+    "AgentNativeStatus",
+    "AgentNativeStatusCapabilities",
+    "AgentNativeStatusConfigurationItem",
+    "AgentNativeStatusRemote",
+    "AgentNativeStatusSelector",
     "AgentOwnComputer",
     "AgentRuns",
     "AgentTemplate",
@@ -61,6 +66,11 @@ __all__ = [
     "CapabilitiesWorkflowsDecisions",
     "CapabilitiesWorkflowsDecisionsProvidersItem",
     "CommitSha",
+    "CompleteRemoteCommandBody",
+    "CompleteRemoteCommandResponse",
+    "CompleteSdkRunBody",
+    "CompleteSdkRunBodyUsage",
+    "CompleteSdkRunResponse",
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
     "ConnectNativeBody",
@@ -69,7 +79,9 @@ __all__ = [
     "ConnectNativeResponseNative",
     "ConnectNativeResponseNativeCapabilities",
     "ConnectNativeResponseNativeConfigurationItem",
+    "ConnectNativeResponseNativeRemote",
     "ConnectNativeResponseNativeSelector",
+    "ConnectorsResource",
     "Cost",
     "CostPlan",
     "CreateAgentBody",
@@ -148,9 +160,11 @@ __all__ = [
     "DefinitionInputNative",
     "DefinitionInputNativeCapabilities",
     "DefinitionInputNativeConfigurationItem",
+    "DefinitionInputNativeRemote",
     "DefinitionInputNativeSelector",
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
+    "DefinitionInputSdk",
     "DefinitionInputToolSettings",
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
@@ -172,9 +186,11 @@ __all__ = [
     "DefinitionNative",
     "DefinitionNativeCapabilities",
     "DefinitionNativeConfigurationItem",
+    "DefinitionNativeRemote",
     "DefinitionNativeSelector",
     "DefinitionPlace1",
     "DefinitionPlace2",
+    "DefinitionSdk",
     "DefinitionToolSettings",
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
@@ -207,6 +223,7 @@ __all__ = [
     "DisconnectNativeResponseNative",
     "DisconnectNativeResponseNativeCapabilities",
     "DisconnectNativeResponseNativeConfigurationItem",
+    "DisconnectNativeResponseNativeRemote",
     "DisconnectNativeResponseNativeSelector",
     "DiscoverNativeBody",
     "DiscoverNativeResponse",
@@ -215,6 +232,9 @@ __all__ = [
     "DiscoverNativeResponseTargetsItemConfigurationItem",
     "DiscoverNativeResponseTargetsItemSelector",
     "Effort",
+    "EnrollRemoteConnectorBody",
+    "EnrollRemoteConnectorBodyCapabilities",
+    "EnrollRemoteConnectorResponse",
     "ExternalRef",
     "Features",
     "FeaturesAgents",
@@ -271,6 +291,11 @@ __all__ = [
     "GetAgentResponseLearning",
     "GetAgentResponseMcpPinValue",
     "GetAgentResponseMcpPinValueToolsItem",
+    "GetAgentResponseNativeStatus",
+    "GetAgentResponseNativeStatusCapabilities",
+    "GetAgentResponseNativeStatusConfigurationItem",
+    "GetAgentResponseNativeStatusRemote",
+    "GetAgentResponseNativeStatusSelector",
     "GetAgentResponseOwnComputer",
     "GetAgentResponseRuns",
     "GetAgentResponseTemplate",
@@ -299,7 +324,9 @@ __all__ = [
     "GetLearningCostResponseSummaryAfter",
     "GetLearningCostResponseSummaryBefore",
     "GetLearningCostResponseSummaryHandBacks",
+    "GetLearningCostResponseSummaryReplay",
     "GetLearningCostResponseSummaryTakeover",
+    "GetLearningCostResponseSummaryWithheld",
     "GetLearningCostResponseWorkflowsItem",
     "GetLearningCostResponseWorkflowsItemByHand",
     "GetLearningCostResponseWorkflowsItemServed",
@@ -317,7 +344,16 @@ __all__ = [
     "GetNativeResponseNative",
     "GetNativeResponseNativeCapabilities",
     "GetNativeResponseNativeConfigurationItem",
+    "GetNativeResponseNativeRemote",
     "GetNativeResponseNativeSelector",
+    "GetObservationsResponse",
+    "GetObservationsResponseConnectorsItem",
+    "GetObservationsResponseLimits",
+    "GetObservationsResponseSessionsItem",
+    "GetObservationsResponseSessionsItemUsage",
+    "GetObservationsResponseUsage",
+    "GetObservationsResponseUsageDailyItem",
+    "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
     "GetRunGraphResponse",
     "GetRunGraphResponseDecisionsItem",
@@ -350,6 +386,7 @@ __all__ = [
     "GetRunLearningResponseObjectVerdictItemsItem",
     "GetRunLearningResponseObjectWorkflowsItem",
     "GetRunResponse",
+    "GetSdkRunResponse",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
     "GetStatsResponseAnalyticsByDayItem",
@@ -410,6 +447,21 @@ __all__ = [
     "HandBackRunComputerResponse",
     "HomeResource",
     "Id",
+    "ImportRemoteHistoryBody",
+    "ImportRemoteHistoryResponse",
+    "ImportRemoteHistoryResponseRunsItem",
+    "ImportRemoteTargetBody",
+    "ImportRemoteTargetBodyTarget",
+    "ImportRemoteTargetBodyTargetCapabilities",
+    "ImportRemoteTargetBodyTargetConfigurationItem",
+    "ImportRemoteTargetBodyTargetRemote",
+    "ImportRemoteTargetBodyTargetSelector",
+    "ImportRemoteTargetResponse",
+    "ImportRemoteTargetResponseNative",
+    "ImportRemoteTargetResponseNativeCapabilities",
+    "ImportRemoteTargetResponseNativeConfigurationItem",
+    "ImportRemoteTargetResponseNativeRemote",
+    "ImportRemoteTargetResponseNativeSelector",
     "ImportTemplateBody",
     "ImportTemplateResponse",
     "ImportTemplateResponseTemplate",
@@ -492,6 +544,9 @@ __all__ = [
     "ListMcpServersResponseServersItemAuth",
     "ListMcpServersResponseServersItemOauth",
     "ListMcpServersResponseServersItemToolsItem",
+    "ListRemoteConnectorsResponse",
+    "ListRemoteConnectorsResponseConnectorsItem",
+    "ListRemoteConnectorsResponseConnectorsItemCapabilities",
     "ListRevisionsResponse",
     "ListRevisionsResponseRevisionsItem",
     "ListRevisionsResponseRevisionsItemMcpPinValue",
@@ -561,8 +616,12 @@ __all__ = [
     "Meter",
     "NextAction",
     "OPERATIONS",
+    "ObservationsResource",
     "PauseRunResponse",
     "PersonAction",
+    "PollRemoteConnectorBody",
+    "PollRemoteConnectorBodyActiveItem",
+    "PollRemoteConnectorResponse",
     "PreviewMcpServerBody",
     "PreviewMcpServerBodyObject1",
     "PreviewMcpServerBodyObject1Auth",
@@ -616,13 +675,23 @@ __all__ = [
     "RefreshMcpServerResponseServerOauth",
     "RefreshMcpServerResponseServerToolsItem",
     "Region",
+    "RegisterRemoteConnectorBody",
+    "RegisterRemoteConnectorBodyCapabilities",
+    "RegisterRemoteConnectorResponse",
+    "RegisterRemoteConnectorResponseConnector",
+    "RegisterRemoteConnectorResponseConnectorCapabilities",
     "ReleaseRunComputerBody",
     "ReleaseRunComputerResponse",
     "ReleaseRunComputerResponseHeld",
+    "RemoteCommandEventsBody",
+    "RemoteCommandEventsResponse",
     "RequestAction",
     "Resources",
     "ResumeRunResponse",
     "RevisionsResource",
+    "RevokeRemoteConnectorResponse",
+    "RevokeRemoteConnectorResponseConnector",
+    "RevokeRemoteConnectorResponseConnectorCapabilities",
     "RotateComposioSecretResponse",
     "RotateTriggerSecretBody",
     "RotateTriggerSecretResponse",
@@ -664,6 +733,8 @@ __all__ = [
     "RunPlace2",
     "RunResult",
     "RunReview",
+    "RunSdk",
+    "RunSdkUsage",
     "RunState",
     "RunStatus",
     "RunSummary",
@@ -686,6 +757,8 @@ __all__ = [
     "RunSummaryPending4",
     "RunSummaryPending5",
     "RunSummaryReview",
+    "RunSummarySdk",
+    "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunTrigger",
     "RunsResource",
@@ -716,6 +789,12 @@ __all__ = [
     "SaveWebhookResponseObject21Disabled",
     "SaveWebhookResponseObject22",
     "SaveWebhookResponseObject22Disabled",
+    "SdkRunEventsBody",
+    "SdkRunEventsBodyEventsItem1",
+    "SdkRunEventsBodyEventsItem2",
+    "SdkRunEventsBodyEventsItem3",
+    "SdkRunEventsResponse",
+    "SdkRunsResource",
     "SecretMeta",
     "SendMessageBody",
     "SendMessageResponse",
@@ -733,6 +812,12 @@ __all__ = [
     "StartRunBody",
     "StartRunResponse",
     "StartRunResponseHeld",
+    "StartSdkRunBody",
+    "StartSdkRunBodyWorkflowToolsItem",
+    "StartSdkRunResponse",
+    "StartSdkRunResponseLearning",
+    "StartSdkRunResponseLearningSkillsItem",
+    "StartSdkRunResponseLearningWorkflowsItem",
     "StopResult",
     "StopRunResponse",
     "TakeOverRunComputerBody",
@@ -826,6 +911,7 @@ __all__ = [
     "VerifyNativeResponseNative",
     "VerifyNativeResponseNativeCapabilities",
     "VerifyNativeResponseNativeConfigurationItem",
+    "VerifyNativeResponseNativeRemote",
     "VerifyNativeResponseNativeSelector",
     "WebhookResource",
     "WorkflowsResource",
@@ -873,6 +959,7 @@ class _AgentRequired(TypedDict):
 
 
 class Agent(_AgentRequired, total=False):
+    native_status: AgentNativeStatus
     external: AgentExternal
     console_url: str
     tools: list[AgentToolsItem]
@@ -905,6 +992,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    sdk: DefinitionSdk
     native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
@@ -919,6 +1007,10 @@ class Definition(_DefinitionRequired, total=False):
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
+
+
+class DefinitionSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -940,6 +1032,7 @@ class _DefinitionNativeRequired(TypedDict):
 
 class DefinitionNative(_DefinitionNativeRequired, total=False):
     verified_at: str
+    remote: DefinitionNativeRemote
 
 
 class _DefinitionNativeSelectorRequired(TypedDict):
@@ -962,6 +1055,11 @@ class DefinitionNativeCapabilities(TypedDict):
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
+
+
+class DefinitionNativeRemote(TypedDict):
+    connector_id: str
+    target_id: str
 
 
 class DefinitionModelTiers(TypedDict, total=False):
@@ -1124,6 +1222,55 @@ class AgentRuns(TypedDict):
     live: int
 
 
+class _AgentNativeStatusRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: AgentNativeStatusSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[AgentNativeStatusConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: AgentNativeStatusCapabilities
+    connected: bool
+
+
+class AgentNativeStatus(_AgentNativeStatusRequired, total=False):
+    verified_at: str
+    remote: AgentNativeStatusRemote
+
+
+class _AgentNativeStatusSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class AgentNativeStatusSelector(_AgentNativeStatusSelectorRequired, total=False):
+    name: str
+
+
+class AgentNativeStatusConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class AgentNativeStatusCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
+class AgentNativeStatusRemote(TypedDict):
+    connector_id: str
+    target_id: str
+
+
 class AgentExternal(TypedDict):
     source: str
     kind: str
@@ -1222,6 +1369,7 @@ class _ConnectNativeResponseNativeRequired(TypedDict):
 
 class ConnectNativeResponseNative(_ConnectNativeResponseNativeRequired, total=False):
     verified_at: str
+    remote: ConnectNativeResponseNativeRemote
 
 
 class _ConnectNativeResponseNativeSelectorRequired(TypedDict):
@@ -1244,6 +1392,11 @@ class ConnectNativeResponseNativeCapabilities(TypedDict):
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
+
+
+class ConnectNativeResponseNativeRemote(TypedDict):
+    connector_id: str
+    target_id: str
 
 
 CreateAgentBody: TypeAlias = "AgentCreate"
@@ -1273,6 +1426,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    sdk: DefinitionInputSdk
     native: DefinitionInputNative
     model: str
     model_tiers: DefinitionInputModelTiers
@@ -1284,6 +1438,10 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
+
+
+class DefinitionInputSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -1305,6 +1463,7 @@ class _DefinitionInputNativeRequired(TypedDict):
 
 class DefinitionInputNative(_DefinitionInputNativeRequired, total=False):
     verified_at: str
+    remote: DefinitionInputNativeRemote
 
 
 class _DefinitionInputNativeSelectorRequired(TypedDict):
@@ -1327,6 +1486,11 @@ class DefinitionInputNativeCapabilities(TypedDict):
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
+
+
+class DefinitionInputNativeRemote(TypedDict):
+    connector_id: str
+    target_id: str
 
 
 class DefinitionInputModelTiers(TypedDict, total=False):
@@ -1491,6 +1655,7 @@ class _DisconnectNativeResponseNativeRequired(TypedDict):
 
 class DisconnectNativeResponseNative(_DisconnectNativeResponseNativeRequired, total=False):
     verified_at: str
+    remote: DisconnectNativeResponseNativeRemote
 
 
 class _DisconnectNativeResponseNativeSelectorRequired(TypedDict):
@@ -1513,6 +1678,11 @@ class DisconnectNativeResponseNativeCapabilities(TypedDict):
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
+
+
+class DisconnectNativeResponseNativeRemote(TypedDict):
+    connector_id: str
+    target_id: str
 
 
 class _DiscoverNativeBodyRequired(TypedDict):
@@ -1595,6 +1765,7 @@ class _GetAgentResponseRequired(TypedDict):
 
 
 class GetAgentResponse(_GetAgentResponseRequired, total=False):
+    native_status: GetAgentResponseNativeStatus
     external: GetAgentResponseExternal
     console_url: str
     kind: Literal["agentic", "workflow"] | None
@@ -1611,6 +1782,55 @@ class GetAgentResponse(_GetAgentResponseRequired, total=False):
 class GetAgentResponseRuns(TypedDict):
     count: int
     live: int
+
+
+class _GetAgentResponseNativeStatusRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: GetAgentResponseNativeStatusSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[GetAgentResponseNativeStatusConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: GetAgentResponseNativeStatusCapabilities
+    connected: bool
+
+
+class GetAgentResponseNativeStatus(_GetAgentResponseNativeStatusRequired, total=False):
+    verified_at: str
+    remote: GetAgentResponseNativeStatusRemote
+
+
+class _GetAgentResponseNativeStatusSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class GetAgentResponseNativeStatusSelector(_GetAgentResponseNativeStatusSelectorRequired, total=False):
+    name: str
+
+
+class GetAgentResponseNativeStatusConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class GetAgentResponseNativeStatusCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
+class GetAgentResponseNativeStatusRemote(TypedDict):
+    connector_id: str
+    target_id: str
 
 
 class GetAgentResponseExternal(TypedDict):
@@ -1757,6 +1977,7 @@ class _GetNativeResponseNativeRequired(TypedDict):
 
 class GetNativeResponseNative(_GetNativeResponseNativeRequired, total=False):
     verified_at: str
+    remote: GetNativeResponseNativeRemote
 
 
 class _GetNativeResponseNativeSelectorRequired(TypedDict):
@@ -1779,6 +2000,11 @@ class GetNativeResponseNativeCapabilities(TypedDict):
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
+
+
+class GetNativeResponseNativeRemote(TypedDict):
+    connector_id: str
+    target_id: str
 
 
 ListAgentsResponse: TypeAlias = "AgentList"
@@ -1891,6 +2117,7 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
+    sdk: RunSummarySdk
     native: RunSummaryNative
     console_url: str
     effort: Effort
@@ -1919,12 +2146,29 @@ class Cost(_CostRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
     plan: CostPlan
 
 
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+
+
+class RunSummarySdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSummarySdkUsage | None
+
+
+class RunSummarySdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 class RunSummaryNative(TypedDict):
@@ -2100,6 +2344,7 @@ class _RunSummaryPending3Required(TypedDict):
 
 class RunSummaryPending3(_RunSummaryPending3Required, total=False):
     spent_usd: float
+    held_usd: float
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
@@ -2165,6 +2410,7 @@ class _VerifyNativeResponseNativeRequired(TypedDict):
 
 class VerifyNativeResponseNative(_VerifyNativeResponseNativeRequired, total=False):
     verified_at: str
+    remote: VerifyNativeResponseNativeRemote
 
 
 class _VerifyNativeResponseNativeSelectorRequired(TypedDict):
@@ -2187,6 +2433,283 @@ class VerifyNativeResponseNativeCapabilities(TypedDict):
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
+
+
+class VerifyNativeResponseNativeRemote(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class _CompleteRemoteCommandBodyRequired(TypedDict):
+    lease_token: str
+
+
+class CompleteRemoteCommandBody(_CompleteRemoteCommandBodyRequired, total=False):
+    result: Any
+    error: str
+
+
+class CompleteRemoteCommandResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class EnrollRemoteConnectorBody(TypedDict, total=False):
+    label: str
+    capabilities: EnrollRemoteConnectorBodyCapabilities
+
+
+class EnrollRemoteConnectorBodyCapabilities(TypedDict, total=False):
+    native_execution: bool
+    history_import: bool
+
+
+class EnrollRemoteConnectorResponse(TypedDict):
+    enrollment_token: str
+    expires_at: str
+    workspace_id: Literal["local"]
+
+
+class ImportRemoteHistoryBody(TypedDict):
+    sessions: list[dict[str, Any]]
+
+
+class ImportRemoteHistoryResponse(TypedDict):
+    agent_id: str
+    runs: list[ImportRemoteHistoryResponseRunsItem]
+    imported: int
+    already: int
+
+
+class ImportRemoteHistoryResponseRunsItem(TypedDict):
+    session_id: str
+    run_id: str
+    already: bool
+
+
+class _ImportRemoteTargetBodyRequired(TypedDict):
+    target_id: str
+    target: ImportRemoteTargetBodyTarget
+
+
+class ImportRemoteTargetBody(_ImportRemoteTargetBodyRequired, total=False):
+    name: str
+    history_only: bool
+
+
+class _ImportRemoteTargetBodyTargetRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: ImportRemoteTargetBodyTargetSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[ImportRemoteTargetBodyTargetConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: ImportRemoteTargetBodyTargetCapabilities
+    connected: bool
+
+
+class ImportRemoteTargetBodyTarget(_ImportRemoteTargetBodyTargetRequired, total=False):
+    verified_at: str
+    remote: ImportRemoteTargetBodyTargetRemote
+
+
+class _ImportRemoteTargetBodyTargetSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class ImportRemoteTargetBodyTargetSelector(_ImportRemoteTargetBodyTargetSelectorRequired, total=False):
+    name: str
+
+
+class ImportRemoteTargetBodyTargetConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class ImportRemoteTargetBodyTargetCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
+class ImportRemoteTargetBodyTargetRemote(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class ImportRemoteTargetResponse(TypedDict):
+    agent_id: str
+    native: ImportRemoteTargetResponseNative
+
+
+class _ImportRemoteTargetResponseNativeRequired(TypedDict):
+    runtime: Literal["claude-code", "codex"]
+    project: str
+    selector: ImportRemoteTargetResponseNativeSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[ImportRemoteTargetResponseNativeConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: ImportRemoteTargetResponseNativeCapabilities
+    connected: bool
+
+
+class ImportRemoteTargetResponseNative(_ImportRemoteTargetResponseNativeRequired, total=False):
+    verified_at: str
+    remote: ImportRemoteTargetResponseNativeRemote
+
+
+class _ImportRemoteTargetResponseNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class ImportRemoteTargetResponseNativeSelector(_ImportRemoteTargetResponseNativeSelectorRequired, total=False):
+    name: str
+
+
+class ImportRemoteTargetResponseNativeConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class ImportRemoteTargetResponseNativeCapabilities(TypedDict):
+    launch: bool
+    notes: bool
+    skills: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
+class ImportRemoteTargetResponseNativeRemote(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class ListRemoteConnectorsResponse(TypedDict):
+    connectors: list[ListRemoteConnectorsResponseConnectorsItem]
+
+
+class ListRemoteConnectorsResponseConnectorsItem(TypedDict):
+    id: str
+    connector_id: str
+    label: str
+    created_at: str
+    last_seen_at: str | None
+    status: Literal["online", "offline", "revoked"]
+    capabilities: ListRemoteConnectorsResponseConnectorsItemCapabilities
+    targets: list[dict[str, Any]]
+
+
+class ListRemoteConnectorsResponseConnectorsItemCapabilities(TypedDict):
+    observe: Literal[True]
+    native_execution: bool
+    history_import: bool
+
+
+class _PollRemoteConnectorBodyRequired(TypedDict):
+    worker_id: str
+
+
+class PollRemoteConnectorBody(_PollRemoteConnectorBodyRequired, total=False):
+    active: list[PollRemoteConnectorBodyActiveItem]
+
+
+class PollRemoteConnectorBodyActiveItem(TypedDict):
+    command_id: str
+    lease_token: str
+
+
+class PollRemoteConnectorResponse(TypedDict):
+    commands: list[dict[str, Any]]
+    cancelled: list[str]
+    server_time: float
+    lease_ttl_ms: float
+
+
+class _RegisterRemoteConnectorBodyRequired(TypedDict):
+    installation_id: str
+    operation_id: str
+    capabilities: RegisterRemoteConnectorBodyCapabilities
+
+
+class RegisterRemoteConnectorBody(_RegisterRemoteConnectorBodyRequired, total=False):
+    label: str
+
+
+class _RegisterRemoteConnectorBodyCapabilitiesRequired(TypedDict):
+    native_execution: bool
+
+
+class RegisterRemoteConnectorBodyCapabilities(_RegisterRemoteConnectorBodyCapabilitiesRequired, total=False):
+    history_import: bool
+
+
+class RegisterRemoteConnectorResponse(TypedDict):
+    connector: RegisterRemoteConnectorResponseConnector
+    credential: str
+    credential_expires_at: str
+
+
+class RegisterRemoteConnectorResponseConnector(TypedDict):
+    id: str
+    connector_id: str
+    label: str
+    created_at: str
+    last_seen_at: str | None
+    status: Literal["online", "offline", "revoked"]
+    capabilities: RegisterRemoteConnectorResponseConnectorCapabilities
+    targets: list[dict[str, Any]]
+
+
+class RegisterRemoteConnectorResponseConnectorCapabilities(TypedDict):
+    observe: Literal[True]
+    native_execution: bool
+    history_import: bool
+
+
+class RemoteCommandEventsBody(TypedDict):
+    lease_token: str
+    sequence: int
+    events: list[dict[str, Any]]
+
+
+class RemoteCommandEventsResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class RevokeRemoteConnectorResponse(TypedDict):
+    connector: RevokeRemoteConnectorResponseConnector
+
+
+class RevokeRemoteConnectorResponseConnector(TypedDict):
+    id: str
+    connector_id: str
+    label: str
+    created_at: str
+    last_seen_at: str | None
+    status: Literal["online", "offline", "revoked"]
+    capabilities: RevokeRemoteConnectorResponseConnectorCapabilities
+    targets: list[dict[str, Any]]
+
+
+class RevokeRemoteConnectorResponseConnectorCapabilities(TypedDict):
+    observe: Literal[True]
+    native_execution: bool
+    history_import: bool
 
 
 CreateFileBody: TypeAlias = "FileCreate"
@@ -2589,6 +3112,7 @@ class GetLearningCostResponseRunsItem(TypedDict):
     workflow: str | None
     learned_revision: str | None
     cost_usd: float | None
+    cost_upper_bound: bool
     learning_usd: float | None
     total_usd: float | None
 
@@ -2618,6 +3142,8 @@ class GetLearningCostResponseSummary(TypedDict):
     after: GetLearningCostResponseSummaryAfter | None
     times_cheaper: float | None
     hand_backs: GetLearningCostResponseSummaryHandBacks | None
+    withheld: GetLearningCostResponseSummaryWithheld | None
+    replay: GetLearningCostResponseSummaryReplay | None
 
 
 class GetLearningCostResponseSummaryTakeover(TypedDict):
@@ -2638,6 +3164,18 @@ class GetLearningCostResponseSummaryAfter(TypedDict):
 class GetLearningCostResponseSummaryHandBacks(TypedDict):
     ran: int
     back: int
+
+
+class GetLearningCostResponseSummaryWithheld(TypedDict):
+    unknown: int
+    at_most: int
+
+
+class GetLearningCostResponseSummaryReplay(TypedDict):
+    n: int
+    workflow_pct: float
+    agent_pct: float
+    cleared: bool
 
 
 class ListLearningEvalsResponse(TypedDict):
@@ -3951,6 +4489,94 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class GetObservationsResponse(TypedDict):
+    connectors: list[GetObservationsResponseConnectorsItem]
+    sessions: list[GetObservationsResponseSessionsItem]
+    usage: GetObservationsResponseUsage
+    limits: GetObservationsResponseLimits
+
+
+class GetObservationsResponseConnectorsItem(TypedDict):
+    id: str
+    display_name: str
+    connection_state: Literal["online", "offline", "disconnected"]
+    ingestion_mode: Literal["polling", "otlp"]
+    last_heartbeat_at: str | None
+    receipt_count: int
+    receipt_capacity: int
+    storage_full: bool
+
+
+class GetObservationsResponseSessionsItem(TypedDict):
+    id: str
+    connector_id: str
+    source_id: str
+    external_session_id: str
+    harness: Literal["claude", "codex"]
+    activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    reported_activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    connection_state: Literal["online", "offline", "disconnected"]
+    selection_active: bool
+    occurred_at: str
+    received_at: str
+    created_at: str
+    updated_at: str
+    sequence: int
+    display_name: str
+    models: list[str]
+    usage: GetObservationsResponseSessionsItemUsage
+    observation_only: Literal[True]
+
+
+class GetObservationsResponseSessionsItemUsage(TypedDict):
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["reported", "unavailable"]
+
+
+class GetObservationsResponseUsage(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["partial", "unavailable"]
+    models: list[GetObservationsResponseUsageModelsItem]
+    daily: list[GetObservationsResponseUsageDailyItem]
+
+
+class GetObservationsResponseUsageModelsItem(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    model: str
+
+
+class GetObservationsResponseUsageDailyItem(TypedDict):
+    date: str
+    total_tokens: int | None
+
+
+class GetObservationsResponseLimits(TypedDict):
+    max_receipts_per_connector: int
+    max_sessions_per_connector: int
+    receipt_retention: str
+    receipt_window_seconds: int
+    session_retention_days: int
+    usage_retention_days: int
+
+
 class ListRevisionsResponse(TypedDict):
     revisions: list[ListRevisionsResponseRevisionsItem]
     next_cursor: str | None
@@ -4113,6 +4739,7 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
+    sdk: RunSdk
     native: RunNative
     console_url: str
     approvals: Literal["ask", "never"]
@@ -4135,6 +4762,22 @@ class _RunResultRequired(TypedDict):
 
 class RunResult(_RunResultRequired, total=False):
     output_error: str
+
+
+class RunSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdkUsage | None
+
+
+class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 class RunNative(TypedDict):
@@ -4306,6 +4949,7 @@ class _RunPending3Required(TypedDict):
 
 class RunPending3(_RunPending3Required, total=False):
     spent_usd: float
+    held_usd: float
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
@@ -4854,6 +5498,7 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
     not_metered: int
 
 
@@ -4921,6 +5566,124 @@ class TimelineRowLearning(TypedDict):
 
 
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
+
+
+class _CompleteSdkRunBodyRequired(TypedDict):
+    status: Literal["completed", "failed", "cancelled"]
+    answer: str
+
+
+class CompleteSdkRunBody(_CompleteSdkRunBodyRequired, total=False):
+    error: str
+    model: str
+    session_id: str
+    usage: CompleteSdkRunBodyUsage
+    evidence_complete: bool
+
+
+class CompleteSdkRunBodyUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class CompleteSdkRunResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class SdkRunEventsBody(TypedDict):
+    sequence: int
+    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3]
+
+
+class SdkRunEventsBodyEventsItem1(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class SdkRunEventsBodyEventsItem2(TypedDict):
+    type: Literal["session"]
+    session_id: str
+
+
+class _SdkRunEventsBodyEventsItem3Required(TypedDict):
+    type: Literal["tool"]
+    id: str
+    name: str
+    status: Literal["started", "completed", "failed"]
+
+
+class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+    input: Any
+    output: Any
+    parent_tool_use_id: str
+
+
+class SdkRunEventsResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class _GetSdkRunResponseRequired(TypedDict):
+    run_id: str
+    state: Literal["running", "processing", "completed", "failed", "cancelled"]
+    learning: Any
+
+
+class GetSdkRunResponse(_GetSdkRunResponseRequired, total=False):
+    learning_run_id: str
+
+
+class _StartSdkRunBodyRequired(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    input: str
+    instructions: str
+
+
+class StartSdkRunBody(_StartSdkRunBodyRequired, total=False):
+    model: str
+    workflow_tools: list[StartSdkRunBodyWorkflowToolsItem]
+    workflow_adapters: list[Literal["runNode", "runJudge"]]
+
+
+class _StartSdkRunBodyWorkflowToolsItemRequired(TypedDict):
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class StartSdkRunBodyWorkflowToolsItem(_StartSdkRunBodyWorkflowToolsItemRequired, total=False):
+    output_schema: dict[str, Any]
+    price_usd: float
+
+
+class StartSdkRunResponse(TypedDict):
+    run_id: str
+    agent_id: str
+    console_url: str
+    token: str
+    learning: StartSdkRunResponseLearning
+
+
+class StartSdkRunResponseLearning(TypedDict):
+    enabled: bool
+    revision: str | None
+    context: str
+    skills: list[StartSdkRunResponseLearningSkillsItem]
+    workflows: list[StartSdkRunResponseLearningWorkflowsItem]
+
+
+class StartSdkRunResponseLearningSkillsItem(TypedDict):
+    name: str
+    files: dict[str, str]
+
+
+class StartSdkRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
 
 
 GetCapabilitiesResponse: TypeAlias = "Capabilities"
@@ -5113,7 +5876,7 @@ class Region(TypedDict):
     state: Literal["live", "beta", "planned"]
 
 
-class Limits(TypedDict):
+class _LimitsRequired(TypedDict):
     max_body_bytes: int
     max_upload_bytes: int | None
     max_files_per_run: int
@@ -5124,6 +5887,10 @@ class Limits(TypedDict):
     idempotency_ttl_s: int
     input_wait_s: int | None
     max_cost_usd: LimitsMaxCostUsd | None
+
+
+class Limits(_LimitsRequired, total=False):
+    free_model_requests: int
 
 
 class LimitsMaxCostUsd(TypedDict):
@@ -7295,6 +8062,15 @@ OPERATIONS: dict[str, Operation] = {
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "importRemoteTarget": Operation(method="POST", path="/connectors/{connector_id}/import", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "listRemoteConnectors": Operation(method="GET", path="/connectors", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "pollRemoteConnector": Operation(method="POST", path="/connectors/{connector_id}/poll", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "registerRemoteConnector": Operation(method="POST", path="/connectors", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "remoteCommandEvents": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/events", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "revokeRemoteConnector": Operation(method="DELETE", path="/connectors/{connector_id}", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "createFile": Operation(method="POST", path="/files", path_params=(), multi_segment=(), query=("path", "content_type", "sha256"), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json", "application/octet-stream", "*/*")), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteFile": Operation(method="DELETE", path="/files/{file_id}", path_params=("file_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "getFile": Operation(method="GET", path="/files/{file_id}", path_params=("file_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -7354,6 +8130,7 @@ OPERATIONS: dict[str, Operation] = {
     "getMcpPrivateHosts": Operation(method="GET", path="/settings/mcp-servers/oauth/private-hosts", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "refreshMcpServer": Operation(method="POST", path="/settings/mcp-servers/{name}/refresh", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveMcpServer": Operation(method="PUT", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "auth.type"), tagged=False),
+    "getObservations": Operation(method="GET", path="/observations", path_params=(), multi_segment=(), query=("days", "session_id"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRevisions": Operation(method="GET", path="/agents/{agent_id}/revisions", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setCurrent": Operation(method="POST", path="/agents/{agent_id}/current", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "archiveRun": Operation(method="POST", path="/runs/{run_id}/archive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -7380,6 +8157,10 @@ OPERATIONS: dict[str, Operation] = {
     "takeOverRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/take-over", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getSdkRun": Operation(method="GET", path="/sdk-runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startSdkRun": Operation(method="POST", path="/agents/{agent_id}/sdk-runs", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getCapabilities": Operation(method="GET", path="/capabilities", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getHealth": Operation(method="GET", path="/health", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callMcp": Operation(method="POST", path="/mcp", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -7485,6 +8266,46 @@ class AgentsResource(Group):
         return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
 
 
+class ConnectorsResource(Group):
+    """client.connectors: one method per operation."""
+
+    def complete_remote_command(self, connector_id: str, command_id: str, body: CompleteRemoteCommandBody, *, timeout: float | None = None) -> CompleteRemoteCommandResponse:
+        """Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete)."""
+        return self._call("completeRemoteCommand", (connector_id, command_id), body, None, timeout=timeout)
+
+    def enroll_remote_connector(self, body: EnrollRemoteConnectorBody, *, timeout: float | None = None) -> EnrollRemoteConnectorResponse:
+        """Create a ten-minute one-use connection code (POST /connectors/enrollment)."""
+        return self._call("enrollRemoteConnector", (), body, None, timeout=timeout)
+
+    def import_remote_history(self, connector_id: str, target_id: str, body: ImportRemoteHistoryBody, *, timeout: float | None = None) -> ImportRemoteHistoryResponse:
+        """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
+        return self._call("importRemoteHistory", (connector_id, target_id), body, None, timeout=timeout)
+
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse:
+        """Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import)."""
+        return self._call("importRemoteTarget", (connector_id,), body, None, timeout=timeout)
+
+    def list_remote_connectors(self, *, timeout: float | None = None) -> ListRemoteConnectorsResponse:
+        """List remote source machines and imported agent targets (GET /connectors)."""
+        return self._call("listRemoteConnectors", (), None, None, timeout=timeout)
+
+    def poll_remote_connector(self, connector_id: str, body: PollRemoteConnectorBody, *, timeout: float | None = None) -> PollRemoteConnectorResponse:
+        """Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll)."""
+        return self._call("pollRemoteConnector", (connector_id,), body, None, timeout=timeout)
+
+    def register_remote_connector(self, body: RegisterRemoteConnectorBody, *, timeout: float | None = None) -> RegisterRemoteConnectorResponse:
+        """Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors)."""
+        return self._call("registerRemoteConnector", (), body, None, timeout=timeout)
+
+    def remote_command_events(self, connector_id: str, command_id: str, body: RemoteCommandEventsBody, *, timeout: float | None = None) -> RemoteCommandEventsResponse:
+        """Append an ordered idempotent native event batch for a valid command lease (POST /connectors/{connector_id}/commands/{command_id}/events)."""
+        return self._call("remoteCommandEvents", (connector_id, command_id), body, None, timeout=timeout)
+
+    def revoke_remote_connector(self, connector_id: str, *, timeout: float | None = None) -> RevokeRemoteConnectorResponse:
+        """Revoke a source connector and stop its outstanding commands (DELETE /connectors/{connector_id})."""
+        return self._call("revokeRemoteConnector", (connector_id,), None, None, timeout=timeout)
+
+
 class FilesResource(Group):
     """client.files: one method per operation."""
 
@@ -7581,7 +8402,7 @@ class LearningResource(Group):
         return self._call("recordLearningEval", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
-        """A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
+        """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
@@ -7729,6 +8550,14 @@ class McpServersResource(Group):
         return self._call("saveMcpServer", (name,), body, None, timeout=timeout)
 
 
+class ObservationsResource(Group):
+    """client.observations: one method per operation."""
+
+    def get_observations(self, *, days: int | None = None, session_id: str | None = None, timeout: float | None = None) -> GetObservationsResponse:
+        """Read activity and token usage reported by externally running agents (GET /observations)."""
+        return self._call("getObservations", (), None, {"days": days, "session_id": session_id}, timeout=timeout)
+
+
 class RevisionsResource(Group):
     """client.revisions: one method per operation."""
 
@@ -7843,6 +8672,26 @@ class RunsResource(Group):
     def unarchive(self, run_id: str, *, timeout: float | None = None) -> UnarchiveRunResponse:
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""
         return self._call("unarchiveRun", (run_id,), None, None, timeout=timeout)
+
+
+class SdkRunsResource(Group):
+    """client.sdk_runs: one method per operation."""
+
+    def complete(self, run_id: str, body: CompleteSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CompleteSdkRunResponse:
+        """Complete a backend SDK task (POST /sdk-runs/{run_id}/complete)."""
+        return self._call("completeSdkRun", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def events(self, run_id: str, body: SdkRunEventsBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SdkRunEventsResponse:
+        """Record bounded SDK execution evidence (POST /sdk-runs/{run_id}/events)."""
+        return self._call("sdkRunEvents", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def get(self, run_id: str, *, timeout: float | None = None) -> GetSdkRunResponse:
+        """Read SDK run and learning state (GET /sdk-runs/{run_id})."""
+        return self._call("getSdkRun", (run_id,), None, None, timeout=timeout)
+
+    def start(self, agent_id: str, body: StartSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
+        """Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs)."""
+        return self._call("startSdkRun", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
 
 class ServerResource(Group):
@@ -7989,12 +8838,15 @@ class Resources:
     """The resource groups, each operation a method that sends it through `call`. `runs` is the client's own: RunsResource with the methods it writes by hand."""
 
     agents: AgentsResource
+    connectors: ConnectorsResource
     files: FilesResource
     home: HomeResource
     learning: LearningResource
     local: LocalResource
     mcp_servers: McpServersResource
+    observations: ObservationsResource
     revisions: RevisionsResource
+    sdk_runs: SdkRunsResource
     server: ServerResource
     template: TemplateResource
     tool_keys: ToolKeysResource
@@ -8006,12 +8858,15 @@ class Resources:
     def __init__(self, call: Call) -> None:
         self._operation = call
         self.agents = AgentsResource(call)
+        self.connectors = ConnectorsResource(call)
         self.files = FilesResource(call)
         self.home = HomeResource(call)
         self.learning = LearningResource(call)
         self.local = LocalResource(call)
         self.mcp_servers = McpServersResource(call)
+        self.observations = ObservationsResource(call)
         self.revisions = RevisionsResource(call)
+        self.sdk_runs = SdkRunsResource(call)
         self.server = ServerResource(call)
         self.template = TemplateResource(call)
         self.tool_keys = ToolKeysResource(call)

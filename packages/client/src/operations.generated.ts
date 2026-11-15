@@ -15,6 +15,40 @@ export type Agent = {
   home_etag: string;
   created_at: Timestamp;
   updated_at: Timestamp;
+  native_status?: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      notes: boolean;
+      skills: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
   external?: {
     source: string;
     kind: string;
@@ -85,6 +119,9 @@ export type DefinitionInput = {
   output_schema?: JsonObject;
   workflow?: JsonObject;
   max_cost_usd?: number;
+  sdk?: {
+    runtime: "claude-agent-sdk" | "codex-sdk";
+  };
   native?: {
     runtime: "claude-code" | "codex";
     project: string;
@@ -114,6 +151,10 @@ export type DefinitionInput = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   };
   model?: string;
   model_tiers?: {
@@ -272,6 +313,19 @@ export type RunSummary = {
   created_at: Timestamp;
   ended_at: Timestamp | null;
   cost: Cost;
+  sdk?: {
+    runtime: "claude-agent-sdk" | "codex-sdk";
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
   native?: {
     runtime: string;
     project: string;
@@ -363,6 +417,7 @@ export type RunSummary = {
     kind: "budget";
     cap_usd: number;
     spent_usd?: number;
+    held_usd?: number;
     needs_usd?: number;
     least_cap_usd?: number;
     suggested_cap_usd?: number;
@@ -405,6 +460,7 @@ export type Cost = {
   free?: true;
   so_far_usd?: number;
   unpriced?: number;
+  upper_bound?: true;
   plan?: {
     requests: number;
     tokens: number;
@@ -524,6 +580,19 @@ export type Run = {
   error: RunError | null;
   cost: Cost;
   poll_after_ms: number;
+  sdk?: {
+    runtime: "claude-agent-sdk" | "codex-sdk";
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
   native?: {
     runtime: string;
     project: string;
@@ -641,6 +710,7 @@ export type Run = {
     kind: "budget";
     cap_usd: number;
     spent_usd?: number;
+    held_usd?: number;
     needs_usd?: number;
     least_cap_usd?: number;
     suggested_cap_usd?: number;
@@ -826,6 +896,7 @@ export type TimelineUsage = {
   free?: true;
   so_far_usd?: number;
   unpriced?: number;
+  upper_bound?: true;
   not_metered?: number;
 };
 
@@ -1081,6 +1152,7 @@ export type Limits = {
     min: Usd;
     max: Usd;
   } | null;
+  free_model_requests?: number;
 };
 
 export type Usd = number;
@@ -1155,6 +1227,10 @@ export type ConnectNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   };
 };
 
@@ -1207,6 +1283,10 @@ export type DisconnectNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   };
 };
 
@@ -1351,6 +1431,10 @@ export type GetNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   } | null;
 };
 
@@ -1468,6 +1552,217 @@ export type VerifyNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+};
+
+/** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
+export type CompleteRemoteCommandBody = {
+  lease_token: string;
+  result?: unknown;
+  error?: string;
+};
+export type CompleteRemoteCommandResponse = {
+  accepted: true;
+};
+
+/** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
+export type EnrollRemoteConnectorBody = {
+  label?: string;
+  capabilities?: {
+    native_execution?: boolean;
+    history_import?: boolean;
+  };
+};
+export type EnrollRemoteConnectorResponse = {
+  enrollment_token: string;
+  expires_at: string;
+  workspace_id: "local";
+};
+
+/** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+export type ImportRemoteHistoryBody = {
+  sessions: Array<Record<string, unknown>>;
+};
+export type ImportRemoteHistoryResponse = {
+  agent_id: string;
+  runs: Array<{
+    session_id: string;
+    run_id: string;
+    already: boolean;
+  }>;
+  imported: number;
+  already: number;
+};
+
+/** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
+export type ImportRemoteTargetBody = {
+  target_id: string;
+  name?: string;
+  target: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      notes: boolean;
+      skills: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+  history_only?: boolean;
+};
+export type ImportRemoteTargetResponse = {
+  agent_id: string;
+  native: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      notes: boolean;
+      skills: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+};
+
+/** List remote source machines and imported agent targets (GET /connectors). */
+export type ListRemoteConnectorsResponse = {
+  connectors: Array<{
+    id: string;
+    connector_id: string;
+    label: string;
+    created_at: string;
+    last_seen_at: string | null;
+    status: "online" | "offline" | "revoked";
+    capabilities: {
+      observe: true;
+      native_execution: boolean;
+      history_import: boolean;
+    };
+    targets: Array<Record<string, unknown>>;
+  }>;
+};
+
+/** Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll). */
+export type PollRemoteConnectorBody = {
+  worker_id: string;
+  active?: Array<{
+    command_id: string;
+    lease_token: string;
+  }>;
+};
+export type PollRemoteConnectorResponse = {
+  commands: Array<Record<string, unknown>>;
+  cancelled: Array<string>;
+  server_time: number;
+  lease_ttl_ms: number;
+};
+
+/** Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors). */
+export type RegisterRemoteConnectorBody = {
+  installation_id: string;
+  operation_id: string;
+  label?: string;
+  capabilities: {
+    native_execution: boolean;
+    history_import?: boolean;
+  };
+};
+export type RegisterRemoteConnectorResponse = {
+  connector: {
+    id: string;
+    connector_id: string;
+    label: string;
+    created_at: string;
+    last_seen_at: string | null;
+    status: "online" | "offline" | "revoked";
+    capabilities: {
+      observe: true;
+      native_execution: boolean;
+      history_import: boolean;
+    };
+    targets: Array<Record<string, unknown>>;
+  };
+  credential: string;
+  credential_expires_at: string;
+};
+
+/** Append an ordered idempotent native event batch for a valid command lease (POST /connectors/{connector_id}/commands/{command_id}/events). */
+export type RemoteCommandEventsBody = {
+  lease_token: string;
+  sequence: number;
+  events: Array<Record<string, unknown>>;
+};
+export type RemoteCommandEventsResponse = {
+  accepted: true;
+};
+
+/** Revoke a source connector and stop its outstanding commands (DELETE /connectors/{connector_id}). */
+export type RevokeRemoteConnectorResponse = {
+  connector: {
+    id: string;
+    connector_id: string;
+    label: string;
+    created_at: string;
+    last_seen_at: string | null;
+    status: "online" | "offline" | "revoked";
+    capabilities: {
+      observe: true;
+      native_execution: boolean;
+      history_import: boolean;
+    };
+    targets: Array<Record<string, unknown>>;
   };
 };
 
@@ -1780,6 +2075,7 @@ export type GetLearningCostResponse = {
     workflow: string | null;
     learned_revision: string | null;
     cost_usd: number | null;
+    cost_upper_bound: boolean;
     learning_usd: number | null;
     total_usd: number | null;
   }>;
@@ -1817,6 +2113,16 @@ export type GetLearningCostResponse = {
     hand_backs: {
       ran: number;
       back: number;
+    } | null;
+    withheld: {
+      unknown: number;
+      at_most: number;
+    } | null;
+    replay: {
+      n: number;
+      workflow_pct: number;
+      agent_pct: number;
+      cleared: boolean;
     } | null;
   };
 };
@@ -2056,7 +2362,7 @@ export type RecordLearningEvalResponse = {
   recorded_at: string;
 };
 
-/** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+/** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
 export type GetLearnedWorkflowReplayResponse = {
   replay: string;
   workflow: string;
@@ -2829,6 +3135,85 @@ export type SaveMcpServerResponse = {
   secret?: SecretMeta;
 };
 
+/** Read activity and token usage reported by externally running agents (GET /observations). */
+export interface GetObservationsParams {
+  days?: number;
+  session_id?: string;
+}
+export type GetObservationsResponse = {
+  connectors: Array<{
+    id: string;
+    display_name: string;
+    connection_state: "online" | "offline" | "disconnected";
+    ingestion_mode: "polling" | "otlp";
+    last_heartbeat_at: string | null;
+    receipt_count: number;
+    receipt_capacity: number;
+    storage_full: boolean;
+  }>;
+  sessions: Array<{
+    id: string;
+    connector_id: string;
+    source_id: string;
+    external_session_id: string;
+    harness: "claude" | "codex";
+    activity: "unknown" | "working" | "idle" | "waiting_input" | "finished" | "failed" | "stopped";
+    reported_activity: "unknown" | "working" | "idle" | "waiting_input" | "finished" | "failed" | "stopped";
+    connection_state: "online" | "offline" | "disconnected";
+    selection_active: boolean;
+    occurred_at: string;
+    received_at: string;
+    created_at: string;
+    updated_at: string;
+    sequence: number;
+    display_name: string;
+    models: Array<string>;
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_tokens: number | null;
+      cache_write_tokens: number | null;
+      total_tokens: number;
+      cache_hit_rate: number | null;
+      overflow: boolean;
+      status: "reported" | "unavailable";
+    };
+    observation_only: true;
+  }>;
+  usage: {
+    input_tokens: number | null;
+    output_tokens: number | null;
+    cache_read_tokens: number | null;
+    cache_write_tokens: number | null;
+    total_tokens: number | null;
+    cache_hit_rate: number | null;
+    overflow: boolean;
+    status: "partial" | "unavailable";
+    models: Array<{
+      input_tokens: number | null;
+      output_tokens: number | null;
+      cache_read_tokens: number | null;
+      cache_write_tokens: number | null;
+      total_tokens: number | null;
+      cache_hit_rate: number | null;
+      overflow: boolean;
+      model: string;
+    }>;
+    daily: Array<{
+      date: string;
+      total_tokens: number | null;
+    }>;
+  };
+  limits: {
+    max_receipts_per_connector: number;
+    max_sessions_per_connector: number;
+    receipt_retention: string;
+    receipt_window_seconds: number;
+    session_retention_days: number;
+    usage_retention_days: number;
+  };
+};
+
 /** The agent's revisions, newest first (GET /agents/{agent_id}/revisions). */
 export interface ListRevisionsParams {
   limit?: number;
@@ -3211,6 +3596,103 @@ export type GetTimelineResponse = TimelinePage;
 
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
+
+/** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
+export type CompleteSdkRunBody = {
+  status: "completed" | "failed" | "cancelled";
+  answer: string;
+  error?: string;
+  model?: string;
+  session_id?: string;
+  usage?: {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_tokens?: number | null;
+    cache_write_tokens?: number | null;
+    cost_usd?: number | null;
+  };
+  evidence_complete?: boolean;
+};
+export interface CompleteSdkRunParams {
+  "Idempotency-Key"?: string;
+}
+export type CompleteSdkRunResponse = {
+  accepted: true;
+};
+
+/** Record bounded SDK execution evidence (POST /sdk-runs/{run_id}/events). */
+export type SdkRunEventsBody = {
+  sequence: number;
+  events: Array<{
+    type: "text";
+    text: string;
+  } | {
+    type: "session";
+    session_id: string;
+  } | {
+    type: "tool";
+    id: string;
+    name: string;
+    status: "started" | "completed" | "failed";
+    input?: unknown;
+    output?: unknown;
+    parent_tool_use_id?: string;
+  }>;
+};
+export interface SdkRunEventsParams {
+  "Idempotency-Key"?: string;
+}
+export type SdkRunEventsResponse = {
+  accepted: true;
+};
+
+/** Read SDK run and learning state (GET /sdk-runs/{run_id}). */
+export type GetSdkRunResponse = {
+  run_id: string;
+  state: "running" | "processing" | "completed" | "failed" | "cancelled";
+  learning_run_id?: string;
+  learning: unknown;
+};
+
+/** Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs). */
+export type StartSdkRunBody = {
+  runtime: "claude-agent-sdk" | "codex-sdk";
+  input: string;
+  instructions: string;
+  model?: string;
+  workflow_tools?: Array<{
+    name: string;
+    description: string;
+    input_schema: Record<string, unknown>;
+    output_schema?: Record<string, unknown>;
+    permission: "allow" | "ask" | "deny";
+    price_usd?: number;
+  }>;
+  workflow_adapters?: Array<"runNode" | "runJudge">;
+};
+export interface StartSdkRunParams {
+  "Idempotency-Key": string;
+}
+export type StartSdkRunResponse = {
+  run_id: string;
+  agent_id: string;
+  console_url: string;
+  token: string;
+  learning: {
+    enabled: boolean;
+    revision: string | null;
+    context: string;
+    skills: Array<{
+      name: string;
+      files: Record<string, string>;
+    }>;
+    workflows: Array<{
+      name: string;
+      workflow: string;
+      description: string;
+    }>;
+  };
+};
 
 /** What this backend offers (GET /capabilities). */
 export type GetCapabilitiesResponse = Capabilities;
@@ -4595,6 +5077,15 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  importRemoteTarget: {"method":"POST","path":"/connectors/{connector_id}/import","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRemoteConnectors: {"method":"GET","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  pollRemoteConnector: {"method":"POST","path":"/connectors/{connector_id}/poll","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  registerRemoteConnector: {"method":"POST","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  remoteCommandEvents: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/events","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  revokeRemoteConnector: {"method":"DELETE","path":"/connectors/{connector_id}","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createFile: {"method":"POST","path":"/files","pathParams":[],"multiSegment":[],"query":["path","content_type","sha256"],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json","application/octet-stream","*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteFile: {"method":"DELETE","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   getFile: {"method":"GET","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4654,6 +5145,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getMcpPrivateHosts: {"method":"GET","path":"/settings/mcp-servers/oauth/private-hosts","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   refreshMcpServer: {"method":"POST","path":"/settings/mcp-servers/{name}/refresh","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveMcpServer: {"method":"PUT","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","auth.type"],"tagged":false},
+  getObservations: {"method":"GET","path":"/observations","pathParams":[],"multiSegment":[],"query":["days","session_id"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRevisions: {"method":"GET","path":"/agents/{agent_id}/revisions","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   setCurrent: {"method":"POST","path":"/agents/{agent_id}/current","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   archiveRun: {"method":"POST","path":"/runs/{run_id}/archive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4680,6 +5172,10 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   takeOverRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/take-over","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  completeSdkRun: {"method":"POST","path":"/sdk-runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  sdkRunEvents: {"method":"POST","path":"/sdk-runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getSdkRun: {"method":"GET","path":"/sdk-runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  startSdkRun: {"method":"POST","path":"/agents/{agent_id}/sdk-runs","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapabilities: {"method":"GET","path":"/capabilities","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getHealth: {"method":"GET","path":"/health","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   callMcp: {"method":"POST","path":"/mcp","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4751,6 +5247,26 @@ export function resources(call: Call) {
       /** Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify). */
       verifyNative: (agentId: string, options?: RequestOptions): Promise<VerifyNativeResponse> => call("verifyNative", [agentId], undefined, undefined, options),
     },
+    connectors: {
+      /** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
+      completeRemoteCommand: (connectorId: string, commandId: string, body: CompleteRemoteCommandBody, options?: RequestOptions): Promise<CompleteRemoteCommandResponse> => call("completeRemoteCommand", [connectorId, commandId], body, undefined, options),
+      /** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
+      enrollRemoteConnector: (body: EnrollRemoteConnectorBody, options?: RequestOptions): Promise<EnrollRemoteConnectorResponse> => call("enrollRemoteConnector", [], body, undefined, options),
+      /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
+      importRemoteHistory: (connectorId: string, targetId: string, body: ImportRemoteHistoryBody, options?: RequestOptions): Promise<ImportRemoteHistoryResponse> => call("importRemoteHistory", [connectorId, targetId], body, undefined, options),
+      /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
+      importRemoteTarget: (connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options),
+      /** List remote source machines and imported agent targets (GET /connectors). */
+      listRemoteConnectors: (options?: RequestOptions): Promise<ListRemoteConnectorsResponse> => call("listRemoteConnectors", [], undefined, undefined, options),
+      /** Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll). */
+      pollRemoteConnector: (connectorId: string, body: PollRemoteConnectorBody, options?: RequestOptions): Promise<PollRemoteConnectorResponse> => call("pollRemoteConnector", [connectorId], body, undefined, options),
+      /** Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors). */
+      registerRemoteConnector: (body: RegisterRemoteConnectorBody, options?: RequestOptions): Promise<RegisterRemoteConnectorResponse> => call("registerRemoteConnector", [], body, undefined, options),
+      /** Append an ordered idempotent native event batch for a valid command lease (POST /connectors/{connector_id}/commands/{command_id}/events). */
+      remoteCommandEvents: (connectorId: string, commandId: string, body: RemoteCommandEventsBody, options?: RequestOptions): Promise<RemoteCommandEventsResponse> => call("remoteCommandEvents", [connectorId, commandId], body, undefined, options),
+      /** Revoke a source connector and stop its outstanding commands (DELETE /connectors/{connector_id}). */
+      revokeRemoteConnector: (connectorId: string, options?: RequestOptions): Promise<RevokeRemoteConnectorResponse> => call("revokeRemoteConnector", [connectorId], undefined, undefined, options),
+    },
     files: {
       /** Reserve an upload (POST /files). */
       create: (body: CreateFileBody | RawBody, params?: CreateFileParams, options?: BodyOptions): Promise<CreateFileResponse> => call("createFile", [], body, params, options),
@@ -4796,7 +5312,7 @@ export function resources(call: Call) {
       read: (agentId: string, file: string, options?: RequestOptions): Promise<Tagged<ReadLearningFileResponse | string>> => call("readLearningFile", [agentId, file], undefined, undefined, options),
       /** Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals). */
       recordEval: (agentId: string, body: RecordLearningEvalBody, params?: RecordLearningEvalParams, options?: RequestOptions): Promise<RecordLearningEvalResponse> => call("recordLearningEval", [agentId], body, params, options),
-      /** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+      /** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
       replay: (agentId: string, name: string, digest: string, replayId: string, options?: RequestOptions): Promise<GetLearnedWorkflowReplayResponse> => call("getLearnedWorkflowReplay", [agentId, name, digest, replayId], undefined, undefined, options),
       /** Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
       retire: (agentId: string, file: string, params?: RetireLearningFileParams, options?: RequestOptions): Promise<Tagged<string>> => call("retireLearningFile", [agentId, file], undefined, params, options),
@@ -4871,6 +5387,10 @@ export function resources(call: Call) {
       /** Preview a remote MCP server, then save it with the tools listed and its credential sealed (PUT /settings/mcp-servers/{name}). */
       save: (name: string, body: SaveMcpServerBody, options?: RequestOptions): Promise<SaveMcpServerResponse> => call("saveMcpServer", [name], body, undefined, options),
     },
+    Observations: {
+      /** Read activity and token usage reported by externally running agents (GET /observations). */
+      getObservations: (params?: GetObservationsParams, options?: RequestOptions): Promise<GetObservationsResponse> => call("getObservations", [], undefined, params, options),
+    },
     revisions: {
       /** The agent's revisions, newest first (GET /agents/{agent_id}/revisions). */
       list: (agentId: string, params?: ListRevisionsParams, options?: RequestOptions): Promise<ListRevisionsResponse> => call("listRevisions", [agentId], undefined, params, options),
@@ -4926,6 +5446,16 @@ export function resources(call: Call) {
       timeline: (runId: string, params?: GetTimelineParams, options?: RequestOptions): Promise<GetTimelineResponse> => call("getTimeline", [runId], undefined, params, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
+    },
+    sdkRuns: {
+      /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
+      complete: (runId: string, body: CompleteSdkRunBody, params?: CompleteSdkRunParams, options?: RequestOptions): Promise<CompleteSdkRunResponse> => call("completeSdkRun", [runId], body, params, options),
+      /** Record bounded SDK execution evidence (POST /sdk-runs/{run_id}/events). */
+      events: (runId: string, body: SdkRunEventsBody, params?: SdkRunEventsParams, options?: RequestOptions): Promise<SdkRunEventsResponse> => call("sdkRunEvents", [runId], body, params, options),
+      /** Read SDK run and learning state (GET /sdk-runs/{run_id}). */
+      get: (runId: string, options?: RequestOptions): Promise<GetSdkRunResponse> => call("getSdkRun", [runId], undefined, undefined, options),
+      /** Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs). */
+      start: (agentId: string, body: StartSdkRunBody, params: StartSdkRunParams, options?: RequestOptions): Promise<StartSdkRunResponse> => call("startSdkRun", [agentId], body, params, options),
     },
     server: {
       /** What this backend offers (GET /capabilities). */

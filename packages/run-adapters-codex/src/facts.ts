@@ -3,7 +3,7 @@
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
 import { codexPolicy } from "./host/policy.js";
 import { codexSchemaProblems } from "./schema.js";
-import { CODEX_INSTALL, CODEX_VERSION } from "./versions.js";
+import { CODEX_BASE_INPUT_TOKENS, CODEX_INSTALL, CODEX_VERSION } from "./versions.js";
 
 export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   id: "codex",
@@ -33,5 +33,7 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   nativeTools: Object.freeze({ web_search: "web_search", shell: "bash" }),
   // A run's MCP tool reaches Codex as `mcp_<server>__<tool>` (adapter.ts codexToolName): the host's is `mcp__<server>__<tool>`.
   hostName: (given: string) => given.replace(/^mcp_(?!_)/, "mcp__"),
+  // Its first request's own input before the agent's prompt, from a Codex run's billing (versions.ts).
+  baseInputTokens: CODEX_BASE_INPUT_TOKENS,
   policy: (options) => codexPolicy({ model: options.model, tools: options.tools, ...(options.webSearch === "live" ? { webSearch: "live" as const } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });

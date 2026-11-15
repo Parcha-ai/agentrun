@@ -40,12 +40,12 @@ export const Contrast: Story = {
     <Themes>
       <Block title="Text pairs" note="Each row is set in its own colours. The two numbers are the measured ratios, light then dark; the test fails under 4.5.">
         <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-          {TEXT_PAIRS.map(({ text, on, wash }) => {
-            const ratio = (theme: "light" | "dark") => { const t = values[theme]; const surface = wash ? blend(hslToRgb(t[wash]!), hslToRgb(t[on]!), 0.1) : hslToRgb(t[on]!); return contrast(hslToRgb(t[text]!), surface).toFixed(1); };
+          {TEXT_PAIRS.map(({ text, on, wash, alpha = 0.1 }) => {
+            const ratio = (theme: "light" | "dark") => { const t = values[theme]; const surface = wash ? blend(hslToRgb(t[wash]!), hslToRgb(t[on]!), alpha) : hslToRgb(t[on]!); return contrast(hslToRgb(t[text]!), surface).toFixed(1); };
             return (
-              <li key={`${text}/${on}/${wash ?? ""}`} className="flex items-center justify-between gap-3 border px-2 py-1.5 font-mono text-label"
-                style={{ color: `hsl(var(--${text}))`, background: wash ? `hsl(var(--${wash}) / 0.1)` : `hsl(var(--${on}))` }}>
-                <span>{text} on {wash ? `${wash}/10` : on}</span><span>{ratio("light")} · {ratio("dark")}</span>
+              <li key={`${text}/${on}/${wash ?? ""}/${alpha}`} className="flex items-center justify-between gap-3 border px-2 py-1.5 font-mono text-label"
+                style={{ color: `hsl(var(--${text}))`, background: wash ? `linear-gradient(hsl(var(--${wash}) / ${alpha}), hsl(var(--${wash}) / ${alpha})), hsl(var(--${on}))` : `hsl(var(--${on}))` }}>
+                <span>{text} on {wash ? `${wash}/${alpha * 100} over ${on}` : on}</span><span>{ratio("light")} · {ratio("dark")}</span>
               </li>
             );
           })}

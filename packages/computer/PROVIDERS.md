@@ -112,9 +112,13 @@ A user on a bigger plan raises the option, up to the fact.
 ```
 
 **`create(req, ctx)`** makes one machine and answers as soon as you have its id. Don't wait for it to boot, because
-AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds machines by them. `req.egress` is always
-`false`, except for a computer with an Archil storage mount. There AgentRun asks `true` so its root can reach Archil,
-and the agent's programs still have no network. `req.cpus` and `req.memoryMb` come whenever the spec gives them: a
+AgentRun polls `get`. The exception is a vendor that applies a machine's settings only once it is ready, as boxd does
+its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
+machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
+finds machines by them. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
+mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
+`true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's
+programs reach it alone. `req.cpus` and `req.memoryMb` come whenever the spec gives them: a
 vendor whose size is its image's refuses them in its own `check`.
 
 ```ts
@@ -262,12 +266,15 @@ export const E2B = defineProvider({
 	keys: [{ name: "E2B_API_KEY", option: "apiKey", required: true }],
 	metered: true,
 	mounts: ["archil"],
-	network: ["none"],
+	network: ["none", "open", "allow"],
 	capabilities: [SANDBOX, LINUX_DESKTOP],
 	prepareImage: true,
 	load: () => import("../e2b.js"),
 });
 ```
+
+A descriptor declares only the network forms its computer enforces; a form it doesn't declare is refused at save, never
+widened.
 
 E2B's names no `defaultImage`: it says `prepareImage`, and the provider's `prepareImage()` answers the box template
 (`boxE2bTemplate()` in `box-image.ts`) with no call, so a sandbox and a desktop that mount an Archil disk start from
@@ -417,7 +424,7 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
 
 ### What AgentRun does for your host
 
-- **`check(spec)`** applies the shared rules (lifetime and its cap, network none, the label namespace and your
+- **`check(spec)`** applies the shared rules (lifetime and its cap, the network forms you declare, the label namespace and your
   `labels` bound, sizes, users, GPUs, the Archil mount), then your `check`.
 - **`create(spec, { requestId })`** names the machine `computer-` plus the first 12 hex digits of the request id's
   sha256, so a retried create finds the machine it already made. It deletes a machine whose create landed after the
@@ -425,7 +432,9 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
   the label `agentrun.computer.gpu` (`<type>:<count>`), which a retry and `attach` read back. Then it waits for the
   machine to run, checks the labels `get` reads back, closes the session buses in `/tmp` (`/tmp/dbus-*`) to the
   computer's user on a `child` host, uploads the daemon and checks its sha256, starts it, and probes from inside that
-  the network is none and the kernel is the runtime you declare. If any step fails after the machine exists, it
+  nothing answers directly and the kernel is the runtime you declare. Under `open` or a list, init starts the egress
+  proxy before it leaves the machine's network, and the probe also checks that init's relay answers and that the
+  proxy serves the spec's form. If any step fails after the machine exists, it
   deletes the machine and waits until `get` answers none, twice running.
 - **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where your host has
   `extend`), `release` (delete, then the same wait; a stop is refused: a computer here is deleted, never stopped and

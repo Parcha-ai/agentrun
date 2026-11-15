@@ -10,11 +10,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
 import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
-import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "../isolation.js";
+import { readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
 import type { KindCapabilities } from "../kinds.js";
 import { RUN_LABEL } from "../labels.js";
@@ -67,6 +68,7 @@ import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec } from "./process.js";
 import { isWhole } from "./values.js";
+import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
@@ -185,6 +187,14 @@ const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 const alive = (state: Machine["state"]) => state !== "gone";
+/** The codes of a create the vendor refused, which made nothing. */
+const REFUSED_CREATE: ReadonlySet<ComputerError["code"]> = new Set(["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"]);
+/**
+ * Whether a create that failed with code may have made a machine, so the request's name is swept. A refusal made
+ * nothing: a machine under the name then is another's (exists: another instance's create of the request), never
+ * deleted. Any other failure (the vendor's, a timeout) may have made one, answered in time or after create gave up.
+ */
+const mayHaveMade = (code: ComputerError["code"]) => !REFUSED_CREATE.has(code);
 
 /** An ISO time a label holds, or undefined when it is missing or not the ISO time create writes. */
 export function isoOf(written: string | undefined): Date | undefined {
@@ -338,7 +348,9 @@ export class HostedProvider implements ComputerProvider {
 			kind: this.#kind,
 			lifetime: facts.lifetime,
 			network: [...descriptor.network],
-			// The probe from inside is the network's truth: no vendor's read of it is taken.
+			// A list is the egress proxy's, init's own (./network.ts): Docker's bounds and ports.
+			...(descriptor.network.includes("allow") ? { allow: structuredClone(HOSTED_ALLOW) } : {}),
+			// The probe and the proxy's policy from inside are the network's truth: no vendor's read of it is taken.
 			networkReadBack: false,
 			isolation: facts.isolation,
 			os: "linux",
@@ -375,6 +387,8 @@ export class HostedProvider implements ComputerProvider {
 				);
 			} else if (archil && user !== ARCHIL_USER) {
 				refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
+			} else if (throughProxy(network) && user.split(":").includes(String(EGRESS_PROXY_USER))) {
+				refuse("user", `the egress proxy of a network open or a list runs as uid and gid ${EGRESS_PROXY_USER} (nobody), so its programs' user may be neither; ask for another uid, such as 1000:1000`);
 			}
 		} else if (archil && daemonUser !== ARCHIL_USER) {
 			refuse(
@@ -384,8 +398,9 @@ export class HostedProvider implements ComputerProvider {
 		}
 		if (typeof image !== "string" || image === "" || image.includes("\0")) refuse("image", `an image is required: the name of ${a(label)} image`);
 		refusals.push(...checkTenure(given, capabilities, label));
-		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
-		else if (network !== "none") refuse("network", 'network is required: "none"');
+		// Only the forms the descriptor declares, each one this computer enforces; any other is refused, never widened.
+		const networkProblem = networkRefusal(label, capabilities.network, network);
+		if (networkProblem) refuse("network", networkProblem);
 		const entries = labels === undefined ? [] : typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
 		const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 		if (bad) refuse("labels", bad);
@@ -433,7 +448,7 @@ export class HostedProvider implements ComputerProvider {
 		const sizes = Object.entries(labels).map(([key, value]) => [key, Buffer.byteLength(key) + Buffer.byteLength(value)] as const);
 		const bytes = sizes.reduce((sum, [, size]) => sum + size, 0);
 		if (bytes <= max) return undefined;
-		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder or labels` };
+		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder${labels[NETWORK_LABEL]?.startsWith("allow:") ? ", network list" : ""} or labels` };
 	}
 
 	/** A host call bounded by ms, the caller's signal when given. */
@@ -555,7 +570,7 @@ export class HostedProvider implements ComputerProvider {
 				const attached = await this.#attached(machine, signal);
 				// The image, an Archil mount and the GPUs are in the labels; the user and the network are read back. No vendor
 				// shows a drift in a size.
-				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu"]) : [];
+				const drift = attached.ok ? readBackDiffer({ ...spec, network: networkOfForm(formOf(spec.network)) as NetworkSpec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu"]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
@@ -582,6 +597,7 @@ export class HostedProvider implements ComputerProvider {
 	 * Daytona) spends none of its label bytes on it (Modal's 512 hold the box image's tag beside an Archil mount's label).
 	 */
 	#labelsOf(spec: ComputerSpec, name: string, deadline: string, maxDeadline: string): Record<string, string> {
+		const network = formOf(spec.network);
 		return {
 			...spec.labels,
 			[COMPUTER_LABEL]: "1",
@@ -589,6 +605,7 @@ export class HostedProvider implements ComputerProvider {
 			[DEADLINE_LABEL]: deadline,
 			[IMAGE_LABEL]: spec.image,
 			...(this.host.extend ? { [MAX_LABEL]: maxDeadline } : {}),
+			...(network === "" ? {} : { [NETWORK_LABEL]: network }),
 			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}),
 			...(typeof spec.gpu?.type === "string" && typeof spec.gpu.count === "number" ? { [GPU_LABEL]: `${spec.gpu.type}:${spec.gpu.count}` } : {}),
 		};
@@ -624,15 +641,17 @@ export class HostedProvider implements ComputerProvider {
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
 			rootOnly: this.host.facts.rootOnly ?? [],
+			network: formOf(spec.network),
 		});
 		const request: MachineRequest = {
 			name,
 			image: spec.image,
 			labels,
 			lifetimeMs,
-			// An Archil computer's root reaches Archil, so its machine has egress: its tools' none is init's own, read back
-			// by the probe from inside, as the tool user, like every network none here.
-			egress: archil,
+			// The machine has egress where its tools' network is open or a list, which init's proxy holds to the public
+			// internet (./network.ts), and where an Archil computer's root reaches Archil. Its tools' none is init's own
+			// either way, read back by the probe from inside, as the tool user.
+			egress: archil || throughProxy(spec.network),
 			...(this.host.facts.daemon === "pid1" ? { command: commands.entrypoint } : {}),
 			...(spec.gpu === undefined ? {} : { gpu: spec.gpu }),
 			...(spec.cpus === undefined ? {} : { cpus: spec.cpus }),
@@ -641,9 +660,9 @@ export class HostedProvider implements ComputerProvider {
 		};
 		const { createMs } = this.#timeouts;
 		// Never signalled, only raced: an aborted call could leave a machine made whose id never came back. One that lands
-		// after this gave up is deleted by its id; one whose answer never comes, by its name.
+		// after this gave up is deleted by its id; one that fails after it, by its name where it may have made one.
 		const created = await hostCall(this.host, `${this.#label}'s create`, (ctx) => this.host.create(request, { timeoutMs: ctx.timeoutMs }), createMs, signal, (made) =>
-			made.ok ? this.#kill(made.value.id) : this.#deleteNamed(name),
+			made.ok ? this.#kill(made.value.id) : mayHaveMade(made.error.code) ? this.#deleteNamed(name) : undefined,
 		);
 		if (!created.ok) {
 			const { code, message } = created.error;
@@ -651,8 +670,7 @@ export class HostedProvider implements ComputerProvider {
 				this.#end(name);
 				return this.#fail(code, `${message}; a machine it makes after this is deleted as it lands, and ${this.#label} ends it by ${deadline} either way`);
 			}
-			// A create the vendor refused made nothing. One that failed otherwise may have: it goes by its name.
-			if (["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"].includes(code)) return created;
+			if (!mayHaveMade(code)) return created;
 			this.#end(name);
 			const swept = await this.#deleteNamed(name);
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
@@ -677,7 +695,8 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Every machine carrying a name create gave, deleted and read back gone: for a create whose answer never came. The
+	 * Every machine carrying a name create gave, deleted and read back gone: for a create that may have made one whose
+	 * id never came (mayHaveMade), never after a refusal, where a machine under the name is another's. The
 	 * listing shows a new machine a moment after the vendor makes it, so it is read for the name until one shows or
 	 * listedMs passes. Best effort, in words.
 	 */
@@ -826,7 +845,7 @@ export class HostedProvider implements ComputerProvider {
 		try {
 			const archil = spec.mount?.kind === "archil" ? { mount: { kind: "archil" as const, disk: spec.mount.disk, region: spec.mount.region, folder: spec.mount.folder }, epoch: claimEpoch(spec.labels) } : undefined;
 			const expected = archil === undefined ? undefined : { ...archil, expected: readBackOf({ ...archil.mount, token: "" }, archil.epoch) };
-			const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none", true, want, signal, expected);
+			const inside = await this.#checkInside(opened.value, ref.name, networkOfForm(formOf(spec.network)), true, want, signal, expected);
 			if (!inside.ok) return inside;
 			notes = inside.value;
 		} finally {
@@ -878,13 +897,12 @@ export class HostedProvider implements ComputerProvider {
 		const drift = [...found.value];
 		const notes: string[] = [];
 		let user: string | undefined;
-		if (network === "none") {
-			const probe = await this.#probe(current, name, signal);
-			if (!probe.ok) return probe;
-			user = `${probe.value.uid}:${probe.value.gid}`;
-			drift.push(...probeNetworkDrift(probe.value));
-			drift.push(...runtimeDrift(want, probe.value.kernel));
-			notes.push(...probeNotes(probe.value, network));
+		if (typeof network === "string" || !("other" in network)) {
+			const read = await this.#networkDrift(current, name, network, signal);
+			if (!read.ok) return read;
+			user = `${read.value.probe.uid}:${read.value.probe.gid}`;
+			drift.push(...read.value.drift, ...runtimeDrift(want, read.value.probe.kernel));
+			notes.push(...probeNotes(read.value.probe, network));
 		}
 		// Which way init fenced its programs, as hello read it back: said once a way other than the plain one was taken.
 		if (starting && current.hello.fence === "userns-netns") {
@@ -936,10 +954,39 @@ export class HostedProvider implements ComputerProvider {
 		}
 	}
 
-	/** `computerd probe` through the daemon, so it runs as the computer's own user. */
-	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<ProbeReport>> {
+	/**
+	 * Its tools' network as they meet it, against the one create made: the probe, as the computer's own user. Under none,
+	 * no target answers. Under open or a list, still none answers directly (their own loopback alone), init's relay
+	 * answers (the one way out, to the proxy), and the proxy's policy beside its socket holds the form create asked for.
+	 */
+	async #networkDrift(connection: ComputerConnection, name: string, network: NetworkSpec, signal?: AbortSignal): Promise<Result<{ drift: string[]; probe: ProbeReport }>> {
+		if (network === "none") {
+			const probe = await this.#probe(connection, name, signal);
+			return probe.ok ? ok({ drift: probeNetworkDrift(probe.value), probe: probe.value }) : probe;
+		}
+		const probe = await this.#probe(connection, name, signal, [...this.#probeTargets, EGRESS_RELAY]);
+		if (!probe.ok) return probe;
+		const form = formOf(network);
+		const drift: string[] = [];
+		const direct = probe.value.reached.filter((target) => target !== EGRESS_RELAY);
+		if (direct.length > 0) drift.push(`network: declared ${form} through the egress proxy alone, read back a direct answer from ${direct.join(", ")}`);
+		if (!probe.value.reached.includes(EGRESS_RELAY)) drift.push(`network: declared ${form} through the egress proxy, and init's relay at ${EGRESS_RELAY} did not answer from inside`);
+		const { helloMs } = this.#timeouts;
+		const policy = await connection.client.call("files.read", { path: EGRESS_POLICY }, { signal: bounded(helloMs, signal) });
+		if (!policy.ok) {
+			if (policy.error.code === "aborted") return signal?.aborted ? this.#fail("aborted", `reading ${EGRESS_POLICY} in ${name} was aborted`) : this.#fail("timeout", `reading ${EGRESS_POLICY} in ${name} did not answer within ${seconds(helloMs)}`);
+			drift.push(`network: declared ${form}, and the egress proxy's policy ${EGRESS_POLICY} could not be read: ${policy.error.message}`);
+		} else {
+			const served = Buffer.from(policy.value.data, "base64").toString("utf8");
+			if (served !== `${form}\n`) drift.push(`network: declared ${form}, the egress proxy serves ${show(served.trim().slice(0, 300))}`);
+		}
+		return ok({ drift, probe: probe.value });
+	}
+
+	/** `computerd probe` through the daemon, so it runs as the computer's own user: to targets, the configured ones by default. */
+	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal, targets: readonly string[] = this.#probeTargets): Promise<Result<ProbeReport>> {
 		const { probeMs } = this.#timeouts;
-		const argv = [DAEMON_IN_COMPUTER, "probe", ...this.#probeTargets.flatMap((target) => ["--connect", target])];
+		const argv = [DAEMON_IN_COMPUTER, "probe", ...targets.flatMap((target) => ["--connect", target])];
 		const ran = await connection.client.call("exec.run", { argv, timeoutMs: probeMs }, { signal: bounded(probeMs + CALL_SLACK_MS, signal) });
 		if (!ran.ok) {
 			if (signal?.aborted) return this.#fail("aborted", `the probe in ${name} was aborted`);
@@ -1050,8 +1097,9 @@ export class HostedProvider implements ComputerProvider {
 		const deadline = deadlineOf(machine);
 		if (deadline === undefined) found.push(`deadline: the label ${DEADLINE_LABEL} reads ${show(machine.labels[DEADLINE_LABEL])}, not the ISO time create writes`);
 		const archil = recordedArchil(machine.labels);
-		// Its tools' network is none, read from inside (#checkInside's probe): no vendor's read of it is taken.
-		const network = "none";
+		// Its tools' network as create recorded it, read from inside (#checkInside: the probe, and the proxy's policy):
+		// no vendor's read of it is taken.
+		const network = networkOfForm(machine.labels[NETWORK_LABEL]);
 		const image = machine.labels[IMAGE_LABEL] ?? "";
 		const spec = { image, lifetimeMs: 1, network, labels: callerLabels(machine.labels) } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
@@ -1107,8 +1155,8 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * Every computer this provider made that carries all of these labels, running or stopped: the listing finds them, and
-	 * a get of each reads its state, labels and end (foundBy). Its network is none, as create made it and the probe reads
-	 * it from inside.
+	 * a get of each reads its state, labels and end (foundBy). Its network is the one its label records, as create made
+	 * it (none without one); attach and network() read it from inside.
 	 */
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const problem = filterProblem(labels);
@@ -1126,44 +1174,44 @@ export class HostedProvider implements ComputerProvider {
 				labels: { ...machine.labels },
 				deadline: deadlineOf(machine),
 				state: machine.state,
-				network: "none",
+				network: networkOfForm(machine.labels[NETWORK_LABEL]),
 				...(archil === undefined ? {} : { mount: archil.expected }),
 			});
 		}
 		return ok(infos);
 	}
 
-	/** The probe reads the policy back from inside. A change is refused: the network is fixed at create. */
+	/** The probe and the proxy's policy read the network back from inside. A change is refused: it is fixed at create. */
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = this.#refProblem(ref);
 		if (problem) return this.#fail("invalid", problem);
 		const fixed = `${a(this.#label)} computer's network is fixed at create: create a new computer`;
-		if (policy !== undefined && policy !== "none") {
-			const wider = policy === "open" || (typeof policy === "object" && policy !== null && "allow" in policy);
-			return this.#fail("refused", wider ? `${OWN_NETWORK_ONLY}; ${fixed}` : `${fixed}; a network is "none"`);
-		}
+		const refused = policy === undefined ? undefined : networkRefusal(this.#label, this.capabilities().network, policy);
+		if (refused) return this.#fail("refused", `${refused}; ${fixed}`);
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
-		let read: NetworkPolicy = "none";
-		// Its tools' none is read from inside, as the tool user, whatever the vendor's network is (an Archil computer's root
-		// reaches Archil): the daemon's own network namespace's live interfaces are lo alone, none can be raised (computerd
-		// probe), and no probe target answers.
-		if (found.value.state === "running") {
+		const recorded = networkOfForm(found.value.labels[NETWORK_LABEL]);
+		let read: NetworkPolicy = recorded;
+		// Its tools' network is read from inside, as the tool user, whatever the vendor's network is (an Archil computer's
+		// root reaches Archil, an open one's proxy the internet): the daemon's own network namespace's live interfaces are
+		// lo alone, none can be raised (computerd probe), no probe target answers directly, and an open or listed one's
+		// relay and proxy serve what its label records.
+		if (found.value.state === "running" && (typeof recorded === "string" || !("other" in recorded))) {
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			try {
-				const drift = await readOwnNetwork(opened.value.client, this.#timeouts.helloMs, bounded(this.#timeouts.helloMs, signal));
-				if (!drift.ok) return this.#fail(drift.error.code, `${ref.name}: ${drift.error.message}`);
-				if (drift.value.length > 0) read = { other: drift.value.join("; ") };
-				const probe = await this.#probe(opened.value, ref.name, signal);
-				if (!probe.ok) return probe;
-				if (probe.value.reached.length > 0) read = { other: `its tools' network was created none, yet from inside an answer came back from ${probe.value.reached.join(", ")}` };
+				const own = await readOwnNetwork(opened.value.client, this.#timeouts.helloMs, bounded(this.#timeouts.helloMs, signal));
+				if (!own.ok) return this.#fail(own.error.code, `${ref.name}: ${own.error.message}`);
+				const drift = await this.#networkDrift(opened.value, ref.name, recorded, signal);
+				if (!drift.ok) return drift;
+				const found = [...own.value, ...drift.value.drift];
+				if (found.length > 0) read = { other: `its tools' network was created ${policyWords(recorded)}, yet from inside: ${found.join("; ")}` };
 			} finally {
 				await opened.value.close();
 			}
 		}
-		if (policy === undefined || policy === read) return ok(read);
-		return this.#fail("refused", `${fixed}: ${ref.name} reads back network ${policyWords(read)}, not ${policy}`);
+		if (policy === undefined || isDeepStrictEqual(networkOfForm(formOf(policy)), read)) return ok(read);
+		return this.#fail("refused", `${fixed}: ${ref.name} reads back network ${policyWords(read)}, not ${policyWords(policy)}`);
 	}
 
 	/** One extend of a computer at a time, each reading the deadline the one before it left. */
@@ -1485,4 +1533,13 @@ function labelProblem(key: string, value: unknown): string | undefined {
 /** "a" or "an" before a vendor's name, by its first letter. */
 function a(label: string): string {
 	return `${/^[AEIOU]/i.test(label) ? "an" : "a"} ${label}`;
+}
+
+/** A spec's network as init's form (networkFormOf): "" for none, and for a network check() refuses. */
+function formOf(network: unknown): string {
+	try {
+		return networkFormOf(network as NetworkSpec);
+	} catch {
+		return "";
+	}
 }

@@ -525,7 +525,7 @@ test("a capped run cancelled while its search through Parallel is under way stil
 /** A model at $1 a million input tokens, its output free: 1,000 tokens in is $0.001. */
 const DOLLAR_MODEL = { id: "m", api: "anthropic", price: { input: 1, output: 0 }, outputCeiling: 100 };
 
-test("a Parallel search under way holds its fee on the run's ledger: a model request beside it that fits only without it is refused, and goes once the search answered and charged nothing", async (t) => {
+test("a Parallel search under way holds its fee on the run's ledger: a model request beside it that fits only without it waits, and goes once the search answered and charged nothing", async (t) => {
   // A request of 1,000 tokens in is $0.001, and a fast search is held at its $0.001: a $0.0015 cap holds one of the two,
   // never both.
   withEnv(t, { AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "422" }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
@@ -537,15 +537,18 @@ test("a Parallel search under way holds its fee on the run's ledger: a model req
   const send = async (url, init) => (arrived(), await held, fakeParallel(url, init));
   const search = bookedIn({ call: "c1", paid }, () => webSearch({ query: "widgets", n: 2 }, parallelExtract(CANARY, send)));
   await reached;
-  const beside = await paid.modelRequest(1_000);
-  assert.ok(beside && "refuse" in beside, `refused while the search is under way: ${JSON.stringify(beside)}`);
+  // It fits once the search's hold settles (the cap's wait for room): it waits for it, neither sent nor refused.
+  let answered = false;
+  const beside = paid.modelRequest(1_000).then((verdict) => ((answered = true), verdict));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(answered, false, "the model request waits while the search is under way");
   assert.ok(Math.abs(paid.heldUsd() - PARALLEL_SEARCH_USD) < 1e-12, `the search held at its fee: ${paid.heldUsd()}`);
   // Parallel refused the search (422): it charged nothing, and its hold is gone.
   release();
   assert.deepEqual(await search, { error: "Parallel's search answered 422" });
   assert.deepEqual(paidBookings(await paid.records()).map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", 0]]);
-  const admitted = await paid.modelRequest(1_000);
-  assert.ok(admitted && !("refuse" in admitted), `with the search's hold settled at $0, the request fits: ${JSON.stringify(admitted)}`);
+  const admitted = await beside;
+  assert.ok(admitted && !("refuse" in admitted), `with the search's hold settled at $0, the request that waited goes: ${JSON.stringify(admitted)}`);
 });
 
 test("a template eval's web fake: a native plane turns to the run's own web_search, a search takes the first matching answer at the call's n, and a page fails in the guarded fetch's own words", async () => {
@@ -572,4 +575,12 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   assert.equal(empty.ok, true, `a status with no body is still a page: ${JSON.stringify(empty)}`);
   const local = await fakeFetch(fixture, "http://127.0.0.1/admin");
   assert.equal(local.ok, false, "the guard's own checks run on a faked fetch too");
+});
+
+test("a template eval's faked JSON page lists the URLs its body holds, as the same body fetched live does", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://www.githubstatus.com/api/v2/incidents.json";
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: JSON.stringify({ incidents: [{ name: "Degraded Actions", shortlink: "https://stspg.io/abc" }] }) }], default: { error: "fetch failed" } } };
+  const page = await fakeFetch(fixture, url);
+  assert.deepEqual([page.ok, page.links], [true, ["https://stspg.io/abc"]], JSON.stringify(page));
 });

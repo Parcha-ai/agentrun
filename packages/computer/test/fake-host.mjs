@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { DEADLINE_LABEL } from "../dist/drift.js";
 import { HostError } from "../dist/host.js";
+import { EGRESS_POLICY as POLICY, EGRESS_RELAY as RELAY } from "../dist/hosted/network.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-archil.mjs";
 import { scriptOfWords } from "./fake-shell.mjs";
@@ -30,6 +31,9 @@ export const FAKE_DESCRIPTOR = {
 		{ kind: "desktop", groups: [...DESKTOP_GROUPS] },
 	],
 };
+
+/** The fake's descriptor declaring every network form, as the hosted vendors that run init's egress proxy do. */
+export const NETWORK_DESCRIPTOR = { ...FAKE_DESCRIPTOR, network: ["none", "open", "allow"] };
 
 /** The fake's descriptor with GPUs on its linux configuration. */
 export const gpuDescriptor = (gpu) => ({ ...FAKE_DESCRIPTOR, capabilities: [{ kind: "linux", groups: [...LINUX_GROUPS], gpu }, FAKE_DESCRIPTOR.capabilities[1]] });
@@ -90,7 +94,8 @@ const START = Date.now();
  *  - facts: over the defaults (child daemon, vendor lifetime);
  *  - descriptor: the host's, FAKE_DESCRIPTOR by default (network none, an archil mount, a linux and a desktop
  *    configuration, no GPU);
- *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
+ *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called, or throws the error
+ *    fake.release(error) is given, having made nothing), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
  *  - failed: words a new machine reads gone in, as the vendor's why, once it is done starting;
@@ -221,6 +226,12 @@ export function fakeHost({
 			const text = Object.entries(fields).map(([k, v]) => `${k}:\t${v}\n`).join("");
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 		}
+		if (method === "files.read" && params.path === POLICY) {
+			// The form init's proxy serves, as init wrote it; box.policy stands for another.
+			if (!m.init?.network) return error("not_found", `${params.path}: no such file`);
+			const text = `${m.box.policy ?? m.init.network}\n`;
+			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+		}
 		if (method === "files.read" && params.path === "/proc/self/net/dev") {
 			const text = netDevText(m.box.interfaces);
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
@@ -233,8 +244,19 @@ export function fakeHost({
 		if (method === "exec.run") {
 			const argv = params.argv;
 			if (argv[0] === DAEMON && argv[1] === "probe") {
+				// Init's egress relay answers on the loopback where init started a proxy, unless the box says it is down.
+				const relayed = m.init?.network && m.box.relay !== "down" ? [RELAY] : [];
 				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
-				const report = { uid: m.box.uid, gid: m.box.gid, kernel: m.box.kernel, interfaces: m.box.interfaces, quiet: m.box.quiet ?? [], raised: m.box.raised ?? [], reached: m.box.reached ?? [], accepted: m.box.accepted ?? targets.filter((t) => !t.endsWith("/udp") && !t.startsWith("[")) };
+				const report = {
+					uid: m.box.uid,
+					gid: m.box.gid,
+					kernel: m.box.kernel,
+					interfaces: m.box.interfaces,
+					quiet: m.box.quiet ?? [],
+					raised: m.box.raised ?? [],
+					reached: [...(m.box.reached ?? []), ...relayed.filter((t) => targets.includes(t))],
+					accepted: m.box.accepted ?? targets.filter((t) => !t.endsWith("/udp") && !t.startsWith("[") && t !== RELAY),
+				};
 				if (m.box.probe === "no-accepted") delete report.accepted;
 				return result({ exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 			}
@@ -321,14 +343,14 @@ export function fakeHost({
 	}
 
 	/** init, once the daemon is in place: what start (child) or the entrypoint (pid1) runs. */
-	function startInit(m, { deadline, user, display: shown = "", max = "" }) {
+	function startInit(m, { deadline, user, display: shown = "", max = "", network = "" }) {
 		if (initFails !== undefined || m.daemon === undefined) {
 			m.initLog = `${initFails ?? `sh: ${DAEMON}: not found`}\n`;
 			return;
 		}
 		const [uid, gid] = user.split(":").map(Number);
 		Object.assign(m.box, { uid, gid });
-		m.init = { deadline, user, display: shown, max };
+		m.init = { deadline, user, display: shown, max, network };
 	}
 
 	/** Runs one argv as the machine's root shell would. */
@@ -391,10 +413,10 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "start") {
-			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?]
-			const [, , , , , , deadline, user, , , shown = "", max = ""] = script.args;
+			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?, n?]
+			const [, , , , , , deadline, user, , , shown = "", max = "", network = ""] = script.args;
 			queueMicrotask(() => {
-				startInit(m, { deadline, user, display: shown, max });
+				startInit(m, { deadline, user, display: shown, max, network });
 				proc.exit(0);
 			});
 			return proc;
@@ -471,7 +493,13 @@ export function fakeHost({
 		if (m.pid1.gate !== undefined && !m.files.has(m.pid1.gate)) return;
 		const args = m.pid1.initArgs;
 		const flag = (name) => args[args.indexOf(name) + 1];
-		startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.pid1.display, max: args.includes("--max-deadline") ? flag("--max-deadline") : "" });
+		startInit(m, {
+			deadline: flag("--deadline"),
+			user: flag("--user"),
+			display: m.pid1.display,
+			max: args.includes("--max-deadline") ? flag("--max-deadline") : "",
+			network: args.includes("--network") ? flag("--network") : "",
+		});
 	}
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
@@ -605,9 +633,9 @@ export function fakeHost({
 
 	fake.host = host;
 	fake.add = add;
-	/** Lets every held create go on. */
-	fake.release = async () => {
-		for (const one of held.splice(0)) one.resolve();
+	/** Lets every held create go on, or, given an error, fail with it (having made nothing). */
+	fake.release = async (error) => {
+		for (const one of held.splice(0)) error === undefined ? one.resolve() : one.reject(error);
 		await new Promise((done) => setTimeout(done, 10));
 	};
 	/**

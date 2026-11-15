@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
+import "./teardown.mjs";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
 import { createDriftedProvider, createProvider, mountFor } from "../../dist/conformance/docker.js";
 
