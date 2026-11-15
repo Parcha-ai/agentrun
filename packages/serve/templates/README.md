@@ -152,10 +152,11 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   `in_reply_to`, `text`, `attachments`) plus `flags` and `references`; it is checked when the case is read. `layouts`
   (default `[folders]`) are the kinds of server each run repeats on, reported per layout: `gmail` (a folder is a label;
   filing labels a message, `archive: true` takes it out of the inbox) and `folders` (every other server; filing moves a
-  message, so `email_file` with `archive: false` is refused and nothing moves). A run starts as its trigger would, never
-  as an ordinary run with the payload pasted in: the mailboxes are seeded, the package is applied (its email trigger
-  takes its start there), `message` is delivered, and the trigger's next poll fires on it, so the run reads only that
-  message's thread. A fixture with no `message` starts the package's schedule's run instead, which reads the whole
+  message, so `email_file` with `archive: false` is refused and nothing moves). The fake runs the real email tools, so
+  filing on it is the tools' own rule. A mailbox the fixture names with no messages (`Receipts: []`) is made empty. A
+  run starts as its trigger would, never as an ordinary run with the payload pasted in: the mailboxes are seeded, the
+  package is applied (its email trigger takes its start there), `message` is delivered to the mailbox the trigger
+  watches (INBOX by default), and the trigger's next poll fires on it, so the run reads only that message's thread. A fixture with no `message` starts the package's schedule's run instead, which reads the whole
   account. `trigger` names the trigger when the package has more than one of that kind. The case's `prompt.md` holds
   `description` and `runs` alone: the run's input and cap are the trigger's. The run's clock, and the date of what it
   drafts, is the case's `now`. Its graders see each email call with its arguments (a refused one too, which still

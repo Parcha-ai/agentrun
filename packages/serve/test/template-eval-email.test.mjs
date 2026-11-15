@@ -166,7 +166,7 @@ test("on folders, email_file with archive false is refused and nothing moves; th
   assert.equal(graderOf(run, "tried.md").pass, true, graderOf(run, "tried.md").reason);
 });
 
-test("a trigger that watches a folder gets the new message there, and a folder the fixture names empty is on the account", { timeout: 600_000 }, async (t) => {
+test("a trigger that watches a folder gets the new message there, a folder the fixture names empty is on the account, and on folders email_file with no archive moves the message", { timeout: 600_000 }, async (t) => {
   const dir = await mailPackage(t, {
     reply: {
       ...REPLY_CASE,
@@ -175,10 +175,14 @@ test("a trigger that watches a folder gets the new message there, and a folder t
     },
   });
   const manifest = join(dir, "agent.md");
-  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("source: { kind: email, every_s: 60 }", "source: { kind: email, every_s: 60, mailbox: Support }"));
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("source: { kind: email, every_s: 60 }", "source: { kind: email, every_s: 60, mailbox: Support }").replace(',"archive":true', ""));
   const report = await evalTemplate({ dir, cases: ["reply"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  // The real email tools ran on the fake: on folders, filing with no archive is a move, and its answer says so.
+  const [filed] = run.calls.filter((call) => call.tool === "email_file");
+  assert.deepEqual(filed.arguments, { message_id: "<a2@example.com>", to: "Ignored" }, JSON.stringify(filed));
+  assert.match(String(filed.result), /"archived":true.*"note":"moved out of the inbox to Ignored"/, JSON.stringify(filed));
   assert.deepEqual(run.mailbox_after.moved.map(({ message_id, before, after }) => ({ message_id, before, after })), [{ message_id: "<a2@example.com>", before: "Support", after: "Ignored" }]);
   assert.equal(graderOf(run, "filed.md").pass, true, graderOf(run, "filed.md").reason);
 });
