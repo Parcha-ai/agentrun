@@ -55,3 +55,23 @@ test("the server process's env value wins over the store's by the same name; a s
   assert.equal(env.PARALLEL_API_KEY, PARALLEL_STORE_DUMMY, "a key only in the store is the store's value");
   assert.equal(env.TYPESAFE_API_KEY, undefined, "a key the run does not need is in neither");
 });
+
+test("a claim gets the server's ChatGPT sign-in only when its run can reach a plan model: its chosen model, a host default on the plan, or a tier it names", async (t) => {
+  const { planOf } = await import("../dist/chatgpt-plan.js");
+  const KEY_DUMMY = `not-a-secret-${"openai-key"}`;
+  const store = await storeWith(t, { OPENAI_API_KEY: KEY_DUMMY });
+  const credential = { type: "oauth", access: `fake-access-${"a".repeat(16)}`, refresh: `fake-refresh-${"r".repeat(16)}`, expires: Date.now() + 3_600_000, clientId: "fake-client" };
+  await putSealedKey(store, KEY, "chatgpt:plan", JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6.1-sol"] }));
+  const claim = (body, launch = {}) => claimSecrets({ store, sealKey: KEY, env: {} }, { kind: "agentic", body: { tools: [], ...body } }, launch);
+  const keyPinned = await claim({ model: "openai/gpt-6.1-sol" }, { model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+  assert.equal(planOf(keyPinned), undefined, "a run pinned to a key's model gets no plan reader");
+  assert.equal(keyPinned.OPENAI_API_KEY, KEY_DUMMY, "it gets its key");
+  const claudePinned = await claim({ harness: "claude-agent", model: "anthropic/claude-sonnet-5-5" }, { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } });
+  assert.equal(planOf(claudePinned), undefined, "nor a Claude Agent run on Anthropic");
+  const onPlan = await claim({}, { model: { provider: "chatgpt", modelId: "gpt-6.1-sol" } });
+  assert.equal(planOf(onPlan)?.state, "signed_in", "a run whose start chose a plan model gets it");
+  const unpinned = await claim({});
+  assert.equal(planOf(unpinned)?.state, "signed_in", "a run that names no model, where the plan is pi's default, gets it");
+  const tierOnPlan = await claim({ model: "openai/gpt-6.1-sol", modelTiers: { fast: "chatgpt/gpt-6.1-sol" } }, { model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+  assert.equal(planOf(tierOnPlan)?.state, "signed_in", "a run whose tier names a plan model gets it");
+});

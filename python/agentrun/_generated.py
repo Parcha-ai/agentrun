@@ -638,6 +638,7 @@ __all__ = [
     "SetCurrentBody",
     "SetCurrentResponse",
     "SignIn",
+    "SignOutChatGPTResponse",
     "SkillFileInfo",
     "SkillFiles",
     "Source",
@@ -2933,6 +2934,14 @@ class SaveComputerKeysResponseGpuPerGpu(TypedDict):
 
 class SaveComputerKeysResponsePersistent(TypedDict, total=False):
     images: list[str]
+
+
+class _SignOutChatGPTResponseRequired(TypedDict):
+    revoked: bool
+
+
+class SignOutChatGPTResponse(_SignOutChatGPTResponseRequired, total=False):
+    message: str
 
 
 class StartChatGPTSignInResponse(TypedDict):
@@ -6402,7 +6411,7 @@ OPERATIONS: dict[str, Operation] = {
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6697,7 +6706,7 @@ class LocalResource(Group):
         """Save a computer provider's keys, sealed (PUT /computers/{provider}/keys)."""
         return self._call("saveComputerKeys", (provider,), body, None, timeout=timeout)
 
-    def sign_out_chat_gpt(self, *, timeout: float | None = None) -> None:
+    def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
 

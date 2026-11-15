@@ -2041,10 +2041,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "signOutChatGPT", tags: ["local"], summary: "Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here",
-      description: "Cancels a sign-in that waits, revokes the session at OpenAI's documented revocation endpoint (one try, 5 s) and removes the sealed sign-in whatever that answered: when OpenAI did not confirm it, disconnect AgentRun in ChatGPT's settings too. A run on a plan model after it fails saying the server is not signed in. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      description: "Cancels a sign-in that waits, removes the sealed sign-in and revokes its session at OpenAI's documented revocation endpoint on auth.openai.com (one try, 5 s); the sign-in is removed whatever OpenAI answered. A renewal or a sign-in finishing meanwhile revokes the pair it got rather than keep it. `revoked` true: nothing of the sign-in is left alive at OpenAI as far as the server can tell (OpenAI confirmed the revocation, or nothing was signed in, as when only a waiting sign-in was cancelled). `revoked` false: signed out here, and `message` says \"Signed out here. OpenAI didn't confirm the revocation: remove AgentRun in your ChatGPT settings.\" A run on a plan model after it fails saying the server is not signed in. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
-      responses: { "204": { description: "Signed out." }, ...errors(401, 403, 429, 500) },
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["revoked"], properties: { revoked: { type: "boolean", description: "Whether OpenAI confirmed the revocation (true, too, when nothing was signed in)." }, message: { type: "string", description: "With `revoked` false: what to do, in words." } } }, "Signed out here."),
+        ...errors(401, 403, 429, 500),
+      },
       "x-agentrun-serve": "chatgpt/1",
     },
   },
