@@ -88,7 +88,7 @@ function sandboxes() {
       return { ok: true, value: { ...ref, spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
     },
     async release(ref) {
-      await docker.beforeRelease();
+      await docker.beforeRelease(ref);
       held.delete(ref.id);
       return { ok: true, value: undefined };
     },
@@ -229,9 +229,13 @@ test("a sandbox run parked on bash's ask and approved within 10 minutes goes on 
     const row = await run.server.runs.get(RUN);
     return row.state === "ended" && row.runner === null;
   }, "the run's row reads released");
-  assert.equal(run.docker.held.size, 1, "the row reads released with the sandbox still held");
-  assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
-  letGo();
+  // Let go whatever the checks say, so a failed one never leaves the runner's close waiting on the held release.
+  try {
+    assert.equal(run.docker.held.size, 1, "the row reads released with the sandbox still held");
+    assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
+  } finally {
+    letGo();
+  }
   await run.settled(["ended"]);
   assert.deepEqual(run.docker.made, ["c1"], "no create at the resume");
   assert.match(JSON.stringify(requests.at(-1)), /left before the park/, "the approved bash read the file on the same sandbox");
@@ -248,7 +252,23 @@ test("a sandbox run approved after 10 minutes goes on on a new sandbox: the kept
   run.docker.held.get("c1").tmp.set("outside-1", "left before the park");
   run.clock.offset = 10 * 60_000 + 1_000;
   const first = requests.length;
+  // The kept one goes at the resume, before the new one is made (releaseOlderClaims); the new one at the loop's close,
+  // after the end's commit released the run's row: that one held here while the row reads released.
+  let letGo;
+  const going = new Promise((resolve) => (letGo = resolve));
+  run.docker.beforeRelease = (ref) => (ref.id === "c2" ? going : undefined);
   await run.server.command(RUN, { kind: "approve", body: { approval: ask.callId } });
+  await until(async () => {
+    const row = await run.server.runs.get(RUN);
+    return row.state === "ended" && row.runner === null;
+  }, "the run's row reads released");
+  // Let go whatever the checks say, so a failed one never leaves the runner's close waiting on the held release.
+  try {
+    assert.deepEqual([...run.docker.held.keys()], ["c2"], "the kept one went at the resume; the new one is still held");
+    assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
+  } finally {
+    letGo();
+  }
   await run.settled(["ended"]);
   assert.deepEqual(run.docker.made, ["c1", "c2"], "a new sandbox");
   assert.doesNotMatch(JSON.stringify(requests.slice(first)), /left before the park/, "the file went with the kept one");
