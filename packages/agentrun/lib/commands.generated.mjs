@@ -1155,7 +1155,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "A replay of a learned workflow's revision: running, done or failed, its counts and its score"
+    "summary": "Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab)"
   },
   {
     "command": [

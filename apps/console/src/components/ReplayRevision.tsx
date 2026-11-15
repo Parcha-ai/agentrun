@@ -48,6 +48,8 @@ export function ReplayRevision({ v2, agentId, workflow, digest, offered, resume 
   // `resume`: the id of this revision's replay that is running (its promotion record's replay_id), so a card opened or
   // reloaded mid-replay follows it. The caller keys the card by revision: another revision starts clean.
   const [state, setState] = useState<State>(resume ? { at: "running", replay: resume, read: null } : { at: "idle" });
+  // The record can arrive after the card mounted (a reload reads revisions before promotions): an idle card follows it then.
+  useEffect(() => { if (resume) setState((s) => (s.at === "idle" ? { at: "running", replay: resume, read: null } : s)); }, [resume]);
   const decided = useRef(onDecided);
   decided.current = onDecided;
   const replay = state.at === "running" ? state.replay : null;
