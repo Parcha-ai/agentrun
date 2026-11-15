@@ -32,10 +32,6 @@ export const LABEL_MAX = 4_000;
 export const GRADE_SOURCES =["feedback", "eval"] as const;
 export type GradeSource = (typeof GRADE_SOURCES)[number];
 
-/** The most characters a grade's words (`label`) may hold, and that the compile ask shows of them (and of the graded
- *  answer). The console's RunGrade WORDS_MAX copies it: the generated types carry no maxLength. */
-export const LABEL_MAX = 4000;
-
 /** One graded run: whether its answer was right (`correct`), the answer's expected fields when the grader knows them
  *  (`expected`: a replay's answer is right when its JSON holds each of them), who said so, and, read from the run's record
  *  when it was graded, the path it took and the learned workflow and digest that served it. */
