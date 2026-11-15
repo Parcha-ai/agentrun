@@ -24,14 +24,21 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
 /** The same with no priced request yet: its typical cost the next request's expected cost (step 0). */
 const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
-/** Each note the faux harness took, with the index of the request that carried it (its first request is 0), from the run's
- *  journal in the store: the note is filed as it is admitted, before that request's own record. */
+/** What every note the model is told begins with: the row of the server's says the words after it. */
+const LABEL = "AgentRun server note: ";
+/** A note's words after its label, which it must begin with. */
+const unlabelled = (text) => {
+  assert.ok(text.startsWith(LABEL), `the note is labelled as the server's: ${text}`);
+  return text.slice(LABEL.length);
+};
+/** Each note the faux harness took (after its label), with the index of the request that carried it (its first request
+ *  is 0), from the run's journal in the store: the note is filed as it is admitted, before that request's own record. */
 const noteRequests = async (store, runId) => {
   let requests = 0;
   const out = [];
   for (const entry of await journalOf(store, runId)) {
     if (entry.kind === "faux.request") requests += 1;
-    else if (entry.kind === "faux.note") out.push([requests, entry.data.text]);
+    else if (entry.kind === "faux.note") out.push([requests, unlabelled(entry.data.text)]);
   }
   return out;
 };
@@ -41,8 +48,8 @@ const WORDS = /^AgentRun: (?:About \$\d+(?:\.\d\d)? left of this run's budget: f
 const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "phase" && WORDS.test(row.summary ?? ""));
 /** The run's journal entries, from the one store (a runner writes them as it goes: nothing to let go first). */
 const journalOf = async (store, runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
-/** The faux harness's notes taken into its requests (FAUX_RECORDS.note), from the run's journal in the store. */
-const notesOf = async (store, runId) => (await journalOf(store, runId)).filter((entry) => entry.kind === "faux.note").map((entry) => entry.data.text);
+/** The faux harness's notes taken into its requests (FAUX_RECORDS.note), after their label, from the run's journal in the store. */
+const notesOf = async (store, runId) => (await journalOf(store, runId)).filter((entry) => entry.kind === "faux.note").map((entry) => unlabelled(entry.data.text));
 /** The words inside a request's reminder (the proxy places the note in the last user text, in a <system-reminder>). */
 const reminderIn = (text) => /<system-reminder>([\s\S]*?)(?:<\/system-reminder>|$)/.exec(text)?.[1] ?? text;
 /** Until the run's runner has let it go (its claim released). */
@@ -72,8 +79,10 @@ test("pi: near its cap the model is told once, in the request it is sent, to fin
   assert.equal(rows[0].text, WRAP_UP_FIRST("$0.50"), "told at step 0, in its words");
   const seen = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((call) => call.note);
   assert.equal(seen.length, 1, "the model saw the note in one request");
-  // The proxy places the note in the request's last user text, inside its reminder: the words between the tags are the row's.
-  assert.equal(`AgentRun: ${reminderIn(seen[0].note)}`, rows[0].summary, "the words it saw are the row's");
+  // The proxy places the note in the request's last user text, inside its reminder: the words between the tags are the
+  // label, then the row's, which the row says once labelled.
+  assert.equal(`AgentRun: ${unlabelled(reminderIn(seen[0].note))}`, rows[0].summary, "the words it saw are the row's");
+  assert.ok(!rows[0].summary.includes(LABEL), "the row is labelled once");
   assert.ok(!(await journalOf(store, runId)).some((entry) => JSON.stringify(entry.model ?? []).includes("run's budget")), "no entry of pi's transcript holds it");
 });
 

@@ -31,12 +31,20 @@ export type LearnedNode = { readonly label: string; readonly kind: string; reado
 export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both" | "escalate"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean; readonly workflow?: string };
 
 /** A run's guard rows, from its root entries: every guard check of every learned_workflow call (LEARNED_NODES `guards`,
- *  never the capped trace's), in order, each with its call's workflow. What its metrics keep as `guards`. */
+ *  never the capped trace's), in order, each with its call's workflow. What its metrics keep as `guards`. A call run
+ *  again (after a park or a crash: it nests calls) keeps an entry each time; only its last counts, as it holds every check
+ *  its rerun made again. */
 export function guardsOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): GuardRow[] {
   const rows: GuardRow[] = [];
-  for (const entry of entries) {
+  const last = new Map<unknown, number>();
+  entries.forEach((entry, index) => {
+    const call = entry.kind === LEARNED_NODES ? (entry.data as { call?: unknown } | undefined)?.call : undefined;
+    if (typeof call === "string") last.set(call, index);
+  });
+  for (const [index, entry] of entries.entries()) {
     if (entry.kind !== LEARNED_NODES) continue;
-    const data = entry.data as { guards?: unknown; workflow?: unknown } | undefined;
+    const data = entry.data as { guards?: unknown; workflow?: unknown; call?: unknown } | undefined;
+    if (typeof data?.call === "string" && last.get(data.call) !== index) continue;
     if (!Array.isArray(data?.guards)) continue;
     const workflow = typeof data.workflow === "string" ? data.workflow : undefined;
     for (const row of data.guards) if (row && typeof row === "object") rows.push(workflow ? { ...(row as GuardRow), workflow } : (row as GuardRow));

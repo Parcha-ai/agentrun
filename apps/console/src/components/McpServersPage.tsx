@@ -7,11 +7,11 @@ import { Chip } from "@/components/ui/chip";
 import { Banner } from "@/components/ui/banner";
 import { Input } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
-import type { Client } from "@/lib/client";
+import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import { ownSettings, type ToolChoice } from "@/lib/toolSettings";
-import type { Permission, ToolSettings } from "@/lib/v2";
+import type { ComposioTriggers, Permission, ToolSettings } from "@/lib/v2";
 import { type ComposioTools, GITHUB_MCP_URL, type McpAdd, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, type McpSource, PREVIEW_SCOPE_NOTE, signInFailure, SOURCE_LABEL } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
@@ -177,6 +177,7 @@ function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onS
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
           {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : () => onChange()} /></ul>}
+          {s.source === "composio" && <AppTriggers v2={v2} server={s.name} writable={writable} />}
           {changes && <p className="mt-2 font-mono text-small" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
@@ -198,6 +199,74 @@ function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onS
       )}
       {problem && <div className="mt-3"><Said problem={problem} />{problem.needsClient && writable && <Button className="mt-2" size="sm" variant="primary" onClick={() => onChange(problem)}>Enter a Client ID</Button>}</div>}
     </li>
+  );
+}
+
+/** Whether Composio has a trigger's instance on, in a row's words. */
+const ON_COMPOSIO: Record<ComposioTriggers["triggers"][number]["on_composio"], string> = { on: "on at Composio", off: "off at Composio", missing: "Composio no longer has it", unknown: "Composio didn't say" };
+
+/** A saved Composio server's triggers (GET .../composio/triggers): each one that uses it, linked, with its event and
+ *  whether its instance is on at Composio; where the project's webhook subscription sends its events; and Rotate secret
+ *  (asked first), which shows no secret: Composio makes it and this server keeps it. A server too old to answer (404)
+ *  shows none of it. */
+function AppTriggers({ v2, server, writable }: { v2: Client; server: string; writable: boolean }) {
+  const [read, setRead] = useState<ComposioTriggers | null>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
+  const [hidden, setHidden] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [rotated, setRotated] = useState(false);
+  useEffect(() => {
+    let live = true;
+    v2.composioTriggers(server).then((r) => { if (live) setRead(r); }, (e) => {
+      if (!live) return;
+      if (e instanceof ClientError && e.status === 404) setHidden(true);
+      else setProblem(mcpProblem(e));
+    });
+    return () => { live = false; };
+  }, [v2, server]);
+  if (hidden) return null;
+  const rotate = async () => {
+    setAsking(false); setBusy(true); setProblem(null); setRotated(false);
+    try { await v2.rotateComposioSecret(server); setRotated(true); } catch (e) { setProblem(mcpProblem(e)); }
+    setBusy(false);
+  };
+  const sub = read?.subscription;
+  return (
+    <section data-composio-triggers aria-label={`${server}'s triggers`} className="mt-3 border p-3">
+      <p className="caps text-label text-muted-foreground">Triggers</p>
+      {!read ? (!problem && <p className="mt-1 font-mono text-small text-muted-foreground">Reading its triggers</p>) : (
+        <>
+          {read.triggers.length ? (
+            <ul className="mt-2 space-y-1">
+              {read.triggers.map((t) => (
+                <li key={t.id} data-trigger={t.id} className="flex flex-wrap items-center gap-x-2 text-body">
+                  <a href={`#/triggers/${encodeURIComponent(t.id)}`} className="font-semibold hover:underline">{t.name}</a>
+                  <span className="font-mono text-small text-muted-foreground">{t.event}</span>
+                  <span className={`font-mono text-small ${t.on_composio === "missing" ? "text-warning-text" : "text-muted-foreground"}`}>· {ON_COMPOSIO[t.on_composio]}{t.enabled ? "" : " · paused here"}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1 text-body text-muted-foreground">No trigger uses it yet. <a href="#/triggers/new-composio" className="underline underline-offset-2">New app trigger</a></p>
+          )}
+          {read.composio_error && <p className="mt-2 text-small text-warning-text">Composio didn't answer: {read.composio_error}</p>}
+          {sub && (sub.ours
+            ? <p className="mt-2 text-small text-muted-foreground">The project's webhook subscription sends its events here.</p>
+            : <p className="mt-2 break-all text-small text-muted-foreground">The project's webhook subscription sends its events to <span className="font-mono">{sub.webhook_url}</span>, not here: a new trigger asks before it moves it.</p>)}
+          {sub?.ours && writable && !asking && <Button className="mt-2" size="sm" disabled={busy} onClick={() => setAsking(true)}>Rotate secret</Button>}
+          {asking && (
+            <div role="alertdialog" aria-label="Rotate the subscription's secret?" className="mt-2 flex flex-wrap items-center gap-3 border bg-card p-3">
+              <p className="min-w-0 flex-1 text-body">Rotate the subscription's secret? Composio makes a new one and this server keeps it; a delivery signed with the old one is refused from then on.</p>
+              <Button size="sm" variant="primary" onClick={() => void rotate()}>Yes, rotate</Button>
+              <Button size="sm" onClick={() => setAsking(false)}>Keep</Button>
+            </div>
+          )}
+          {rotated && <p className="mt-2 text-small text-success-text" role="status">Rotated: Composio signs with the new secret from now on.</p>}
+        </>
+      )}
+      {problem && <div className="mt-2"><Said problem={problem} /></div>}
+    </section>
   );
 }
 

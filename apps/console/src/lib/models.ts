@@ -24,6 +24,15 @@ export function harnessFree(harness: string, harnesses: readonly HarnessInfo[] |
   return new Map((harnesses?.find((h) => h.id === harness)?.free_models ?? []).map((m) => [m.id, m]));
 }
 
+/** Said beside the spend cap for a model the cap cannot stop: a free one (`harnesses[].free_models`), each request $0 in
+ *  the catalog. The server ends such a run at its limit of these requests (capabilities' `limits.free_model_requests`),
+ *  so the cap box says it: "free model: up to 60 requests". Null for a paid model, a ChatGPT plan's (its requests don't
+ *  count), no model, or a server that names no limit. */
+export function freeRequestsNote(model: string | null | undefined, harness: string, harnesses: readonly HarnessInfo[] | undefined, limit: number | null | undefined): string | null {
+  if (!model || typeof limit !== "number" || isPlanModel(model)) return null;
+  return harnessFree(harness, harnesses).has(model) ? `free model: up to ${limit} requests` : null;
+}
+
 /** A context window as a person reads it: "1M", "262K", "8K" (binary or decimal thousands alike, rounded). */
 export function contextSize(tokens: number): string {
   if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000 * 10) / 10}M`.replace(/\.0M$/, "M");

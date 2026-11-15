@@ -7,7 +7,8 @@ import {ROOT_CONVERSATION_ID} from '@earendil-works/pi-durable';
 import {storeOn} from "./store-helpers.mjs";
 import {nativeFixture} from './native-fixtures/setup.mjs';
 import {discoverNative} from '../dist/native/discovery.js';
-import {snapshotNativeInstructions} from '../dist/native/instructions.js';
+import {snapshotNativeInstructions,withSavedNativeInstructions} from '../dist/native/instructions.js';
+import {checkedPrepared} from '../dist/native/remote.js';
 import {nativeSourceInstructions,nativeLearningLoop} from '../dist/runner/native-loop.js';
 import {learningLoopFactory} from '../dist/runner/learning-factory.js';
 import {createLearningLoop} from '../dist/runner/learning-loop.js';
@@ -220,4 +221,44 @@ test('active direct AGENTS policy refuses the durable grader before any proposal
  const result=await gradePolicy(t,{snapshot:await snapshotNativeInstructions(target),configuration:target});
  assert.equal(result.requests.length,0);assert.equal(result.view.state,'dropped');assert.equal(result.view.reason,'checker');
  assert.match(result.view.detail,/Claude.*policy/i);assert.equal(result.view.merged,undefined);
+});
+
+// The remote preparation seam must not advertise more policy coverage than its immutable evidence supplies. Reuse the
+// durable grader fixture so refusal is checked before both a new model call and a previously recorded keep verdict.
+for(const runtime of ['claude-code','codex'])for(const kind of ['complete','incomplete',...(runtime==='claude-code'?['legacy-settings','legacy-policy']:['legacy-policy'])])test(`remote ${runtime} ${kind} preparation retains policy evidence through saved instructions and durable grading`,async t=>{
+ const f=await nativeFixture(t);
+ await f.put(join(f.project,runtime==='codex'?'AGENTS.md':'CLAUDE.md'),'Preserve owner review.');
+ if(kind==='incomplete'){
+  if(runtime==='codex'){
+   await f.put(join(f.env.CODEX_HOME,'config.toml'),'model_instructions_file = "policy.md"\n');
+   await f.put(join(f.env.CODEX_HOME,'policy.md'),'Never bypass owner review.');
+  }else{
+   await f.put(join(f.project,'CLAUDE.md'),'@AGENTS.md');
+   await f.put(join(f.project,'AGENTS.md'),'Never bypass owner review.');
+  }
+ }
+ const target=(await discoverNative({project:f.project,runtime,env:f.env})).targets.find(value=>value.selector.kind==='project');
+ const captured=await snapshotNativeInstructions(target);
+ if(kind==='legacy-settings')delete captured.claudeConfigurationChecked;
+ if(kind==='legacy-policy')delete captured[runtime==='codex'?'codexConfigurationChecked':'claudePolicySourcesChecked'];
+ const before={...target,connected:true,remote:{connector_id:`rc_${'a'.repeat(32)}`,target_id:'source-project'}};
+ const prepared=checkedPrepared(before,JSON.parse(JSON.stringify({target:before,instructions:captured})));
+ const snapshot=JSON.parse(JSON.stringify(withSavedNativeInstructions(prepared.instructions,'Pinned saved policy.',text=>text)));
+ assert.equal(prepared.target.capabilities.launch,before.capabilities.launch,'policy evidence never disables ordinary source task launch');
+ assert.deepEqual(prepared.target.remote,before.remote);assert.equal(prepared.target.model,before.model);
+ assert.deepEqual(snapshot.files,captured.files);assert.ok(snapshot.text.includes(captured.text));assert.match(snapshot.text,/Pinned saved policy/);
+ for(const field of ['codexConfigurationChecked','claudeConfigurationChecked','claudePolicySourcesChecked'])assert.equal(snapshot[field],captured[field],`the remote seam must not invent or lose ${field}`);
+ if(kind==='complete'){
+  assert.equal(snapshot.incomplete,undefined);assert.equal(prepared.target.capabilities.notes,before.capabilities.notes);assert.equal(prepared.target.capabilities.skills,before.capabilities.skills);
+ }else{
+  assert.equal(prepared.target.capabilities.notes,false);assert.equal(prepared.target.capabilities.skills,false);
+  assert.ok(snapshot.incomplete);assert.ok(prepared.target.issues.some(issue=>issue.includes(snapshot.incomplete)));
+  if(kind==='incomplete')assert.equal(snapshot.incomplete,captured.incomplete,'the actual source omission reason survives preparation and JSON');
+ }
+ const cachedGrade=kind.startsWith('legacy')?{source:'source-1',usd:0.01,graded:{},verdict:{merge:true,reason:'Previously approved.',items:[{file:NOTE.file,keep:true,question:'General',why:'Keep this note.'}]}}:undefined;
+ const result=await gradePolicy(t,{snapshot,configuration:prepared.target,cachedGrade});
+ assert.equal(result.run.state,'ended');assert.equal(result.view.state,'dropped');assert.equal(result.view.merged,undefined);
+ assert.equal(result.requests.length,kind==='complete'?1:0,'only a current complete remote snapshot reaches the grader');
+ if(kind==='complete')assert.ok(result.requests[0].prompt.includes(snapshot.text));
+ else assert.equal(result.view.reason,'checker');
 });

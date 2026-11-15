@@ -104,10 +104,11 @@ export interface Admission {
   stoppedUsd(streamedTokens: number): number;
 }
 
-/** A refusal for room's figures, beside its words: what the cap counted as taken, the least the step needs, and the least
- *  cap that sends it (the figure its words name). */
+/** A refusal for room's figures, beside its words: what the run had spent (never a hold), what its steps in flight held,
+ *  the least the step needs, and the least cap that sends it (the figure its words name). */
 export interface RefusalFigures {
   readonly spentUsd: number;
+  readonly heldUsd?: number;
   readonly needsUsd: number;
   readonly leastCapUsd: number;
   /** A paid call's refusal: the call (its name, hold and basis), so a pause that lands after the refusal can say it again

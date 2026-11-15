@@ -14,7 +14,7 @@ import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDetermin
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
-import { KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
 const PKG = join(FIXTURES, "evalpkg");
@@ -205,6 +205,37 @@ test("a background shell call keeps its own name in the grading record, as the g
   assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
+test("a codemode script's call is graded as codemode on every harness, never as a computer kind's tool; a computer tool it called is graded as its kind", () => {
+  const rows = [
+    { kind: "tool_use", tool_use_id: "1", tool_name: "codemode", tool_input_preview: "return 1;" },
+    { kind: "tool_use", tool_use_id: "1/s1", tool_name: "computer_act", tool_input_preview: "{}" },
+  ];
+  for (const harness of ["pi", "claude-agent", "opencode"]) assert.deepEqual(callsOf(rows, harness).map((c) => c.tool), ["codemode", "desktop"], harness);
+});
+
+test("tool_used's at_least passes on that many matching calls or more, its args filtering first as count's do; count stays exact, and a grader gives one of the two", async (t) => {
+  const search = (query) => ({ tool: "web_search", arguments: { query }, status: "success", result: "{}" });
+  const record = { answer: "", calls: ["a", "b", "c", "d", "robots"].map(search), mcpCalls: [], files: [] };
+  const grade = (fields) => gradeDeterministic({ file: "s.md", type: "tool_used", tools: ["web_search"], expect: "called", ...fields }, record, []);
+  assert.deepEqual(grade({ atLeast: 4 }), { pass: true, reason: "5 calls of web_search; the grader expects at least 4" }, "five searches pass at least 4");
+  assert.equal(grade({ atLeast: 5 }).pass, true);
+  assert.deepEqual(grade({ atLeast: 6 }), { pass: false, reason: "5 calls of web_search; the grader expects at least 6" });
+  assert.equal(grade({ count: 4 }).pass, false, "count is still exact");
+  assert.deepEqual(grade({ atLeast: 2, args: { query: "robots" } }), { pass: false, reason: `1 call of web_search with {"query":"robots"}; the grader expects at least 2` }, "args filter the calls first");
+  // Read from a grader's front matter: at_least, a whole number of calls of 1 or more, and never beside count.
+  const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
+  const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
+  grader("most.md", "at_least: 4");
+  assert.deepEqual(readCases(dir, ["graded"]).cases[0].graders.find((g) => g.file === "most.md"), { file: "most.md", type: "tool_used", tools: ["web_search"], expect: "called", atLeast: 4 });
+  grader("both.md", "count: 4\nat_least: 4");
+  grader("zero.md", "at_least: 0");
+  grader("none.md", "expect: not_called\nat_least: 2");
+  assert.throws(() => readCases(dir, ["graded"]), (e) => {
+    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a least one: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
+    return true;
+  });
+});
+
 /** A copy of the fixture package whose agent is also granted `grants` (monid endpoints), with one case `monid` whose
  *  agent calls monid's /person/enrich by its wire name and whose graders are `graders` ({file: front matter}). */
 async function monidPackage(t, grants, graders) {
@@ -254,6 +285,36 @@ test("a tool_used grader naming a monid endpoint the package does not grant by n
   assert.match(said, /graders\/star\.md: monid:apollo\/\* is not a monid endpoint the package grants by name/);
 });
 
+test("a monid: unavailable case's monid call answers as monid unreachable does, unsent and uncharged, and no run of it reaches monid", { timeout: 300_000 }, async (t) => {
+  withEnv(t, { MONID_API_KEY: FAUX_MONID_KEY });
+  const dir = await monidPackage(t, ["monid:faux/person/enrich"], { "enriched.md": "type: tool_used\ntool: monid:faux/person/enrich\ncount: 1" });
+  writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
+  const before = fauxMonidCalls.length;
+  const report = await evalTemplate({ dir, cases: ["monid"], serve: { faux: FAUX, fauxMonid: FAUX_MONID } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  // monid-run.ts' own words for a call whose price can't be read because monid can't be reached (monid.ts failure).
+  const words = "monid:faux/person/enrich was not sent: monid's price for it could not be read before the call (monid could not be reached: fetch failed).";
+  assert.deepEqual(run.calls.map((call) => [call.tool, JSON.parse(call.result.split("\n")[0])]), [["monid:faux/person/enrich", { error: words }]], JSON.stringify(run.calls));
+  assert.equal(graderOf(run, "enriched.md").reason, "1 call of monid:faux/person/enrich; the grader expects exactly 1", "tool_used counts the call under its monid name");
+  // The save still reads monid's listing to pin the endpoint (free); the call itself sends nothing.
+  const sent = fauxMonidCalls.slice(before).map((call) => `${call.method} ${call.path}`);
+  assert.ok(!sent.some((line) => line === "POST /v1/run"), `no run reached monid: ${sent.join(", ")}`);
+});
+
+test("a monid: case checks: unavailable only, on a package that grants a monid endpoint, and only on the eval's own server", async (t) => {
+  const said = { "said.md": "type: regex\npattern: monid" };
+  const dir = await monidPackage(t, ["monid:faux/person/enrich"], said);
+  writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
+  assert.deepEqual(caseProblems(dir), [], "unavailable on a package that grants an endpoint reads");
+  await assert.rejects(evalTemplate({ dir, cases: ["monid"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/monid: monid fakes the package's monid endpoints on the eval's own server alone: run it without --server/.test(e.message));
+  writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: down\n");
+  assert.match(caseProblems(dir).join("\n"), /evals\/monid\/case\.yaml: monid is unavailable \(not "down"\)/);
+  const bare = await monidPackage(t, ["web_search"], said);
+  writeFileSync(join(bare, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
+  assert.match(caseProblems(bare).join("\n"), /evals\/monid\/case\.yaml: monid fakes the package's monid endpoints, and it grants none/);
+});
+
 test("an llm grader sees each call's whole arguments, a web_fetch's URL with its query, and never a secret one carried", { timeout: 300_000 }, async (t) => {
   // A secret-shaped header and github token (an sk- key, a GitHub token): the run's own redaction takes them out of what is
   // served, so neither the grader's prompt nor the report holds them. The URL's query is no secret, and is shown whole.
@@ -291,6 +352,104 @@ test("an llm grader sees each call's whole arguments, a web_fetch's URL with its
   assert.deepEqual(fetched?.arguments, { url, headers: { Authorization: "Bearer [redacted]" }, github: "[redacted]" }, JSON.stringify(run.calls));
 });
 
+/** The fixture package copied with web_search and web_fetch granted, and one case `name` whose case.yaml says `web` and
+ *  whose prompt makes `calls` ([tool, args]) in order, then answers. `files`: more files in the case, by path. */
+async function webPackage(t, name, web, calls, files = {}) {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const manifest = readFileSync(join(dir, "agent.md"), "utf8");
+  writeFileSync(join(dir, "agent.md"), manifest.replace("tools: [read, write, ask_person]", "tools: [read, write, ask_person, web_search, web_fetch]"));
+  const at = join(dir, "evals", name);
+  mkdirSync(join(at, "graders"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), `parameters:\n  team: blue\nweb: ${web}\n`);
+  const lines = calls.map(([tool, args]) => `Call ${tool} with ${JSON.stringify(args)}`).join("\n");
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: Searches and reads the web.\n---\n${lines}\nAnswer:\nWEB done\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "web"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "searched.md"), `---\ntype: tool_used\ntool: web_search\ncount: ${calls.filter(([tool]) => tool === "web_search").length}\n---\n`);
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(at, path)), { recursive: true });
+    writeFileSync(join(at, path), text);
+  }
+  return dir;
+}
+/** A call's result as the model read it: its JSON line. */
+const resultOf = (call) => JSON.parse(call.result.split("\n")[0]);
+
+test("a web: unavailable case's run gets the real failed-search words on every web_search, a failed page on every web_fetch, and never the network", { timeout: 300_000 }, async (t) => {
+  const { RATE_LIMITED } = await import("../dist/exa-keyless.js");
+  const dir = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "industrial robotics deals this week" }], ["web_search", { query: "robotics funding" }], ["web_fetch", { url: "https://deals.example.test/week" }]]);
+  const report = await evalTemplate({ dir, cases: ["search-failed"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  const searches = run.calls.filter((call) => call.tool === "web_search");
+  assert.equal(searches.length, 2, JSON.stringify(run.calls));
+  for (const search of searches) assert.deepEqual(resultOf(search), { error: RATE_LIMITED }, search.result);
+  const [fetched] = run.calls.filter((call) => call.tool === "web_fetch");
+  assert.equal(resultOf(fetched).ok, false, fetched.result);
+  assert.equal(resultOf(fetched).url, "https://deals.example.test/week");
+  assert.equal(resultOf(fetched).error, "fetch failed", fetched.result);
+  // The calls count as any call does.
+  assert.equal(graderOf(run, "searched.md").pass, true, graderOf(run, "searched.md").reason);
+});
+
+test("a web: fixture answers a matching query and a fetched URL from the case, and a query or URL it does not match gets its default", { timeout: 300_000 }, async (t) => {
+  const hit = { url: "https://news.example.test/robot-deal", title: "Acme raises $40M", snippet: "Acme raised $40M for warehouse robots.", published: "2026-11-12" };
+  const fixture = {
+    search: { answers: [{ query: "robot", results: [hit] }, { query: "^outage", error: "Parallel's search answered 503" }], default: { results: [] } },
+    fetch: { answers: [{ url: hit.url, title: "Acme raises $40M", text: "Acme raised $40M for warehouse robots on 12 November." }, { url: "https://news.example.test/gone", status: 404, text: "" }], default: { error: "fetch failed" } },
+  };
+  const dir = await webPackage(t, "web-fixture", "fixtures/web.json", [
+    ["web_search", { query: "Robot funding rounds" }],
+    ["web_search", { query: "outage at the exchange" }],
+    ["web_search", { query: "weather in Lisbon" }],
+    ["web_fetch", { url: hit.url }],
+    ["web_fetch", { url: "https://news.example.test/gone" }],
+    ["web_fetch", { url: "https://elsewhere.example.test/" }],
+  ], { "fixtures/web.json": JSON.stringify(fixture) });
+  const report = await evalTemplate({ dir, cases: ["web-fixture"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  const [robot, outage, weather] = run.calls.filter((call) => call.tool === "web_search").map(resultOf);
+  assert.deepEqual({ ...robot, provider: undefined }, { provider: undefined, query: "Robot funding rounds", results: [hit] });
+  assert.ok(["native", "exa-keyless", "parallel"].includes(robot.provider), robot.provider);
+  assert.deepEqual(outage, { error: "Parallel's search answered 503" });
+  assert.deepEqual({ ...weather, provider: undefined }, { provider: undefined, query: "weather in Lisbon", results: [] });
+  const [page, gone, elsewhere] = run.calls.filter((call) => call.tool === "web_fetch").map(resultOf);
+  assert.equal(page.ok, true, JSON.stringify(page));
+  assert.equal(page.title, "Acme raises $40M");
+  assert.equal(page.text, "Acme raised $40M for warehouse robots on 12 November.");
+  assert.deepEqual([gone.ok, gone.status, gone.error], [false, 404, "the page answered 404"]);
+  assert.deepEqual([elsewhere.ok, elsewhere.error], [false, "fetch failed"]);
+  assert.equal(graderOf(run, "searched.md").pass, true, graderOf(run, "searched.md").reason);
+});
+
+test("a web: case checks: unavailable or a fixture file of the case whose answers are whole, and only on the eval's own server", async (t) => {
+  const dir = await webPackage(t, "web-bad", "fixtures/web.json", [["web_search", { query: "x" }]], { "fixtures/web.json": JSON.stringify({ search: { answers: [{ query: "(unclosed", results: [] }, { results: [] }], default: { results: [] } }, fetch: { answers: [{ url: "https://a.example.test/" }], default: { error: "x" } } }) });
+  const problems = (() => {
+    try {
+      readCases(dir, ["web-bad"]);
+    } catch (thrown) {
+      if (thrown instanceof CaseError) return thrown.problems.join("\n");
+      throw thrown;
+    }
+    return "";
+  })();
+  assert.match(problems, /web-bad\/fixtures\/web\.json: search\.answers\.0\.query does not compile as a regular expression/);
+  assert.match(problems, /web-bad\/fixtures\/web\.json: search\.answers\.1 is \{query, results\} or \{query, error\}/);
+  assert.match(problems, /web-bad\/fixtures\/web\.json: fetch\.answers\.0 is \{url, status\?, title\?, text\} or \{url, error\}/);
+  const missing = await webPackage(t, "web-missing", "fixtures/none.json", [["web_search", { query: "x" }]]);
+  assert.throws(() => readCases(missing, ["web-missing"]), (e) => e instanceof CaseError && /web-missing\/case\.yaml: web is unavailable, or a fixture file in the case \(not "fixtures\/none\.json"\)/.test(e.message));
+  // A package with no web tool, its tools named without one or not named at all (its computer's shell tools, or none).
+  for (const tools of ["tools: [read, write, ask_person]\n", ""]) {
+    const bare = await webPackage(t, "web-bare", "unavailable", [["web_search", { query: "x" }]]);
+    const manifest = readFileSync(join(bare, "agent.md"), "utf8");
+    writeFileSync(join(bare, "agent.md"), manifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", tools));
+    assert.notEqual(readFileSync(join(bare, "agent.md"), "utf8"), manifest);
+    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search and web_fetch, and the package's tools name neither/.test(e.message), JSON.stringify(tools));
+  }
+  const named = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "x" }]]);
+  await assert.rejects(evalTemplate({ dir: named, cases: ["search-failed"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/search-failed: web fakes the web tools on the eval's own server alone: run it without --server/.test(e.message));
+});
+
 test("a grader's prompt stays under its cap: the longest results lose their middle first, then the middle calls, and the list says so", () => {
   const grader = { file: "g.md", type: "llm", rubric: "Pass if it fetched the page." };
   const call = (i, result) => ({ tool: "web_fetch", arguments: { url: `https://example.test/${i}` }, status: "success", result });
@@ -322,9 +481,84 @@ test("a grader's prompt stays under its cap: the longest results lose their midd
   assert.ok(graderInput(grader, "task", faked).includes(`1. mcp__crm__lookup: ${JSON.stringify(mcp(1).arguments)}`));
 });
 
+test("a grader's prompt cut for room keeps every url a web call answered: snippets and page text give way first, url lists last, and the list says so", () => {
+  const grader = { file: "g.md", type: "llm", rubric: "Pass only if every item it reports has a link that appears in its search or fetch results." };
+  const hits = (q) => Array.from({ length: 10 }, (_, i) => ({ url: `https://vendor.example/${q}/story-${i + 1}`, title: `Story ${i + 1}`, snippet: `Story ${i + 1}: ${"the team closed its books faster ".repeat(94)}`, published: "2026-11-01" }));
+  const search = (q) => ({ tool: "web_search", name: "web_search", arguments: { query: q }, status: "success", result: `${JSON.stringify({ provider: "parallel", query: q, results: hits(q) })}\nCite the URL of each result you rely on.` });
+  const page = { ok: true, url: "https://vendor.example/blog/switched", status: 200, title: "Customers who switched", text: "Each team moved its cards over in a week. ".repeat(180), links: [] };
+  const fetch = { tool: "web_fetch", name: "web_fetch", arguments: { url: page.url }, status: "success", result: JSON.stringify(page) };
+  const bash = { tool: "bash", name: "bash", arguments: { command: "cat notes.md" }, status: "success", result: `HEAD-${"a".repeat(6000)}-TAIL` };
+  const run = { answer: "Story 9: https://vendor.example/a/story-9", calls: [search("a"), search("b"), fetch, bash], mcpCalls: [], files: [] };
+  const prompt = graderInput(grader, "task", run, 20_000);
+  assert.ok(prompt.length <= 20_000, String(prompt.length));
+  const calls = prompt.slice(prompt.indexOf("<tool-calls untrusted>"));
+  assert.match(calls, /^<tool-calls untrusted>\n\(Cut to keep this prompt under its cap: each long result keeps its head and tail, its middle cut where marked; a web_search keeps every result's url, title and date, and a web_fetch its url and title, their snippets and page text cut\.\)\n/);
+  for (const q of ["a", "b"]) for (let i = 1; i <= 10; i++) assert.ok(calls.includes(`"url":"https://vendor.example/${q}/story-${i}","title":"Story ${i}"`), `${q} ${i}`);
+  assert.ok(calls.includes(`"url":"${page.url}","status":200,"title":"${page.title}"`));
+  assert.match(calls, /4\. bash \{"command":"cat notes\.md"\} -> success: HEAD-a+ \[\.\.\. \d+ characters cut \.\.\.\] a+-TAIL/);
+  // Room for the url lists alone: every other result is left out, every url still shown, and the list says so.
+  const tight = graderInput(grader, "task", run, 3_500);
+  assert.ok(tight.length <= 3_500, String(tight.length));
+  for (const q of ["a", "b"]) for (let i = 1; i <= 10; i++) assert.ok(tight.includes(`https://vendor.example/${q}/story-${i}"`), `${q} ${i}`);
+  assert.ok(tight.includes(`"url":"${page.url}","status":200,"title":"${page.title}"`));
+  // So many searches that their url lists alone pass the room: those lose their middle, said on the list's first line.
+  const crowded = graderInput(grader, "task", { ...run, calls: Array.from({ length: 12 }, (_, i) => search(`q${i}`)) }, 6_000);
+  assert.ok(crowded.length <= 6_000, String(crowded.length));
+  assert.match(crowded, /<tool-calls untrusted>\n\(Cut to keep this prompt under its cap: the web calls' url lists alone pass it, so every other result is left out, and each url list keeps its head and tail, its middle cut where marked\.\)\n1\. web_search/);
+  assert.match(crowded, /\n12\. web_search \{"query":"q11"\} -> success: \{"provider":"parallel","query":"q11","results":\[\{"url":"https:\/\/vendor\.example\/q11\/story-1",[^\n]* \[\.\.\. \d+ characters cut \.\.\.\] [^\n]*\nCite the URL of each result you rely on\.\n<\/tool-calls>/);
+});
+
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
   const of = (...passes) => exitCodeOf({ cases: passes.map((pass, i) => ({ name: `c${i}`, pass })) });
   assert.deepEqual([of(true), of(true, true), of(false), of(true, false), of(false, true, true)], [0, 0, 1, 1, 1]);
+});
+
+/** A copy of the fixture package with a case `clock` whose agent answers the day its environment line names, graded by
+ *  a regex and an llm grader; its case.yaml carries `now` when given. */
+async function clockPackage(t, now, today, mark = "CLOCK-CASE") {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = join(dir, "evals", "clock");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), `parameters:\n  team: blue\n${now === undefined ? "" : `now: ${now}\n`}`);
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: The run is told the day.\n---\nAnswer:\nToday: {{today}} (${mark})\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "clock"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "day.md"), `---\ntype: regex\npattern: "Today: ${today}"\n---\n`);
+  writeFileSync(join(at, "graders", "judged.md"), `---\ntype: llm\n---\nPass if the answer contains "${mark}".\n`);
+  return dir;
+}
+
+test("a case's now is its runs' clock: the environment line names its day, and its llm graders are told it", { timeout: 300_000 }, async (t) => {
+  const report = await evalTemplate({ dir: await clockPackage(t, "2026-11-14T09:00:00Z", "2026-11-14"), cases: ["clock"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.match(run.answer, /^Today: 2026-11-14 \(CLOCK-CASE\)/, "the environment line says the case's day");
+  assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
+  const graded = graderInputs().filter((input) => input.includes("CLOCK-CASE"));
+  assert.equal(graded.length, 1);
+  assert.match(graded[0], /^The run ran on a clock set to 2026-11-14T09:00:00Z: its date was 2026-11-14 \(UTC\), whatever today's date is where you are\.$/m);
+});
+
+test("a case without now runs on the real clock, and its graders are told no clock", { timeout: 300_000 }, async (t) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const report = await evalTemplate({ dir: await clockPackage(t, undefined, today, "REAL-CLOCK"), cases: ["clock"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  // A run that crossed midnight UTC says the next day.
+  assert.ok([today, new Date().toISOString().slice(0, 10)].some((day) => run.answer.startsWith(`Today: ${day} `)), run.answer);
+  const graded = graderInputs().filter((input) => input.includes("REAL-CLOCK"));
+  assert.equal(graded.length, 1);
+  assert.doesNotMatch(graded[0], /clock set to/);
+});
+
+test("readCases refuses a now that is not a date and time with its offset, and a now case refuses a named server", async (t) => {
+  for (const bad of ["2026-11-14", "2026-11-14T09:00:00", "2026-02-30T09:00:00Z", "tomorrow", "2026-11-14T25:00:00Z"]) {
+    const dir = await clockPackage(t, bad, "x");
+    assert.throws(() => readCases(dir, ["clock"]), (thrown) => thrown instanceof CaseError && thrown.problems.includes(`evals/clock/case.yaml: now is a date and time with its offset (2026-11-14T09:00:00Z), not ${JSON.stringify(bad)}`), bad);
+  }
+  const dir = await clockPackage(t, "2026-11-14T09:00:00+02:00", "x");
+  assert.equal(readCases(dir, ["clock"]).cases[0].now, "2026-11-14T09:00:00+02:00");
+  // Only the eval's own server sets a run's clock: a named one would run the case on its own, and is refused unreached.
+  await assert.rejects(evalTemplate({ dir, cases: ["clock"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/clock: now sets its runs' clock on the eval's own server alone: run it without --server"));
 });
 
 test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {

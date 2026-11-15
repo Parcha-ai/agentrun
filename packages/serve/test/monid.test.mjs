@@ -193,6 +193,27 @@ test("under a cap, a pinned endpoint is refused before it is sent unless the run
   assert.equal(said(await run(await toolLedger(undefined))).status, "COMPLETED", "with no cap, it runs");
 });
 
+test("a template eval's monid unavailable: every endpoint, fixed-price or priced by usage, answers as monid unreachable does, sends nothing, and holds or books nothing", async (t) => {
+  const work = await scratch(t);
+  // The faux and its key are there: the fake must answer in their place, never reach them.
+  const env = { [FAUX_ENV]: "1", [FAUX_MONID_ENV]: FAUX_MONID, [MONID_KEY_ENV]: KEY };
+  const pin = {
+    "monid:faux/person/lookup": { description: "Look a person up.", input: { type: "object" }, usd: 1 },
+    "monid:faux/person/search": { description: "Search people.", input: { type: "object" }, usd: null },
+  };
+  const tools = monidForClaim(pin, env, () => localWorkspace(work), "run-1", () => true, "unavailable").tools;
+  const from = calls.length;
+  const ledger = await toolLedger(5);
+  for (const [i, tool] of tools.entries()) {
+    const callId = `c${i}`;
+    const answer = await bookedIn({ call: callId, paid: ledger }, () => tool.call({ body: { name: "Ada" } }, { callId, signal: new AbortController().signal, attempt: 0 }));
+    const name = Object.keys(pin)[i];
+    assert.deepEqual([answer.isError, JSON.parse(answer.text)], [true, { error: `${name} was not sent: monid's price for it could not be read before the call (monid could not be reached: fetch failed).` }]);
+  }
+  assert.deepEqual(calls.slice(from), [], "nothing reached monid");
+  assert.deepEqual([ledger.spentUsd(), ledger.heldUsd()], [0, 0], "nothing held or booked");
+});
+
 test("/usage by meter during a monid run in flight: tokens are the run's model cost, and no tool charge is reported until the call settles", { timeout: 90_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });

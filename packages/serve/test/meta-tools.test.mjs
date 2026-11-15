@@ -82,6 +82,34 @@ test("a codemode script sees the run's tools and nothing else of the run: no pro
   assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "undefined", "undefined", "function", false], answer.text);
 });
 
+test("a script tests for a tool with typeof: a name the run has no tool by reads \"undefined\"", async () => {
+  const nested = { call: async () => ({ text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "return [typeof tools.missing, typeof tools['no-such-tool'], typeof tools?.missing, typeof tools.write_file, `${typeof tools.missing}`, 'typeof tools.missing', typeof tools.missing === 'undefined' ? 'absent' : 'there', 'missing' in tools, 'write_file' in tools];";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "function", "undefined", "typeof tools.missing", "absent", false, true], answer.text);
+  // Nothing around the script can be shadowed by it: its own `Object`, `Proxy` or `undefined` change no answer.
+  const shadowed = await codemode.call({ script: "const Object = {};\nlet Proxy, Reflect;\nlet undefined = 'set';\nreturn [typeof tools.write_file, typeof tools.missing];" }, { signal: new AbortController().signal, nested });
+  assert.equal(shadowed.isError, undefined, shadowed.text);
+  assert.deepEqual(shadowed.structured, ["function", "undefined"], shadowed.text);
+});
+
+test("calling a tool the run doesn't have fails with an error that names it and lists the run's tools; nothing is called", async () => {
+  const calls = [];
+  const nested = { call: async (name) => (calls.push(name), { text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  for (const called of ["return await tools.missing({});", "const one = tools.missing;\nreturn await one({});", "if (typeof tools.missing !== 'function') throw new Error('no missing tool');"]) {
+    const refused = await codemode.call({ script: called }, { signal: new AbortController().signal, nested });
+    assert.equal(refused.isError, true, refused.text);
+    assert.match(refused.text, /The script read tools\.missing, which this run doesn't have\. Its tools are: write_file, web_search, send_email, read_file\./, called);
+  }
+  assert.deepEqual(calls, [], "nothing was called");
+  // A failure that is no TypeError and names no name it read keeps its own words alone.
+  const other = await codemode.call({ script: "typeof tools.missing;\nthrow new Error('out of paper');" }, { signal: new AbortController().signal, nested });
+  assert.match(other.text, /The script failed: out of paper$/, other.text);
+});
+
 test("a script reads a nested call's value: its structured value, else its one text part parsed when that is a JSON object or array, else its text", async () => {
   // As Composio answers through MCP: one text part holding a JSON object.
   const answers = {
@@ -99,6 +127,62 @@ test("a script reads a nested call's value: its structured value, else its one t
   const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
   const direct = await call.call({ name: "write_file", args: {} }, { signal: new AbortController().signal, nested });
   assert.equal(direct.text, answers.write_file.text, "the text the model reads is the call's text, unchanged");
+});
+
+test("a script stopped by a parked call lists each earlier call's result as the script read it: unescaped JSON where it parsed, a quoted string where not", async () => {
+  // The run again after the person's answer (its start's memo is the first run's): the recorded calls answer from their
+  // records, and the first call that runs now (send_email) ends the script with every call before it listed.
+  const answers = {
+    write_file: { text: JSON.stringify({ default_branch: "main", stars: 0 }) },
+    web_search: { text: "plain words" },
+    read_file: { text: "sent", structured: { id: "m-1" } },
+  };
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { ...answers[name], fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "const r = await tools.write_file({});\nawait tools.web_search({});\nawait tools.read_file({});\nawait tools.send_email({});\nreturn r.stars;";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.match(answer.text, /^The script was stopped/, answer.text);
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.deepEqual(lines, [
+    `1. write_file completed: {"default_branch":"main","stars":0}. Its effect is done; it was not run again.`,
+    `2. web_search completed: "plain words". Its effect is done; it was not run again.`,
+    `3. read_file completed: {"id":"m-1"}. Its effect is done; it was not run again.`,
+    `4. send_email completed: "mailed". Its effect is done; it was not run again.`,
+  ], answer.text);
+});
+
+test("a stopped script lists a call's string value as the script read it: its structured string, never its fuller text", async () => {
+  // A nested call that showed text('note') and returned 'saved': text "note\nsaved", value "saved".
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { text: "note\nsaved", structured: "saved", fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const answer = await codemode.call({ script: "const said = await tools.write_file({});\nawait tools.send_email({});\nreturn said;" }, { signal: new AbortController().signal, nested });
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(lines[0], `1. write_file completed: "saved". Its effect is done; it was not run again.`, answer.text);
+});
+
+test("a script reads a nested call's image with its pixels: image(...) shows it, a returned one is the answer's image, and no text carries its data", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  // As a computer tool answers a screenshot: its value with the image's data left out, the data in its images.
+  const shot = { text: "A screenshot, 1280x800.", images: [{ data: PNG, mimeType: "image/png" }], structured: { type: "image", mimeType: "image/png", width: 1280, height: 800 } };
+  const nested = { call: async () => ({ ...shot, fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const run = (script) => codemode.call({ script }, { signal: new AbortController().signal, nested });
+  const shown = await run("const shot = await tools.web_search({});\nimage(shot);\nreturn { width: shot.width, data: typeof shot.data };");
+  assert.equal(shown.isError, undefined, shown.text);
+  assert.deepEqual(shown.structured, { width: 1280, data: "string" }, shown.text);
+  assert.deepEqual(shown.images, [{ data: PNG, mimeType: "image/png" }], "image(shot) shows the screenshot's pixels");
+  const returned = await run("return await tools.web_search({});");
+  assert.deepEqual(returned.images, [{ data: PNG, mimeType: "image/png" }], "a returned screenshot is the answer's image");
+  assert.deepEqual(returned.structured, shot.structured, "the value keeps its image's place, without its data");
+  for (const answer of [shown, returned]) assert.ok(!answer.text.includes(PNG), `no text carries the image's data: ${answer.text}`);
+  // Stopped after it, the screenshot's line names the image, never its data.
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const again = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { ...shot, fresh: false }), memo: async () => first };
+  const stopped = await codemode.call({ script: "await tools.web_search({});\nawait tools.send_email({});" }, { signal: new AbortController().signal, nested: again });
+  assert.match(stopped.text, /1\. web_search completed: \{"type":"image","mimeType":"image\/png","width":1280,"height":800\}\./, stopped.text);
+  assert.ok(!stopped.text.includes(PNG), stopped.text);
 });
 
 /** A pi run of `script` over the suite's tools, its gate `gate(call)`: what each suite tool ran, and the last tool result. */
@@ -425,7 +509,7 @@ test("codemode, tools_search and tools_call each have a setting: allow unless an
   assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_CALL))).offered, all);
 });
 
-test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words; pi's computer codemode stays the kind's", async () => {
+test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words", async () => {
   const gate = (settings, where) => runnerGate({ settings, harness: "pi", ...where });
   for (const name of [CODEMODE, TOOLS_SEARCH, TOOLS_CALL]) {
     assert.equal(await verdictOf(gate({}), name), "allow", `${name}: allow by default`);

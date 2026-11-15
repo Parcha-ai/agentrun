@@ -56,7 +56,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; install?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { section: Section; template?: string; install?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -83,6 +83,7 @@ export function route(h: string = location.hash): Where {
   if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
   if (h === "#/triggers/new-webhook") return { section: "triggers", trigger: null, kind: "webhook" };
   if (h === "#/triggers/new-github") return { section: "triggers", trigger: null, kind: "github" };
+  if (h === "#/triggers/new-composio") return { section: "triggers", trigger: null, kind: "composio" };
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
@@ -422,7 +423,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const keyCardSavesModel = caps?.models.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
     && !!caps.features?.tool_keys?.routes;
   // The server lists its tools as objects (name, available, missing).
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [] };
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], ...(typeof caps?.limits?.free_model_requests === "number" ? { freeRequests: caps.limits.free_model_requests } : {}) };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
   // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings.

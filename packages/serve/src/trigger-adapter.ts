@@ -7,6 +7,13 @@ import type { SettingsSpec } from "./sealed-settings-store.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
+/** Whether a run `adapter`'s firing starts is handed its trigger's last completed result: the one place it is decided
+ *  (its previousResult, by default true). */
+export const carriesPrevious = (adapter: Pick<TriggerAdapter, "previousResult">): boolean => adapter.previousResult ?? true;
+
+/** The most of a firing's payload passed on, in bytes of UTF-8 (triggers.ts cuts past it, at a character's start). A
+ *  source that answers JSON fits its payload within it first (trigger-email.ts), so its JSON is never cut. */
+export const PAYLOAD_KEPT_BYTES = 16 * 1024;
 /** A source as the store keeps it: its kind, the adapter's id, and the adapter's own fields. */
 export type Source = { kind: string } & Json;
 
@@ -28,6 +35,10 @@ export type TriggerAdapter = {
   /** `clock`: it fires on its own times, read by the engine's timer (a source that polls, on each). `push`: a request delivered to the server fires it,
    *  keyed by the sender's own id, which a retry repeats. */
   delivery: "clock" | "push";
+  /** Whether a run it starts is handed its trigger's last completed result (trigger-targets.ts previousResultOf). Default
+   *  true: a repeat run (a schedule's weekly digest) leaves out what the last one reported. false: each firing is a
+   *  different person's (an email's sender), so one run's answer is never handed to the next. */
+  previousResult?: boolean;
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
    *  it up; never for words that come from outside. */
   owner: boolean;
@@ -63,6 +74,9 @@ export type TriggerAdapter = {
   /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
    *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
   push?: Push;
+  /** For a pushed source whose hook is not the one its settings' scope gives (a source that keeps a key per scope, served
+   *  at /v2/hooks/{its id}/{scope}): the path under /v2/hooks/ a trigger of `source` is delivered at, its `hook_url`. */
+  hookOf?(source: Source): string;
   /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
    *  `scope` to find the triggers it fires. */
   scopeOf?(source: Source): string;
@@ -123,6 +137,10 @@ export type Push = {
   maxBodyBytes: number;
   /** The settings field it checks a request with. */
   key: string;
+  /** For a source whose settings are the server's: it keeps its key per scope (a Composio project's subscription, by its
+   *  hook), and is served at /v2/hooks/{its id}/{scope} alone, each request checked with that scope's key; its events'
+   *  `scope` is that scope, for its takes. */
+  scoped?: true;
   /** Why the headers alone are refused, before a byte of the body is read. */
   headers?(headers: Headers, nowMs: number): string | undefined;
   /** Why the request is not the sender's under `key`, or undefined when it is (and fits `source`, when given). */

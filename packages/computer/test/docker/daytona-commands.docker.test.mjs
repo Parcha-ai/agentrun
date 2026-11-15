@@ -10,6 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DaemonClient } from "../../dist/index.js";
 import { childCommands } from "../../dist/hosted/scripts.js";
 

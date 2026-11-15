@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
+import "./teardown.mjs";
 import { conformanceCases, ensureImage, formatReport, runConformance } from "../../dist/index.js";
 import { createDriftedProvider, createProvider } from "../../dist/conformance/docker.js";
 

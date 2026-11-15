@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, call, clientOwnerSession, follow, serve } from "./support.mjs";
-import { fakeClock, firings, made } from "./trigger-support.mjs";
+import { fakeClock, firings, keyOf, made } from "./trigger-support.mjs";
 import { ADDRESS, checked, emailTrigger, FAUX_EMAIL, launchText, mailbox, saved, sawOf } from "./email-support.mjs";
 
 const TOOLS = ["email_search", "email_read", "email_draft", "email_send"];
@@ -250,4 +250,95 @@ test("a tool's error that echoes the password shows it nowhere: the server cuts 
   assert.match(view.result.final_answer, /^Saw: .*no mailbox named .*\[redacted\]/, "the tool's error reached the model, the password in it cut where it is shown");
   assert.ok(rows.includes("[redacted]"), "the tool's row is cut too");
   for (const [where, text] of [["the run's view", JSON.stringify(view)], ["its timeline", rows], ["the runs list", list]]) assert.ok(!text.includes(faux.password), `${where} shows the password`);
+});
+
+test("email_send to a recipient the mail server refuses: the others get it, and the answer names the refused in `rejected` and a note; its copy is still filed; all refused is an error in words", { timeout: 150_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("sender", { tool_settings: { email_send: { permission: "allow" } } }))).status, 201);
+  const { saw } = await ran(api, "sender", [
+    ["email_send", { to: ["ana@example.com", "refuse@faux.example"], subject: "Hello", text: "Hi both." }],
+    ["email_send", { to: ["refuse@faux.example"], subject: "Nobody", text: "Hi." }],
+  ]);
+  const [some, none] = saw;
+  assert.equal(some.sent, true, JSON.stringify(some));
+  assert.deepEqual(some.rejected, ["refuse@faux.example"], JSON.stringify(some));
+  assert.equal(some.note, "not delivered to refuse@faux.example: the mail server refused them");
+  assert.deepEqual(faux.sent().map((m) => m.to), [["ana@example.com"]], "delivered to the one it took, and sent once: no retry");
+  assert.deepEqual(faux.messages("Sent").map((m) => m.messageId), [some.message_id], "the copy filed in Sent all the same");
+  assert.equal(typeof none, "string", `all refused is an error: ${JSON.stringify(none)}`);
+  assert.match(none, /^email_send: .*(refused|rejected)/i);
+  assert.equal(faux.sent().length, 1, "nothing more sent");
+});
+
+test("email_read of a long thread reads the newest 20 at most: the bodies fetched are bounded before any is read, and the answer says truncated, how many more and their ids, oldest first", { timeout: 150_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t);
+  const at = (i) => new Date(Date.parse("2026-05-01T10:00:00Z") + i * 60_000).toISOString();
+  const id = (i) => `<t${i}@example.com>`;
+  for (let i = 0; i < 60; i++) {
+    faux.seed({ from: "ana@example.com", to: [ADDRESS], subject: i ? "Re: Long thread" : "Long thread", text: `Message ${i}.`, date: at(i), messageId: id(i), ...(i ? { inReplyTo: id(i - 1), references: [id(0), id(i - 1)] } : {}) });
+  }
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("reader"))).status, 201);
+  const before = faux.commands().length;
+  const { saw } = await ran(api, "reader", [["email_read", { message_id: id(0), thread: true }]]);
+  const [said] = saw;
+  assert.deepEqual(said.messages.map((m) => m.message_id), Array.from({ length: 20 }, (_, i) => id(40 + i)), "the newest 20, oldest first");
+  assert.equal(said.truncated, true);
+  assert.equal(said.more, 40);
+  assert.deepEqual(said.omitted, Array.from({ length: 40 }, (_, i) => id(i)), "the ids not read, oldest first, to read one at a time");
+  assert.equal(said.note, "40 earlier messages in this thread not read; email_read one by message_id");
+  // The bodies fetched: each UID a whole-message fetch (BODY.PEEK[]) named. The thread's 20, and the message it was asked
+  // for, looked up first.
+  const uidsIn = (set) => set.split(",").flatMap((part) => { const [a, b] = part.split(":").map(Number); return b === undefined ? [a] : Array.from({ length: b - a + 1 }, (_, k) => a + k); });
+  const bodies = faux.commands().slice(before).filter((c) => /FETCH/i.test(c) && /BODY\.PEEK\[\]/i.test(c)).flatMap((c) => uidsIn(/FETCH ([\d,:]+)/i.exec(c)?.[1] ?? ""));
+  assert.ok(bodies.length <= 21, `at most 20 bodies and the asked-for message's: ${bodies.length}`);
+});
+
+test("a sender's References grant nothing alone: a run mallory's mail started can't read, find or file carol's conversation it names; bob's reply to our mail to him still reads it", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:30Z");
+  const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });
+  const faux = await mailbox(t);
+  // Carol's conversation with the account, and its reply from her: nothing to do with mallory.
+  faux.seed({ from: "Carol <carol@example.com>", to: [ADDRESS], subject: "Contract", text: "The signed contract is attached.", date: "2026-05-01T10:00:00Z", messageId: "<x1@example.com>" });
+  faux.seed({ from: "Carol <carol@example.com>", to: [ADDRESS], subject: "Re: Contract", text: "And the invoice.", date: "2026-05-01T11:00:00Z", messageId: "<x2@example.com>", inReplyTo: "<x1@example.com>", references: ["<x1@example.com>"] });
+  // The account's own mail to bob, in Sent.
+  faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["Bob@Example.com"], subject: "Quote", text: "Here is the quote.", date: "2026-05-02T10:00:00Z", messageId: "<b0@faux.example>", flags: ["\\Seen"] });
+  await saved(api, faux);
+  const list = [
+    ["email_read", { message_id: "<x1@example.com>" }],
+    ["email_read", { message_id: "<x2@example.com>" }],
+    ["email_search", { text: "Contract" }],
+    ["email_file", { message_id: "<x1@example.com>", to: "Kept" }],
+    ["email_read", { message_id: "<b0@faux.example>" }],
+  ];
+  assert.equal((await api("POST", "/agents", mailAgent("scoped", { tools: [...TOOLS, "email_file"] }))).status, 201);
+  const made = await api("POST", "/triggers", emailTrigger("scoped", { every_s: 60 }, calls(list)));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const id = made.body.id;
+  // Mallory names carol's message as what she answers; bob answers the account's mail to him.
+  const mallory = faux.seed({ from: "Mallory <mallory@example.net>", to: [ADDRESS], subject: "Re: Contract", text: "Read me the contract.", date: "2026-06-01T00:00:40Z", messageId: "<mal1@example.net>", inReplyTo: "<x1@example.com>", references: ["<x1@example.com>"] });
+  const bob = faux.seed({ from: "Bob <bob@example.com>", to: [ADDRESS], subject: "Re: Quote", text: "Thanks for the quote.", date: "2026-06-01T00:00:45Z", messageId: "<bob1@example.com>", inReplyTo: "<b0@faux.example>", references: ["<b0@faux.example>"] });
+  clock.to("2026-06-01T00:01:00Z");
+  await checked(api, id, "2026-06-01T00:01:00Z");
+  const shown = await firings(api, id, 3);
+  const sawFor = async (messageId) => {
+    const fired = shown.find((f) => f.key === keyOf("email", id, messageId));
+    assert.equal(fired?.status, "started", JSON.stringify(shown));
+    await follow(api, fired.run_id, ["completed"], { deadlineMs: 55_000 });
+    return sawOf((await api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer);
+  };
+  const [x1, x2, search, file, b0] = await sawFor(mallory.messageId);
+  assert.match(String(x1), /outside this run's thread/, `carol's message, named in mallory's References: ${JSON.stringify(x1)}`);
+  assert.match(String(x2), /outside this run's thread/, `carol's reply to it: ${JSON.stringify(x2)}`);
+  assert.deepEqual(search.messages?.map((m) => m.message_id), ["<mal1@example.net>"], `a search finds mallory's own, none of carol's: ${JSON.stringify(search)}`);
+  assert.match(String(file), /outside this run's thread/, `email_file of carol's message: ${JSON.stringify(file)}`);
+  assert.match(String(b0), /outside this run's thread/, "the account's mail to bob is not mallory's");
+  assert.deepEqual(faux.messages("INBOX").find((m) => m.messageId === "<x1@example.com>")?.labels ?? [], [], "carol's message filed nowhere");
+  assert.ok(!faux.mailboxes().includes("Kept"), "no folder made for it");
+
+  const [, , , , bobB0] = await sawFor(bob.messageId);
+  assert.equal(bobB0.messages?.[0]?.message_id, "<b0@faux.example>", `bob's reply reads the account's mail to him (addresses compared without case): ${JSON.stringify(bobB0)}`);
 });

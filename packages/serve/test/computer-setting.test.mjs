@@ -56,7 +56,7 @@ test("a desktop's or a phone's computer may say its surface (code or tools) and 
     assert.deepEqual(issues({ kind, provider: "x", exec: true }), [], kind);
   }
   for (const surface of ["both", "", 1, null]) assert.deepEqual(issues({ kind: "desktop", provider: "x", surface }), [["definition.computer.surface", "not_an_option"]], JSON.stringify(surface));
-  assert.equal(computerIssues({ kind: "desktop", provider: "x", surface: "both" }, "definition.computer")[0].message, 'definition.computer.surface is "code" (the agent drives the computer by scripts alone) or "tools" (by its step tools alone); absent, both');
+  assert.equal(computerIssues({ kind: "desktop", provider: "x", surface: "both" }, "definition.computer")[0].message, 'definition.computer.surface is "code" (the agent drives the computer by codemode scripts alone) or "tools" (by its step tools, listed); absent, as "tools"');
   for (const exec of ["no", 0, null]) assert.deepEqual(issues({ kind: "phone", provider: "x", exec }), [["definition.computer.exec", "wrong_type"]], JSON.stringify(exec));
   assert.equal(computerIssues({ kind: "phone", provider: "x", exec: "no" }, "definition.computer")[0].message, "definition.computer.exec is false (the agent gets no shell and starts no program on its computer) or true (as absent)");
   for (const kind of ["sandbox", "browser"]) {

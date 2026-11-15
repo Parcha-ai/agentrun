@@ -90,7 +90,8 @@ const START = Date.now();
  *  - facts: over the defaults (child daemon, vendor lifetime);
  *  - descriptor: the host's, FAKE_DESCRIPTOR by default (network none, an archil mount, a linux and a desktop
  *    configuration, no GPU);
- *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
+ *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called, or throws the error
+ *    fake.release(error) is given, having made nothing), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
  *  - failed: words a new machine reads gone in, as the vendor's why, once it is done starting;
@@ -605,9 +606,9 @@ export function fakeHost({
 
 	fake.host = host;
 	fake.add = add;
-	/** Lets every held create go on. */
-	fake.release = async () => {
-		for (const one of held.splice(0)) one.resolve();
+	/** Lets every held create go on, or, given an error, fail with it (having made nothing). */
+	fake.release = async (error) => {
+		for (const one of held.splice(0)) error === undefined ? one.resolve() : one.reject(error);
 		await new Promise((done) => setTimeout(done, 10));
 	};
 	/**

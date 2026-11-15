@@ -92,9 +92,10 @@ export function foldLabel(tool: string, calls: readonly { input: string | null; 
   return subjects.length ? `${head}: ${list(subjects)}` : head;
 }
 
-/** The input worth showing: Grep's keys first, then the browser and file ones. */
+/** The input worth showing: Grep's keys first, then the browser and file ones, and last the app a computer's look or act
+ *  names (never what an act types: its steps; nor a codemode script, which can hold it). */
 export function inputPreview(args: Obj, max: number): string | null {
-  for (const key of ["description", "command", "query", "file_path", "url", "path", "code"]) {
+  for (const key of ["description", "command", "query", "file_path", "url", "path", "code", "app"]) {
     const value = str(args[key]);
     if (value) return cut(scrubUrls(value), max);
   }
@@ -288,6 +289,23 @@ registerLabel(
   { name: "Look at the computer", saysFailure: true },
 );
 registerLabel("computer_screenshot", (_a, result) => callWords({ method: "screen.shot", started_at: "", ms: 0, ok: result?.isError !== true }), { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots of the computer", saysFailure: true });
+/** A computer_op's op as the computer's record names the call it makes (the surface's SURFACE_OPS). */
+const OP_METHODS: Readonly<Record<string, string>> = { "input.act": "input.actions", "apps.list": "apps.list", "apps.open": "apps.launch", "shell.run": "exec.run", "processes.start": "process.start", "files.read": "files.read", "files.write": "files.write", "files.list": "files.list", "files.stat": "files.stat" };
+// A script's computer op (computer.apps, .shell, .files, .input, .processes), said as the call it makes on the computer.
+registerLabel(
+  "computer_op",
+  (a, result) => {
+    const op = str(a.op);
+    const method = op !== undefined && Object.hasOwn(OP_METHODS, op) ? OP_METHODS[op]! : undefined;
+    if (!method) return result?.isError ? "Could not act on the computer" : "Acted on the computer";
+    const app = method === "apps.launch" ? str(obj(a.args)?.id) : undefined;
+    return callWords({ method, started_at: "", ms: 0, ok: result?.isError !== true, ...(app ? { app } : {}) });
+  },
+  { many: (n) => `Acted on the computer ${n} times` },
+  { name: "Use the computer's apps, shell and files", saysFailure: true },
+);
+// computer_script is no longer offered (codemode scripts the computer, each step a nested call of its own); its label
+// stays so an earlier run's stored rows still read as they did.
 registerLabel(
   "computer_script",
   (a, result) => {

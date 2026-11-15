@@ -162,14 +162,14 @@ describe("the schedules list", () => {
     const t = await open(server({ triggers: [] }).v2, {});
     expect(t.text()).toContain("No triggers yet");
     expect(t.button(/^New schedule$/)).toBeTruthy();
-    // The three things that can start a run, each with its own way in.
+    // The four things that can start a run, each with its own way in.
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
     expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
-    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
+    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger", "New app trigger"]);
     expect(panel.textContent).toContain("At the times you set: every day or week at a time, every few minutes or hours, or once.");
     expect(panel.textContent).not.toMatch(/cron/i);
-    // Each is on the page once: the header's three show when there is a trigger.
-    for (const name of ["New schedule", "New webhook", "New GitHub trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
+    // Each is on the page once: the header's four show when there is a trigger.
+    for (const name of ["New schedule", "New webhook", "New GitHub trigger", "New app trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
 });
 

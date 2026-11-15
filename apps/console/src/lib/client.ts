@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -56,7 +56,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 /** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -97,6 +97,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
+  const replays = (id: string, name: string, digest: string) => `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions/${encodeURIComponent(digest)}/replays`;
   const mcpServer = (name: string) => `/settings/mcp-servers/${encodeURIComponent(name)}`;
   const trigger = (id: string) => `/triggers/${encodeURIComponent(id)}`;
   // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
@@ -176,6 +177,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     learningPromotions: (id: string) => call<Promotions>("GET", `${agent(id)}/learning/promotions`),
     learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
     learnedWorkflowRevisions: (id: string, name: string, limit?: number) => call<WorkflowRevisions>("GET", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions${limit ? `?limit=${limit}` : ""}`),
+    /** Starts a replay of one revision of a learned workflow on the server's default inputs (POST .../revisions/{digest}/replays):
+     *  the owner's session only; 409 replay_conflict, agent_not_runnable or fewer graded runs than a replay needs. */
+    startLearnedWorkflowReplay: (id: string, name: string, digest: string) => call<ReplayStarted>("POST", `${replays(id, name, digest)}`, { body: {} }),
+    /** A replay as it stands, and decided once its runs ended (GET .../replays/{replay_id}). */
+    learnedWorkflowReplay: (id: string, name: string, digest: string, replay: string) => call<ReplayRead>("GET", `${replays(id, name, digest)}/${encodeURIComponent(replay)}`),
     learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
     learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
     /** A note's whole text and its version, for the If-Match of an edit or a retire. */
@@ -324,8 +330,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
     /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
     rotateTriggerSecret: (id: string, body: { secret?: string } = {}) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body }),
-    updateTrigger: (id: string, body: TriggerInput) => call<Trigger>("PATCH", trigger(id), { body }),
-    deleteTrigger: (id: string) => call<unknown>("DELETE", trigger(id)),
+    /** A trigger from an app answers `composio` beside it when Composio could not follow a pause or resume. */
+    updateTrigger: (id: string, body: TriggerInput) => call<TriggerUpdated>("PATCH", trigger(id), { body }),
+    /** None (204), or `composio`'s note when Composio could not follow the delete. */
+    deleteTrigger: (id: string) => call<TriggerDeleted>("DELETE", trigger(id)),
     /** Runs a schedule now: `key` is the click's own Idempotency-Key, so the same click sent again fires once. */
     fireTrigger: (id: string, key: string) => call<Firing>("POST", `${trigger(id)}/fire`, { body: {}, headers: { "idempotency-key": key } }),
     /** Its last firings, newest first. */
@@ -361,6 +369,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     /** 204 when it is gone; 200 with a note when a Composio server it made could not be removed there (the row is gone either way). */
     deleteMcpServer: (name: string) => call<{ deleted: true; composio?: { removed: false; note: string } } | undefined>("DELETE", mcpServer(name)),
+    /** A saved Composio server's toolkit's events, for a trigger from an app. */
+    composioEvents: (name: string) => call<ComposioEvents>("GET", `${mcpServer(name)}/composio/events`),
+    /** A saved Composio server's triggers, and where its project's webhook subscription sends events. */
+    composioTriggers: (name: string) => call<ComposioTriggers>("GET", `${mcpServer(name)}/composio/triggers`),
+    /** Rotates the subscription's secret on Composio and keeps the new one here: no secret in the answer. */
+    rotateComposioSecret: (name: string) => call<{ rotated: true }>("POST", `${mcpServer(name)}/composio/rotate-secret`, { body: {} }),
+    /** Deletes the project's subscription on Composio once no trigger uses it. */
+    deleteComposioSubscription: (name: string) => call<{ deleted: true }>("DELETE", `${mcpServer(name)}/composio/subscription`),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
     startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string; toolkit?: string | null }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
     /** The private-network hosts an MCP server's authorization server may be on; none by default. */

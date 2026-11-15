@@ -137,6 +137,95 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## connectors
+
+### `agentrun connectors complete-remote-command CONNECTOR_ID COMMAND_ID`
+
+Complete a source command once under its valid lease.
+
+Route: `POST /connectors/{connector_id}/commands/{command_id}/complete`.
+
+- `--lease-token STRING` (string, required)
+- `--error STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors enroll-remote-connector`
+
+Create a ten-minute one-use connection code.
+
+Route: `POST /connectors/enrollment`.
+
+- `--label STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors import-remote-history CONNECTOR_ID TARGET_ID`
+
+Import explicitly selected, redacted past sessions without running or learning from them.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/history`.
+
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors import-remote-target CONNECTOR_ID`
+
+Import an explicitly selected source-native agent reference.
+
+Route: `POST /connectors/{connector_id}/import`.
+
+- `--target-id STRING` (string, required)
+- `--name STRING` (string)
+- `--history-only` (boolean)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors list-remote-connectors`
+
+List remote source machines and imported agent targets.
+
+Route: `GET /connectors`.
+
+### `agentrun connectors poll-remote-connector CONNECTOR_ID`
+
+Renew active source leases and claim one command without replay.
+
+Route: `POST /connectors/{connector_id}/poll`.
+
+- `--worker-id STRING` (string, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors register-remote-connector`
+
+Exchange a one-use enrollment code for a connector-scoped credential.
+
+Route: `POST /connectors`.
+
+- `--installation-id STRING` (string, required)
+- `--operation-id STRING` (string, required)
+- `--label STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors remote-command-events CONNECTOR_ID COMMAND_ID`
+
+Append an ordered idempotent native event batch for a valid command lease.
+
+Route: `POST /connectors/{connector_id}/commands/{command_id}/events`.
+
+- `--lease-token STRING` (string, required)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors revoke-remote-connector CONNECTOR_ID`
+
+Revoke a source connector and stop its outstanding commands.
+
+Route: `DELETE /connectors/{connector_id}`.
+
 ## files
 
 ### `agentrun files create`
@@ -315,7 +404,7 @@ Route: `POST /agents/{agent_id}/learning/evals`.
 
 ### `agentrun learning replay AGENT_ID NAME DIGEST REPLAY_ID`
 
-A replay of a learned workflow's revision: running, done or failed, its counts and its score.
+Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab).
 
 Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
 
@@ -355,6 +444,12 @@ A code that pairs a person's own computer with this server.
 
 Route: `POST /computers/pairings`.
 
+### `agentrun local delete-composio-subscription NAME`
+
+Delete the Composio project's webhook subscription, once no trigger uses it.
+
+Route: `DELETE /settings/mcp-servers/{name}/composio/subscription`.
+
 ### `agentrun local delete-computer COMPUTER_ID`
 
 Remove a paired computer: its token ends and its socket closes.
@@ -385,6 +480,18 @@ Whether run folders are on Archil disks (Mode 2), the settings, and whether its 
 
 Route: `GET /workspace/archil`.
 
+### `agentrun local list-composio-events NAME`
+
+List a saved Composio server's toolkit's events, for a composio trigger.
+
+Route: `GET /settings/mcp-servers/{name}/composio/events`.
+
+### `agentrun local list-composio-triggers NAME`
+
+A saved Composio server's triggers, each with its instance's state on Composio.
+
+Route: `GET /settings/mcp-servers/{name}/composio/triggers`.
+
 ### `agentrun local list-computer-choices PROVIDER`
 
 The values a computer provider's picked keys offer, read from the vendor.
@@ -396,6 +503,21 @@ Route: `GET /computers/{provider}/choices`.
 Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved.
 
 Route: `GET /computers`.
+
+### `agentrun local receive-hook-composio HOOK`
+
+Fire a Composio trigger: a request it checks, no token.
+
+Route: `POST /hooks/composio/{hook}`.
+
+- `--body JSON|@FILE|-` (*/*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of */*; any other than JSON is sent as given.
+
+### `agentrun local rotate-composio-secret NAME`
+
+Rotate the Composio project's webhook subscription's secret, and keep the new one.
+
+Route: `POST /settings/mcp-servers/{name}/composio/rotate-secret`.
 
 ### `agentrun local test-computer PROVIDER`
 
@@ -700,7 +822,7 @@ Route: `GET /runs/{run_id}/timeline`.
 - `--after INTEGER` (integer): The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.
 - `--wait-ms INTEGER` (integer): JSON only. How long to hold the request for a change after `after`.
 - `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500); has_more says when another waits.
-- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
+- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
 
@@ -717,6 +839,55 @@ Wait until the run ends or waits on a person, and print it.
 Route: `GET /runs/{run_id}/timeline, long-polled, then GET /runs/{run_id}`.
 
 - `--timeout SECONDS` (number, this CLI's own): stop waiting after this long, exit 1 (the run goes on)
+
+## sdk-runs
+
+### `agentrun sdk-runs complete RUN_ID`
+
+Complete a backend SDK task.
+
+Route: `POST /sdk-runs/{run_id}/complete`.
+
+- `--idempotency-key STRING` (string)
+- `--status completed|failed|cancelled` (string, one of these, required)
+- `--answer STRING` (string, required)
+- `--error STRING` (string)
+- `--model STRING` (string)
+- `--session-id STRING` (string)
+- `--evidence-complete` (boolean)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun sdk-runs events RUN_ID`
+
+Record bounded SDK execution evidence.
+
+Route: `POST /sdk-runs/{run_id}/events`.
+
+- `--idempotency-key STRING` (string)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun sdk-runs get RUN_ID`
+
+Read SDK run and learning state.
+
+Route: `GET /sdk-runs/{run_id}`.
+
+### `agentrun sdk-runs start AGENT_ID`
+
+Register a task executed by an existing backend SDK.
+
+Route: `POST /agents/{agent_id}/sdk-runs`.
+
+- `--idempotency-key STRING` (string, required)
+- `--runtime claude-agent-sdk|codex-sdk` (string, one of these, required)
+- `--input STRING` (string, required)
+- `--instructions STRING` (string, required)
+- `--model STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ## server
 

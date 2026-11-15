@@ -9,7 +9,17 @@ repository: https://github.com/Parcha-ai/agentrun
 category: engineering
 tags: [code-review, github, pull-requests]
 harness: [pi]
-model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
+# The server's fast model by default, so it installs on any model key or the ChatGPT sign-in; particle-1, the
+# low-cost model it was built on, is the owner's pick where an OpenRouter key is saved.
+model:
+  tier: fast
+  choices:
+    - id: particle
+      label: Particle 1 (OpenRouter)
+      model: openrouter/particle-ai/particle-1
+      harness: pi
+      secrets: [OPENROUTER_API_KEY]
+      note: "The model this template was tuned and measured on: about 18 cents a review on our own pull requests."
 effort: medium
 # A computer with a shell first, else none. With a shell, bash runs from the run's work folder, where AgentRun has
 # checked out the pull request in repo/ before the first turn (`checkout: pull_request`: its head at ref pr/head, with
@@ -43,8 +53,10 @@ parameters:
   owner: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", description: "the GitHub account that owns the repository to review, as GitHub spells it, like Parcha-ai" }
   repo: { type: string, pattern: "^[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]$", description: "the repository's name alone, without its owner, as GitHub spells it, like agentrun" }
   focus: { type: string, required: false, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
-# Each run's spend cap: the reviewers' tool calls are bounded by it and by the guides' own call counts.
-budget: { per_run_usd: 0.50 }
+# Each run's spend cap: the reviewers' tool calls are bounded by it and by the guides' own call counts. About twice the
+# dearest review measured on the default model (GPT-6.1 Sol through OpenRouter: $0.16 to $0.90 a pull request, up to
+# ~400 lines), so the eight reviewers' first requests, held at their worst case together, never park the run on its cap.
+budget: { per_run_usd: 2.00 }
 learning: false
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
 approvals: never

@@ -7,10 +7,11 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } from '../native-command-owner.js';
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -290,6 +291,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
     if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new Error("Start the AgentRun server to install MCP and Monid revision metadata before opening a runner. The runner does not upgrade this store.");
+    const nativeOwners=(await connection.all<{name:string}>("PRAGMA table_info(settings)")).some(column=>column.name==='connector_id');
+    if(!nativeOwners){
+      if(role==='runner')throw new Error('Native command ownership metadata is not prepared. Start this build’s server before its runners.');
+      await connection.write([{sql:'ALTER TABLE settings ADD COLUMN connector_id TEXT'}],{full:true});
+    }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
@@ -311,7 +317,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMMANDS_ONE_ANSWER },
         // An earlier build of this version kept no imported template packages (schema.ts IMPORTED_TEMPLATES).
         { sql: IMPORTED_TEMPLATES },
+        { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
+      await backfillNativeCommandOwners(connection);
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
@@ -1273,16 +1281,23 @@ class SqliteStore implements Store {
         return row === undefined ? undefined : JSON.parse(row.value);
       },
       put: async (key, value) => {
-        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", params: [key, json(value), now()] }]);
+        const encoded=json(value);
+        await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
       },
       putIfAbsent: async (key, value) => {
-        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, json(value), now()] }]);
+        const encoded=json(value);
+        await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);
       },
       // `was` is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
-      replaceIf: async (key, was, value) => {
-        const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?", params: [json(value), now(), key, json(was)] }]);
+      replaceIf: async (key, was, value, claim) => {
+        const encoded=json(value);
+        if (claim) return db.transaction(async tx => {
+          const at = await underClaim(tx, claim, now);
+          return await tx.runCounted("UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", encoded, nativeCommandOwner(key,encoded), at, key, json(was)) === 1;
+        });
+        const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", params: [encoded, nativeCommandOwner(key,encoded), now(), key, json(was)] }]);
         return result!.changes === 1;
       },
       removeIf: async (key, was) => {
@@ -1292,7 +1307,25 @@ class SqliteStore implements Store {
       remove: async (key) => {
         await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
       },
-      all: async () => (await db.all<SettingRecord>("SELECT key, value, updated_at FROM settings ORDER BY key")).map(settingOf),
+      all: async (filter) => {
+        const clauses:string[]=[],params:string[]=[];
+        if(filter?.connectorId!==undefined&&!validConnectorId(filter.connectorId))return [];
+        if(filter){
+          // Both stores order keys by bytes (Postgres settings.key is COLLATE C). This range also enables namespace indexes.
+          const points=Array.from(filter.prefix);let upper:string|undefined;
+          for(let i=points.length-1;i>=0;i--){const cp=points[i]!.codePointAt(0)!;if(cp<0x10ffff){upper=points.slice(0,i).join("")+String.fromCodePoint(cp+1);break;}}
+          clauses.push("key >= ?");params.push(filter.prefix);
+          if(upper!==undefined){clauses.push("key < ?");params.push(upper);}
+          clauses.push("substr(key, 1, length(?)) = ?");params.push(filter.prefix,filter.prefix);
+        }
+        const selection=`SELECT key, value, updated_at FROM settings${clauses.length?` WHERE ${clauses.join(" AND ")}`:""}`;
+        // Disjoint indexed branches: an OR lets SQLite choose a namespace scan over every connector's payload.
+        // Null metadata is a legacy write racing setup; strict JS verification below never widens its owner.
+        const query=filter?.connectorId===undefined?`${selection} ORDER BY key`:`${selection} AND connector_id = ? UNION ALL ${selection} AND connector_id IS NULL ORDER BY key`;
+        const values=filter?.connectorId===undefined?params:[...params,filter.connectorId,...params];
+        const rows=await db.all<SettingRecord>(query,...values);
+        return rows.filter(row=>filter?.connectorId===undefined||nativeCommandOwner(row.key,row.value)===filter.connectorId).map(settingOf);
+      },
     };
 
     this.sealedKeys = {
@@ -1834,6 +1867,21 @@ class SqliteStore implements Store {
     const at = this.#now();
     const state = run.state ?? "ended";
     return this.#db.transaction(async (tx) => {
+      for (const guard of [...(run.settingsGuards ?? [])].sort((a, b) => a.key.localeCompare(b.key))) {
+        // A no-op update takes the row's write lock on both SQLite and Postgres until the import commits. A source
+        // revoke/disconnect either commits first and refuses this write, or waits for this already-started import.
+        const setting = await tx.get<{ value: string }>("UPDATE settings SET value = value WHERE key = ? RETURNING value", guard.key);
+        const value = setting === undefined ? undefined : JSON.parse(setting.value);
+        if (!value || Object.entries(guard.fields).some(([field, expected]) => JSON.stringify(value[field]) !== JSON.stringify(expected))) {
+          throw new StoreConstraint("The source import grant changed before the history write committed.");
+        }
+      }
+      if (run.requireActiveAgent) {
+        // Archive updates this same row. It either commits first and refuses this import, or waits for this
+        // already-admitted history transaction; a read outside the transaction cannot establish that order.
+        const agent = await tx.get<{ id: string }>("UPDATE agents SET archived_at = archived_at WHERE id = ? AND archived_at IS NULL RETURNING id", run.agentId);
+        if (!agent) throw new StoreConstraint("The agent was archived before the history write committed.");
+      }
       // The ended run row, its launch row and its transcript's journal, all in this one transaction (the server's own
       // writer): a crash between them leaves nothing. The run is created at epoch 0 with no runner, and the journal's fence
       // passes for that one row, by the rowid its insert returned (the claim fence's inserted-here form).

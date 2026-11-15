@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DockerProvider } from "../../dist/docker.js";
 import { newRequest } from "./request.mjs";
 import { pullTar, pushTar } from "../../dist/index.js";

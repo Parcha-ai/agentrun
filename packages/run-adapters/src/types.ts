@@ -81,10 +81,13 @@ export interface HostTool {
 export interface NestedCalls {
   /** Call tool `name` (a session tool, by its host name) with `args`, under `key`: stable for the same call in a rerun
    *  of the calling one. A deny answers `refused` with the gate's words; a park holds until the session lets go, then
-   *  rejects. */
-  call(name: string, args: Record<string, unknown>, key: string): Promise<NestedResult>;
-  /** `value` the first time `key` is asked in this call, and that first value again in every rerun of the call. */
-  memo<T extends JsonValue>(key: string, value: T): Promise<T>;
+   *  rejects. Given `signal`, the call runs on it as well as on the calling one's: a caller that cuts one part of its work
+   *  (a learned workflow's node whose sibling failed) cuts that part's call. */
+  call(name: string, args: Record<string, unknown>, key: string, signal?: AbortSignal): Promise<NestedResult>;
+  /** `value` the first time `key` is asked in this call, and that first value again in every rerun of the call. Given a
+   *  function, it is called only the first time: a rerun reads the recorded value and never calls it, so work it does (a
+   *  model's request, a paid decision) is done and paid for once. */
+  memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T>;
 }
 
 /** A nested call's answer. */
@@ -193,8 +196,12 @@ export interface ModelRequest {
    *  release, the time a person used): held at `feeUsd` and booked, never asked of the cap's rule, so a run past its cap
    *  or of unknown spend still counts it (main keeps it so: keepHold). `hold`: a hold-only step: money reserved, not
    *  spent; given back on a lost claim, never booked as cut (its holder's charges book the money, each its own step).
-   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string };
+   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked.
+   *  `under`: the key of the model session whose tool call it runs in (the CLI's session): a request of that session
+   *  still in flight may be the one that asked for the call, unbooked until the call returns (Claude Code books its
+   *  cost after its calls, Codex starts a call with its response open), so the call never waits on it (runBooking).
+   *  Not written on its record. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
@@ -213,6 +220,9 @@ export interface ModelRequest {
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
   route?: string;
+  /** Aborted when the request's client goes (a stop, a cancel, a lost claim): a request still waiting for room under the
+   *  run's cap (runBooking) leaves its line then, admitted for nothing and holding nothing. */
+  signal?: AbortSignal;
 }
 
 /** What a paid request cost, once it completed. */

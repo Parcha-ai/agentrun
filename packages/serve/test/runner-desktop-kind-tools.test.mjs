@@ -1,7 +1,8 @@
 // A desktop computer brings its kind's tools to a run on the runner. An agent names its computer (definition.computer
 // {kind: "desktop", provider}), never the desktop's tools (definition.tools refuses them), so the run's spec binds,
 // beside what the revision grants, the tools the CLAIMED computer brings as its groups offer them: computer_observe,
-// computer_act, computer_screenshot, computer_script and computer_request_handoff, by the kernel registry's own list
+// computer_act, computer_screenshot, computer_op (a codemode script's other ops) and computer_request_handoff, by the
+// kernel registry's own list
 // (computerToolsFor), each once. They go through the run's
 // one gate under the kind's settings key (`desktop`), so a deny refuses them in its words (naming desktop). A run with no computer gets
 // none of them.
@@ -42,7 +43,7 @@ const callOf = (spec, name) => spec.session.tools.find((tool) => tool.name === n
 const ctx = (callId) => ({ callId, signal: new AbortController().signal, attempt: 0 });
 
 test("pi: a run of an agent whose computer is a desktop is handed computer_screenshot, computer_act and computer_request_handoff, each once, beside what it was granted; a computer_screenshot call runs and answers a screenshot", async (t) => {
-  assert.deepEqual([...DESKTOP], ["computer_observe", "computer_act", "computer_screenshot", "computer_script", "computer_request_handoff"], "the registry's tools for the faux desktop's groups");
+  assert.deepEqual([...DESKTOP], ["computer_observe", "computer_act", "computer_screenshot", "computer_op", "computer_request_handoff"], "the registry's tools for the faux desktop's groups");
   // computer_screenshot is granted too (the store keeps a body the API would refuse): it is bound once.
   const { spec } = await specFor(t, { body: { tools: ["read", "computer_screenshot"], computer: FAUX_DESKTOP }, computer: fauxComposer });
   const names = toolNames(spec);
@@ -54,10 +55,13 @@ test("pi: a run of an agent whose computer is a desktop is handed computer_scree
   assert.ok(shot.images?.length === 1, `it answers the screen as an image: ${JSON.stringify({ ...shot, images: shot.images?.length })}`);
   const input = await callOf(spec, "computer_act").call(CLICK, ctx("c2"));
   assert.notEqual(input.isError, true, `the click ran: ${input.text}`);
-  // The script runs in serve's isolate over the same computer: the value it returns is the answer's.
-  const script = await callOf(spec, "computer_script").call({ code: "const shot = await computer.screen.shot(); return { width: shot.width, ui: typeof computer.app };" }, ctx("c3"));
-  assert.notEqual(script.isError, true, `the script ran: ${script.text}`);
-  assert.deepEqual(script.structured, { width: 1280, ui: "undefined" }, "the faux desktop has no ui group: no app()");
+  // A codemode script's `computer` is bound to the claimed computer's card (no ui group here: no app()), and reaches its
+  // raw input through computer_op, bound for scripts alone, over the same computer.
+  assert.deepEqual(spec.scriptComputer?.card.groups, ["screen", "input.pointer", "input.keys"], "the script's computer is the claimed one's card");
+  assert.equal(callOf(spec, "computer_op").deferred, true, "computer_op is never listed to the model");
+  const moved = await callOf(spec, "computer_op").call({ op: "input.act", args: { actions: [{ type: "move", at: [1, 1] }] } }, ctx("c3"));
+  assert.notEqual(moved.isError, true, `computer_op ran: ${moved.text}`);
+  assert.ok(!toolNames(spec).includes("computer_script"), "no computer_script");
 });
 
 test("pi: the agent's computer_request_handoff asks the person through the claim's hold: the call waits for their answer, never refused at once, and a stop ends the wait", async (t) => {
@@ -76,17 +80,31 @@ test("pi: the agent's computer_request_handoff asks the person through the claim
   assert.doesNotMatch(answer.text ?? "", /not available|needs a|no host tool/i, `the stop ended the ask, not a missing port: ${answer.text}`);
 });
 
-test("pi: an agent whose desktop's surface is tools is handed computer_observe, computer_act, computer_screenshot and the hand-over, never computer_script", async (t) => {
+/** The desktop's tools a spec lists to the model, and the ones it binds for a codemode script's nested calls alone. */
+const listedAndScripts = (spec) => [DESKTOP.filter((name) => callOf(spec, name) && !callOf(spec, name).deferred), DESKTOP.filter((name) => callOf(spec, name)?.deferred === true)];
+
+test("pi: an agent whose desktop's surface is tools is listed computer_observe, computer_act, computer_screenshot and the hand-over, computer_op bound for scripts alone, never computer_script", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, surface: "tools" } }, computer: fauxComposer });
   const names = toolNames(spec);
-  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"], JSON.stringify(names));
-  assert.ok(!names.includes("codemode"), "no code mode among the session's tools");
+  assert.deepEqual(listedAndScripts(spec), [["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"], ["computer_op"]], JSON.stringify(names));
+  assert.ok(!names.includes("codemode") && !names.includes("computer_script"), "no code mode among the session's tools (the loop adds the host's), no computer_script");
 });
 
-test("pi: an agent whose desktop's surface is code is handed the hand-over alone of the computer's tools: its code mode is the script, and computer_observe, computer_act and computer_screenshot are not listed", async (t) => {
+test("pi: an agent whose desktop's surface is code is listed the hand-over alone, as every harness is, its per-step tools and computer_op bound for scripts alone", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, surface: "code" } }, computer: fauxComposer });
-  const names = toolNames(spec);
-  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_request_handoff"], JSON.stringify(names));
+  assert.deepEqual(listedAndScripts(spec), [["computer_request_handoff"], ["computer_observe", "computer_act", "computer_screenshot", "computer_op"]], JSON.stringify(toolNames(spec)));
+});
+
+test("pi: a desktop run's codemode is the host's: pi carries no code mode of its own, and under desktop set to deny codemode is allowed while each computer tool a script would call is refused", async (t) => {
+  for (const surface of [undefined, "code"]) {
+    const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, ...(surface ? { surface } : {}) } }, settings: DENY_DESKTOP, computer: fauxComposer });
+    const own = (spec.adapter.ownTools ?? []).map((tool) => tool.name);
+    assert.ok(!own.includes("codemode"), `surface ${surface}: no pi-native codemode beside the host's: ${JSON.stringify(own)}`);
+    assert.equal(await spec.gate({ callId: "m1", tool: "codemode", args: { script: "return 1;" } }), "allow", `surface ${surface}: codemode is held to its own setting, not desktop's`);
+    for (const [tool, args] of [["computer_op", { op: "input.act", args: { actions: [] } }], ["computer_act", CLICK]]) {
+      assert.deepEqual(await spec.gate({ callId: `n-${tool}`, tool, args }), { deny: deniedText("desktop") }, `surface ${surface}: ${tool} is refused in desktop's deny words`);
+    }
+  }
 });
 
 test("pi: a run with no computer is handed none of the desktop's tools", async (t) => {
@@ -217,11 +235,12 @@ test("codex: a run of an agent whose computer is a desktop is handed computer_sc
   assert.doesNotMatch(answer, /not available|Permission denied|error/i, `the screenshot ran: ${answer}`);
 });
 
-test("codex: an agent whose desktop's surface is code is handed computer_script and the hand-over, none of the per-step tools, and the model's script runs", { timeout: 120_000 }, async (t) => {
-  const { handed, answer } = await codexCall(t, "computer_script", { code: "return (await computer.screen.shot()).width;" }, undefined, { ...FAUX_DESKTOP, surface: "code" });
-  const computers = handed.filter((name) => DESKTOP.includes(name));
-  assert.deepEqual(computers, ["computer_script", "computer_request_handoff"], `the script and the hand-over alone: ${JSON.stringify(handed)}`);
-  assert.match(answer ?? "", /1280/, `the script ran: ${answer}`);
+test("codex: an agent whose desktop's surface is code is handed every computer tool, computer_op among them (Codex's own code mode reaches only what it is handed), never computer_script, and the model's computer_op call runs", { timeout: 120_000 }, async (t) => {
+  const { handed, answer } = await codexCall(t, "computer_op", { op: "input.act", args: { actions: [{ type: "move", at: [1, 1] }] } }, undefined, { ...FAUX_DESKTOP, surface: "code" });
+  const computers = handed.filter((name) => DESKTOP.includes(name) || name === "computer_script");
+  assert.deepEqual(computers, [...DESKTOP], `every computer tool, listed for Codex's own code mode: ${JSON.stringify(handed)}`);
+  assert.ok(answer !== undefined, "the call answered");
+  assert.doesNotMatch(answer, /not available|Permission denied|error|refused/i, `computer_op ran: ${answer}`);
 });
 
 test("codex: desktop set to deny on this server refuses the model's computer_act call in the deny words naming desktop's setting", { timeout: 120_000 }, async (t) => {

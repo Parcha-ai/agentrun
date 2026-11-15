@@ -99,6 +99,9 @@ describe("RunDetail's Report tab before an answer", () => {
     // A server that sends the cap without the figures: said without them, never a figure it lacks.
     const bare = report({ ...paused, pending: { kind: "budget", cap_usd: 0.05, said, at: "2026-11-04T20:08:05.127Z" } } as Run, f.page.rows);
     expect(bare).toContain("Its $0.05 cap is reached. Raise the cap above to continue.");
+    // Refused while steps were still running: what they hold is said beside what it spent, never as spend.
+    const holding = report({ ...paused, pending: { kind: "budget", cap_usd: 0.5, spent_usd: 0.03, held_usd: 0.47, needs_usd: 0.1, said, at: "2026-11-04T20:08:05.127Z" } } as Run, f.page.rows);
+    expect(holding).toContain("It has spent $0.03 of its $0.50 cap, and holds $0.47 for steps still running. Raise the cap above to continue.");
   });
 
   it("a question the server names as one (pending.kind question) reads as a question", () => {

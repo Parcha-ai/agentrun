@@ -2,6 +2,7 @@ import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, input
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 import type { ComputerCallRow } from "./computer.js";
+import { webShownOf, webWithin } from "./web-calls.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -77,20 +78,28 @@ export type TimelineEvent = {
    *  makes it where the call is first seen, cut at CAPS.text. */
   tool_input?: Obj;
   /** On a `tool_result` row of a timeline read with `calls`: the head of the call's output, to `calls.result` characters,
-   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are. */
+   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every url, its long
+   *  texts cut to fit (CALL_RESULT_CHARS). */
   tool_result_text?: string | null;
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
 export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
+/** The call a nested call (the kernel's NestedCalls: a script's, tools_call's) was made in, read off its id
+ *  (`<callId>/<key>`); undefined for a call the model made itself. */
+export const nestingCallOf = (callId: string): string | undefined => {
+  const at = callId.lastIndexOf("/");
+  return at > 0 ? callId.slice(0, at) : undefined;
+};
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
 /** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
-/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a search's first rows (web_search
- *  answers up to 10 results, each snippet at most 3,000 characters, most far shorter) or a fetched page's first screens,
- *  and still one redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). */
+/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a tool's output's head, still one
+ *  redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). A web call's is not its head: a
+ *  web_search's every result keeps its url, title and published date, and a web_fetch its url and title, their snippets
+ *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it (25 results, long titles). */
 export const CALL_RESULT_CHARS = 8000;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
@@ -171,8 +180,13 @@ export const BROWSER_CHARGE = "browser";
 export const chargedTool = (row: TimelineEvent): string | undefined =>
   !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" && row.tool_name !== null && BROWSER_STEPS.has(row.tool_name) ? BROWSER_CHARGE : undefined;
 /** The spend cap's wrap-up (serve's cap.ts): the run's model was told once, near its cap, to finish (`words`, what it was
- *  told). A row of its own, the server's ("AgentRun: …"); no request, no cost. */
+ *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
+ *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
+/** The run's model was told once, on its first request after its claim gave it a computer in place of an earlier
+ *  claim's, that the old one is gone with what was on it (`words`, what it was told after the label, as the wrap-up's).
+ *  A row of its own, the server's, as the wrap-up's; no request, no cost. */
+export const COMPUTER_NOTE = "agentrun.computer_note";
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
  *  (`not_metered`); it is no charge and never makes the cost unknown. */
@@ -251,8 +265,9 @@ export type TimelineOptions = {
    *  tail as long as a key, not by the word holdback. */
   redactLive?: (text: string) => string;
   /** For a reader that grades the run (a template eval): each `tool_use` row carries its call's arguments whole
-   *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`),
-   *  made safe by `redact`, a redactor that reads that far (the rows' own `redact` stops at the head a row shows).
+   *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`; a
+   *  web call's every url, each of its strings redacted on its own), made safe by `redact`, a redactor that reads that
+   *  far (the rows' own `redact` stops at the head a row shows).
    *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
    *  digits); such a number is shown as "[redacted]". */
   calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
@@ -721,9 +736,15 @@ function createProjector(options: TimelineOptions) {
     const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
-  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own. */
+  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, its
+   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut (web-calls.ts). */
   const wholeRedact = options.calls?.redact ?? options.redact;
-  const resultText = (text: string): string | null => (text ? cut(scrubUrls(wholeRedact ? wholeRedact(text) : text), options.calls!.result) : null);
+  const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
+  const resultText = (tool: string, text: string): string | null => {
+    if (!text) return null;
+    const web = webShownOf(tool, text, callShown);
+    return web ? webWithin(web, options.calls!.result) : cut(callShown(text), options.calls!.result);
+  };
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
   /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
    *  outcome is read once, for the summary and the status both. */
@@ -746,7 +767,7 @@ function createProjector(options: TimelineOptions) {
       summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
-      ...(options.calls ? { tool_result_text: resultText(view.text) } : {}),
+      ...(options.calls ? { tool_result_text: resultText(tool.name, view.text) } : {}),
     });
   };
 
@@ -806,9 +827,10 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === CAP_WRAPUP) {
-      // What the run's model was told near its cap: the server's row (`origin: "server"`, in the words of its other rows),
-      // no request, no cost, and no message any turn took (its id ends in NOTE_SUFFIX, which isMessageRow passes over).
+    if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE) {
+      // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
+      // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in
+      // NOTE_SUFFIX, which isMessageRow passes over).
       const words = str(obj(entry.data)?.words);
       if (words) add(make("phase", conv, `${base}${NOTE_SUFFIX}`, { summary: `AgentRun: ${words}`, text: words, origin: "server" }));
       return out;
@@ -889,7 +911,9 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
+          // Recorded managed calls derive their nesting from the id; SDK calls keep their validated explicit parent.
+          const nesting = (entry.recordedCall ? nestingCallOf(id) : undefined) ?? str(obj(entry.data)?.parentCallId);
+          const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
           calls.set(`${conv}:${id}`, opened);
@@ -927,7 +951,7 @@ function createProjector(options: TimelineOptions) {
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown, call?.use.parent_tool_use_id);
       if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
       add(row);
       if (!view.isError) {

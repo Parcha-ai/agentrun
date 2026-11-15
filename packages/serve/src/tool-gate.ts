@@ -25,8 +25,7 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
-import { computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_OP_TOOL, computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
@@ -84,11 +83,27 @@ const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot
 const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
   const keys = new Map<string, string[]>();
   for (const def of [...computerToolDefs("desktop", []), ...computerToolDefs("phone", [])]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
-  // pi's code mode, offered only beside a desktop's or a phone's tools (runner/adapters/pi-computer.ts): its scripts
-  // reach the computer as computer_script's do, so it is held to the same keys. Its nested tool calls pass the gate each.
-  keys.set(CODEMODE_TOOL_NAME, keys.get("computer_script") ?? []);
   return keys;
 })();
+/** A script's computer op (computer_op's `op`) that runs on the computer what one of the run's own tools runs, held to
+ *  that tool's setting: the shell is bash's, a program started to run on (processes.start) bash_background's (bash's
+ *  setting, and a read-only bash policy refuses it), a file's write is write's, a file's read, listing or stat is
+ *  read's. The other ops (apps, raw input) are the computer kind's, computer_op's own key (KIND_TOOLS). */
+const OP_HELD_AS: Readonly<Record<string, string>> = Object.freeze({ "shell.run": "bash", "processes.start": "bash_background", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
+/** The ops whose command runs in the computer's shell. */
+const SHELL_OPS: ReadonlySet<string> = new Set(["shell.run", "processes.start"]);
+
+/** The tool a call of `name` with `args` is held to, with the arguments that tool's gate reads, where it is not its own:
+ *  a computer_op whose op runs what one of the run's own tools runs (OP_HELD_AS), with its command and cwd, or its path.
+ *  Undefined for any other call. */
+export function heldAs(name: string, args: unknown): { readonly tool: string; readonly args: unknown } | undefined {
+  if (name !== COMPUTER_OP_TOOL) return undefined;
+  const { op, args: given } = (args ?? {}) as { op?: unknown; args?: unknown };
+  const tool = typeof op === "string" && Object.hasOwn(OP_HELD_AS, op) ? OP_HELD_AS[op]! : undefined;
+  if (tool === undefined) return undefined;
+  const fields = (given !== null && typeof given === "object" ? given : {}) as Record<string, unknown>;
+  return { tool, args: SHELL_OPS.has(op as string) ? { command: fields.command, ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}) } : { path: fields.path } };
+}
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** A session's `{name -> settings key}` map (nameMapOf). */
 export type NameMap = ReadonlyMap<string, string>;
@@ -102,8 +117,7 @@ export function nameMapOf(harness: string): NameMap {
   const names = new Map<string, string>();
   const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
   for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
-  // pi's code mode (`codemode`) is the computer kind's (KIND_TOOLS); the host's own is read by its own key (RunGate.hostMeta).
-  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS.filter((one) => one !== CODEMODE_TOOL_NAME), ...DECISION_PROVIDER_KEYS]) name(own, own);
+  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
   name(READ_SKILL_FILE, "read");
   for (const [own, keys] of KIND_TOOLS) name(own, keys[0]!);
   for (const [own, key] of Object.entries(facts?.nativeTools ?? {})) if (key) name(own, key);
@@ -399,8 +413,8 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.computerCodemode ? { computerCodemode: true } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
@@ -420,7 +434,7 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -437,14 +451,19 @@ export class RunGate {
    *  refusal says whether it took effect is not known, never that nothing was sent. */
   async decide(name: string, args: unknown, options: { readonly replayed?: boolean } = {}): Promise<"allow" | "ask" | { deny: string }> {
     // tools_search, tools_call and the host's codemode (runner/meta-tools.ts) run: each call they make is asked about here
-    // as its own tool, by its own name. pi's code mode on a run with a desktop or a phone is not the host's: its scripts
-    // reach the computer themselves, so it is held to the kind's setting (KIND_TOOLS).
+    // as its own tool, by its own name (a computer's tool by its kind's setting, KIND_TOOLS).
     // Each has a settings key of its own (allow unless an owner sets deny: a denied one is not offered, and a call to it is
     // refused here).
-    if (this.hostMeta(name)) {
+    if (META_TOOLS.has(name)) {
       const setting = this.setting(name);
       return setting.permission === "deny" ? { deny: deniedText(name, name, setting.from, options.replayed ? "unknown" : "no") } : "allow";
     }
+    // A script's computer op that runs what one of the run's own tools runs (heldAs: its shell, its files) is that tool's
+    // call, decided as on a computer, where it runs: a desktop that mounts no folder has a computer to run a command on,
+    // so shell.run and processes.start follow bash's one setting alike, as the run's own tools on a computer do. It is a
+    // computer tool too: the kind's deny (desktop or phone set to deny) refuses it first, in the kind's words, below.
+    const held = heldAs(name, args);
+    if (held && this.policy(name) !== "deny") return this.onComputer().decide(held.tool, held.args, options);
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
     const ran = options.replayed ? "unknown" : "no";
@@ -464,20 +483,22 @@ export class RunGate {
   }
 
   /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
-   *  own name; a name nothing maps, as it came. */
-  askedAs(name: string): string {
+   *  own name; a script's computer op with `args` by the tool it is held to (heldAs); a name nothing maps, as it came. */
+  askedAs(name: string, args?: unknown): string {
+    const held = heldAs(name, args);
+    if (held) return this.askedAs(held.tool);
     return shellToolOf(name) ?? this.keyOf(name) ?? name;
+  }
+  private computerGate?: RunGate;
+  /** This gate as on a computer: where a script's computer op runs (heldAs), whatever the run's own shell is. */
+  private onComputer(): RunGate {
+    return (this.computerGate ??= new RunGate({ ...this.where, computer: true }, this.readServerSettings, this.overrides, this.approvers, this.approvals));
   }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
-  /** Whether `name` is one of the host's three, not pi's own code mode on a desktop or a phone (which is held to the
-   *  kind's keys). */
-  private hostMeta(name: string): boolean {
-    return META_TOOLS.has(name) && !(name === CODEMODE_TOOL_NAME && this.where.computerCodemode);
-  }
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    if (this.hostMeta(tool)) return this.settingOf(tool, tool);
+    if (META_TOOLS.has(tool)) return this.settingOf(tool, tool);
     // A tool the desktop and the phone both have (every computer tool): the gate knows not the run's kind, so it is held to the
     // stricter of both keys' settings, never more permissive than the run's own kind's.
     const shared = KIND_TOOLS.get(tool);

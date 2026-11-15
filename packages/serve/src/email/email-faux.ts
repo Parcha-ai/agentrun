@@ -5,7 +5,8 @@
 // (BODY[] and BODY.PEEK[], a part of one, HEADER.FIELDS), STORE, APPEND, CREATE (and SUBSCRIBE), UID MOVE, NOOP, CLOSE,
 // UNSELECT, LOGOUT; on the Gmail layout also X-GM-EXT-1's labels (FETCH and STORE of X-GM-LABELS: a message in INBOX
 // carries \Inbox, and one whose \Inbox is taken off leaves INBOX for [Gmail]/All Mail); and SMTP's EHLO, AUTH PLAIN and
-// LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT. A fetch of BODY[] without PEEK marks the message \Seen, as a
+// LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT; a recipient whose local part is `refuse` (refuse@faux.example) is refused
+// at RCPT with a 550, as a server refuses an address it won't deliver to, and the rest are delivered. A fetch of BODY[] without PEEK marks the message \Seen, as a
 // real server does, so a test can tell a read that changes the inbox from one that does not. The test seeds the
 // mailboxes, reads them back and what SMTP received, and switches the sign-in off or the UIDVALIDITY to another. Plaintext
 // on the loopback address only: never a server anyone else reaches.
@@ -597,7 +598,9 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         }
         case "RCPT": {
           if (!envelope) return send("503 5.5.1 MAIL first");
-          envelope.to.push(/<([^>]*)>/.exec(text)?.[1] ?? "");
+          const rcpt = /<([^>]*)>/.exec(text)?.[1] ?? "";
+          if (/^refuse@/i.test(rcpt)) return send(`550 5.1.1 <${rcpt}>: no such user here`);
+          envelope.to.push(rcpt);
           return send("250 2.1.5 ok");
         }
         case "DATA": {

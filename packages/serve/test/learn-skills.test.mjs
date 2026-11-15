@@ -98,31 +98,24 @@ test("accounts off, an ask-set MCP tool is not offered and a draft using it is r
   assert.deepEqual([denied.tools, denied.gated], [[], { "mcp:linear/create_issue": "deny" }]);
 });
 
-// #2424: a learned_workflow call whose MCP tools set to ask don't all fit on its approval card (learnedAskFits) is refused
-// at the gate. At learn time the same rule, #2424's own, refuses such a draft in the gate's words, so none is kept that
-// every call would refuse; one whose ask-set tools fit is offered and passes.
+// A learned_workflow call's card names the MCP actions set to ask that its preview shows whole (learnedAskShown); each one
+// past it asks on its own as it runs, a call nested in the workflow's. So a draft with more ask-set MCP tools than its card
+// shows is offered and passes at learn time: no call of it is refused for its card's size.
 const LONG = (i) => `mcp:linear/create_issue_with_a_rather_long_descriptive_name_${String(i).padStart(2, "0")}`;
 const manyCalls = (n) => {
   const doc = JSON.parse(richWorkflow());
   doc.root.steps.splice(1, 1, ...Array.from({ length: n }, (_, i) => ({ ...mcpCall(LONG(i), `Call ${i}`), as: `page${i}` })));
   return JSON.stringify(doc);
 };
-test("a draft whose MCP tools set to ask would not all fit on its learned call's approval card is refused at learn time in the gate's words; one whose do is offered and passes", async () => {
-  const { learnedAskFits } = await import("../dist/learned-workflow.js");
+test("a draft whose MCP tools set to ask would not all fit on its learned call's approval card is offered and passes at learn time: those past the card ask as they run", async () => {
+  const { learnedAskShown } = await import("../dist/learned-workflow.js");
   const { permissionOf } = await import("../dist/tool-gate.js");
   const granted = Array.from({ length: 40 }, (_, i) => LONG(i));
   const offered = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, { mcp: true, approvers: true });
-  assert.deepEqual(offered.asked, granted, "every one is offered because it asks");
-  assert.equal(learnedAskFits(granted.slice(0, 40)), false, "40 of them do not fit");
-  const ask = { asked: offered.asked, fits: learnedAskFits };
-  const crowded = check(draft(manyCalls(40)), { tools: offered.tools, gated: offered.gated, ask });
-  assert.ok(crowded.problems.some((p) => p.rule === "workflow" && /its approval card can't name all 40 MCP tools it would call that are set to ask: set some of them to allow or deny for this agent\./.test(p.detail)), JSON.stringify(crowded.problems));
-  const few = check(draft(manyCalls(3)), { tools: offered.tools, gated: offered.gated, ask });
-  assert.deepEqual([few.ok, few.problems], [true, []]);
-  // Set to allow, a tool is no ask: forty allowed tools are no card at all.
-  const allowed = tools.learnedDraftTools(granted, () => "allow", undefined, undefined, { mcp: true, approvers: true });
-  assert.deepEqual(allowed.asked, []);
-  assert.equal(check(draft(manyCalls(40)), { tools: allowed.tools, gated: allowed.gated, ask: { asked: allowed.asked, fits: learnedAskFits } }).ok, true);
+  assert.deepEqual([offered.tools, offered.gated], [granted, {}], "every one is offered: its call asks");
+  assert.ok(learnedAskShown(granted.map((tool) => ({ tool, args: { title: "{url}" } }))).mcp_calls.length < 40, "40 of them do not all fit on one card");
+  const crowded = check(draft(manyCalls(40)), { tools: offered.tools, gated: offered.gated });
+  assert.deepEqual([crowded.ok, crowded.problems], [true, []]);
 });
 
 test("a draft's unpriced MCP call nodes, by step: each MCP tool with no declared price, named by its step, tool and server; a priced one and a table tool are not", async () => {
@@ -437,8 +430,8 @@ test("the tools a learned draft may name are the granted ones the gate allows: o
   assert.equal(typeof tools.learnedDraftTools, "function");
   const granted = ["read", "web_fetch", "web_search"];
   const permission = (name) => (name === "web_fetch" ? "ask" : name === "web_search" ? "deny" : "allow");
-  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {}, asked: [] });
-  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {}, asked: [] });
+  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {} });
+  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {} });
   // With where each was set, a deny names it.
   assert.deepEqual(tools.learnedDraftTools(granted, permission, undefined, () => "agent").deniedBy, { web_search: "agent" });
 });

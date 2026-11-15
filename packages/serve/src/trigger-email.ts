@@ -12,13 +12,11 @@
 import { DEFAULT_ACCOUNT, NO_ACCOUNT, type OpenedAccount } from "./email/account.js";
 import type { ImapSession, MailMessage } from "./email/mail.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
-import { closedSchema, type PolledEvent, type PollResult, type Source, type StartResult, type StartWhy, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
+import { closedSchema, PAYLOAD_KEPT_BYTES, type PolledEvent, type PollResult, type Source, type StartResult, type StartWhy, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 import { MAX_EVERY_S, MIN_EVERY_S } from "./trigger-schedule.js";
 
 /** The most messages one poll takes: the rest wait for the next. */
 export const POLL_TAKES = 20;
-/** The most bytes of a payload's text: the payload's JSON stays under the engine's cut (PAYLOAD_KEPT_BYTES). */
-const TEXT_KEPT_BYTES = 12 * 1024;
 /** The one event an email trigger's accept names. */
 const EVENT = "message";
 /** The trigger's own settings: its cursor and its last check, no secret (public). */
@@ -58,18 +56,44 @@ function cursorOf(text: string | undefined): Cursor | undefined {
 }
 const kept = (cursor: Cursor) => ({ [CURSOR]: JSON.stringify(cursor) });
 
-/** `text` cut to `bytes` of UTF-8 at a character's start, and said to be cut. */
-function cutText(text: string, bytes: number): string {
-  const all = Buffer.from(text, "utf8");
-  if (all.length <= bytes) return text;
-  let end = bytes;
-  while (end > 0 && (all[end]! & 0xc0) === 0x80) end--;
-  return `${all.subarray(0, end).toString("utf8")}\n[cut: the message's text was ${all.length} bytes]`;
+/** Whether `payload`'s JSON is within the engine's bound, measured as the engine does: bytes of UTF-8, escapes counted. */
+const fits = (payload: Record<string, unknown>) => Buffer.byteLength(JSON.stringify(payload), "utf8") <= PAYLOAD_KEPT_BYTES;
+
+/** The first `n` characters (code points) of `text`, ending in `…` when cut. */
+const clipped = (text: unknown, n: number) => (typeof text === "string" && [...text].length > n ? `${[...text].slice(0, n).join("")}…` : text);
+
+/** A message's payload whole, its JSON within PAYLOAD_KEPT_BYTES, so the engine never cuts it mid-string. When it is over,
+ *  the text is cut, the longest prefix that fits found by halving (a character's start, escapes counted), said in it and
+ *  marked `text_truncated: true`; when its other fields alone are over, the subject, the names and the lists are cut too,
+ *  shorter until it fits. */
+function fittedPayload(whole: Record<string, unknown>): Record<string, unknown> {
+  if (fits(whole)) return whole;
+  const text = typeof whole.text === "string" ? whole.text : "";
+  // No more characters than the bound has bytes can fit: the halving reads at most that many.
+  const chars = [...text.slice(0, 2 * PAYLOAD_KEPT_BYTES)].slice(0, PAYLOAD_KEPT_BYTES);
+  const said = `\n[cut: the message's text was ${Buffer.byteLength(text, "utf8")} bytes]`;
+  let rest: Record<string, unknown> = whole;
+  const withText = (n: number) => ({ ...rest, text: `${chars.slice(0, n).join("")}${said}`, text_truncated: true });
+  for (let room = 1000; !fits(withText(0)); room = Math.floor(room / 2)) {
+    const list = (value: unknown) => (Array.isArray(value) ? value.slice(0, Math.max(1, Math.floor(room / 20))).map((one) => (typeof one === "string" ? clipped(one, Math.min(320, room)) : one)) : value);
+    const attachments = Array.isArray(whole.attachments) ? whole.attachments.slice(0, Math.max(0, Math.floor(room / 20))).map((a: Record<string, unknown>) => ({ ...a, name: clipped(a?.name, Math.min(200, room)) })) : whole.attachments;
+    rest = { ...whole, from: clipped(whole.from, Math.min(998, room)), message_id: clipped(whole.message_id, Math.min(998, room)), in_reply_to: clipped(whole.in_reply_to, Math.min(998, room)), subject: clipped(whole.subject, room), from_name: clipped(whole.from_name, Math.min(320, room)), to: list(whole.to), cc: list(whole.cc), attachments };
+    if (room === 0) break;
+  }
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(withText(mid))) lo = mid;
+    else hi = mid - 1;
+  }
+  return withText(lo);
 }
 
-/** A message as the event its trigger fires: its payload (JSON, untrusted), its attrs, keyed by its Message-ID. */
+/** A message as the event its trigger fires: its payload (JSON, untrusted, whole within the engine's bound), its attrs,
+ *  keyed by its Message-ID. */
 function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => Record<string, unknown>): PolledEvent {
-  const payload = { ...payloadOf(m), text: cutText(m.text, TEXT_KEPT_BYTES) };
+  const payload = fittedPayload(payloadOf(m));
   return {
     key: m.message_id ?? `${cursor.uidvalidity}:${m.uid}`,
     text: JSON.stringify(payload),
@@ -146,6 +170,8 @@ export const email: TriggerAdapter = {
   label: "email trigger",
   delivery: "clock",
   owner: false,
+  // Each message is its sender's: one run's answer (to alice) is never handed to the next (bob's).
+  previousResult: false,
   settings: { scope: "trigger", fields: { [CURSOR]: { public: true }, last_check: { public: true } } },
   describe: `{kind: "email", account?: "${DEFAULT_ACCOUNT}", mailbox?: "INBOX", every_s?: ${MIN_EVERY_S}, accept?: [{event: "${EVENT}", where?}]}`,
   fires: "each new message in the server's email account's mailbox (`email`), read every every_s seconds, that its `accept` takes",
