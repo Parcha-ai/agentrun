@@ -177,25 +177,26 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await assert.rejects(serve(t, { templates: broken }), (error) => error instanceof PackageError && /version is SemVer 2/.test(error.message));
 });
 
-test("a package's model: its preferred one where this server runs it on the harness, else this server's model for its tier", async () => {
+test("a package's model: its preferred one where this server runs it on the harness, else refused, never the tier's; the tier's model where it prefers none", async () => {
   const model = { tier: "fast", prefer: "openrouter/particle-ai/particle-1" };
-  const pick = async (env, m, harness = "pi") => (await packageModel(env, m, harness)).model;
-  assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, model), model.prefer, "a key for its provider runs it");
-  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-6-luna" }, model), "openai/gpt-6-luna", "no OpenRouter key: the fast tier's");
-  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key" }, { tier: "strong", prefer: model.prefer }), "openai/gpt-6.1-sol", "no tier model set: the default of the key it has");
-  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-6.1-terra" }, { tier: "balanced" }), "openai/gpt-6.1-terra", "balanced is the server's default");
-  assert.equal(await pick({ ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key" }, model, "claude-agent"), "anthropic/claude-sonnet-5-5", "a harness that cannot run it takes the tier's");
-  assert.equal(await pick({}, model), undefined, "no key at all: none, so the agent runs on the server's default");
-  assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, undefined), undefined, "a package that names none");
+  const pick = (env, m, harness = "pi") => packageModel(env, m, harness);
+  const keyless = { refused: { why: "no OpenRouter key is saved here", fix: "Save an OpenRouter key in Settings → Model keys, or apply with overrides.model." } };
+  assert.deepEqual(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, model), { model: model.prefer }, "a key for its provider runs it");
+  assert.deepEqual(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-6-luna" }, model), keyless, "no OpenRouter key: refused, though the fast tier has a model");
+  assert.deepEqual(await pick({}, model), keyless, "no key at all");
+  assert.deepEqual(await pick({ ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key" }, model, "claude-agent"), { refused: { why: "claude-agent does not run it", fix: "Apply with overrides.model." } }, "a harness that cannot run it: refused, never the tier's");
+  const choices = [{ id: "luna", label: "Luna", model: "openai/gpt-6-luna", harness: "pi", secrets: [] }];
+  assert.equal((await pick({}, { ...model, choices })).refused?.fix, "Save an OpenRouter key in Settings → Model keys, or apply with overrides.model or one of the package's model choices (overrides.choice).", "a package with choices names them in the fix");
+  assert.deepEqual(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-6.1-terra" }, { tier: "balanced" }), { model: "openai/gpt-6.1-terra" }, "balanced is the server's default");
+  assert.deepEqual(await pick({ OPENAI_API_KEY: "fake-test-key" }, { tier: "strong" }), { model: "openai/gpt-6.1-sol" }, "no tier model set: the default of the key it has");
+  assert.deepEqual(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, undefined), {}, "a package that names none");
 });
 
-test("a preferred model this server does not know is not used, said in a warning; a free one serve lists is used", async () => {
+test("a preferred model no catalog here lists is refused, saying so; a free one serve lists is used", async () => {
   const env = { OPENROUTER_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openrouter/openai/gpt-6-luna" };
-  const unknown = await packageModel(env, { tier: "fast", prefer: "openrouter/nobody/no-such-model:free" }, "pi");
-  assert.equal(unknown.model, "openrouter/openai/gpt-6-luna", "the fast tier's");
-  assert.equal(unknown.warning, "model.prefer openrouter/nobody/no-such-model:free is not used: this server does not know that model. The agent runs on this server's model for the fast tier. overrides.model picks another.");
+  assert.deepEqual(await packageModel(env, { tier: "fast", prefer: "openrouter/nobody/no-such-model:free" }, "pi"), { refused: { why: "no model catalog here lists it", fix: "Apply with overrides.model." } });
   assert.deepEqual(await packageModel(env, { tier: "fast", prefer: "openrouter/inclusionai/ling-3.2-flash:free" }, "pi"), { model: "openrouter/inclusionai/ling-3.2-flash:free" });
-  assert.equal((await packageModel({ OPENAI_API_KEY: "fake-test-key" }, { tier: "fast", prefer: "openrouter/inclusionai/ling-3.1-flash" }, "pi")).warning, undefined, "one that lacks only a key: no warning");
+  assert.equal((await packageModel({ OPENAI_API_KEY: "fake-test-key" }, { tier: "fast", prefer: "openrouter/inclusionai/ling-3.1-flash" }, "pi")).refused?.why, "no OpenRouter key is saved here", "one that lacks only a key says the key");
 });
 
 test("on a gateway server, a package's model is never one the gateway has not said it serves: a bare gateway id is left to the server's default, and a preferred model is not used, said in a warning", async () => {

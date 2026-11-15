@@ -927,21 +927,22 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
- *  with a key for its provider, but never through a gateway (AGENT_MODEL_BASE_URL), which never said it serves it: then
- *  a warning says so. Else the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL or
- *  AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
+ *  with a key for its provider, else `refused` (preferUnrunnable): apply makes nothing, never the tier's model in its
+ *  place. Through a gateway (AGENT_MODEL_BASE_URL), which never said it serves `prefer`, it is not used and a warning says
+ *  so. With no `prefer`, or one skipped there, the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL
+ *  or AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
  *  which no definition can name: then no model, and the agent runs on the server's default (a warning when the tier's
  *  model is not that default). No model either when the package names none or the server has none. */
-export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string }> {
+export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string; refused?: { why: string; fix: string } }> {
   if (!model) return {};
   // Through a gateway, only the gateway knows what it serves: a preferred model it never named is not picked, and the
   // owner is told (overrides.model picks one it serves).
   const gateway = Boolean(env.AGENT_MODEL_BASE_URL);
   const skipped = model.prefer && gateway ? `model.prefer ${model.prefer} is not used: this server reaches its models through a gateway, which has not said it serves that model.` : undefined;
-  const preferred = !skipped && model.prefer && harnessRuns(env, model.prefer, harness) ? await chooseModel(env, model.prefer, "default", harness) : undefined;
-  if (preferred && !("why" in preferred)) return { model: model.prefer };
-  // A preferred model this server's catalog does not list is said, as a gateway's skip is (one that lacks only a key is not).
-  const unknown = preferred && "why" in preferred && preferred.needs === "model" ? `model.prefer ${model.prefer} is not used: this server does not know that model.` : undefined;
+  if (model.prefer && !gateway) {
+    const refused = await preferUnrunnable(env, model.prefer, harness, Boolean(model.choices?.length));
+    return refused ? { refused } : { model: model.prefer };
+  }
   const tier = MODEL_TIERS[model.tier]!;
   const id = hostModel(env, tier, harness);
   // A gateway's own id (no provider) is no "provider/model-id" a definition can name: the agent is left to the server's
@@ -949,13 +950,29 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   // model the agent runs on, never the tier's when it is left out.
   const bare = Boolean(id && !MODEL_REF.test(id));
   const runsOn = bare && id !== env.AGENT_MODEL ? `The ${model.tier} tier's model ${id} is this gateway's own id, which an agent's definition can't name, so the agent runs on this server's default model.`
-    : skipped || unknown ? (bare || !id ? "The agent runs on this server's default model." : `The agent runs on this server's model for the ${model.tier} tier.`)
+    : skipped ? (bare || !id ? "The agent runs on this server's default model." : `The agent runs on this server's model for the ${model.tier} tier.`)
     : undefined;
-  const warning = [skipped ?? unknown, runsOn, skipped ? "overrides.model picks another the gateway serves." : unknown ? "overrides.model picks another." : undefined].filter(Boolean).join(" ");
+  const warning = [skipped, runsOn, skipped ? "overrides.model picks another the gateway serves." : undefined].filter(Boolean).join(" ");
   return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
 }
 
-/** Why this server can't run a model choice's model on its harness, in words; undefined when it can. Unlike `prefer`
+/** Why this server can't run a package's `prefer` on `harness`, and what the owner does about it, as `{why, fix}` in
+ *  words; undefined when it can. A missing key names its provider and Settings → Model keys; a model no catalog here
+ *  lists, or one the harness does not run, only another model: overrides.model, or a model choice where the package
+ *  has them (`choices`). */
+async function preferUnrunnable(env: NodeJS.ProcessEnv, prefer: string, harness: string, choices: boolean): Promise<{ why: string; fix: string } | undefined> {
+  const other = `apply with overrides.model${choices ? " or one of the package's model choices (overrides.choice)" : ""}.`;
+  const another = `${other[0]!.toUpperCase()}${other.slice(1)}`;
+  if (!harnessRuns(env, prefer, harness)) return { why: `${harness} does not run it`, fix: another };
+  const chosen = await chooseModel(env, prefer, "default", harness);
+  if (!("why" in chosen)) return undefined;
+  if (chosen.needs === "model") return { why: "no model catalog here lists it", fix: another };
+  const row = MODEL_KEYS.find((one) => one.id === prefer.slice(0, prefer.indexOf("/")));
+  if (row && !env[row.field]) return { why: `no ${row.label} key is saved here`, fix: `Save ${/^[AEIOU]/.test(row.label) ? "an" : "a"} ${row.label} key in Settings → Model keys, or ${other}` };
+  return { why: chosen.why.replace(/\.$/, ""), fix: another };
+}
+
+/** Why this server can't run a model choice's model on its harness, in words; undefined when it can. As with `prefer`
  *  (packageModel), a choice is never swapped for the tier's model: the owner who picked it gets it, or apply refuses. The
  *  harness is the server's offer of it (`offer`, capabilities' harnesses): one not available here runs nothing. A gateway
  *  (AGENT_MODEL_BASE_URL) never said it serves the model, so a choice is refused there, as `prefer` is skipped. */
