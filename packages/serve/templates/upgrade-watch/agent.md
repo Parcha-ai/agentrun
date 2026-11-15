@@ -6,6 +6,8 @@ description: Every Monday, reads what a project you depend on released since the
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
+category: engineering
+tags: [upgrades, dependencies, releases, github]
 harness: [pi]
 model: { tier: balanced }
 effort: medium
@@ -14,9 +16,9 @@ parameters:
   repository: { type: string, required: true, pattern: "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$", description: "the GitHub repository whose releases to watch, as owner/name (\"acme/widget\")" }
   current_version: { type: string, required: true, pattern: "^[^\\n]{1,60}$", description: "the version you run now, as its release tag (\"v2.3.1\"). After you upgrade, tell the agent the new one in a run and it remembers it" }
   depends_on: { type: string, required: true, pattern: "^[^\\n]{2,4000}$", description: "what your project uses from it, semicolon-separated, each a thing a release note could name: a command and its flags, an HTTP route, a config key, an environment variable, a file format, an exported function (\"the serve command's --port and --data flags; POST /v2/agents; the WIDGET_TOKEN variable\")" }
-  cron: { type: string, format: cron, default: "0 8 * * 1", description: "when the check runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it" }
-  timezone: { type: string, format: timezone, default: UTC, description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" }
-budget: { per_run_usd: 3.00, tool_calls: 24 }
+  cron: { type: string, title: Schedule, required: false, format: cron, default: "0 8 * * 1", description: "when the check runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it" }
+  timezone: { type: string, title: Time zone, required: false, format: timezone, default: UTC, description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" }
+budget: { per_run_usd: 3.00 }
 learning: true
 # Runs unattended (its job runs on a schedule) and writes nothing: it reads release notes and answers.
 approvals: never
