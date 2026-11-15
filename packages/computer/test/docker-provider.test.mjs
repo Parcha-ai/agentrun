@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DockerProvider } from "../dist/docker.js";
-import { checkLifetime, computerNameFor } from "../dist/index.js";
+import { checkLifetime, computerNameFor, PROVIDERS } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { container, fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
@@ -559,6 +559,25 @@ test("desktop: a desktop computer declares kind desktop and the display's groups
 	assert.equal(fakeDocker().provider.capabilities().kind, "linux");
 	assert.throws(() => fakeDocker({ desktop: { display: "0" } }), /display "0" .*such as :0/);
 	assert.throws(() => fakeDocker({ desktop: { server: [] } }), /server .*program/);
+});
+
+test("desktop: the descriptor's desktop configuration builds a desktop, as serve makes the provider from its options; its sandbox stays linux", async () => {
+	const entry = PROVIDERS.find((one) => one.id === "docker");
+	const configurationOf = (kind) => entry.capabilities.find((one) => one.kind === kind);
+	// serve makes a run's provider with its configuration's options beside the keys (computer-for-claim.ts vendorProvider).
+	for (const [kind, groups] of [["desktop", DESKTOP_GROUPS], ["linux", ["exec", "files", "processes"]]]) {
+		const configuration = configurationOf(kind);
+		assert.deepEqual(configuration.groups, groups, kind);
+		const { provider } = fakeDocker({ ...configuration.options });
+		const caps = provider.capabilities();
+		assert.deepEqual([caps.kind, caps.groups], [kind, groups], `${kind}: the built provider declares what its configuration does`);
+		const result = await provider.create(SPEC, req());
+		assert.equal(result.ok, true, JSON.stringify(result));
+		const connected = await provider.connect(result.value);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		assert.deepEqual([connected.value.hello.kind, connected.value.hello.groups], [kind, groups], `${kind}: its computer's hello`);
+		await connected.value.close();
+	}
 });
 
 test("desktop: create() gives the daemon DISPLAY, starts the X server through the daemon, and checks hello once the display is up", async () => {
