@@ -80,6 +80,16 @@ test("an image by file id or with no URL counts at the most an image of unknown 
   assert.ok((await responsesLocalInputTokens(output)) > most);
 });
 
+test("each part of a function call's output is an item: three text parts add three items' margin over one string output", async () => {
+  const parts = [words(10), words(20), words(30)];
+  const output = (value) => ({ model: MODEL, input: [{ type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' }, { type: 'function_call_output', call_id: 'c1', output: value }] });
+  const split = output(parts.map((text) => ({ type: 'input_text', text })));
+  const joined = output(parts.join(''));
+  // The call, its output, and each of the output's three parts; a string output is the call and the output alone.
+  assert.equal(await responsesLocalInputTokens(split), withMargin(await o200kTokens(JSON.stringify(split)), 2 + 3));
+  assert.equal(await responsesLocalInputTokens(joined), withMargin(await o200kTokens(JSON.stringify(joined)), 2));
+});
+
 test("only a model on o200k_base is counted; any other, and a body with a file input, keeps its byte bound", async () => {
   for (const model of [MODEL, 'openai/gpt-6.1-sol', 'gpt-5.5', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o4-mini', 'codex-mini-latest', 'gpt-oss-120b', 'chatgpt-4o-latest']) {
     assert.ok(o200kModel(model), model);
@@ -193,6 +203,19 @@ test("a Messages body's local count is its JSON's tokens with the margin: 47 tok
   assert.equal(await messagesLocalInputTokens(turns), withMargin(await o200kTokens(JSON.stringify(turns)), 1 + 2 + 1 + 1 + 1));
 });
 
+test("each block inside a tool_result is an item: three text blocks add three items' margin over one string result", async () => {
+  const parts = [words(10), words(20), words(30)];
+  const result = (content) => ({ ...messages('Read the page.'), messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content }] }] });
+  const split = result(parts.map((text) => ({ type: 'text', text })));
+  const joined = result(parts.join(''));
+  // The system block, the tool_result, and each of its three blocks; a string result is the system block and the result alone.
+  assert.equal(await messagesLocalInputTokens(split), withMargin(await o200kTokens(JSON.stringify(split)), 1 + 1 + 3));
+  assert.equal(await messagesLocalInputTokens(joined), withMargin(await o200kTokens(JSON.stringify(joined)), 1 + 1));
+  // A message of no blocks is still one item.
+  const empty = { ...messages(''), messages: [{ role: 'user', content: [] }] };
+  assert.equal(await messagesLocalInputTokens(empty), withMargin(await o200kTokens(JSON.stringify(empty)), 1 + 1));
+});
+
 test("a long page in a Messages body counts near a quarter of its bytes, and never under its own tokens", async () => {
   const body = { ...messages('Summarize it.'), messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: words(70_000) }] }] }] };
   const local = await messagesLocalInputTokens(body);
@@ -219,10 +242,11 @@ test("a thinking signature counts at its bytes and an image at what the routed m
   const shot = (source) => ({ ...messages('What is this?'), messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'image', source }] }] }] });
   const billed = imageTokens(SOL, imageInputOf(data));
   assert.ok(billed > 0);
-  assert.equal(await messagesLocalInputTokens(shot({ type: 'base64', media_type: 'image/png', data })), withMargin(await o200kTokens(JSON.stringify(shot({ type: 'base64', media_type: 'image/png', data: '' }))), 1 + 1) + billed);
+  // The system block, the tool_result and the image inside it are three items.
+  assert.equal(await messagesLocalInputTokens(shot({ type: 'base64', media_type: 'image/png', data })), withMargin(await o200kTokens(JSON.stringify(shot({ type: 'base64', media_type: 'image/png', data: '' }))), 1 + 1 + 1) + billed);
   // An image by URL: at the most an image of unknown size is billed as.
   const url = shot({ type: 'url', url: 'https://example.com/a.png' });
-  assert.equal(await messagesLocalInputTokens(url), withMargin(await o200kTokens(JSON.stringify(url)), 1 + 1) + imageTokens(SOL, { bytes: 0 }));
+  assert.equal(await messagesLocalInputTokens(url), withMargin(await o200kTokens(JSON.stringify(url)), 1 + 1 + 1) + imageTokens(SOL, { bytes: 0 }));
 });
 
 test("a Messages body to a model not on o200k_base, one with a document, or one that is not an object keeps its byte bound", async () => {

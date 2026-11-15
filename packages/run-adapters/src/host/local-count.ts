@@ -17,7 +17,7 @@ import { imageInputOf, imageTokens, messagesImagesIn } from "./overhead.js";
  *    gpt-4.5, gpt-5, the o-series and gpt-oss (MODEL_PREFIX_TO_ENCODING,
  *    https://github.com/openai/tiktoken/blob/79dc2c0533685b893616c78160b5d9e40876e724/tiktoken/model.py#L7-L37). A later
  *    model that bills by a revised vocabulary may split some text finer; a tenth more covers a revision of that order.
- *  - `perItem`, 16 tokens for each input item, each tool and the instructions: the framing the provider renders around
+ *  - `perItem`, 16 tokens for each input item (and each part of a tool's result), each tool and the instructions: the framing the provider renders around
  *    each (harmony's `<|start|>assistant<|channel|>commentary to=functions.read <|constrain|>json<|message|>`, some 12
  *    tokens, https://github.com/openai/harmony/blob/e0ce87d1c3b9f59dec2e27de4770c769f03ebbd3/docs/format.md), beside
  *    the cookbook's 3 a message (num_tokens_from_messages,
@@ -104,7 +104,10 @@ export async function responsesLocalInputTokens(body: Record<string, unknown>): 
     if (key === "image_url" && typeof value === "string" && typeof this === "object" && this !== null && images.has(this)) return "";
     return value;
   });
-  const items = list(body.input).length + list(body.tools).length + (typeof body.instructions === "string" && body.instructions !== "" ? 1 : 0);
+  // Each input item, and each part of a function call's output (the provider frames each part it renders, as it does a
+  // Messages tool_result's blocks), each tool and the instructions.
+  const outputParts = list(body.input).reduce<number>((sum, item) => sum + (plain(item) && item.type === "function_call_output" ? list(item.output).filter(plain).length : 0), 0);
+  const items = list(body.input).length + outputParts + list(body.tools).length + (typeof body.instructions === "string" && body.instructions !== "" ? 1 : 0);
   const tokens = await o200kTokens(text);
   return Math.ceil(tokens * (1 + LOCAL_COUNT_MARGIN.share)) + LOCAL_COUNT_MARGIN.perItem * items + LOCAL_COUNT_MARGIN.perRequest + opaque;
 }
@@ -129,8 +132,8 @@ function messagesBlocks(messages: unknown): Record<string, unknown>[] {
  * serve's translation sends on to a provider of another API (pi's session on `openai/gpt-6.1-sol` through OpenRouter,
  * whose chat completions carry the same text). Its JSON as sent, counted with o200k_base, with a thinking block's
  * `signature` and a redacted one's `data` at their bytes and each image at what it is billed as on the routed model, in
- * place of their text. An item is each message's block (one for a message with none), each tool and each system block:
- * the provider frames each turn, call and result it renders. Undefined (the body keeps its byte bound) for a model whose
+ * place of their text. An item is each message's block and each block inside a tool_result (one for a message with
+ * none), each tool and each system block: the provider frames each turn, call, result and part of a result it renders. Undefined (the body keeps its byte bound) for a model whose
  * tokenizer is not o200k_base (every Claude model: Anthropic counts those itself, or the byte bound holds), for a body
  * with a document (billed by its pages, with no stated bound), and for a body that is not an object.
  */
@@ -155,7 +158,7 @@ export async function messagesLocalInputTokens(body: Record<string, unknown>): P
   });
   const messages = list(body.messages).filter(plain);
   const system = typeof body.system === "string" ? (body.system === "" ? 0 : 1) : list(body.system).length;
-  const items = messages.reduce((sum, message) => sum + Math.max(1, list(message.content).length), 0) + list(body.tools).length + system;
+  const items = messages.reduce((sum, message) => sum + Math.max(1, messagesBlocks([message]).length), 0) + list(body.tools).length + system;
   const tokens = await o200kTokens(text);
   return Math.ceil(tokens * (1 + LOCAL_COUNT_MARGIN.share)) + LOCAL_COUNT_MARGIN.perItem * items + LOCAL_COUNT_MARGIN.perRequest + opaque;
 }
