@@ -272,9 +272,9 @@ test("the claim makes a computer's spec from what its provider declares: one tha
 });
 
 // Daytona's and E2B's own providers (the computer package's, built with a fake key; nothing is called): under the server's
-// default list, the spec the composer makes from their declared capabilities is one their own check() takes, where the
-// list it made before was refused as network open or an allow-list is ("a remote computer takes network none only").
-test("a Daytona or an E2B sandbox under the server's default box_allow asks for network none within its provider's lifetime, and its provider's check takes the spec", async () => {
+// default list, the spec the composer makes from their declared capabilities is the list, through the egress proxy their
+// init starts, and their own check() takes it. Orgo's, which declares none alone, still gets none, as Settings says.
+test("a Daytona or an E2B sandbox under the server's box_allow asks for that list within its provider's lifetime, and its provider's check takes the spec; none stays none", async () => {
   const spec = computerSpecOf({});
   for (const id of ["daytona", "e2b"]) {
     const provider = await providerFor(id, { apiKey: "fake-test-key" });
@@ -283,13 +283,16 @@ test("a Daytona or an E2B sandbox under the server's default box_allow asks for 
     const named = spec(entryOf(id), "sandbox", { boxAllow: [...DEFAULT_BOX_ALLOW], networks, maxLifetimeMs });
     const prepared = entryOf(id).prepareImage ? await provider.prepareImage() : undefined;
     const asked = prepared?.ok ? { ...named, image: prepared.value } : named;
-    assert.equal(asked.network, "none", id);
+    assert.deepEqual(asked.network, { allow: [...DEFAULT_BOX_ALLOW] }, id);
     assert.deepEqual(provider.check(asked), [], `${id}'s check takes the spec`);
-    const before = { ...asked, network: { allow: [...DEFAULT_BOX_ALLOW] } };
-    assert.deepEqual(provider.check(before).map((refusal) => refusal.field), ["network"], `${id} refuses the list`);
+    const operator = spec(entryOf(id), id === "e2b" ? "desktop" : "sandbox", { boxAllow: ["example.com"], boxAllowSet: true, networks, maxLifetimeMs });
+    assert.deepEqual(operator.network, { allow: ["example.com"] }, `${id}: the operator's list`);
     // An explicit none stays none; nothing is widened.
     assert.equal(spec(entryOf(id), "sandbox", { boxAllow: "none", networks, maxLifetimeMs }).network, "none");
   }
+  const orgo = PROVIDERS.find((one) => one.id === "orgo");
+  assert.deepEqual(orgo.network, ["none"]);
+  assert.equal(spec(entryOf("orgo"), "desktop", { boxAllow: ["example.com"], boxAllowSet: true, networks: orgo.network, maxLifetimeMs: 3_600_000 }).network, "none", "Orgo declares none alone: none");
 });
 
 // AGENTRUN_DAYTONA_SNAPSHOT names the snapshot of every Daytona computer (one of box/Dockerfile, which an Archil mount

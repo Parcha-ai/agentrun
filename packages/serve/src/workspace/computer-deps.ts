@@ -220,9 +220,10 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
 /** The network a computer of `kind` on `entry` asks for: what the run allows (its box_allow), narrowed to "none" when its
  *  provider makes "none" but not what the run allows. A launch that names no box_allow (a row from before every launch
  *  was stamped with it) allows what this server allows now (`current`), never "open"; a sandbox with none still has no
- *  network, as it always had. A remote computer (Daytona's or E2B's, each one whose capabilities' network is ["none"])
- *  runs its programs in a network of their own, so an open or listed network is one it refuses at create; "none" reaches
- *  less than the run allows, never more. Under "none", the operator's word for no network at all, a computer whose
+ *  network, as it always had. A hosted computer (Agent37's, E2B's, Modal's, Daytona's) takes the list as Docker's does,
+ *  through the egress proxy its init starts; one whose capabilities' network is ["none"] alone (Orgo's) runs its
+ *  programs in a network of their own with no way out, so it gets "none", which reaches less than the run allows, never
+ *  more, and Settings says so (computers.ts NO_NETWORK_WORDS). Under "none", the operator's word for no network at all, a computer whose
  *  provider makes no "none" (a cloud phone, a hosted browser, Local Chrome) is refused in words (noNetworkRefusal), as
  *  the run's start refuses it (resolve-computer.ts computerReadiness). A vendor-hosted computer that runs only on the
  *  vendor's own network (its capabilities' network is ["open"]) is "open" under a list, the default or the operator's,

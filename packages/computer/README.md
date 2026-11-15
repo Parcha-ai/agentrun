@@ -121,8 +121,12 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `computerd stdio` stays outside and still reaches init's socket: a unix socket with a path is not in a network
   namespace. It needs root with CAP_SYS_ADMIN and CAP_NET_ADMIN (a VM's root, a privileged container); without them, or
   with any read-back short, init refuses to start in words and the computer fails closed. `--own-network` takes no
-  `--egress`: such a computer's network is `none` (open and allowlists wait for a proxy out of that namespace, which
-  is not built yet). The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
+  `--egress`; for a spec whose network is `open` or a list it takes `--network open|allow:<list>`, and init, still
+  root and in the machine's own network, first starts the egress proxy (`daemon/internal/egress`): as nobody, on a
+  Unix socket root's and the tool user's group's alone (`/opt/agentrun/egress/egress.sock`), to the public internet
+  only (Docker's egress table, plus the machine's own addresses), and with a list to its hosts alone, refused before
+  any lookup. Init relays its loopback port 3128 to that socket and gives its programs the proxy env; their namespace
+  stays their loopback alone. The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
 - **Where root may not make the network namespace, init makes it inside a user namespace.** Root holds no
   CAP_SYS_ADMIN on gVisor (Modal's GPU runtime), so `unshare(CLONE_NEWNET)` is EPERM. It may make a user namespace with
@@ -1503,7 +1507,7 @@ the TTL.
 | --- | --- | --- |
 | `kind` | `linux` | a Linux shell with computerd: exec, files and processes |
 | `lifetime` | `vendor` | `ttlMinutes` destroys the sandbox in any state once it elapses; set to the lifetime in whole minutes, rounded up. Init also ends every process at the deadline itself. |
-| `network` | `none` | `networkBlockAll` at create, and the daemon's own network namespace; open and allowlists wait for a proxy out of it (known gap) |
+| `network` | `none`, `open`, `allow` | none: `networkBlockAll` at create, and the daemon's own network namespace; open and a list: not blocked (the account's tier may still limit where it goes), and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
@@ -1805,7 +1809,7 @@ would hold an empty process table).
 | --- | --- | --- |
 | `kind` | `desktop` (default) or `linux` | `options.kind`; a desktop's X server is computerd's own |
 | `lifetime` | `vendor` | E2B kills the sandbox at its timeout, set to the lifetime; init ends every process at the deadline too |
-| `network` | `none` | `allowInternetAccess` false and `allowPublicTraffic` false at create, and the daemon's own network namespace; `open` waits for a proxy out of it (known gap) |
+| `network` | `none`, `open`, `allow` | none: `allowInternetAccess` false and `allowPublicTraffic` false at create, and the daemon's own network namespace; open and a list: `allowInternetAccess` true (`allowPublicTraffic` stays false), and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `vendorAgentPorts` | `[49983]` | envd's port; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `isolation` | `microvm` | Firecracker |
@@ -1827,9 +1831,9 @@ Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, the 
 `[2606:4700:4700::1111]:53/udp`, or the `probeTargets` option), and refuses the computer if one answers within the 10 s
 window (the rule every provider shares: [Network none, read from inside](#network-none-read-from-inside-nothing-answers)).
 The probe's `exec.run` is bounded at 30 s (`timeouts.probeMs`), above its longest run, 20 s. Open and an allowlist
-are refused in words while the daemon's programs have a network of their own (known gap: a proxy out of that network
-is the next feature after this one; a computer that needs pip, npm or git from the internet cannot be made on E2B
-until then). The network is fixed at create: `network(ref, policy)` refuses a change. Since the probe runs inside the
+go through the egress proxy init starts outside the daemon's programs' network (the shared hosted adapter's, below):
+the sandbox is made with internet access, and the programs reach the public internet, or the list's hosts, through
+`127.0.0.1:3128` alone. The network is fixed at create: `network(ref, policy)` refuses a change. Since the probe runs inside the
 daemon's own network, every target reads `refused` there, whatever E2B's firewall would have done; the firewall facts
 below are what a program outside that namespace meets.
 
@@ -2035,7 +2039,7 @@ at most that late. `delete` ends every connection to the instance at once, a ret
 | `isolation` | `vm` or `gvisor` | `options.type`: `vm` (default) or `default` |
 | `lifetime` | `janitor` | Agent37 never ends an instance on its own; init's deadline and the deadline label do, and the run's sweep is the backstop |
 | `maxLifetimeMs` | 24 h | the janitor's cap; `options.maxLifetimeMs` sets less |
-| `network` | `none` | `deny-all` at create, and the daemon's own network namespace |
+| `network` | `none`, `open`, `allow` | none: `deny-all` at create, and the daemon's own network namespace; open and a list: `allow-all`, and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `vendorAgentPorts` | `[22022, 7681]` | the platform's sshd (root for whoever holds the key) and its web terminal (ttyd), both seen listening on every VM |
 | `mount` | `archil` | the run's folder on an Archil disk; `/dev/fuse` is there on both types (live), and the mount needs the box template |

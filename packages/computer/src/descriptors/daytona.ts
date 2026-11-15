@@ -94,8 +94,11 @@ export const DAYTONA = defineProvider({
 	// no linux-vm class to try instead. An Archil mount is refused in these words, before any request.
 	mounts: [],
 	unmounted: { archil: DAYTONA_NO_ARCHIL },
-	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
-	network: ["none"],
+	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
+	// networkBlockAll. Open and a list: the sandbox is not blocked (the account's tier may still limit where it goes), and
+	// its programs' one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts
+	// alone (hosted/network.ts).
+	network: ["none", "open", "allow"],
 	// A linux computer, with GPUs when asked.
 	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },

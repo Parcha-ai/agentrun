@@ -297,8 +297,8 @@ A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
 runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
 set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; a Daytona or Modal box is made with no network when a host list is set, and
-capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
+init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.

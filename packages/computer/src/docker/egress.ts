@@ -101,7 +101,7 @@ export function egressCodeProblem({ dir, packageJson }: EgressCode, user: string
  * A spec's allowlist, normalized as the proxy reads it (parseAllow: lowercase, a name's trailing dot dropped, no
  * repeats), or why Docker cannot hold it, in words.
  */
-export function allowOf(entries: unknown): { list: string[] } | { problem: string } {
+export function allowOf(entries: unknown, owner = "a Docker allowlist"): { list: string[] } | { problem: string } {
 	if (!Array.isArray(entries) || !entries.every((entry) => typeof entry === "string")) return { problem: `an allowlist is a list of names and CIDRs, such as ${EXAMPLE}` };
 	if (entries.length === 0) return { problem: 'an allowlist needs at least one name or CIDR; for no network ask for "none"' };
 	let list: string[];
@@ -113,8 +113,8 @@ export function allowOf(entries: unknown): { list: string[] } | { problem: strin
 	if (list.length === 0) return { problem: 'an allowlist needs at least one name or CIDR; for no network ask for "none"' };
 	const cidrs = list.filter((entry) => entry.includes("/")).length;
 	const names = list.length - cidrs;
-	if (names > MAX_ALLOW) return { problem: `a Docker allowlist holds at most ${MAX_ALLOW} names, not ${names}` };
-	if (cidrs > MAX_ALLOW) return { problem: `a Docker allowlist holds at most ${MAX_ALLOW} CIDRs, not ${cidrs}` };
+	if (names > MAX_ALLOW) return { problem: `${owner} holds at most ${MAX_ALLOW} names, not ${names}` };
+	if (cidrs > MAX_ALLOW) return { problem: `${owner} holds at most ${MAX_ALLOW} CIDRs, not ${cidrs}` };
 	return { list };
 }
 

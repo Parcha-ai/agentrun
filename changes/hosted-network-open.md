@@ -1,0 +1,12 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
+kind: fix
+---
+Hosted computers (Agent37, E2B, Modal, Daytona) take network `open` and an allowlist, so a hosted desktop's browser and a hosted sandbox's `pip`, `npm` and `git` reach the web. Before, every hosted descriptor declared `none` alone: the server's list was narrowed to `none`, and a provider asked for `open` refused it.
+- The tools' network namespace stays loopback alone. Their one way out is an egress proxy that `computerd init` starts before it leaves the machine's network (`--network open` or `--network allow:<list>`). It runs as `nobody`, listens on a Unix socket only root and the tool user's group reach, and init relays `127.0.0.1:3128` to it and sets the proxy variables.
+- The proxy follows the Docker egress proxy's table: public addresses only. It refuses metadata (169.254.169.254 and the other clouds'), private and link-local ranges, loopback (so the vendor's agent on the machine), and the machine's own addresses, with 403 and an `x-egress-refused` header. A list is checked before any lookup, on ports 80 and 443.
+- The machine gets the vendor's egress for it: Agent37 `allow-all`, E2B `allowInternetAccess`, Modal without `blockNetwork`, Daytona without `networkBlockAll`. Under `none`, nothing changes.
+- A descriptor declares only the network forms its computer enforces. A form it doesn't declare is refused in words naming the provider and the choices, such as "Orgo can't limit the network to a list; choose none". Orgo still declares `none` alone: its adapter starts no proxy.
+- Create and `network()` read the network back from inside: nothing answers directly, init's relay answers, and the policy file beside the proxy's socket holds the form the label records.
+- An Archil computer takes `open` or a list too. Its root still mounts the folder outside the tools' network.
+- `places.boxes` lists a Daytona or Modal box as `allowlist` under a host list, not `none`.
