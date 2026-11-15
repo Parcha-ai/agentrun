@@ -265,9 +265,13 @@ function quoteSite(keys: string[]): QuoteSite {
 const QUOTE_SITE_DEPTH = 16;
 
 /** Every place in `schema` (a draft's output schema, its `#/definitions/<id>` refs read from `schemas`) holding quotes: a
- *  `quote` or `quotes` property that is a string, a list of strings, or holds them deeper (`quotes: [{quote}]`). `over`
- *  when there are more than QUOTE_SITES_MAX of them or the schema nests past QUOTE_SITE_DEPTH keys: the places found
- *  are then not all of them, and the rule refuses rather than read a part as the whole. */
+ *  `quote` or `quotes` property that is a string, a list of strings, or holds them deeper (`quotes: [{quote}]`). A quote
+ *  key's value is read shape by shape: each `anyOf`/`oneOf`/`allOf` branch, and each kind a `type` list names (a string,
+ *  and the list or record beside it), gives its own place, so `quotes: string | [{quote}]` holds quotes at `quotes` and
+ *  at `quotes[].quote`. A shape holding structure where no `quote` key is found (records of other fields) holds quotes
+ *  no check reads (`*`). `over` when there are more than QUOTE_SITES_MAX places or the schema nests past
+ *  QUOTE_SITE_DEPTH keys: the places found are then not all of them, and the rule refuses rather than read a part as
+ *  the whole. */
 function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { sites: QuoteSite[]; over: boolean } {
   const resolve = (node: unknown): unknown => {
     for (let hops = 0; hops < 8 && isObject(node) && typeof node.$ref === "string"; hops++) {
@@ -277,38 +281,43 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { site
     }
     return node;
   };
-  const stringish = (node: unknown, depth = 0): boolean => {
-    const schema = resolve(node);
-    if (!isObject(schema) || depth > 8) return true;
-    if (typeof schema.type === "string") return schema.type === "string";
-    if (Array.isArray(schema.type)) return schema.type.includes("string");
-    for (const key of ["anyOf", "oneOf"] as const) if (Array.isArray(schema[key])) return (schema[key] as unknown[]).some((inner) => stringish(inner, depth + 1));
-    return schema.properties === undefined && schema.items === undefined;
-  };
   const sites: QuoteSite[] = [];
   let over = false;
-  const add = (keys: string[]) => {
-    if (sites.some((site) => site.keys.join("\u0000") === keys.join("\u0000"))) return;
+  const add = (keys: string[]): true => {
+    if (sites.some((site) => site.keys.join("\u0000") === keys.join("\u0000"))) return true;
     if (sites.length < QUOTE_SITES_MAX) sites.push(quoteSite(keys));
     else over = true;
+    return true;
   };
   const around = new Set<unknown>();
-  const walk = (node: unknown, at: string[]): void => {
+  /** Walks `node` at `at`; `quoted` when it is a quote key's value (or its items, or a branch of either). Whether it
+   *  found a place holding quotes. */
+  const walk = (node: unknown, at: string[], quoted = false): boolean => {
     const schema = resolve(node);
-    if (!isObject(schema) || around.has(schema) || over) return;
-    if (at.length > QUOTE_SITE_DEPTH) return void (over = true);
-    around.add(schema);
-    if (isObject(schema.properties)) for (const [key, inner] of Object.entries(schema.properties)) {
-      if (!QUOTE_KEYS.has(key)) { walk(inner, [...at, key]); continue; }
-      const held = resolve(inner);
-      if (stringish(inner)) add([...at, key]);
-      else if (isObject(held) && isObject(held.items) && stringish(held.items)) add([...at, key, "[]"]);
-      else { const before = sites.length; walk(inner, [...at, key]); if (sites.length === before) add([...at, key, "*"]); }
+    // A quote key's value the schema leaves open (an unresolved ref, `true`) is read as a quote.
+    if (!isObject(schema)) return quoted && add(at);
+    if (around.has(schema) || over) return false;
+    if (at.length > QUOTE_SITE_DEPTH) {
+      over = true;
+      return false;
     }
-    if (isObject(schema.items)) walk(schema.items, [...at, "[]"]);
-    if (isObject(schema.additionalProperties)) walk(schema.additionalProperties, [...at, "*"]);
-    for (const key of ["anyOf", "oneOf", "allOf"] as const) if (Array.isArray(schema[key])) for (const inner of schema[key] as unknown[]) walk(inner, at);
+    around.add(schema);
+    const types = typeof schema.type === "string" ? [schema.type] : Array.isArray(schema.type) ? schema.type as unknown[] : undefined;
+    const branches = (["anyOf", "oneOf", "allOf"] as const).flatMap((key) => (Array.isArray(schema[key]) ? schema[key] as unknown[] : []));
+    const shaped = schema.properties !== undefined || schema.items !== undefined || schema.additionalProperties !== undefined;
+    // A string here: a type naming it, or no type, branch or shape at all.
+    let found = quoted && (types ? types.includes("string") : !branches.length && !shaped) && add(at);
+    const structured = !types || types.includes("array") || types.includes("object");
+    if (structured) {
+      if (isObject(schema.properties)) for (const [key, inner] of Object.entries(schema.properties)) found = walk(inner, [...at, key], QUOTE_KEYS.has(key)) || found;
+      if (isObject(schema.items)) found = walk(schema.items, [...at, "[]"], quoted) || found;
+      if (isObject(schema.additionalProperties)) found = walk(schema.additionalProperties, [...at, "*"], quoted) || found;
+    }
+    for (const inner of branches) found = walk(inner, at, quoted) || found;
     around.delete(schema);
+    // A quote key's list or record holding no `quote` key and no string: its quotes are where no check reads them.
+    if (quoted && structured && !found && (shaped || !branches.length)) found = add([...at, "*"]);
+    return found;
   };
   walk(schema, []);
   return { sites, over };
@@ -386,7 +395,7 @@ const siteKey = (site: QuoteSite): string => site.keys.join("\u0000");
  *  run's path through its top-level chain is sure to pass a step: a check is an escalate on quote_missing that is a step
  *  of that chain after the last step writing the answer's key (a check in one route branch, or before the answer is
  *  written, reads no answer on another path), and each place in the answer holding quotes needs a check reading it
- *  (its path and field, when one pair can; else any check under the answer). Its pages are state keys holding a page as
+ *  (its path and field; a place no one pair reads is refused, as quote_missing reads none of it). Its pages are state keys holding a page as
  *  fetched (holdsPage). A composed workflow node writing the whole answer (its `as` the answer's path) whose child
  *  passes this rule in its own state has checked the places in the answer its child's schema declares too; the parent
  *  still checks any other place its own schema declares. `checked`: the places a passing workflow checked. */
@@ -413,21 +422,23 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
   const sites = declared.filter((site) => !covered.includes(siteKey(site)));
   const passed = { applies: true, problems: [], checked: declared.map(siteKey) };
   if (!sites.length) return passed;
-  const problems: string[] = [];
+  // A place no one path and field reads (quotes under two lists, in a map, in records with no quote key): quote_missing
+  // would read none of its quotes, so no check passes it.
+  const problems = sites.filter((site) => !site.read).map((site) => `the answer carries quotes (${where(site)}) in a shape no quote_missing check reads, and the workflow fetches pages: give them one it reads, a quote, a list of quotes or a list of records each holding its quote at one field`);
+  const readable = sites.flatMap((site) => (site.read ? [{ site, read: site.read }] : []));
   if (!pages.length) {
-    problems.push(...sites.map((site) => `the answer carries quotes (${where(site)}) and the workflow fetches pages, but no state key holds a page as fetched (a model step's summary of one is no page, a map's or a composed workflow's result included): keep the pages its call steps fetch in the state and check the quotes against them in code with a quote_missing escalate, never a judge`));
+    problems.push(...readable.map(({ site }) => `the answer carries quotes (${where(site)}) and the workflow fetches pages, but no state key holds a page as fetched (a model step's summary of one is no page, a map's or a composed workflow's result included): keep the pages its call steps fetch in the state and check the quotes against them in code with a quote_missing escalate, never a judge`));
   } else {
     const checks = steps.slice(answered + 1).flatMap((step) => {
       if (!isNode(step) || step.node !== "escalate" || !isObject(step.when) || step.when.predicate !== "quote_missing") return [];
       const when = step.when;
       return [{ label: String(step.label ?? "(no label)").slice(0, 64), path: when.path, field: when.field ?? "", pages: Array.isArray(when.pages) ? when.pages as unknown[] : [] }];
     });
-    for (const site of sites) {
-      const path = site.read ? [answerPath, ...site.read.path].join(".") : undefined;
-      const field = site.read?.field ?? "";
-      const read = (check: (typeof checks)[number]) => (path !== undefined ? check.path === path && check.field === field : typeof check.path === "string" && (check.path === answerPath || check.path.startsWith(`${answerPath}.`)));
-      if (checks.some(read)) continue;
-      const predicate = `{"predicate": "quote_missing", "path": ${JSON.stringify(path ?? "<the answer's quotes>")}${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ${JSON.stringify(pages)}}`;
+    for (const { site, read } of readable) {
+      const path = [answerPath, ...read.path].join(".");
+      const field = read.field ?? "";
+      if (checks.some((check) => check.path === path && check.field === field)) continue;
+      const predicate = `{"predicate": "quote_missing", "path": ${JSON.stringify(path)}${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ${JSON.stringify(pages)}}`;
       problems.push(`the answer carries quotes (${where(site)}) and the workflow fetches pages: check them in code, with an escalate ${predicate} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge`);
     }
     for (const { label, pages: read } of checks) for (const page of read) {
