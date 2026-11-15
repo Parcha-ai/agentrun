@@ -108,6 +108,43 @@ test("a step waiting for room leaves at the run's stop, admitted for nothing, an
   near(tools.heldUsd(), 0, "the waiter held nothing");
 });
 
+test("a stopped run admits nothing more: a cancelled burst's waiters leave, and the calls that come after the stop are refused, none charged", async () => {
+  const stop = new AbortController();
+  const { store, run } = runOn(0.5, { stopped: stop.signal });
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  const first = await tools.admit(fetchCall("out", 0.4));
+  // A burst of 5 behind it, each waiting for room.
+  const waiters = Array.from({ length: 5 }, (_, i) => tools.admit(fetchCall(`waits${i}`, 0.3)).then(() => "admitted", (error) => error));
+  await sleep(150);
+  stop.abort(new Error("the run was stopped"));
+  for (const left of await Promise.all(waiters)) assert.ok(left instanceof Error && !(left instanceof cap.CapRefused), `each waiter left, unadmitted: ${left}`);
+  // The room comes back, and the burst's calls still queued behind the stop (released from their own booking's line once
+  // the waiters left) reach the cap: none is admitted.
+  await tools.settle(first.id, 0.02);
+  const after = await Promise.all(Array.from({ length: 3 }, (_, i) => tools.admit(fetchCall(`late${i}`, 0.01)).then(() => "admitted", (error) => error)));
+  assert.ok(after.every((left) => left instanceof Error), `no call after the stop was admitted: ${after}`);
+  assert.equal((await requestsIn(store, cap.TOOL_SESSION)).length, 1, "only the first was ever admitted");
+  near(tools.spentUsd(), 0.02, "nothing charged after the stop");
+  near(tools.heldUsd(), 0, "nothing held after the stop");
+});
+
+test("steps that come together keep the order they came in: a smaller step behind one that must wait never goes first", async () => {
+  const { store, run } = runOn(0.5);
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  const decisions = await run.decisions(await store.open(cap.DECISION_SESSION));
+  const first = await tools.admit(fetchCall("out", 0.4));
+  const order = [];
+  // Asked in the same tick: $0.30 must wait beside $0.40 held; the $0.05 decision behind it fits the $0.10 left, but came
+  // second.
+  const big = tools.admit(fetchCall("big", 0.3)).then((a) => (order.push("big"), a));
+  const small = decisions.admit(decision("small", 0.05)).then((a) => (order.push("small"), a));
+  await sleep(300);
+  assert.deepEqual(order, [], "the smaller one waits behind the one that came first");
+  await tools.settle(first.id, 0.02);
+  await Promise.all([big, small]);
+  assert.deepEqual(order, ["big", "small"]);
+});
+
 test("a step waiting for room is refused in its own words when the run parks meanwhile, the hold named apart", async () => {
   let parked = false;
   const { store, run } = runOn(0.5, { parked: () => parked });

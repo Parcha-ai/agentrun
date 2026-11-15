@@ -19,8 +19,8 @@
 // Waiting for room. A refusal that `waits` (the cap's: the request fits beside the run's spend, only not beside the holds
 // of steps in flight that settle on their own) is not handed on: the request waits in the run's line, first come first
 // served, and is asked again once a step it waited on has settled (each settle books the step at what it cost, at most its
-// hold, so the room comes back). Only the line's first asks; a step that comes while others wait goes to the line's end,
-// so a small one never takes the room an earlier one waits for. Model requests, decisions and paid tool calls (a web
+// hold, so the room comes back). Every step joins the line as it comes, before its first ask, and only the line's first
+// asks, so a small one never takes the room an earlier one waits for, even when the two came together. Model requests, decisions and paid tool calls (a web
 // fetch's, a search's) wait alike: a tool call runs once the request that asked for it has answered, so it never waits on
 // a hold its own wait keeps from settling.
 // - The hold ledger is the run's records (every session's runner.request and runner.turn), which every process of the run
@@ -33,6 +33,8 @@
 // - A waiter leaves the line, admitted for nothing and holding nothing, when its client goes (its signal: a stop, a
 //   cancel, a lost claim), when the run stops (`stopped`, for a paid call or a decision too), when its booking stops (`halted`: thrown, as a stop that came during the check), or when the
 //   run parks meanwhile (`parked`: refused in its own words, so nothing more is sent until a raise).
+// - Nothing is admitted once its signal is aborted: a step that comes, or reaches its turn, after its client went or the
+//   run stopped is refused with the signal's reason, before any read, so no call starts or is charged after a stop.
 import { type BeforeRequest, type InFlight, sessionSpendOf } from "./runner.js";
 import { freeRequestsIn } from "./kernel/cap/free.js";
 import type { SessionRecord } from "./types.js";
@@ -87,8 +89,11 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
 
   /** One admission, in turn with every other: `before`'s verdict on `request` over the run's totals now, and the steps in
    *  flight it was judged beside that settle on their own (what a refusal that waits waits on). */
-  const ask = (request: Parameters<BeforeRequest>[0]) => {
+  const ask = (request: Parameters<BeforeRequest>[0], signal: AbortSignal | undefined) => {
     const asked = queue.then(async () => {
+      // A step whose client went, or whose run stopped, while it waited its turn here is never admitted: nothing is held,
+      // recorded or charged for it, and the next one asks.
+      if (signal?.aborted) throw gone(signal);
       let spentUsd: number | null = 0;
       // The run's requests on free models so far, each counted once: every one whose runner.request says so, answered, in
       // flight or cut, in any session and any process, and below, each admitted here not yet recorded.
@@ -141,7 +146,9 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
           ...(request.host === undefined ? {} : { host: request.host }),
           ...(request.route === undefined ? {} : { route: request.route }),
           ...(freeRequest ? { freeRequest: true as const } : {}),
-          ...(request.paid?.hold ? { stays: true as const } : {}),
+          // A hold-only step, or money already owed (a browser session's reserve or release, settled when its session
+          // ends, not when a call answers): never waited on.
+          ...(request.paid?.hold || request.paid?.owed ? { stays: true as const } : {}),
         });
       }
       return { verdict, settling };
@@ -189,27 +196,26 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
     // What ends its wait: its own client's going (a model request's), or the run's stop (any step's: a paid call's or a
     // decision's has no client of its own here).
     const signal = request.signal && options.stopped ? AbortSignal.any([request.signal, options.stopped]) : (request.signal ?? options.stopped);
-    let place: Place | undefined;
+    // Every step joins the line as it comes, before its first ask, and asks only once it is first: steps that come together
+    // are asked in the order they came, so one behind a step that must wait never goes ahead of it. The first leaving
+    // (admitted, refused or gone) wakes the next at once.
+    const place: Place = {};
+    line.push(place);
     try {
-      // Others already wait: this one goes to the line's end, and asks once it is first.
-      if (line.length > 0) {
-        place = {};
-        line.push(place);
-        let pause = WAIT_POLL_FIRST_MS;
-        while (line[0] !== place) {
-          // Not first yet: it has no verdict of its own to be refused in, so a park reaches it as its first ask does.
-          await nap(place, pause, signal);
-          if (signal?.aborted) throw gone(signal);
-          const halted = request.halted?.();
-          if (halted) throw halted;
-          pause = Math.min(2 * pause, WAIT_POLL_MOST_MS);
-        }
-      }
       let pause = WAIT_POLL_FIRST_MS;
+      while (line[0] !== place) {
+        // Not first yet: it has no verdict of its own to be refused in, so a park reaches it as its first ask does.
+        await nap(place, pause, signal);
+        if (signal?.aborted) throw gone(signal);
+        const halted = request.halted?.();
+        if (halted) throw halted;
+        pause = Math.min(2 * pause, WAIT_POLL_MOST_MS);
+      }
+      pause = WAIT_POLL_FIRST_MS;
       let quietSince = Date.now();
       let waitedOn: Set<string> | undefined;
       for (;;) {
-        const { verdict, settling } = await ask(request);
+        const { verdict, settling } = await ask(request, signal);
         if (!(verdict && "refuse" in verdict && verdict.waits)) return verdict;
         // A step it waited on has settled since it last asked: the wait goes on, from the first pause again.
         if (waitedOn && [...waitedOn].some((id) => !settling.has(id))) {
@@ -218,11 +224,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
         }
         waitedOn = settling;
         if (Date.now() - quietSince >= stallMs) return plain(verdict);
-        if (!place) {
-          place = {};
-          line.push(place);
-        }
-        // It waits first in line (it asked while none waited, or it was first): only the first asks again.
+        // It waits first in line: only the first asks again.
         do {
           await nap(place, pause, signal);
           if (leaving(request, signal) === "parked") return plain(verdict);
@@ -230,7 +232,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
         } while (line[0] !== place);
       }
     } finally {
-      if (place) leave(place);
+      leave(place);
     }
   };
 }
