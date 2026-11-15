@@ -5,10 +5,12 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter: the bound is the bytes, 9,772 tokens at first, most of them the computer's tools' and
-//    codemode's definitions, the computer's types among them, and the desktop skill's line in the system prompt), the
-//    first request needs $0.052 and the whole run $0.110: $0.12, documented, takes it to its answer, $0.11 parks it
-//    before its last step;
+//  - through a gateway (OpenRouter, which counts nothing): the first request is bounded by its bytes, 9,772 tokens, most
+//    of them the computer's tools' and codemode's definitions, the computer's types among them, and the desktop skill's
+//    line in the system prompt, so it needs $0.052. Each later request carries the one before it, so it is bounded by
+//    what that one billed and the bytes it adds, its screenshot at the 1,366 tokens it bills (1,744 over the last bill,
+//    against the 1,300 each step bills here): the whole run needs $0.082. $0.09, documented, takes it to its answer;
+//    $0.08 wraps it up before its last screenshot;
 //  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt), so the first
 //    request needs $0.030 and the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it. The count
 //    here is the one recorded from a real desktop run before codemode was offered beside the computer's tools; the fake
@@ -25,7 +27,7 @@ const { fauxComputers } = await import("../dist/faux-computers.js");
 after(closeOpenSessions);
 
 /** The minimums serve's README states for pi on Sonnet: through a gateway, and straight to Anthropic. */
-const GATEWAY_MINIMUM = 0.12;
+const GATEWAY_MINIMUM = 0.09;
 const DIRECT_MINIMUM = 0.09;
 /** A step's least, as the cap prices it here: its input bound at the cache-write price and a 1,024-token answer. */
 const leastOf = (bound) => (bound * 3.75 + 1_024 * 15) / 1e6;
@@ -85,7 +87,7 @@ async function neededFor(t, origin) {
   return { sent, first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked };
 }
 
-test("the documented minimums are what the run needs, to the cent above: $0.12 through a gateway, $0.09 straight to Anthropic", async (t) => {
+test("the documented minimums are what the run needs, to the cent above: $0.09 through a gateway, $0.09 straight to Anthropic", async (t) => {
   const gateway = await neededFor(t, "https://openrouter.ai/api");
   const direct = await neededFor(t, "https://api.anthropic.com");
   t.diagnostic(`measured: ${JSON.stringify({ offered: offeredOf(gateway.sent[0]), gateway: { first: gateway.first, whole: gateway.whole, bound: gateway.asked[0].request.inputTokensMax }, direct: { first: direct.first, whole: direct.whole } })}`);
@@ -102,9 +104,10 @@ test("through a gateway, a pi desktop run on Sonnet under $0.04 is refused its f
   assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.06/,JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
 });
 
-// A cent under the minimum the run does not get every step. Straight to Anthropic the cap parks it before its last step.
-// Through a gateway the whole run needs $0.110, a fraction of a cent over $0.11, so at $0.11 the wrap-up refuses its last
-// screenshot first and the run answers.
+// A cent under the minimum the run does not get every step. Straight to Anthropic the cap parks it before its last step:
+// the count there is the recorded one, whatever the request carries. Through a gateway the wrap-up refuses its last
+// screenshot first, so the answer's request carries the refusal's words in place of a screenshot, its bound follows its
+// bytes, and the run answers.
 for (const [route, origin, minimum, underEnds] of [["through a gateway", "https://openrouter.ai/api", GATEWAY_MINIMUM, "wrapped up"], ["straight to Anthropic", "https://api.anthropic.com", DIRECT_MINIMUM, "parked"]]) {
   test(`${route}, the documented minimum ($${minimum}) takes a pi desktop run on Sonnet through four screenshots to its answer; a cent under, it is ${underEnds} before its last screenshot`, async (t) => {
     const at = await desktopRun(t, minimum, origin);

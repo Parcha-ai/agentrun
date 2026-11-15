@@ -3165,7 +3165,13 @@ nothing asked of the provider, and its bound is that count when it is below the 
 (`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
 token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
 gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
-that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it.
+that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it. On any route
+with no count (a Claude model through a gateway), a Messages request on pi or claude-agent that carries the session's
+last answered request unchanged, apart from the messages it adds, is bounded by what the provider billed that request's
+whole input at (its answer's input, cache read and cache write tokens) plus the bytes of the messages it adds, each
+image among them at what it is billed as, when that is below its byte bound: the earlier request's system prompt, tools
+and messages bill alike in the later one, and what it adds is bounded as the byte bound bounds any body. A request that
+differs in anything else, or adds a document, keeps its other bounds.
 
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
 step is sent only when the run's spend plus that step's least (its whole input bound at the cache-write price, and a
@@ -3173,21 +3179,22 @@ step is sent only when the run's spend plus that step's least (its whole input b
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
 screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
-tokens, so it needs $0.052 and the whole run $0.110;
+tokens, so it needs $0.052; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
+needs $0.082;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
 $0.030 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
-| Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
+| Through a gateway (OpenRouter): the byte bound, then the last bill | $0.06 | $0.09 | about $0.012 |
 | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the
 five-step figure does not get every step: straight to Anthropic it parks before its last step, its words naming that
-figure; through a gateway ($0.11, a fraction of a cent under the $0.110 it needs) the wrap-up refuses its last screenshot
-and it answers.
+figure; through a gateway ($0.08) the wrap-up refuses its last screenshot, the answer's request carries the refusal in
+place of a screenshot and fits, and it answers.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself

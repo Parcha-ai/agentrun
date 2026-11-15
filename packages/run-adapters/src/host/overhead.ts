@@ -18,7 +18,8 @@
 // margin (`LOCAL_COUNT_MARGIN`, `responsesLocalInputTokens`, `messagesLocalInputTokens`), on every route: straight to
 // OpenAI, through a gateway, or through serve's Messages translation. A body this cannot count with a margin it can state
 // (a model on another tokenizer, a file input) has no local count, and keeps its byte bound; Anthropic counts its own
-// models' (the claude-agent policy's countInput).
+// models' (the claude-agent policy's countInput). A Messages request that carries an earlier one its provider billed
+// (a session's next step) is bounded by that bill and the bytes it adds (`messagesInputAfter`), on any model and route.
 import { o200kModel, o200kTokens } from "./o200k.js";
 
 /** One image a request carries: the bytes its data takes in the body (its base64, or its data URL; 0 for an image the
@@ -440,6 +441,84 @@ export async function messagesLocalInputTokens(body: Record<string, unknown>): P
   const system = typeof body.system === "string" ? (body.system === "" ? 0 : 1) : list(body.system).length;
   const items = messages.reduce((sum, message) => sum + Math.max(1, messagesBlocks([message]).length), 0) + list(body.tools).length + system;
   return withMargin(await o200kTokens(text), items, opaque);
+}
+
+/** An earlier request of a session and the input tokens its provider billed for it (input, cache reads and cache writes
+ *  together), as its answer reported them. */
+export interface BilledRequest {
+  readonly body: Record<string, unknown>;
+  readonly inputTokens: number;
+}
+
+/** The fields of a Messages body that bill no input: how much it may answer, whether it streams, and who asks. */
+const UNBILLED_FIELDS: ReadonlySet<string> = new Set(["messages", "max_tokens", "stream", "metadata"]);
+
+/** A tool or a content block without its own cache marker, its `cache_control` key: a marker bills no token. Only that
+ *  key: one deeper (a schema's property, a tool call's input) is text the model reads. */
+const unmarked = (block: unknown): unknown => {
+  if (!plain(block)) return block;
+  const { cache_control: _marker, ...rest } = block;
+  return rest;
+};
+/** Content blocks without the cache markers the API reads in them: on each block, and on each block of a tool result's
+ *  content. */
+const unmarkedBlocks = (blocks: unknown): unknown =>
+  Array.isArray(blocks)
+    ? blocks.map((block) => {
+        const bare = unmarked(block);
+        return plain(bare) && bare.type === "tool_result" && Array.isArray(bare.content) ? { ...bare, content: bare.content.map(unmarked) } : bare;
+      })
+    : blocks;
+/** A content (a message's, or the system prompt) as the API reads it: a string is one text block. */
+const asBlocks = (content: unknown): unknown => (typeof content === "string" ? [{ type: "text", text: content }] : content);
+/**
+ * A body's field (`name`), or one of its messages (`message`), as the model reads it: without the cache markers, where
+ * the Messages API reads one (Anthropic's prompt caching guide, "What can be cached": a tool definition, a block of the
+ * system prompt, a block of a message's content, and so a tool use or tool result, and the API's `ToolResultBlockParam`,
+ * whose content blocks each take one). A `cache_control` anywhere else is not a marker and bills as text.
+ */
+const readOf = (name: string | undefined, value: unknown): string => {
+  if (name === undefined) return JSON.stringify(plain(value) ? { ...value, content: unmarkedBlocks(asBlocks(value.content)) } : value);
+  if (name === "system") return JSON.stringify(unmarkedBlocks(asBlocks(value)));
+  if (name === "tools") return JSON.stringify(Array.isArray(value) ? value.map(unmarked) : value);
+  return JSON.stringify(value);
+};
+
+/**
+ * The most input tokens a Messages `body` can be billed for, from an earlier request of its session that the provider
+ * billed (`earlier`): that request's billed input, plus the bytes of the messages `body` carries after the ones the two
+ * share, each image among them at the most it is billed as in place of its data's bytes. Undefined (no figure: the body
+ * keeps its other bounds) when the two differ in anything but their messages and the fields that bill no input
+ * (`max_tokens`, `stream`, `metadata`), when the earlier request's figure is not a count, or when the messages it adds
+ * hold a document (billed by its pages, with no stated bound).
+ *
+ * Why it never undercounts: the provider renders a request as its system prompt and tools, then each message in turn,
+ * each between its own role markers, and bills each message's tokens whatever follows it. So the two requests' system
+ * prompt, tools (the tool-use prompt with them) and shared messages bill alike, and the earlier request was billed for all
+ * of them, and for any message of its own the later one dropped, which only adds to the figure. What the later request
+ * adds is bounded as the byte bound bounds any body (`inputTokensMaxOf`): a byte-level BPE token covers at least one
+ * byte, and the JSON keys each message spends cover its role markers. Two bodies are compared as the model reads them:
+ * a cache marker, where the API reads one (`readOf`), bills nothing, and a message's string content is the one text block the API reads it as (the Claude
+ * CLI sends its environment message as a block in one request and a string in the next). A thinking block the API leaves
+ * out of a later request's context (an earlier turn's) only makes the later request cheaper.
+ *
+ * It needs no tokenizer, so it bounds a Claude model through a gateway (OpenRouter), which counts nothing and whose
+ * tokenizer is not o200k_base: the CLI's second request, read at its bytes, is four times what it bills.
+ */
+export function messagesInputAfter(earlier: BilledRequest, body: Record<string, unknown>): number | undefined {
+  if (!plain(earlier?.body) || !plain(body) || !Number.isSafeInteger(earlier.inputTokens) || earlier.inputTokens <= 0) return undefined;
+  const fields = new Set([...Object.keys(earlier.body), ...Object.keys(body)].filter((name) => !UNBILLED_FIELDS.has(name)));
+  for (const name of fields) if (readOf(name, earlier.body[name]) !== readOf(name, body[name])) return undefined;
+  const before = list(earlier.body.messages);
+  const after = list(body.messages);
+  let shared = 0;
+  while (shared < before.length && shared < after.length && readOf(undefined, before[shared]) === readOf(undefined, after[shared])) shared += 1;
+  const added = after.slice(shared);
+  if (messagesBlocks(added).some((block) => block.type === "document")) return undefined;
+  const model = typeof body.model === "string" ? body.model : undefined;
+  // Each image's data is part of the added bytes, so the sum is never below the earlier figure.
+  const images = messagesImagesIn(added).reduce((sum, image) => sum + imageTokens(model, image) - image.bytes, 0);
+  return earlier.inputTokens + Buffer.byteLength(JSON.stringify(added), "utf8") + images;
 }
 
 /** The image a body's `data` (base64, or a data URL) carries: the bytes it takes, and its size when its header says it.

@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { messagesImagesIn, messagesLocalInputTokens, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, messagesInputAfter, messagesLocalInputTokens, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type BilledRequest, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -504,6 +504,10 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     // bytes would bound it at four times its tokens and, past 272,000, at the long-context price). A Claude model, a body
     // with a document, or one offering the hosted search (its allowance is part of the byte bound) keeps the byte bound.
     countInputLocally: (body: Record<string, unknown>) => (offersWebSearch(body) ? undefined : messagesLocalInputTokens(body)),
+    // A request that carries the session's earlier one its provider billed: that bill and the bytes it adds, on any model
+    // (Claude through OpenRouter, which counts nothing, held at its bytes four times what it bills). Not with the hosted
+    // search offered: what its searches read in has no bound.
+    inputAfter: (earlier: BilledRequest, body: Record<string, unknown>) => (offersWebSearch(body) ? undefined : messagesInputAfter(earlier, body)),
     outputLeast: anthropicOutputLeast,
     effortOf: anthropicEffort,
     reasoningHidden: anthropicReasoningHidden,
