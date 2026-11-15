@@ -5,6 +5,7 @@
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
 import { blurbOf, isHostTool } from "./tool-list.js";
+import { EMAIL_DRAFT, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND } from "./email/names.js";
 import { mcpNameOf, mcpToolName, parseToolName } from "./tool-names.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
@@ -120,7 +121,12 @@ export type ToolHost = {
   liveAt?: RunnerLive;
   /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
    *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
-  store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings" | "sealedKeys">;
+  /** The trigger that started the run, and its source's kind (run-launch.ts trigger, inputOrigin): an email's run reads
+   *  its thread alone (email/tools.ts). Absent: a person's run, or one no trigger started. */
+  startedBy?: { readonly trigger: { readonly id: string; readonly firing_key: string; readonly attrs?: Readonly<Record<string, string>> }; readonly source: string };
+  /** The agent's own tool settings (its revision's tool_settings), as its gate reads them: an email read tool's `scope`. */
+  toolSettings?: unknown;
   /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
    *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
   claim?: Claim;
@@ -187,6 +193,14 @@ export type ToolEntry = {
 const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
   summary, needs: [], nodes: false, callOnly: true, effect,
   bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
+});
+
+/** An email tool (email/tools.ts emailEntry), its binding loaded at its first bind. */
+const emailTool = (name: string, summary: string): ToolEntry => ({
+  summary,
+  needs: [],
+  nodes: false,
+  bind: async (host) => (await import("./email/tools.js")).emailEntry(name, summary).bind(host),
 });
 
 /** web_fetch, bound under `name`. */
@@ -661,6 +675,12 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search)) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
+  // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;
+  // the mail libraries load at the first bind.
+  [EMAIL_SEARCH]: emailTool(EMAIL_SEARCH, "Search the server's email account: { from?, to?, subject?, text?, since?, unread?, mailbox?: \"INBOX\", limit?: 20 (max 50) } -> { messages: [{ message_id, from, to, subject, date, snippet, unread, attachments }] }, newest first. On a run an email started, its thread alone unless the agent's setting says scope: \"mailbox\"."),
+  [EMAIL_READ]: emailTool(EMAIL_READ, "Read an email of the server's account by message_id, or its whole thread (thread: true, by References and In-Reply-To, oldest first): { message_id, thread? } -> { messages: [{ from, from_name, to, cc, subject, date, message_id, in_reply_to, text, attachments, references }] }. Reads leave mail unread."),
+  [EMAIL_DRAFT]: emailTool(EMAIL_DRAFT, "Save an email to the account's Drafts, sending nothing: { to, cc?, subject, text, in_reply_to? } -> { saved: true, mailbox, message_id }; in_reply_to threads it as a reply."),
+  [EMAIL_SEND]: emailTool(EMAIL_SEND, "Send an email from the server's account over SMTP: { to, cc?, subject, text, in_reply_to? } -> { sent: true, message_id }; in_reply_to threads it as a reply, and a copy is filed in Sent. Asks the person first by default."),
   browser: browserTool,
   // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
   // (adapter-run-spec.ts), never by this table; not a host tool (tool-list.ts `replay`), so another harness refuses it.

@@ -6,14 +6,13 @@
 // folder of that name else; any other a folder's own name, as a Gmail layout shows. Reads are PEEKs: the inbox reads
 // unread after. A run an email started sees only its thread (the message that started it and every message linked to
 // it by References or In-Reply-To, in any mailbox) unless the agent's tool setting says `scope: "mailbox"`; any other
-// run sees the whole account. The password is in no answer, row or run input.
+// run sees the whole account. The password is in no answer, row or run input; one a tool's error ever echoed is cut from
+// everything the server shows.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
-import { agent, call, clientOwnerSession, follow, runDir, serve } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, serve } from "./support.mjs";
 import { fakeClock, firings, made } from "./trigger-support.mjs";
-import { ADDRESS, emailTrigger, FAUX_EMAIL, mailbox, saved, sawOf } from "./email-support.mjs";
+import { ADDRESS, emailTrigger, FAUX_EMAIL, launchText, mailbox, saved, sawOf } from "./email-support.mjs";
 
 const TOOLS = ["email_search", "email_read", "email_draft", "email_send"];
 const calls = (list) => `Email calls: ${JSON.stringify(list)}`;
@@ -83,7 +82,7 @@ test("search newest first, a thread read oldest first, a draft in Drafts with \\
 
   // The password: in no answer the run was handed, no row, no input.
   const rows = JSON.stringify((await api("GET", `/runs/${runId}/timeline?wait_ms=0`)).body);
-  const meta = await readFile(join(runDir(data, runId), "serve.json"), "utf8");
+  const meta = launchText(data, runId);
   for (const where of [JSON.stringify(saw), rows, meta]) assert.ok(!where.includes(faux.password));
 });
 
@@ -232,4 +231,22 @@ test("the email tools' defaults: search, read and draft allow; send asks; none i
   const { tools } = (await api("GET", "/capabilities")).body;
   const listed = TOOLS.map((name) => tools.find((tool) => tool.name === name));
   assert.deepEqual(listed.map((tool) => [tool?.name, tool?.default_permission, tool?.permission, tool?.nodes]), [["email_search", "allow", "allow", false], ["email_read", "allow", "allow", false], ["email_draft", "allow", "allow", false], ["email_send", "ask", "ask", false]]);
+});
+
+test("a tool's error that echoes the password shows it nowhere: the server cuts it from the run's rows, its answer, its title and the runs list", { timeout: 150_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("echo"))).status, 201);
+  // The model names the password as a mailbox: the tool's error says the name back, whole.
+  const started = await api("POST", "/agents/echo/runs", { input: { content: calls([["email_search", { mailbox: faux.password }]]) } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  const rows = JSON.stringify((await api("GET", `/runs/${runId}/timeline?wait_ms=0`)).body);
+  const list = JSON.stringify((await api("GET", "/runs")).body);
+  assert.match(view.result.final_answer, /^Saw: .*no mailbox named .*\[redacted\]/, "the tool's error reached the model, the password in it cut where it is shown");
+  assert.ok(rows.includes("[redacted]"), "the tool's row is cut too");
+  for (const [where, text] of [["the run's view", JSON.stringify(view)], ["its timeline", rows], ["the runs list", list]]) assert.ok(!text.includes(faux.password), `${where} shows the password`);
 });

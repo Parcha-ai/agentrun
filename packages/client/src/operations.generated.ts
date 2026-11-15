@@ -69,6 +69,20 @@ export type DefinitionInput = {
       provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
     };
+    email_search?: {
+      permission?: "allow" | "ask" | "deny";
+      scope?: "thread" | "mailbox";
+    };
+    email_read?: {
+      permission?: "allow" | "ask" | "deny";
+      scope?: "thread" | "mailbox";
+    };
+    email_draft?: {
+      permission?: "allow" | "ask" | "deny";
+    };
+    email_send?: {
+      permission?: "allow" | "ask" | "deny";
+    };
     browser?: {
       provider?: "auto" | "browserbase" | "kernel" | "chrome";
       permission?: "allow" | "deny";
@@ -297,6 +311,7 @@ export type RunSummary = {
     tool: string;
     call_id: string;
     args_preview: string;
+    summary?: string;
     requested_at: string;
     price?: number | "not metered" | "priced by usage";
     destructive?: true;
@@ -544,6 +559,7 @@ export type Run = {
     tool: string;
     call_id: string;
     args_preview: string;
+    summary?: string;
     requested_at: string;
     price?: number | "not metered" | "priced by usage";
     destructive?: true;
@@ -687,7 +703,7 @@ export type TimelineRow = {
   origin?: "server" | "trigger";
   trigger?: {
     id: string;
-    source: "schedule" | "webhook" | "slack" | "github";
+    source: "schedule" | "webhook" | "slack" | "github" | "email";
     owner: boolean;
     name?: string;
   };
@@ -946,7 +962,7 @@ export type Features = {
   };
   triggers?: {
     routes: boolean;
-    sources: Array<"schedule" | "webhook" | "github">;
+    sources: Array<"schedule" | "webhook" | "github" | "email">;
     targets: Array<"start_run" | "message_run">;
     min_every_s: number;
     history_kept: number;
@@ -1826,6 +1842,8 @@ export type CreatePairingResponse = {
 
 /** Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id}). */
 
+/** Forget this server's email account (DELETE /settings/email). */
+
 /** Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil). */
 export type DeleteWorkspaceArchilResponse = {
   on: boolean;
@@ -1867,6 +1885,23 @@ export type GetChatGPTSignInResponse = {
   plan?: string;
   authorize_url?: string;
   models?: Array<string>;
+};
+
+/** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
+export type GetEmailAccountResponse = {
+  configured: boolean;
+  preset: "gmail" | "fastmail" | "icloud" | "other" | null;
+  address: string | null;
+  user: string | null;
+  imap: {
+    host: string;
+    port: number;
+  } | null;
+  smtp: {
+    host: string;
+    port: number;
+  } | null;
+  password_unreadable: boolean;
 };
 
 /** Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github). */
@@ -2142,6 +2177,37 @@ export type SaveComputerKeysResponse = {
   };
 };
 
+/** Save this server's email account, its password sealed (PUT /settings/email). */
+export type SaveEmailAccountBody = {
+  preset?: "gmail" | "fastmail" | "icloud" | "other" | "outlook";
+  address: string;
+  user?: string;
+  password: string;
+  imap?: {
+    host: string;
+    port: number;
+  };
+  smtp?: {
+    host: string;
+    port: number;
+  };
+};
+export type SaveEmailAccountResponse = {
+  configured: boolean;
+  preset: "gmail" | "fastmail" | "icloud" | "other" | null;
+  address: string | null;
+  user: string | null;
+  imap: {
+    host: string;
+    port: number;
+  } | null;
+  smtp: {
+    host: string;
+    port: number;
+  } | null;
+  password_unreadable: boolean;
+};
+
 /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
 
 /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
@@ -2169,6 +2235,33 @@ export type TestComputerResponse = {
 } | {
   ok: false;
   why: string;
+};
+
+/** Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test). */
+export type TestEmailAccountBody = {
+  preset?: "gmail" | "fastmail" | "icloud" | "other" | "outlook";
+  address?: string;
+  user?: string;
+  password?: string;
+  imap?: {
+    host: string;
+    port: number;
+  };
+  smtp?: {
+    host: string;
+    port: number;
+  };
+};
+export type TestEmailAccountResponse = {
+  ok: boolean;
+  imap: {
+    ok: boolean;
+    message: string;
+  };
+  smtp: {
+    ok: boolean;
+    message: string;
+  };
 };
 
 /** Test the Archil account key at its region's control plane (POST /workspace/archil/test). */
@@ -3221,6 +3314,18 @@ export type PutToolSettingsBody = {
     provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
+  email_search?: {
+    permission?: "allow" | "ask" | "deny";
+  };
+  email_read?: {
+    permission?: "allow" | "ask" | "deny";
+  };
+  email_draft?: {
+    permission?: "allow" | "ask" | "deny";
+  };
+  email_send?: {
+    permission?: "allow" | "ask" | "deny";
+  };
   browser?: {
     provider?: "auto" | "browserbase" | "kernel" | "chrome";
     permission?: "allow" | "deny";
@@ -3315,6 +3420,25 @@ export type CreateTriggerBody = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "email";
+    account?: "default";
+    mailbox?: string;
+    every_s?: number;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -3383,6 +3507,25 @@ export type CreateTriggerResponse = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "email";
+    account: "default";
+    mailbox: string;
+    every_s: number;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -3415,6 +3558,10 @@ export type CreateTriggerResponse = {
     at: string;
     reason: "connection_lost";
     detail: string;
+  } | {
+    at: string;
+    reason: "sign_in_refused";
+    detail: string;
   } | null;
   next_at: string | null;
   last_run_id: string | null;
@@ -3422,7 +3569,7 @@ export type CreateTriggerResponse = {
   updated_at: string;
   last_firing: {
     key: string;
-    by: "schedule" | "manual" | "webhook" | "github";
+    by: "schedule" | "email" | "manual" | "webhook" | "github";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -3436,6 +3583,11 @@ export type CreateTriggerResponse = {
     attempts?: number;
     retry_at?: string;
     catch_up?: true;
+  } | null;
+  last_check?: {
+    at: string;
+    ok: boolean;
+    message: string;
   } | null;
   hook_url?: string;
   secret?: SecretMeta;
@@ -3452,7 +3604,7 @@ export interface FireTriggerParams {
 }
 export type FireTriggerResponse = {
   key: string;
-  by: "schedule" | "manual" | "webhook" | "github";
+  by: "schedule" | "email" | "manual" | "webhook" | "github";
   nominal_at: string;
   status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
   at: string;
@@ -3472,7 +3624,7 @@ export type FireTriggerResponse = {
 export type ListTriggerFiringsResponse = {
   firings: Array<{
     key: string;
-    by: "schedule" | "manual" | "webhook" | "github";
+    by: "schedule" | "email" | "manual" | "webhook" | "github";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -3538,6 +3690,25 @@ export type GetTriggerResponse = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "email";
+    account: "default";
+    mailbox: string;
+    every_s: number;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -3570,6 +3741,10 @@ export type GetTriggerResponse = {
     at: string;
     reason: "connection_lost";
     detail: string;
+  } | {
+    at: string;
+    reason: "sign_in_refused";
+    detail: string;
   } | null;
   next_at: string | null;
   last_run_id: string | null;
@@ -3577,7 +3752,7 @@ export type GetTriggerResponse = {
   updated_at: string;
   last_firing: {
     key: string;
-    by: "schedule" | "manual" | "webhook" | "github";
+    by: "schedule" | "email" | "manual" | "webhook" | "github";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -3591,6 +3766,11 @@ export type GetTriggerResponse = {
     attempts?: number;
     retry_at?: string;
     catch_up?: true;
+  } | null;
+  last_check?: {
+    at: string;
+    ok: boolean;
+    message: string;
   } | null;
   hook_url?: string;
   secret?: SecretMeta;
@@ -3647,6 +3827,25 @@ export type ListTriggersResponse = {
           prefix: string;
         }>;
       }>;
+    } | {
+      kind: "email";
+      account: "default";
+      mailbox: string;
+      every_s: number;
+      accept?: Array<{
+        event: string;
+        actions?: Array<string>;
+        where?: Array<{
+          pointer: string;
+          in: Array<unknown>;
+        } | {
+          pointer: string;
+          exists: boolean;
+        } | {
+          pointer: string;
+          prefix: string;
+        }>;
+      }>;
     };
     target: {
       kind: "start_run";
@@ -3679,6 +3878,10 @@ export type ListTriggersResponse = {
       at: string;
       reason: "connection_lost";
       detail: string;
+    } | {
+      at: string;
+      reason: "sign_in_refused";
+      detail: string;
     } | null;
     next_at: string | null;
     last_run_id: string | null;
@@ -3686,7 +3889,7 @@ export type ListTriggersResponse = {
     updated_at: string;
     last_firing: {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "email" | "manual" | "webhook" | "github";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3700,6 +3903,11 @@ export type ListTriggersResponse = {
       attempts?: number;
       retry_at?: string;
       catch_up?: true;
+    } | null;
+    last_check?: {
+      at: string;
+      ok: boolean;
+      message: string;
     } | null;
     hook_url?: string;
     secret?: SecretMeta;
@@ -3751,6 +3959,25 @@ export type UpdateTriggerBody = {
   } | {
     kind: "github";
     accept: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
+  } | {
+    kind: "email";
+    account?: "default";
+    mailbox?: string;
+    every_s?: number;
+    accept?: Array<{
       event: string;
       actions?: Array<string>;
       where?: Array<{
@@ -3829,6 +4056,25 @@ export type UpdateTriggerResponse = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "email";
+    account: "default";
+    mailbox: string;
+    every_s: number;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -3861,6 +4107,10 @@ export type UpdateTriggerResponse = {
     at: string;
     reason: "connection_lost";
     detail: string;
+  } | {
+    at: string;
+    reason: "sign_in_refused";
+    detail: string;
   } | null;
   next_at: string | null;
   last_run_id: string | null;
@@ -3868,7 +4118,7 @@ export type UpdateTriggerResponse = {
   updated_at: string;
   last_firing: {
     key: string;
-    by: "schedule" | "manual" | "webhook" | "github";
+    by: "schedule" | "email" | "manual" | "webhook" | "github";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -3882,6 +4132,11 @@ export type UpdateTriggerResponse = {
     attempts?: number;
     retry_at?: string;
     catch_up?: true;
+  } | null;
+  last_check?: {
+    at: string;
+    ok: boolean;
+    message: string;
   } | null;
   hook_url?: string;
   secret?: SecretMeta;
@@ -4045,10 +4300,12 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   connectGitHub: {"method":"POST","path":"/integrations/github/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createPairing: {"method":"POST","path":"/computers/pairings","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteComputer: {"method":"DELETE","path":"/computers/{computer_id}","pathParams":["computer_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  deleteEmailAccount: {"method":"DELETE","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteWorkspaceArchil: {"method":"DELETE","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   disconnectGitHub: {"method":"DELETE","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   finishChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in/finish","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getChatGPTSignIn: {"method":"GET","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getEmailAccount: {"method":"GET","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -4059,10 +4316,12 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveComposioServer: {"method":"PUT","path":"/settings/mcp-servers/{name}/composio","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit","tools.[]","user_id"],"tagged":false},
   saveComputerKeys: {"method":"PUT","path":"/computers/{provider}/keys","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  saveEmailAccount: {"method":"PUT","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startMcpOAuth: {"method":"POST","path":"/settings/mcp-servers/{name}/oauth/start","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","scopes.[]","client_id"],"tagged":false},
   testComputer: {"method":"POST","path":"/computers/{provider}/test","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  testEmailAccount: {"method":"POST","path":"/settings/email/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWorkspaceArchil: {"method":"POST","path":"/workspace/archil/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteMcpServer: {"method":"DELETE","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getMcpServer: {"method":"GET","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4216,6 +4475,8 @@ export function resources(call: Call) {
       createPairing: (options?: RequestOptions): Promise<CreatePairingResponse> => call("createPairing", [], undefined, undefined, options),
       /** Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id}). */
       deleteComputer: (computerId: string, options?: RequestOptions): Promise<void> => call("deleteComputer", [computerId], undefined, undefined, options),
+      /** Forget this server's email account (DELETE /settings/email). */
+      deleteEmailAccount: (options?: RequestOptions): Promise<void> => call("deleteEmailAccount", [], undefined, undefined, options),
       /** Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil). */
       deleteWorkspaceArchil: (options?: RequestOptions): Promise<DeleteWorkspaceArchilResponse> => call("deleteWorkspaceArchil", [], undefined, undefined, options),
       /** Disconnect GitHub: the App's credentials gone from this server, and every github trigger off (DELETE /integrations/github). */
@@ -4224,6 +4485,8 @@ export function resources(call: Call) {
       finishChatGptsignIn: (body: FinishChatGPTSignInBody, options?: RequestOptions): Promise<FinishChatGPTSignInResponse> => call("finishChatGPTSignIn", [], body, undefined, options),
       /** This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt). */
       getChatGptsignIn: (options?: RequestOptions): Promise<GetChatGPTSignInResponse> => call("getChatGPTSignIn", [], undefined, undefined, options),
+      /** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
+      getEmailAccount: (options?: RequestOptions): Promise<GetEmailAccountResponse> => call("getEmailAccount", [], undefined, undefined, options),
       /** Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github). */
       getGitHubConnection: (options?: RequestOptions): Promise<GetGitHubConnectionResponse> => call("getGitHubConnection", [], undefined, undefined, options),
       /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
@@ -4240,12 +4503,16 @@ export function resources(call: Call) {
       saveComposioServer: (name: string, body: SaveComposioServerBody, options?: RequestOptions): Promise<SaveComposioServerResponse> => call("saveComposioServer", [name], body, undefined, options),
       /** Save a computer provider's keys, sealed (PUT /computers/{provider}/keys). */
       saveComputerKeys: (provider: string, body: SaveComputerKeysBody, options?: RequestOptions): Promise<SaveComputerKeysResponse> => call("saveComputerKeys", [provider], body, undefined, options),
+      /** Save this server's email account, its password sealed (PUT /settings/email). */
+      saveEmailAccount: (body: SaveEmailAccountBody, options?: RequestOptions): Promise<SaveEmailAccountResponse> => call("saveEmailAccount", [], body, undefined, options),
       /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
       signOutChatGpt: (options?: RequestOptions): Promise<void> => call("signOutChatGPT", [], undefined, undefined, options),
       /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
       startChatGptsignIn: (options?: RequestOptions): Promise<StartChatGPTSignInResponse> => call("startChatGPTSignIn", [], undefined, undefined, options),
       /** Test a computer provider's account with its saved keys (POST /computers/{provider}/test). */
       testComputer: (provider: string, options?: RequestOptions): Promise<TestComputerResponse> => call("testComputer", [provider], undefined, undefined, options),
+      /** Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test). */
+      testEmailAccount: (body?: TestEmailAccountBody, options?: RequestOptions): Promise<TestEmailAccountResponse> => call("testEmailAccount", [], body, undefined, options),
       /** Test the Archil account key at its region's control plane (POST /workspace/archil/test). */
       testWorkspaceArchil: (options?: RequestOptions): Promise<TestWorkspaceArchilResponse> => call("testWorkspaceArchil", [], undefined, undefined, options),
     },

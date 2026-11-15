@@ -35,7 +35,7 @@ import { builtinHarness } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
-import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
+import { asksByDefault, isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
@@ -63,7 +63,7 @@ const isBuiltin = (name: string): boolean => isToolRow(name) || SERVE_OWN_TOOLS.
  *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
  *  refused. */
 export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
-  if (isCatalogTool(name) || !isBuiltin(name)) return "ask";
+  if (isCatalogTool(name) || !isBuiltin(name) || asksByDefault(name)) return "ask";
   return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
 };
 
@@ -351,6 +351,9 @@ export type PendingApproval = {
   call_id: string;
   /** The call's arguments as text, at most ARGS_PREVIEW_BYTES. */
   args_preview: string;
+  /** What the call does in words, where its tool says (email_send: "Send email to <to>, cc <cc>: <subject>" and the
+   *  text's first 300 characters), redacted as its arguments are. */
+  summary?: string;
   requested_at: string;
   price?: ApprovalPrice;
   /** Present, true, when the run's pin marks the tool destructive (toolEffect): an allow of it needs confirm_destructive. */

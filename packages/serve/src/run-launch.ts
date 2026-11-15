@@ -107,9 +107,12 @@ const readDisk = (value: unknown): LaunchDisk | undefined =>
 const readReplay = (value: unknown): Replay | undefined =>
   isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest } : undefined;
 
-/** The trigger a launch body names, as read back: `{ id, firing_key }`, or null (triggerOf of the old serve.json). */
+/** The trigger a launch body names, as read back: `{ id, firing_key }` and its firing's `attrs` (each a string) when it
+ *  kept them, or null (triggerOf of the old serve.json). */
 function readTrigger(value: unknown): RunTrigger | null {
-  return isObject(value) && typeof value.id === "string" && typeof value.firing_key === "string" ? { id: value.id, firing_key: value.firing_key } : null;
+  if (!(isObject(value) && typeof value.id === "string" && typeof value.firing_key === "string")) return null;
+  const attrs = isObject(value.attrs) ? Object.fromEntries(Object.entries(value.attrs).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+  return { id: value.id, firing_key: value.firing_key, ...(Object.keys(attrs).length ? { attrs } : {}) };
 }
 
 /** Where a run runs, as read back from a launch body, or undefined when it names none. */

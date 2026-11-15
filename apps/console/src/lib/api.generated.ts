@@ -280,6 +280,20 @@ export interface components {
         provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
+      email_search?: {
+        permission?: "allow" | "ask" | "deny";
+        scope?: "thread" | "mailbox";
+      };
+      email_read?: {
+        permission?: "allow" | "ask" | "deny";
+        scope?: "thread" | "mailbox";
+      };
+      email_draft?: {
+        permission?: "allow" | "ask" | "deny";
+      };
+      email_send?: {
+        permission?: "allow" | "ask" | "deny";
+      };
       browser?: {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "deny";
@@ -327,6 +341,9 @@ export interface components {
       } | {
         provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
+      } | {
+        permission?: "allow" | "ask" | "deny";
+        scope?: "thread" | "mailbox";
       } | {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "deny";
@@ -449,7 +466,7 @@ export interface components {
     };
     triggers?: {
       routes: boolean;
-      sources: ("schedule" | "webhook" | "github")[];
+      sources: ("schedule" | "webhook" | "github" | "email")[];
       targets: ("start_run" | "message_run")[];
       min_every_s: number;
       history_kept: number;
@@ -736,6 +753,7 @@ export interface components {
       tool: string;
       call_id: string;
       args_preview: string;
+      summary?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -914,6 +932,7 @@ export interface components {
       tool: string;
       call_id: string;
       args_preview: string;
+      summary?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1025,7 +1044,7 @@ export interface components {
     origin?: "server" | "trigger";
     trigger?: {
       id: string;
-      source: "schedule" | "webhook" | "slack" | "github";
+      source: "schedule" | "webhook" | "slack" | "github" | "email";
       owner: boolean;
       name?: string;
     };
@@ -1406,6 +1425,25 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "email";
+        account?: "default";
+        mailbox?: string;
+        every_s?: number;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -1471,6 +1509,25 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "email";
+        account: "default";
+        mailbox: string;
+        every_s: number;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -1503,6 +1560,10 @@ export interface operations {
         at: string;
         reason: "connection_lost";
         detail: string;
+      } | {
+        at: string;
+        reason: "sign_in_refused";
+        detail: string;
       } | null;
       next_at: string | null;
       last_run_id: string | null;
@@ -1510,7 +1571,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "email" | "manual" | "webhook" | "github";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -1524,6 +1585,11 @@ export interface operations {
         attempts?: number;
         retry_at?: string;
         catch_up?: true;
+      } | null;
+      last_check?: {
+        at: string;
+        ok: boolean;
+        message: string;
       } | null;
       hook_url?: string;
       secret?: components["SecretMeta"];
@@ -1545,6 +1611,10 @@ export interface operations {
     };
   };
   deleteComputer: {
+    body: never;
+    answer: never;
+  };
+  deleteEmailAccount: {
     body: never;
     answer: never;
   };
@@ -1622,7 +1692,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "email" | "manual" | "webhook" | "github";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -1814,6 +1884,24 @@ export interface operations {
       plan?: string;
       authorize_url?: string;
       models?: string[];
+    };
+  };
+  getEmailAccount: {
+    body: never;
+    answer: {
+      configured: boolean;
+      preset: "gmail" | "fastmail" | "icloud" | "other" | null;
+      address: string | null;
+      user: string | null;
+      imap: {
+        host: string;
+        port: number;
+      } | null;
+      smtp: {
+        host: string;
+        port: number;
+      } | null;
+      password_unreadable: boolean;
     };
   };
   getFile: {
@@ -2472,6 +2560,25 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "email";
+        account: "default";
+        mailbox: string;
+        every_s: number;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -2504,6 +2611,10 @@ export interface operations {
         at: string;
         reason: "connection_lost";
         detail: string;
+      } | {
+        at: string;
+        reason: "sign_in_refused";
+        detail: string;
       } | null;
       next_at: string | null;
       last_run_id: string | null;
@@ -2511,7 +2622,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "email" | "manual" | "webhook" | "github";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -2525,6 +2636,11 @@ export interface operations {
         attempts?: number;
         retry_at?: string;
         catch_up?: true;
+      } | null;
+      last_check?: {
+        at: string;
+        ok: boolean;
+        message: string;
       } | null;
       hook_url?: string;
       secret?: components["SecretMeta"];
@@ -3241,7 +3357,7 @@ export interface operations {
     answer: {
       firings: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "email" | "manual" | "webhook" | "github";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3309,6 +3425,25 @@ export interface operations {
               prefix: string;
             })[];
           }[];
+        } | {
+          kind: "email";
+          account: "default";
+          mailbox: string;
+          every_s: number;
+          accept?: {
+            event: string;
+            actions?: string[];
+            where?: ({
+              pointer: string;
+              in: unknown[];
+            } | {
+              pointer: string;
+              exists: boolean;
+            } | {
+              pointer: string;
+              prefix: string;
+            })[];
+          }[];
         };
         target: {
           kind: "start_run";
@@ -3341,6 +3476,10 @@ export interface operations {
           at: string;
           reason: "connection_lost";
           detail: string;
+        } | {
+          at: string;
+          reason: "sign_in_refused";
+          detail: string;
         } | null;
         next_at: string | null;
         last_run_id: string | null;
@@ -3348,7 +3487,7 @@ export interface operations {
         updated_at: string;
         last_firing: {
           key: string;
-          by: "schedule" | "manual" | "webhook" | "github";
+          by: "schedule" | "email" | "manual" | "webhook" | "github";
           nominal_at: string;
           status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
           at: string;
@@ -3362,6 +3501,11 @@ export interface operations {
           attempts?: number;
           retry_at?: string;
           catch_up?: true;
+        } | null;
+        last_check?: {
+          at: string;
+          ok: boolean;
+          message: string;
         } | null;
         hook_url?: string;
         secret?: components["SecretMeta"];
@@ -3490,6 +3634,18 @@ export interface operations {
       };
       web_search?: {
         provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        permission?: "allow" | "ask" | "deny";
+      };
+      email_search?: {
+        permission?: "allow" | "ask" | "deny";
+      };
+      email_read?: {
+        permission?: "allow" | "ask" | "deny";
+      };
+      email_draft?: {
+        permission?: "allow" | "ask" | "deny";
+      };
+      email_send?: {
         permission?: "allow" | "ask" | "deny";
       };
       browser?: {
@@ -3627,7 +3783,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "email" | "manual" | "webhook" | "github";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3647,7 +3803,7 @@ export interface operations {
       ok: "duplicate";
     } | {
       key: string;
-      by: "schedule" | "manual" | "webhook" | "github";
+      by: "schedule" | "email" | "manual" | "webhook" | "github";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3668,7 +3824,7 @@ export interface operations {
     answer: {
       firings: ({
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "email" | "manual" | "webhook" | "github";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3690,7 +3846,7 @@ export interface operations {
     } | Record<string, unknown> | {
       firings: ({
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "email" | "manual" | "webhook" | "github";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -3925,6 +4081,37 @@ export interface operations {
       };
     };
   };
+  saveEmailAccount: {
+    body: {
+      preset?: "gmail" | "fastmail" | "icloud" | "other" | "outlook";
+      address: string;
+      user?: string;
+      password: string;
+      imap?: {
+        host: string;
+        port: number;
+      };
+      smtp?: {
+        host: string;
+        port: number;
+      };
+    };
+    answer: {
+      configured: boolean;
+      preset: "gmail" | "fastmail" | "icloud" | "other" | null;
+      address: string | null;
+      user: string | null;
+      imap: {
+        host: string;
+        port: number;
+      } | null;
+      smtp: {
+        host: string;
+        port: number;
+      } | null;
+      password_unreadable: boolean;
+    };
+  };
   saveMcpServer: {
     body: {
       url: string;
@@ -4085,6 +4272,33 @@ export interface operations {
       why: string;
     };
   };
+  testEmailAccount: {
+    body: {
+      preset?: "gmail" | "fastmail" | "icloud" | "other" | "outlook";
+      address?: string;
+      user?: string;
+      password?: string;
+      imap?: {
+        host: string;
+        port: number;
+      };
+      smtp?: {
+        host: string;
+        port: number;
+      };
+    };
+    answer: {
+      ok: boolean;
+      imap: {
+        ok: boolean;
+        message: string;
+      };
+      smtp: {
+        ok: boolean;
+        message: string;
+      };
+    };
+  };
   testWebhook: {
     body: never;
     answer: {
@@ -4168,6 +4382,25 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "email";
+        account?: "default";
+        mailbox?: string;
+        every_s?: number;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target?: {
         kind: "start_run";
@@ -4233,6 +4466,25 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "email";
+        account: "default";
+        mailbox: string;
+        every_s: number;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -4265,6 +4517,10 @@ export interface operations {
         at: string;
         reason: "connection_lost";
         detail: string;
+      } | {
+        at: string;
+        reason: "sign_in_refused";
+        detail: string;
       } | null;
       next_at: string | null;
       last_run_id: string | null;
@@ -4272,7 +4528,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "manual" | "webhook" | "github";
+        by: "schedule" | "email" | "manual" | "webhook" | "github";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4286,6 +4542,11 @@ export interface operations {
         attempts?: number;
         retry_at?: string;
         catch_up?: true;
+      } | null;
+      last_check?: {
+        at: string;
+        ok: boolean;
+        message: string;
       } | null;
       hook_url?: string;
       secret?: components["SecretMeta"];

@@ -15,7 +15,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { hostToolNames } from "../dist/tool-list.js";
+import { asksByDefault, hostToolNames } from "../dist/tool-list.js";
 import { BOX_WORK } from "../dist/place.js";
 import { deniedText } from "../dist/tool-gate.js";
 import { liveSettings, runnerGate } from "./gate-support.mjs";
@@ -190,7 +190,7 @@ test("a run's gate reads the server's settings at each call: a change reaches th
   assert.equal(await gate.decide("write", { path: ".learning/notes.md", content: "x" }), "ask", "its permission, never a file's word");
 });
 
-test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
+test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default, and so does email_send; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
   withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL"]);
   const { api } = await serve(t);
   const doc = (await api("GET", "/openapi.json")).body;
@@ -199,7 +199,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   const byName = (tools) => Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   const view = byName(caps.tools);
   for (const name of Object.keys(TOOLS)) {
-    assert.deepEqual([view[name].permission, view[name].default_permission, view[name].permissions], [isCatalog(name) ? "ask" : "allow", isCatalog(name) ? "ask" : "allow", [...permissionsOf(name)]], name);
+    const asks = isCatalog(name) || asksByDefault(name) ? "ask" : "allow";
+    assert.deepEqual([view[name].permission, view[name].default_permission, view[name].permissions], [asks, asks, [...permissionsOf(name)]], name);
   }
   const put = await api("PUT", "/settings/tools", { [ENRICH]: { permission: "allow" }, "monid:faux/*": { permission: "deny" }, web_fetch: { permission: "ask" }, read: { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } });
   assert.equal(put.status, 200, JSON.stringify(put.body));

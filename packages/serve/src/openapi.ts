@@ -5,6 +5,7 @@
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
 import { TRIGGER_SOURCES } from "./timeline/index.js";
+import { EMAIL_SCOPES, SCOPED_TOOLS } from "./email/names.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
@@ -195,6 +196,33 @@ const VALIDATED = {
     warnings: { type: "array", items: { type: "string" } },
   },
 };
+/** A mail server's endpoint: its host and port. */
+const MAIL_ENDPOINT = closed({ host: { type: "string", minLength: 1, maxLength: 253 }, port: { type: "integer", minimum: 1, maximum: 65535 } });
+const MAIL_ENDPOINT_OR_NULL = { oneOf: [MAIL_ENDPOINT, { type: "null" }] };
+/** GET and PUT /settings/email's answer (email/account.ts accountView): the account, never its password. */
+const EMAIL_ACCOUNT = closed({
+  configured: { type: "boolean", description: "An account is saved and its password opens with this server's seal key: the email trigger and tools can sign in." },
+  preset: { oneOf: [{ enum: ["gmail", "fastmail", "icloud", "other"] }, { type: "null" }], description: "The preset it was saved from: its servers are the preset's; `other`, the person's own." },
+  address: { type: ["string", "null"], description: "The address it sends as." },
+  user: { type: ["string", "null"], description: "Who signs in: the address unless saved otherwise." },
+  imap: { ...MAIL_ENDPOINT_OR_NULL, description: "Where its mail is read: TLS on 993, STARTTLS required on any other port." },
+  smtp: { ...MAIL_ENDPOINT_OR_NULL, description: "Where its mail is sent: TLS on 465, STARTTLS required on any other port." },
+  password_unreadable: { type: "boolean", description: "An account is saved but its password, sealed under another seal key, does not open here: save it again." },
+}, "The server's one email account (\"default\"), never its password.");
+/** PUT /settings/email's and POST /settings/email/test's body: the account and its password. */
+const EMAIL_ACCOUNT_BODY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    preset: { enum: ["gmail", "fastmail", "icloud", "other", "outlook"], default: "other", description: "gmail, fastmail and icloud fill imap and smtp; other takes both. outlook is refused in words: Outlook needs Microsoft sign-in, which this server doesn't do yet." },
+    address: { type: "string", minLength: 1, maxLength: 320, description: "The address it sends as." },
+    user: { type: "string", minLength: 1, maxLength: 320, description: "Who signs in. Default: the address." },
+    password: { type: "string", minLength: 1, maxLength: 320, "x-agentrun-secret": true, description: "The account's app password (Gmail, iCloud and Fastmail each make one for an app): sealed, never answered or shown again. A test of the saved account may leave it out." },
+    imap: MAIL_ENDPOINT,
+    smtp: MAIL_ENDPOINT,
+  },
+};
+/** One half of an email account test. */
+const MAIL_CHECK = closed({ ok: { type: "boolean" }, message: { type: "string", description: "In plain words: \"Signed in to <host>.\", with INBOX's count for IMAP, or why not." } });
 /** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
 const CHATGPT_SIGN_IN = {
   type: "object", additionalProperties: false, required: ["state"],
@@ -403,11 +431,21 @@ const BASH_POLICY = {
   enum: [...BASH_POLICIES],
   description: "An agent's own setting on bash only, never the server's. read-only: the tool gate reads each shell call's command before it runs or anyone is asked, and refuses, in words the model reads, one that could write, run code or read outside the run's folder: a program outside its read list (git's read subcommands, grep, sed -n with one N,Mp range, cat, head, tail, wc, ls, find without -exec and the like), redirection other than 2>/dev/null and 2>&1, $ and backticks, subshells, ||, a lone &, a pipe into anything but a filter, an unquoted glob, or a path outside the folder or on the never-open list. bash_background and bash_input are refused under it. A policy adds to bash's permission and is never one: approvals `never` lifts none of it, and an approved call is decided again before it runs.",
 };
-/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy. */
+/** An email read tool's scope in an agent's own tool settings (email/tools.ts). */
+const EMAIL_SCOPE = {
+  enum: [...EMAIL_SCOPES],
+  description: "An agent's own setting on email_read and email_search only, never the server's. thread (the default): on a run an email trigger started, the tool sees the thread of the message that started it alone (that message, and every message whose References or In-Reply-To links it, in any mailbox), and a message outside it is answered \"outside this run's thread\" and never fetched; mailbox: the whole account. A run no email started sees the whole account either way.",
+  "x-agentrun-serve": "email/1",
+};
+/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy and the email read tools' scope. */
 const AGENT_TOOL_SETTINGS = {
   ...TOOL_SETTINGS,
   additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
-  properties: { ...TOOL_SETTINGS.properties, bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } } },
+  properties: {
+    ...TOOL_SETTINGS.properties,
+    bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } },
+    ...Object.fromEntries(SCOPED_TOOLS.map((name) => [name, { ...TOOL_SETTINGS.properties[name], properties: { ...TOOL_SETTINGS.properties[name]!.properties, scope: EMAIL_SCOPE } }])),
+  },
 };
 /** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, `browserbase`, or `unavailable: <reason>`. */
 const RESOLUTION = { type: "string", pattern: "^(native|kernel|exa-keyless|parallel|browserbase|unavailable: .+)$" };
@@ -946,7 +984,7 @@ const TRIGGER_FIELDS = closed({
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, description: `How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one \`missed\` firing. 0: a missed time never fires. Default ${CATCHUP_WINDOW_S}.` },
   max_active_runs: { type: ["integer", "null"], minimum: 1, maximum: MAX_ACTIVE_RUNS, description: `For a \`start_run\` trigger of a pushed source (a webhook, with or without \`accept\`): each event starts its own run, never skipped behind the last, and this is the most of its runs active at once. A firing past it waits due and is tried again; past 20 due an event is 429 \`rate_limited\`. Null: a trigger with \`accept\` takes every run this server has room for, and one without keeps the overlap skip. A schedule or a \`message_run\` target is 422 with it set.` },
   failures_in_a_row: { type: "integer", minimum: 0, description: `Failed firings since the last that started a run; at ${FAILURES_TO_PAUSE} the trigger turns itself off (\`disabled\`). Turned on again, it counts from 0.` },
-  disabled: { oneOf: [closed({ at: DATE_TIME, reason: { const: "auto_paused" } }), closed({ at: DATE_TIME, reason: { const: "source_unreadable" }, detail: { type: "string", description: "Why the source no longer reads." } }), closed({ at: DATE_TIME, reason: { const: "agent_archived" }, detail: { type: "string", description: "The agent it runs as, archived." } }), closed({ at: DATE_TIME, reason: { const: "connection_lost" }, detail: { type: "string", description: "Which connection went (GitHub disconnected here, or the App's installation deleted or suspended on GitHub)." } }), { type: "null" }], description: `Why it is off, when the server turned it off: \`agent_archived\`, the agent it runs as was archived (turning it on is 409 agent_archived until the agent is unarchived); \`auto_paused\`, ${FAILURES_TO_PAUSE} failed firings in a row; \`connection_lost\`, the connection it needs went (GitHub disconnected here, or the App's installation deleted or suspended on GitHub); \`source_unreadable\`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it) or its every_s is out of range (a hand edit of its row), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for \`source_unreadable\` takes a new source.` },
+  disabled: { oneOf: [closed({ at: DATE_TIME, reason: { const: "auto_paused" } }), closed({ at: DATE_TIME, reason: { const: "source_unreadable" }, detail: { type: "string", description: "Why the source no longer reads." } }), closed({ at: DATE_TIME, reason: { const: "agent_archived" }, detail: { type: "string", description: "The agent it runs as, archived." } }), closed({ at: DATE_TIME, reason: { const: "connection_lost" }, detail: { type: "string", description: "Which connection went (GitHub disconnected here, or the App's installation deleted or suspended on GitHub)." } }), closed({ at: DATE_TIME, reason: { const: "sign_in_refused" }, detail: { type: "string", description: "What to fix: the account in Settings → Email." } }), { type: "null" }], description: `Why it is off, when the server turned it off: \`agent_archived\`, the agent it runs as was archived (turning it on is 409 agent_archived until the agent is unarchived); \`auto_paused\`, ${FAILURES_TO_PAUSE} failed firings in a row; \`connection_lost\`, the connection it needs went (GitHub disconnected here, or the App's installation deleted or suspended on GitHub); \`sign_in_refused\`, an email trigger's mail server refused the sign-in 3 times in a row (fix the account in Settings → Email, then turn it on); \`source_unreadable\`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it) or its every_s is out of range (a hand edit of its row), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for \`source_unreadable\` takes a new source.` },
   next_at: { type: ["string", "null"], format: "date-time", description: "When it fires next; null while it is off." },
   last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped, unless its firings each start their own run (a webhook with `accept`, or a pushed trigger with `max_active_runs`). Null until one starts." },
   created_at: DATE_TIME,
@@ -954,7 +992,7 @@ const TRIGGER_FIELDS = closed({
   last_firing: { oneOf: [TRIGGER_FIRING, { type: "null" }] },
 }, "A trigger. A firing while its last run is active (working, or waiting on a person) is skipped, and recorded as a skipped firing with why: never queued, since a firing queued behind a run parked on a person would wait as long as the person does. A webhook trigger with `accept` is the exception: each event it takes starts its own run.");
 /** A trigger's view: its fields, all there, and `hook_url`, a pushed source's alone. */
-const TRIGGER = { ...TRIGGER_FIELDS, properties: { ...TRIGGER_FIELDS.properties, hook_url: { type: "string", description: "Where its sender posts, for a pushed source alone (absent for a schedule): a webhook's own hook, `/v2/hooks/{id}`, at this server's public URL (AGENTRUN_PUBLIC_URL) when it has one, else the path." } } };
+const TRIGGER = { ...TRIGGER_FIELDS, properties: { ...TRIGGER_FIELDS.properties, last_check: { oneOf: [closed({ at: DATE_TIME, ok: { type: "boolean" }, message: { type: "string" } }), { type: "null" }], description: "A polled source's (an email's) last check of its mailbox: when, whether it read, and in words (\"Read INBOX: 2 messages new.\", or why not: a server that couldn't be reached is said here and tried at the next time). Null before its first; absent for any other source.", "x-agentrun-serve": "email/1" }, hook_url: { type: "string", description: "Where its sender posts, for a pushed source alone (absent for a schedule): a webhook's own hook, `/v2/hooks/{id}`, at this server's public URL (AGENTRUN_PUBLIC_URL) when it has one, else the path." } } };
 const TRIGGER_WRITE = {
   name: { type: "string", minLength: 1, maxLength: 200, description: "Default the trigger's id." },
   enabled: { type: "boolean", default: true, description: "Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up." },
@@ -1995,6 +2033,44 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  "/settings/email": {
+    get: {
+      operationId: "getEmailAccount", tags: ["local"], summary: "This server's email account: its address, servers and who signs in, never its password",
+      description: "The one account the email trigger reads and the email tools read and send with. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(EMAIL_ACCOUNT, "The account."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "email/1",
+    },
+    put: {
+      operationId: "saveEmailAccount", tags: ["local"], summary: "Save this server's email account, its password sealed",
+      description: "Replaces the account. A preset fills the servers (gmail: imap.gmail.com:993 and smtp.gmail.com:465; fastmail: imap.fastmail.com:993 and smtp.fastmail.com:465; icloud: imap.mail.me.com:993 and smtp.mail.me.com:587); `other` takes both. Every connection is TLS (993 and 465 from the start, any other port with STARTTLS required), never in the clear. The password is sealed under the server's seal key and is in no answer, event or log line. Nothing is checked against the servers here: POST /settings/email/test signs in. 422 by field for a body that does not read, and outlook is refused in words. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { ...EMAIL_ACCOUNT_BODY, required: ["address", "password"] } } } },
+      responses: { "200": json(EMAIL_ACCOUNT, "Saved."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
+      "x-agentrun-serve": "email/1",
+    },
+    delete: {
+      operationId: "deleteEmailAccount", tags: ["local"], summary: "Forget this server's email account",
+      description: "Removes the account and its sealed password. An email trigger's next check then fails, saying so, and an email tool answers that no account is saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "email/1",
+    },
+  },
+  "/settings/email/test": {
+    post: {
+      operationId: "testEmailAccount", tags: ["local"], summary: "Sign in to the email account's IMAP and SMTP servers, sending nothing",
+      description: "Signs in to IMAP (INBOX opened read-only, its count said) and to SMTP (signed in and out, nothing sent), for the saved account with an empty body, or the account in the body (its password may be left out to test the saved one's with other servers). Saves nothing. Each half answers ok and its words: a refused sign-in, or a server that couldn't be reached, in words, never the password. 422 for a body that does not read, or an empty body with no account saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: false, content: { "application/json": { schema: EMAIL_ACCOUNT_BODY } } },
+      responses: { "200": json(closed({ ok: { type: "boolean", description: "Both signed in." }, imap: MAIL_CHECK, smtp: MAIL_CHECK }), "The test's answer."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "email/1",
+    },
+  },
   "/settings/chatgpt": {
     get: {
       operationId: "getChatGPTSignIn", tags: ["local"], summary: "This server's ChatGPT sign-in: its state, who and which plan, never a token",
@@ -2543,6 +2619,7 @@ const PENDING: Json = {
         tool: { type: "string" },
         call_id: { type: "string", description: "The call's id, as its tool_result row's tool_use_id." },
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes.` },
+        summary: { type: "string", description: "What the call does, in words, where its tool says: email_send's \"Send email to <to>, cc <cc>: <subject>\", a blank line, then the text's first 300 characters. Redacted as args_preview is.", "x-agentrun-serve": "email/1" },
         requested_at: { type: "string", format: "date-time" },
         price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }, { const: "priced by usage" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call; \"priced by usage\" for a monid endpoint priced by usage: monid estimates its cost only when the call runs, after the allow (the call is held at that estimate, and a charge above it stops the run), so nothing is sent to monid while it waits. Absent when the tool names none." },
         destructive: { const: true, description: `Present on an MCP tool's call that is destructive by the annotations the run pinned (destructiveHint true, readOnlyHint not true), and on a call whose allow lets such a tool run (a learned workflow's, its card naming the tool in \`mcp_calls\`): its allow needs \`confirm_destructive: true\`. Absent on every other call.`, "x-agentrun-serve": "allowreads/1" },
@@ -3251,6 +3328,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       fields.push([name, ...down, field].join("."));
     }
   }
+  // email/1: the email read tools' scope, inside an agent's own tool settings (AGENT_TOOL_SETTINGS).
+  fields.push(...SCOPED_TOOLS.map((name) => `DefinitionInput.tool_settings.${name}.scope`));
   // inlineagent/1: POST /runs' body, the run fields of POST /agents/{agent_id}/runs (RunCreate, as extended above) but a
   // pinned revision, with the agent given inline as POST /agents takes one and its reference in the system that owns it.
   const runCreate = schemas.RunCreate as Json & { properties: Record<string, Json> };

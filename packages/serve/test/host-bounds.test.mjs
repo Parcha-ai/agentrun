@@ -6,7 +6,8 @@
 // LINKS_CHARS), title (TITLE_CAP) and URL (URL_MAX) at theirs, and Parallel's failure said beside it; web_search's
 // RESULTS_MAX results with SNIPPET_MAX snippets; monid's answer past CLIP; pi's read and bash past their 2,000 lines or
 // 50 KB (host-tools' MAX_LINES and MAX_BYTES, as pi's own descriptions state them), with their notes; write and edit with
-// the longest file name. Text that the answer must escape (quotes, backslashes) is used wherever it can grow a result.
+// the longest file name; the email tools' searches and threads with every field and text past its cut (email/answer.ts).
+// Text that the answer must escape (quotes, backslashes) is used wherever it can grow a result.
 // Three-byte text (CJK) is used wherever a result's bytes can grow past its characters. Each largest result is measured
 // in characters (the bound; the Claude Agent CLI's estimate, a quarter of a token a character) and as Codex counts it,
 // four bytes of UTF-8 a token, against the adapter's tool_output_token_limit. A tool added to the host tools with no
@@ -36,6 +37,8 @@ import { hostToolsOf } from "./host-tools-of.mjs";
 import { LEARNED_CLIP, learnedText, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import * as web from "../dist/web-fetch.js";
 import * as search from "../dist/web-search.js";
+import { emailError, emailText } from "../dist/email/answer.js";
+import { emailRegistrations } from "../dist/email/tools.js";
 
 const PUBLIC = "http://public.example/";
 /** The background tools: the computer's, run by the kernel's registry (workspace/run-tools.ts), not by a host tool here. */
@@ -82,6 +85,25 @@ test("every host tool's largest result is within the host's result bound, which 
   const found = { provider: "native", query: '"'.repeat(search.QUERY_MAX), results: Array.from({ length: search.RESULTS_MAX }, () => hit), text: '"'.repeat(search.ANSWER_MAX) };
   const wideHit = { url: `https://s.example/${"u".repeat(pages.URL_MAX)}`, title: wide.repeat(pages.TITLE_CAP), snippet: wide.repeat(search.SNIPPET_MAX) };
   keep("web_search", search.searchText(found), search.searchText({ provider: "native", query: wide.repeat(search.QUERY_MAX), results: Array.from({ length: search.RESULTS_MAX }, () => wideHit), text: wide.repeat(search.ANSWER_MAX) }));
+
+  // The email tools: a search's most messages and a thread's, every field past its cut, in quotes, in three-byte text and in
+  // control characters (six characters of JSON each); a draft's and a send's answers; an error's words.
+  const mailOf = (fill, i) => ({ message_id: `<${fill.repeat(5_000)}${i}@x>`, from: fill.repeat(5_000), from_name: fill.repeat(5_000), to: Array.from({ length: 500 }, () => fill.repeat(400)), cc: Array.from({ length: 500 }, () => fill.repeat(400)), subject: fill.repeat(20_000), date: fill.repeat(500), in_reply_to: fill.repeat(5_000), references: Array.from({ length: 500 }, () => fill.repeat(2_000)), attachments: Array.from({ length: 500 }, () => ({ name: fill.repeat(2_000), size: 1, type: fill.repeat(2_000) })) });
+  const fills = ['"', wide, "\u0001"];
+  const bare = (i) => ({ message_id: `<m${i}@x>`, from: "a@example.com", to: ["b@example.com"], subject: "s", date: "2026-06-01T00:00:00.000Z", in_reply_to: null, references: [], attachments: [] });
+  const mails = [
+    ...fills.map((fill) => emailText({ messages: Array.from({ length: 50 }, (_, i) => ({ ...mailOf(fill, i), snippet: fill.repeat(5_000), unread: true })) })),
+    ...fills.map((fill) => emailText({ messages: Array.from({ length: 20 }, (_, i) => ({ ...mailOf(fill, i), text: fill.repeat(300_000) })) })),
+    ...fills.map((fill) => emailText({ messages: Array.from({ length: 20 }, (_, i) => ({ ...bare(i), text: fill.repeat(i % 2 ? 300_000 : 1_000) })) })),
+    ...fills.map((fill) => emailText({ messages: [{ ...bare(0), text: fill.repeat(2_000_000) }] })),
+    ...fills.map((fill) => emailText({ saved: true, mailbox: fill.repeat(50_000), message_id: fill.repeat(50_000) })),
+    ...fills.map((fill) => emailText({ sent: true, message_id: fill.repeat(50_000), note: fill.repeat(50_000) })),
+    ...fills.map((fill) => emailError(`email_read: ${fill.repeat(50_000)}`)),
+  ];
+  const thread = JSON.parse(mails[2 * fills.length]);
+  assert.ok(thread.messages.length === 20 && thread.messages.filter((m) => m.text.length === 1_000).length === 10, "a thread's short texts kept whole, its long ones sharing what is left");
+  assert.ok(JSON.parse(mails[0]).omitted > 0, "a search's messages that do not fit are counted");
+  for (const tool of ["email_search", "email_read", "email_draft", "email_send"]) keep(tool, ...mails);
 
   // A monid endpoint (one host tool per pinned endpoint, runner/monid-run.ts): one answer far past CLIP, the whole filed
   // under work/, by the longest run id it files by.
@@ -141,7 +163,7 @@ test("every host tool's largest result is within the host's result bound, which 
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
   // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow.
   const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) }, policy: () => "allow", denyFrom: () => "default" });
-  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), learned, askPerson];
+  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), learned, askPerson, ...emailRegistrations({})];
   const endpoints = monidForClaim({ [MONID_ENDPOINT]: { description: "Enrich a person.", input: { type: "object", properties: {} }, usd: 0.003 } }, {}, () => ws).tools;
   const all = [...hostToolsOf(run, HOSTED, ctx, new Map(), registrations), ...endpoints];
   assert.deepEqual(all.map((tool) => tool.name).sort(), [...HOSTED, "monid__faux__person__enrich"].sort(), "every host tool, and a monid endpoint, under its wire name");

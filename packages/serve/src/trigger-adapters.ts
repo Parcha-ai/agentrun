@@ -4,5 +4,6 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { schedule } from "./trigger-schedule.js";
 import { github } from "./trigger-github.js";
 import { webhook } from "./trigger-webhook.js";
+import { email } from "./trigger-email.js";
 
-export const TRIGGER_ADAPTERS: readonly TriggerAdapter[] = [schedule, webhook, github];
+export const TRIGGER_ADAPTERS: readonly TriggerAdapter[] = [schedule, webhook, github, email];

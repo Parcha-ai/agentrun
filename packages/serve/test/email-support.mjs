@@ -1,11 +1,10 @@
 // The email tests' own: the fake mail account (src/email/email-faux.ts) on loopback, the server's account saved to point at
 // it, an email trigger's body, and a fired run's payload read back from its input.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { startEmailFaux } from "../dist/email/email-faux.js";
-import { runDir } from "./support.mjs";
 
 export const FAUX_EMAIL = new URL("./fixtures/faux-email.mjs", import.meta.url).pathname;
 /** The address the server's account sends as. */
@@ -32,9 +31,21 @@ let named = 0;
 /** An email trigger's body: agent `agentId` started on each message, with `content` as its input. */
 export const emailTrigger = (agentId, source = {}, content = "Answer this email.", extra = {}) => ({ name: `mail ${++named}`, source: { kind: "email", ...source }, target: { kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 }, ...extra });
 
-/** A fired run's input as the run was given it (its serve.json), and the payload its email tag holds, parsed. */
+/** Run `runId`'s launch body as the server wrote it (the store's run_launch row, run-launch.ts), as text. */
+export function launchText(data, runId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    const row = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
+    assert.ok(row, `no launch for ${runId}`);
+    return row.body;
+  } finally {
+    db.close();
+  }
+}
+
+/** A fired run's input as the run was given it (its launch), and the payload its email tag holds, parsed. */
 export async function firedInput(data, runId) {
-  const { content } = JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).input;
+  const { content } = JSON.parse(launchText(data, runId)).input;
   const tagged = /\n\n<trigger-payload source="email"([^>]*) untrusted>\n([\s\S]*?)\n<\/trigger-payload>/.exec(content);
   return { content, attrs: tagged?.[1], payload: tagged ? JSON.parse(tagged[2]) : undefined };
 }

@@ -25,7 +25,7 @@ export type TriggerAdapter = {
   id: string;
   /** How a person names one: `the <label> "<name>"`, in each run's provenance line. */
   label: string;
-  /** `clock`: it fires on its own times, read by the engine's timer. `push`: a request delivered to the server fires it,
+  /** `clock`: it fires on its own times, read by the engine's timer (a source that polls, on each). `push`: a request delivered to the server fires it,
    *  keyed by the sender's own id, which a retry repeats. */
   delivery: "clock" | "push";
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
@@ -73,7 +73,26 @@ export type TriggerAdapter = {
   /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
    *  only the events it names). Default false: a firing while the last run is active is skipped. */
   concurrent?(source: Source): boolean;
+  /** For a clock source that polls (the email trigger): what it finds when its time comes, read from outside the server.
+   *  The engine fires each event it returns through the path a pushed event takes (`takes`, `concurrent`,
+   *  max_active_runs, the day-kept keys, a run per event), records no `missed` row for a time it was not there for, and
+   *  keeps the poll's cursor once its firings are recorded. */
+  poll?(source: Source, ctx: PollContext): Promise<PollResult>;
+  /** A run's title after its trigger's name, from what its source says of the firing (its attrs): an email's sender and
+   *  subject. Default: the event and action the attrs name. */
+  title?(attrs: Record<string, string>): string | undefined;
 };
+
+/** What a poll is given: its trigger's own settings (its cursor, public, as the adapter's `settings` names them) and the
+ *  source's credentials, read now (TriggerDeps.credentials: the email account, opened). */
+export type PollContext = { trigger: string; setting(field: string): string | undefined; credentials(): Promise<unknown> };
+/** One event a poll found: a pushed event's fields; `cursor`, the settings to keep once it and every event before it are
+ *  recorded; `left`, when it is recorded as skipped and starts nothing, why (in words). */
+export type PolledEvent = PushEvent & { cursor: Record<string, string>; left?: string };
+/** What a poll found: `check`, said on the trigger as its last check; `refused`, the source's credentials refused (the
+ *  engine turns the trigger off at the third in a row, `detail` its words); `note`, one history line that starts no run
+ *  (a first poll's, a reset's); `events`, oldest first; `cursor`, the settings to keep once every event is recorded. */
+export type PollResult = { check: { ok: boolean; message: string }; refused?: { detail: string }; note?: string; events?: PolledEvent[]; cursor?: Record<string, string> };
 
 /** Request headers, as Node gives them. */
 export type Headers = Record<string, string | string[] | undefined>;

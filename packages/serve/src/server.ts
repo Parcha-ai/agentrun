@@ -153,6 +153,8 @@ import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
+import { noAccount, openAccount } from "./email/account.js";
+import { emailRoute } from "./email/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
@@ -505,6 +507,11 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  // The server's email account (email/routes.ts): the owner's session's alone, its password in no answer.
+  { method: "GET", pattern: /^\/settings\/email$/, name: "getEmailAccount" },
+  { method: "PUT", pattern: /^\/settings\/email$/, name: "saveEmailAccount" },
+  { method: "DELETE", pattern: /^\/settings\/email$/, name: "deleteEmailAccount" },
+  { method: "POST", pattern: /^\/settings\/email\/test$/, name: "testEmailAccount" },
   { method: "GET", pattern: /^\/settings\/chatgpt$/, name: "getChatGPTSignIn" },
   { method: "DELETE", pattern: /^\/settings\/chatgpt$/, name: "signOutChatGPT" },
   { method: "POST", pattern: /^\/settings\/chatgpt\/sign-in$/, name: "startChatGPTSignIn" },
@@ -1252,6 +1259,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   ({ secrets: secretStores, settings: triggerSettings } = await openServerSecretsOverStore(store, data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
   secretStores.add("server", () => [token]);
+  // The email account's password (email/account.ts), and each one saved since this server started: cut from everything
+  // it shows, so a tool's error or a model's text that ever echoed it shows it nowhere.
+  const emailPasswords = new Set<string>();
+  const heldEmailPassword = async () => {
+    const password = (await openAccount(store, sealKey).catch(() => undefined))?.password;
+    if (password) emailPasswords.add(password);
+  };
+  await heldEmailPassword();
+  secretStores.add("email", () => [...emailPasswords]);
   // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
@@ -1598,7 +1614,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clock: options.triggerClock,
     ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
     adapters,
-    unavailable: (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : undefined),
+    unavailable: async (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : kind === "email" && !(await openAccount(store, sealKey)) ? noAccount() : undefined),
+    // The email trigger's account, its password opened as it polls (email/account.ts): never kept in the engine.
+    credentials: async (kind) => (kind === "email" ? openAccount(store, sealKey) : undefined),
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
     // (trigger-targets.ts, over the run write half and the run view): targetIssues, start, message, statusOf, runOf. The
@@ -3431,6 +3449,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await toolKeys.remove(id);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      // Never through `idempotent`: its record keeps the body, and the body holds the password.
+      case "getEmailAccount":
+      case "saveEmailAccount":
+      case "deleteEmailAccount":
+      case "testEmailAccount": {
+        const body = found.name === "saveEmailAccount" || found.name === "testEmailAccount" ? await bodyOf(req) : undefined;
+        if (found.name === "saveEmailAccount" && stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the account was not saved.");
+        const answer = await emailRoute({ store, sealKey }, found.name, body);
+        if (found.name === "saveEmailAccount") await heldEmailPassword();
+        if (answer === undefined) return void res.writeHead(204, { "cache-control": "no-store" }).end();
+        return send(res, 200, answer, { "cache-control": "no-store" });
+      }
       // The ChatGPT sign-in (chatgpt-plan.ts): a step it refuses is 400 in its words; its token is in no answer.
       case "getChatGPTSignIn":
         await planNow();
