@@ -9,8 +9,10 @@ export const E2B = defineProvider({
 	keys: [{ name: "E2B_API_KEY", option: "apiKey", required: true }],
 	metered: true,
 	mounts: ["archil"],
-	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
-	network: ["none"],
+	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
+	// no internet access. Open and a list: the sandbox gets internet access, and its programs' one way out is init's egress
+	// proxy, which reaches the public internet alone, and with a list its hosts alone (hosted/network.ts).
+	network: ["none", "open", "allow"],
 	capabilities: [SANDBOX, LINUX_DESKTOP],
 	// No default image: every computer, sandbox or desktop, starts from the box template its prepareImage() answers.
 	prepareImage: true,

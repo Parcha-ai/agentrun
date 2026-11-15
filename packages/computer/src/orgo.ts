@@ -14,6 +14,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { networkRefusal } from "./hosted/network.js";
 import { childCommands, type DaemonExpected, daemonDrift } from "./hosted/scripts.js";
 import { DaemonClient } from "./client.js";
 import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
@@ -185,9 +186,10 @@ const DELETE_TRIES = 5;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels", "gpu"]);
 /** The states in which a computer runs, or is on its way to. */
 const RUNNING = new Set(["running", "creating", "restarting", "updating", "resuming"]);
-/** Why a network other than "none" is refused: this configuration makes none alone. */
-const NETWORK_REFUSAL =
-	'an Orgo computer takes network "none" only: Orgo has no egress control, so its tools have no network of their own (init\'s namespace holds them to loopback), and open or an allowlist waits for the proxy-backed feature';
+/** Why a network other than "none" is refused, in the words every hosted provider uses (hosted/network.ts), and why:
+ *  this configuration makes none alone. */
+const networkRefused = (network: unknown) =>
+	`${networkRefusal("Orgo", ORGO.network, network)}: an Orgo computer's tools have no network of their own (init's namespace holds them to loopback), and Orgo's adapter, unlike the shared hosted one, starts no egress proxy out of it`;
 
 /** The scripts the provider runs as root, each marked on its first line, its arguments after it. */
 const X11_SCRIPT = ["# agentrun-computer: orgo-x11", "s=$1", '[ -S "$s" ] || { echo "no X socket at $s"; exit 1; }'].join("\n");
@@ -382,7 +384,7 @@ export class OrgoProvider implements ComputerProvider {
 		const { image, network, cpus, memoryMb, labels, mount } = given;
 		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "${BASE}" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
 		refusals.push(...checkTenure(given, this.capabilities(), "Orgo"));
-		if (network !== "none") refuse("network", NETWORK_REFUSAL);
+		if (network !== "none") refuse("network", networkRefused(network));
 		if (memoryMb !== undefined && !RAM_GB.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", "memoryMb is one of Orgo's sizes: 4096, 8192, 16384 or 32768");
 		if (cpus !== undefined && !CPUS.includes(cpus as number)) refuse("cpus", "cpus is one of Orgo's sizes: 0.5, 1, 2, 4 or 6");
 		if (labels !== undefined) {
@@ -1103,7 +1105,7 @@ export class OrgoProvider implements ComputerProvider {
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
-		if (policy !== undefined && policy !== "none") return fail("refused", NETWORK_REFUSAL);
+		if (policy !== undefined && policy !== "none") return fail("refused", networkRefused(policy));
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
 		if (found.value.status !== "running") return fail("refused", `${ref.name} is ${found.value.status}: its network is read from inside, and a read would wake it`);

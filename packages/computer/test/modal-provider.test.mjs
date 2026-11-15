@@ -111,14 +111,15 @@ async function withProcessEnv(values, fn) {
 
 // --- what a Modal computer is ---
 
-test("capabilities, as before the move: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none alone with no read-back, a uid, no agent port, GPUs on gVisor", () => {
+test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none, open and a list with no vendor read-back, a uid, no agent port, GPUs on gVisor", () => {
 	const { provider, rec } = setup();
 	assert.equal(provider.id, "modal");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
 		kind: "linux",
 		lifetime: "vendor",
-		network: ["none"],
+		network: ["none", "open", "allow"],
+		allow: { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true },
 		networkReadBack: false,
 		isolation: "vm",
 		os: "linux",
@@ -195,10 +196,9 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	for (const lifetimeMs of [undefined, 0, 1.5, DAY_MS + 1]) {
 		assert.deepEqual(provider.check({ ...SPEC, lifetimeMs }), checkLifetime(lifetimeMs, provider.capabilities()), `lifetimeMs ${String(lifetimeMs)}: the shared rule's words`);
 	}
-	for (const network of ["open", { allow: ["8.8.8.0/24"] }]) {
-		assert.deepEqual(refused({ ...SPEC, network }), ["network"], `network ${JSON.stringify(network)}`);
-		assert.match(words({ ...SPEC, network }, "network"), /network "none" only/);
-	}
+	for (const network of ["open", { allow: ["8.8.8.0/24"] }]) assert.deepEqual(refused({ ...SPEC, network }), [], `network ${JSON.stringify(network)}`);
+	assert.deepEqual(refused({ ...SPEC, network: "wifi" }), ["network"]);
+	assert.match(words({ ...SPEC, network: "wifi" }, "network"), /network is required: none, open or a list/);
 	for (const cpus of [0, -1, 0.1, "2", Number.NaN]) assert.deepEqual(refused({ ...SPEC, cpus }), ["cpus"], `cpus ${String(cpus)}`);
 	assert.match(words({ ...SPEC, cpus: 0.1 }, "cpus"), /Modal counts physical cores, 2 CPUs each/);
 	for (const memoryMb of [0, 1.5, "512"]) assert.deepEqual(refused({ ...SPEC, memoryMb }), ["memoryMb"], `memoryMb ${String(memoryMb)}`);
@@ -359,12 +359,12 @@ const MOUNT = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-ea
 const ARCHIL_SPEC = { ...SPEC, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: MOUNT };
 const noToken = (value, what) => assert.ok(!JSON.stringify(value ?? null).includes(TOKEN), `${what} holds the token`);
 
-test("check(): an Archil spec takes network none, the run and epoch labels, the helper's shapes and the tool user, with no SDK call; no refusal holds the token", () => {
+test("check(): an Archil spec takes network none or open, the run and epoch labels, the helper's shapes and the tool user, with no SDK call; no refusal holds the token", () => {
 	const { provider, rec } = setup();
 	assert.deepEqual(provider.check(ARCHIL_SPEC), []);
+	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, network: "open" }), [], "open: the tools' proxy beside root's mount");
 	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, user: "2510:2510" }), [], "the tool user, named");
 	const cases = [
-		[{ network: "open" }, "network", /none/],
 		[{ labels: { "agentrun.run": RUN } }, "labels", /agentrun\.epoch/],
 		[{ mount: { ...MOUNT, folder: "agents/a1/runs/r2/work" } }, "mount", /run r2/],
 		[{ mount: { ...MOUNT, token: "short" } }, "mount", /mount\.token/],
@@ -388,6 +388,21 @@ test("create of an Archil computer: Modal's network stays on for root to reach A
 	assert.equal(tags["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
 	assert.equal(recordedMount(tags).folder, MOUNT.folder, "read back as the adapter wrote it");
 	noToken(rec.calls, "what the SDK was handed");
+});
+
+test("create under open or a list leaves Modal's network on (no blockNetwork) for init's egress proxy, gives init --network and the form, and records it in a tag; an Archil computer under open too", async () => {
+	for (const [spec, form] of [
+		[{ ...SPEC, network: "open" }, "open"],
+		[{ ...SPEC, network: { allow: ["Example.com"] } }, "allow:example.com"],
+		[{ ...ARCHIL_SPEC, network: "open" }, "open"],
+	]) {
+		const { provider, rec } = setup();
+		await create(provider, spec);
+		const { blockNetwork, command, tags } = rec.params();
+		assert.equal(blockNetwork, undefined, form);
+		assert.deepEqual(command.slice(-2), ["--network", form]);
+		assert.equal(tags["agentrun.computer.network"], form);
+	}
 });
 
 test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id on the box image fit; past the bound check() refuses in words, before any SDK call", async () => {
@@ -728,12 +743,10 @@ test("the drifted provider uploads a daemon built as <version>-drift", async () 
 // The loopback block: whatever Modal runs inside a sandbox, the daemon's programs get a network of their own (init
 // --own-network) and run as 2510:2510. No listener of Modal's inside is documented, so no port is declared.
 
-test("the loopback block: network none only, no agent port declared, open refused in words", () => {
+test("the loopback block: no agent port declared, open and a list taken through init's egress proxy alone", () => {
 	const { provider, rec } = setup();
-	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().network, ["none", "open", "allow"]);
 	assert.deepEqual(provider.capabilities().vendorAgentPorts, []);
-	const refusals = provider.check({ ...SPEC, network: "open" });
-	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
-	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open" }), []);
 	assert.deepEqual(rec.calls, []);
 });

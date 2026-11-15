@@ -12,7 +12,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { enabledBoxes, placeOffers, remoteNoList, withNetworks } from "../dist/place-offers.js";
+import { enabledBoxes, placeOffers, withNetworks } from "../dist/place-offers.js";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
@@ -210,13 +210,13 @@ test("daytona and modal are offered by their computer provider's required keys, 
   assert.ok(!shown.includes("fake-test-key") && !shown.includes("saved-modal-id") && !shown.includes("env-"), "no key's value in an offer");
 });
 
-test("what each available box reaches: docker through its egress proxy (or none, or unavailable as refused); daytona and modal never get the host list", () => {
+test("what each available box reaches: docker through its egress proxy (or none, or unavailable as refused); daytona and modal the host list too, through their init's egress proxy", () => {
   const offers = [{ id: "docker", available: true }, { id: "modal", available: true }, { id: "daytona", available: true }];
   const by = (list) => Object.fromEntries(list.map((offer) => [offer.id, offer]));
   const listed = by(withNetworks(offers, ["pypi.org"], { hostAddresses: ["docker-host-address"] }));
   assert.deepEqual(listed.docker, { id: "docker", available: true, network: "allowlist", host_addresses: ["docker-host-address"] });
-  assert.deepEqual(listed.daytona, { id: "daytona", available: true, network: "none", network_reason: remoteNoList("daytona") });
-  assert.deepEqual(listed.modal, { id: "modal", available: true, network: "none", network_reason: remoteNoList("modal") });
+  assert.deepEqual(listed.daytona, { id: "daytona", available: true, network: "allowlist" }, "the Docker host's addresses are Docker's alone");
+  assert.deepEqual(listed.modal, { id: "modal", available: true, network: "allowlist" });
   const none = by(withNetworks(offers, "none"));
   assert.deepEqual([none.docker.network, none.docker.network_reason, none.daytona.network, none.daytona.network_reason, none.modal.network_reason], ["none", "AGENTRUN_BOX_ALLOW is none", "none", undefined, undefined]);
   assert.deepEqual(by(withNetworks(offers, ["pypi.org"], { refused: "Docker is another machine's" })).docker, { id: "docker", available: false, state: "unavailable", reason: "Docker is another machine's" });

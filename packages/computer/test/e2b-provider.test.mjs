@@ -97,12 +97,12 @@ async function withProcessEnv(values, fn) {
 	}
 }
 
-test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none probed from inside, envd's port, and Hobby's 1 h cap", () => {
+test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none, open and a list probed from inside, envd's port, and Hobby's 1 h cap", () => {
 	const { provider } = setup();
 	const caps = provider.capabilities();
 	assert.deepEqual(
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, isolation: caps.isolation, network: caps.network, networkReadBack: caps.networkReadBack, release: caps.release, vendorAgentPorts: caps.vendorAgentPorts },
-		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: false, release: ["delete"], vendorAgentPorts: [49983] },
+		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none", "open", "allow"], networkReadBack: false, release: ["delete"], vendorAgentPorts: [49983] },
 	);
 	assert.deepEqual(caps.groups, DESKTOP_GROUPS);
 	assert.equal(caps.maxLifetimeMs, HOUR, "E2B Hobby caps a sandbox at 1 h");
@@ -202,14 +202,15 @@ test("kind linux is the plain template: no display, groups exec, files and proce
 	assert.throws(() => setup({ kind: "android" }), /desktop or linux/);
 });
 
-test("check() takes a template as the image, network none, and labels; it refuses open, an allowlist, sizes, a user and a workdir in words", () => {
+test("check() takes a template as the image, network none, open or a list, and labels; it refuses a malformed list, sizes, a user and a workdir in words", () => {
 	const { provider } = setup();
 	assert.deepEqual(provider.check({ ...SPEC, labels: { run: "r1" } }), []);
 	const fields = (spec) => provider.check(spec).map((r) => r.field);
 	assert.deepEqual(fields({ ...SPEC, image: "" }), ["image"]);
-	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
-	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), ["network"]);
-	assert.match(provider.check({ ...SPEC, network: { allow: ["example.com"] } })[0].message, /allowlists wait for a proxy/);
+	assert.deepEqual(fields({ ...SPEC, network: "open" }), []);
+	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), []);
+	assert.deepEqual(fields({ ...SPEC, network: { allow: ["192.168.0.0/16"] } }), ["network"], "a list the proxy would refuse is refused at check");
+	assert.deepEqual(fields({ ...SPEC, network: "wifi" }), ["network"]);
 	assert.deepEqual(fields({ ...SPEC, cpus: 2 }), ["cpus"]);
 	assert.deepEqual(fields({ ...SPEC, memoryMb: 1024 }), ["memoryMb"]);
 	assert.match(provider.check({ ...SPEC, cpus: 2 })[0].message, /an E2B computer has the size of its template: name a template of the size you need, not cpus/, "E2B's own check: the adapter passes sizes on");
@@ -334,6 +335,30 @@ test("create() asks E2B for the lifetime as its timeout in whole seconds, the la
 	assert.match(opts.metadata[`${COMPUTER}.name`], /^computer-[0-9a-f]{12}$/);
 	assert.equal(opts.metadata[`${COMPUTER}.timeout-ms`], "601000");
 	assert.equal(opts.signal, undefined, "never cancelled: an aborted create could leave a sandbox whose id never came back");
+	assert.equal(opts.metadata[`${COMPUTER}.network`], undefined, "none carries no network label");
+});
+
+test("create() under open or a list asks E2B for internet access, for init's egress proxy, still no public traffic, and records the form in a label", async () => {
+	for (const [network, form] of [
+		["open", "open"],
+		[{ allow: ["Example.com"] }, "allow:example.com"],
+	]) {
+		const calls = [];
+		const Sandbox = {
+			...recorder().Sandbox,
+			list: () => ({ hasNext: true, nextItems: async () => ((Sandbox.listed = true), []), get hasNext() { return !Sandbox.listed; } }),
+			create: async (template, opts) => {
+				calls.push([template, opts]);
+				throw Object.assign(new Error("400: template not found"), { name: "InvalidArgumentError" });
+			},
+		};
+		const provider = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		await provider.create({ ...SPEC, network }, { requestId: `r-net-${form}` });
+		const [, opts] = calls[0];
+		assert.equal(opts.allowInternetAccess, true, form);
+		assert.deepEqual(opts.network, { allowPublicTraffic: false });
+		assert.equal(opts.metadata[`${COMPUTER}.network`], form);
+	}
 });
 
 test("the provider refuses to start while E2B_SANDBOX_URL is set in process.env: the SDK would send every sandbox call there", async () => {
@@ -483,13 +508,11 @@ test("the live E2B suite skips when only E2B_API_KEY is set", () => {
 // The loopback block: E2B's envd runs as root in the sandbox and answers on 49983, so the daemon's programs get a network
 // of their own (init --own-network) and run as 2510:2510.
 
-test("the loopback block: network none only, envd's port declared, open refused in words", () => {
+test("the loopback block: envd's port declared, open and a list taken through init's egress proxy alone (it refuses envd's port)", () => {
 	const { provider, rec } = setup();
-	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().network, ["none", "open", "allow"]);
 	assert.deepEqual(provider.capabilities().vendorAgentPorts, [49983]);
-	const refusals = provider.check({ ...SPEC, network: "open" });
-	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
-	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open" }), []);
 	assert.deepEqual(rec.calls, []);
 });
 

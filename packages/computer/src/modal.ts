@@ -236,7 +236,7 @@ class ModalHost implements MachineHost {
 	 * sandboxes.create in the app: the request's image (an im- id opened by fromId, else a registry tag) with HOME and the
 	 * workdir the computer's home, the entrypoint as its command, the lifetime as its timeout in the whole seconds the
 	 * SDK takes, the spec's sizes as limits over Modal's small default request, no network unless the adapter asks egress
-	 * (an Archil computer's root, to reach Archil), and the labels as its tags, on gVisor for a GPU computer.
+	 * (an Archil computer's root, to reach Archil, or the egress proxy of a network open or a list), and the labels as its tags, on gVisor for a GPU computer.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		void ctx;
