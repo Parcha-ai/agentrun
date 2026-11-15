@@ -784,10 +784,14 @@ export type Api = (method: string, path: string, body?: unknown, headers?: Recor
 function apiOf(baseUrl: string, token: string): Api {
   return async (method, path, body, headers = {}, options = {}) => {
     const raw = typeof body === "string";
+    // The console's page takes a write from its session only with a JSON body type, a body or not (page.ts answerPage):
+    // a bodiless DELETE from the session without it is refused (401), so it goes with it too.
+    const session = Boolean(headers.cookie) && method !== "GET" && method !== "HEAD";
+    const type = body === undefined ? (session ? "application/json" : undefined) : raw ? "text/markdown" : "application/json";
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       // A request made from the console's session (its cookie) goes without the token, which would make it the token's.
-      headers: { ...(headers.cookie ? {} : { authorization: `Bearer ${token}` }), ...(body === undefined ? {} : { "content-type": raw ? "text/markdown" : "application/json" }), ...headers },
+      headers: { ...(headers.cookie ? {} : { authorization: `Bearer ${token}` }), ...(type ? { "content-type": type } : {}), ...headers },
       ...(body === undefined ? {} : { body: raw ? body : JSON.stringify(body) }),
       ...(options.signal ? { signal: options.signal } : {}),
     }).catch((error: unknown) => {
@@ -1172,7 +1176,11 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
     for (const { name, url } of saved) if (await ownsFake(api, name, url)) await api("DELETE", `/settings/mcp-servers/${name}`).catch(() => undefined);
     for (const fake of fakes) await fake.close();
     // The eval's own server's email account was the last run's fake mailbox, gone with it.
-    if (one.email) await api("DELETE", "/settings/email", undefined, ctx.owner).catch(() => undefined);
+    // A removal that fails is said: on an owner's folder the fake would stay as their account.
+    if (one.email) {
+      const removed = await api("DELETE", "/settings/email", undefined, ctx.owner).catch((error: unknown) => ({ status: 0, body: (error as Error).message }));
+      if (removed.status !== 204 && removed.status !== 404) ctx.log(`case ${one.name}: the server's email account (the case's fake mailbox) was not removed: DELETE /settings/email ${removed.status} ${JSON.stringify(removed.body).slice(0, 200)}`);
+    }
   }
 }
 /** What the stopped server on `data` would do on its own once started, said ("1 enabled trigger, 2 runs not ended"), or
