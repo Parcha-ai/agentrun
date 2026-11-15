@@ -535,6 +535,30 @@ describe("applying a template", () => {
     expect(t.sent[0].body.overrides).toEqual({ approvals: "never" });
   });
 
+  it("offers a package's model choices in one Model group, the default first, each choice's warning and note shown word for word before it is picked, and sends the pick as overrides.choice", async () => {
+    const WARNING = "Free models may keep and train on what you send. Your email goes to whoever serves this model.";
+    const NOTE = "Turn on OpenRouter Settings → Privacy → ZDR only.";
+    const INBOX: TemplateView = { ...NOTES, name: "inbox", harness: ["codex", "pi"], model: { tier: "balanced", choices: [{ id: "free", label: "Free model", model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", harness: "pi", warning: WARNING, note: NOTE, secrets: ["OPENROUTER_API_KEY"] }] } };
+    const t = await open("inbox", { templates: [INBOX] });
+    const group = t.host.querySelector('fieldset[aria-label="Model"]');
+    expect(group).toBeTruthy();
+    const radios = [...group!.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+    expect(radios.map((r) => r.closest("label")!.querySelector("[data-choice-label]")!.textContent)).toEqual(["Your default: balanced on codex", "Free model"]);
+    expect(radios[0].checked).toBe(true);
+    // Shown while the default is picked: the owner reads it before choosing.
+    expect(group!.querySelector('[data-choice-warning="free"]')!.textContent).toBe(WARNING);
+    expect(group!.querySelector('[data-choice-note="free"]')!.textContent).toBe(NOTE);
+    await t.click(radios[1]);
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.overrides).toEqual({ approvals: "ask", choice: "free" });
+    // A package with no choices: no Model group, and no choice sent.
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const plain = await open("meeting-notes");
+    expect(plain.host.querySelector('fieldset[aria-label="Model"]')).toBeNull();
+    await plain.click(plain.button(/^Apply/));
+    expect(plain.sent[0].body.overrides).toEqual({ approvals: "ask" });
+  });
+
   it("titles what was applied with the values sent, not edits made while the apply was under way", async () => {
     const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
     let answer: (v: unknown) => void = () => {};
