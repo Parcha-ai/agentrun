@@ -2509,23 +2509,19 @@ explicitly, so the SDK takes none of them from the environment.
 
 | MachineHost | boxd |
 | --- | --- |
-| `create` | `machines.create` with the adapter's name and labels, the org, `isolated: true` (the machine joins none of the org's networks and holds no in-machine credential), `config.autoSuspendTimeout: 0` and the size; any image but `"default"` is a snapshot, restored with `fromSnapshot`; with `deleteTimer`, `deleteAfter`. Its own client, bounded by `createMs` and never sent twice |
-| `prepare` | `machines.waitUntilReady`, then `setEgressAllow(id, ["none"])` and `setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may work for a long time with none |
-| `get` | `machines.get`; not found, or a machine of another org, is none |
+| `create` | `machines.create` with the adapter's name and labels, the org, `isolated: true` (the machine joins none of the org's networks and holds no in-machine credential), `config.autoSuspendTimeout: 0` and the size; any image but `"default"` is a snapshot, restored with `fromSnapshot`; with `deleteTimer`, `deleteAfter`. Its own client, bounded by `createMs` and never sent twice. Then `machines.waitUntilReady`, `setEgressAllow(id, ["none"])` and `setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may work for a long time with none |
+| `get` | `machines.get`: the labels, the state and `createdAt`; a machine of another org is none |
 | `list` | `machines.list` by the labels, in the org |
 | `delete` | `machines.delete`; not found is done |
 | `exec` | one `machines.streamExec` of the argv quoted; boxd runs it as the image's user (`boxd`, uid 1000) with passwordless sudo, and the adapter's scripts `sudo -n` to root. `kill` cancels the stream: boxd ends the process group |
 | `upload` | `files.upload` |
-| `setLabels` | `machines.updateLabels({ set })`, the janitor's deadline label at extend |
+| `extend` | `machines.updateLabels({ set })` of the janitor's deadline label |
 | `errorCode` | the SDK's error names (`NotFoundError`, `AuthenticationError`, `RateLimitError`, `ConflictError`, ...), then an `APIStatusError`'s gRPC code (3 invalid, 4 and 14 timeout, 8 limit, 9 refused) |
-| `check` | `"default"` or a snapshot's name, and no snapshot when the provider names a size (a restore has the snapshot's); label names of 1 to 63 of `a-z0-9._/-`, not `boxd/` |
+| `check` | `"default"` or a snapshot's name, and no snapshot when the provider names a size (a restore has the snapshot's); no `cpus` or `memoryMb` in the spec (the size is the provider's); label names of 1 to 63 of `a-z0-9._/-`, not `boxd/` |
 
-`get` reads back the state (`suspended`, standby that wakes on the next call, and `migrating` run; `hibernated` and
-`stopped` are stopped), the network (`["none"]` is none, `[]` is open), the size and the snapshot, and holds boxd's own
-create options as drift: the name, `isolated`, every idle timer at 0, no delete timer before the most the computer may
-live, the snapshot it was restored from, no `agentrun.*` label create did not write (a restore merges its snapshot's
-labels), and the size when the provider names one. boxd keeps a name to one machine, so a create that loses a race for
-its name is `exists`, and the adapter's retry finds the machine by its name label.
+`get` reads the state: `suspended` (standby that wakes on the next call) and `migrating` run; `hibernated` and
+`stopped` are stopped; `failed`, `destroyed` and any status it does not know are gone. boxd keeps a name to one
+machine, so a create that loses a race for its name is `exists`, and the adapter's retry finds the machine by its name.
 
 boxd's in-machine agent, which carries the SDK's exec and file calls, listens on TCP 57073. Init starts with
 `--own-network`, so the daemon and every program it starts run in a network namespace of their own, their loopback
@@ -2538,8 +2534,8 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 | --- | --- | --- |
 | `kind` | `linux` (default) or `desktop` | `options.kind`; a desktop's X server is computerd's own |
 | `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; with `deleteTimer`, boxd also deletes it just past the most it may live |
-| `network` | `none` | the egress allowlist `["none"]`, read back by `machines.get`, and the daemon's own network namespace |
-| `networkReadBack` | `true` | `machines.get` reports `egressAllow` |
+| `network` | `none` | the egress allowlist `["none"]`, and the daemon's own network namespace, read from inside by the probe |
+| `networkReadBack` | `false` | as on every vendor on the adapter |
 | `isolation` | `microvm` | a KVM microVM with its own kernel |
 | `daemon` | `child` | boxd's agent runs the commands; init is a detached command it starts |
 | `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys`, `apps` | checked against hello on every connect |

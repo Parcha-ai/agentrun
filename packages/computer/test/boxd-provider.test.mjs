@@ -7,12 +7,12 @@ import test from "node:test";
 import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
 
-const { BoxdProvider, create, CAPABILITIES, MOUNT } = await import("../dist/boxd.js");
+const { BoxdProvider, create } = await import("../dist/boxd.js");
 const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
 
 const KEY = "bxd_fake_computer_key_0123456789";
 const NAME = "agentrun.computer.name";
-const IMAGE_LABEL = "agentrun.computer.image";
+const DEADLINE_LABEL = "agentrun.computer.deadline";
 const MAX_LABEL = "agentrun.computer.max-deadline";
 const SPEC = { image: "default", lifetimeMs: 600_000, network: "none" };
 const LINUX_GROUPS = ["exec", "files", "processes"];
@@ -22,7 +22,9 @@ const HOUR = 3_600_000;
 
 const named = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra });
 
-/** A machine as boxd reads one that create made as asked: running, isolated, egress closed, no idle timer. */
+const CREATED = new Date("2026-11-15T08:00:00Z");
+
+/** A machine as boxd reads one that create made: running, in the org. */
 function machine(patch = {}) {
 	const max = new Date(Date.now() + HOUR).toISOString();
 	return {
@@ -30,13 +32,8 @@ function machine(patch = {}) {
 		name: "computer-0123456789ab",
 		status: "running",
 		labels: { [NAME]: "computer-0123456789ab", [MAX_LABEL]: max },
-		egressAllow: ["none"],
-		idle: { suspendAfter: 0, hibernateAfter: 0, destroyAfter: 0 },
-		resources: { vcpu: 2, memoryBytes: 8 * 1024 ** 3 },
-		networking: { isolated: true },
 		org: { id: "org-1", name: "acme" },
-		deleteAt: null,
-		source: null,
+		createdAt: CREATED,
 		...patch,
 	};
 }
@@ -73,7 +70,7 @@ function setup(options = {}, answers = {}) {
 	return { rec, provider, host: provider.host };
 }
 const ctx = { timeoutMs: 1_234 };
-const request = (labels = {}) => ({ name: "computer-0123456789ab", image: "default", labels: { [NAME]: "computer-0123456789ab", [MAX_LABEL]: new Date(Date.now() + HOUR).toISOString(), ...labels }, network: "none" });
+const request = (labels = {}) => ({ name: "computer-0123456789ab", image: "default", labels: { [NAME]: "computer-0123456789ab", [MAX_LABEL]: new Date(Date.now() + HOUR).toISOString(), ...labels }, lifetimeMs: HOUR, egress: false });
 
 test("the SDK gets the key, the address and the region explicitly; create has its own client, bounded by createMs and never retried", () => {
 	const { rec } = setup({ region: "nyc" });
@@ -105,20 +102,21 @@ test("the constructor refuses a size that is not boxd's and the machine user's u
 	assert.throws(make({ maxLifetimeMs: 31 * 24 * HOUR }), /the longest boxd keeps a computer/);
 });
 
-test("capabilities: a child daemon in a microVM, network none read back, janitor lifetime, delete only, boxd's agent port; desktop too", () => {
-	const caps = setup().provider.capabilities();
+test("capabilities: a child daemon in a microVM, network none, janitor lifetime, delete only, boxd's agent port; desktop too", () => {
+	const { provider, host } = setup();
+	const caps = provider.capabilities();
 	assert.deepEqual(
 		{ ...caps },
-		{ kind: "linux", lifetime: "janitor", network: ["none"], networkReadBack: true, isolation: "microvm", os: "linux", daemon: "child", groups: LINUX_GROUPS, maxLifetimeMs: 24 * HOUR, release: ["delete"], mount: [], vendorAgentPorts: [57073] },
+		{ kind: "linux", lifetime: "janitor", network: ["none"], networkReadBack: false, isolation: "microvm", os: "linux", daemon: "child", groups: LINUX_GROUPS, maxLifetimeMs: 24 * HOUR, release: ["delete"], mount: [], vendorAgentPorts: [57073] },
 	);
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.deepEqual(setup({ kind: "desktop" }).provider.capabilities().groups, DESKTOP_GROUPS);
-	assert.deepEqual(MOUNT, []);
-	assert.deepEqual(CAPABILITIES, BOXD.capabilities);
+	assert.equal(host.descriptor, BOXD);
+	assert.deepEqual(BOXD.mounts, []);
 	assert.deepEqual(BOXD.capabilities.map(({ kind, options }) => [kind, options.kind]), [["linux", "linux"], ["desktop", "desktop"]]);
 });
 
-test("check takes default or a snapshot's name, refuses a snapshot with a size and a label name boxd does not take, with no call", () => {
+test("check takes default or a snapshot's name, refuses a snapshot with a size, the spec's size and a label name boxd does not take, with no call", () => {
 	const { rec, provider } = setup();
 	const fields = (spec, p = provider) => p.check(spec).map(({ field }) => field);
 	assert.deepEqual(fields(SPEC), []);
@@ -128,13 +126,14 @@ test("check takes default or a snapshot's name, refuses a snapshot with a size a
 	assert.deepEqual(fields({ ...SPEC, labels: { "boxd/owner": "x" } }), ["labels"]);
 	assert.deepEqual(fields({ ...SPEC, labels: { Team: "x" } }), ["labels"]);
 	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
+	assert.deepEqual(fields({ ...SPEC, cpus: 2, memoryMb: 4096 }), ["cpus", "memoryMb"]);
 	assert.deepEqual(rec.calls, []);
 });
 
 test("create asks for an isolated machine in the org with no standby, the size, the snapshot, and with deleteTimer a delete 5 minutes past the most it may live", async () => {
 	const { rec, host } = setup({ vcpu: 2, memory: "8G", deleteTimer: true }, { create: machine() });
 	const req = request();
-	assert.deepEqual(await host.create({ ...req, image: "my-snapshot" }, ctx), { ok: true, value: { id: "m-1" } });
+	assert.deepEqual(await host.create({ ...req, image: "my-snapshot" }, ctx), { id: "m-1" });
 	const [[name, params]] = rec.calls;
 	assert.equal(name, "create");
 	const { deleteAfter, ...rest } = params;
@@ -145,59 +144,48 @@ test("create asks for an isolated machine in the org with no standby, the size, 
 	assert.deepEqual(plain.rec.calls[0][1], { name: req.name, labels: req.labels, isolated: true, config: { autoSuspendTimeout: 0 } }, "default is boxd's own image: no snapshot, no size, no timer");
 });
 
-test("prepare waits until boxd's agent is ready, then closes egress and hibernation, in that order", async () => {
-	const { rec, host } = setup();
-	assert.deepEqual(await host.prepare("m-1", ctx), { ok: true, value: undefined });
-	assert.deepEqual(rec.calls, [
+test("create then waits until boxd's agent is ready, and closes egress and hibernation, in that order; a request for egress is refused", async () => {
+	const { rec, host } = setup({}, { create: machine() });
+	await host.create(request(), ctx);
+	assert.deepEqual(rec.calls.slice(1), [
 		["waitUntilReady", "m-1", { timeout: ctx.timeoutMs }],
 		["setEgressAllow", "m-1", ["none"]],
 		["setAutoHibernateTimeout", "m-1", 0],
 	]);
+	const failing = setup({}, { create: machine(), setEgressAllow: () => Promise.reject(named("APIStatusError", { grpcCode: 14 })) });
+	await assert.rejects(failing.host.create(request(), ctx), { name: "APIStatusError" }, "a setting that fails fails the create, and the adapter sweeps the machine by its labels");
+	const open = setup();
+	await assert.rejects(open.host.create({ ...request(), egress: true }, ctx), (error) => error.code === "invalid" && /reaches nothing outside/.test(error.message));
+	assert.deepEqual(open.rec.calls, [], "no machine is made");
 });
 
-test("get reads the machine back: state, network, size and snapshot; boxd's own create options read back wrong are drift", async () => {
-	const read = async (patch, options) => (await setup(options, { get: machine(patch) }).host.get("m-1", ctx)).value;
-	const good = await read({}, { vcpu: 2, memory: "8G" });
-	assert.deepEqual({ ...good, labels: undefined }, { id: "m-1", labels: undefined, state: "running", network: "none", size: { cpus: 2, memoryMb: 8192 } });
-	assert.equal((await read({ egressAllow: [] })).network, "open");
-	assert.deepEqual((await read({ egressAllow: ["example.com"] })).network, { other: "an egress allowlist of 1 entries, which this provider never makes" });
-	for (const [status, state] of [["pending", "starting"], ["suspended", "running"], ["migrating", "running"], ["hibernated", "stopped"], ["stopped", "stopped"], ["failed", "failed"], ["destroyed", "going"]]) assert.equal((await read({ status })).state, state, status);
-	assert.deepEqual(await read({ status: "melting" }).then(({ state, why }) => [state, why]), ["failed", 'boxd reads its status as "melting"']);
-	const drift = async (patch, options) => (await read(patch, options)).drift ?? [];
-	assert.deepEqual(await drift({}), []);
-	assert.match((await drift({ name: "other" }))[0], /^name:/);
-	assert.match((await drift({ networking: { isolated: false } }))[0], /^isolated:/);
-	assert.deepEqual((await drift({ idle: { suspendAfter: 60, hibernateAfter: 0, destroyAfter: 600 } })).map((line) => line.split(":")[0]), ["auto-suspend", "auto-destroy"]);
-	assert.match((await drift({ deleteAt: new Date(Date.now() + 60_000) }))[0], /^delete-after: .* before the most it may live/);
-	assert.deepEqual(await drift({ deleteAt: new Date(Date.now() + 2 * HOUR) }), [], "a delete after the most it may live is the backstop");
-	assert.match((await drift({ source: { kind: "snapshot", name: "snap" } }))[0], /^snapshot:/);
-	const restored = machine({ source: { kind: "snapshot", name: "snap" } });
-	restored.labels[IMAGE_LABEL] = "snap";
-	assert.deepEqual((await setup({}, { get: restored }).host.get("m-1", ctx)).value.image, { resolved: "snap" });
-	assert.match((await drift({ resources: { vcpu: 1, memoryBytes: 4 * 1024 ** 3 } }, { vcpu: 2, memory: "8G" }))[0], /^size:/);
+test("get reads the machine back: its labels, its state and when boxd made it", async () => {
+	const read = async (patch) => setup({}, { get: machine(patch) }).host.get("m-1", ctx);
+	assert.deepEqual(await read({}), { id: "m-1", labels: machine().labels, state: "running", createdAt: CREATED });
+	for (const [status, state] of [["pending", "starting"], ["starting", "starting"], ["suspended", "running"], ["migrating", "running"], ["hibernated", "stopped"], ["stopped", "stopped"], ["failed", "gone"], ["destroyed", "gone"]]) assert.equal((await read({ status })).state, state, status);
+	assert.deepEqual(await read({ status: "melting" }).then(({ state, why }) => [state, why]), ["gone", 'boxd reads its status as "melting"']);
+	assert.equal((await read({ createdAt: null })).createdAt, undefined);
 });
 
-test("a restore that carries agentrun labels create did not write is drift; one of another org, or not found, is none", async () => {
-	const { host } = setup({}, { create: machine(), get: () => machine({ labels: { ...machine().labels, "agentrun.run": "old" } }) });
-	await host.create(request(), ctx);
-	assert.match((await host.get("m-1", ctx)).value.drift[0], /^label agentrun\.run: create wrote none/);
-	assert.deepEqual(await setup({}, { get: machine({ org: { id: "org-2", name: "other" } }) }).host.get("m-1", ctx), { ok: true, value: undefined });
-	assert.equal((await setup({ org: "org-2" }, { get: machine({ org: { id: "org-2", name: "other" } }) }).host.get("m-1", ctx)).value.id, "m-1", "the org by id");
-	const gone = setup({}, { get: () => Promise.reject(named("NotFoundError")) });
-	assert.deepEqual(await gone.host.get("m-1", ctx), { ok: true, value: undefined });
+test("one of another org is none; not found and other errors are thrown for the adapter to read", async () => {
+	assert.equal(await setup({}, { get: machine({ org: { id: "org-2", name: "other" } }) }).host.get("m-1", ctx), undefined);
+	assert.equal((await setup({ org: "org-2" }, { get: machine({ org: { id: "org-2", name: "other" } }) }).host.get("m-1", ctx)).id, "m-1", "the org by id");
+	assert.equal((await setup({ org: undefined }, { get: machine({ org: { id: "org-2", name: "other" } }) }).host.get("m-1", ctx)).id, "m-1", "no org set: the key's own");
+	const { host } = setup({}, { get: () => Promise.reject(named("NotFoundError")) });
+	await assert.rejects(host.get("m-1", ctx), (error) => host.errorCode(error) === "not_found");
 	await assert.rejects(setup({}, { get: () => Promise.reject(named("AuthenticationError")) }).host.get("m-1", ctx), { name: "AuthenticationError" });
 });
 
 test("list asks the org for the labels; delete of a machine boxd no longer has is done", async () => {
 	const { rec, host } = setup({}, { list: [machine()], delete: () => Promise.reject(named("NotFoundError")) });
 	const listed = await host.list({ "agentrun.computer": "true" }, ctx);
-	assert.deepEqual(listed.value.map(({ id }) => id), ["m-1"]);
+	assert.deepEqual(listed.map(({ id }) => id), ["m-1"]);
 	assert.deepEqual(rec.calls[0], ["list", { org: "acme", labels: { "agentrun.computer": "true" } }]);
-	assert.deepEqual(await host.delete("m-1", ctx), { ok: true, value: undefined });
+	assert.equal(await host.delete("m-1", ctx), undefined);
 	await assert.rejects(setup({}, { delete: () => Promise.reject(named("RateLimitError")) }).host.delete("m-1", ctx), { name: "RateLimitError" });
 });
 
-test("exec is one streamExec of the quoted argv, stdin ended when none is asked; wait reads a lost stream as -1, kill closes it", async () => {
+test("exec is one streamExec of the quoted argv, stdin open; wait reads a lost stream as -1, kill closes it", async () => {
 	const events = [];
 	const stream = (code) => ({
 		stderr: (async function* () {})(),
@@ -208,28 +196,27 @@ test("exec is one streamExec of the quoted argv, stdin ended when none is asked;
 		close: () => events.push(["close"]),
 	});
 	const { rec, host } = setup({}, { streamExec: () => stream(3) });
-	const quiet = (await host.exec("m-1", ["echo", "a b"], { stdin: false }, ctx)).value;
+	const fed = await host.exec("m-1", ["echo", "a b"], ctx);
 	assert.deepEqual(rec.calls[0], ["streamExec", "m-1", { command: "echo 'a b'" }]);
-	assert.deepEqual(events, [["end"]]);
-	assert.equal(await quiet.wait(), 3);
-	events.length = 0;
-	const fed = (await host.exec("m-1", ["cat"], { stdin: true }, ctx)).value;
+	assert.deepEqual(events, [], "stdin stays open until the adapter ends it");
 	await fed.write(Buffer.from("hi"));
 	await fed.end();
+	assert.equal(await fed.wait(), 3);
 	await fed.kill();
 	assert.deepEqual(events, [["write", "hi"], ["end"], ["close"]]);
 	const lost = setup({}, { streamExec: () => stream(undefined) });
-	assert.equal(await (await lost.host.exec("m-1", ["true"], { stdin: false }, ctx)).value.wait(), -1);
+	assert.equal(await (await lost.host.exec("m-1", ["true"], ctx)).wait(), -1);
 });
 
-test("upload is files.upload, and setLabels sets the janitor's labels with updateLabels", async () => {
+test("upload is files.upload, and extend sets the janitor's deadline label with updateLabels", async () => {
 	const { rec, host } = setup({}, { "files.upload": 4, updateLabels: {} });
 	const bytes = new Uint8Array([1, 2, 3, 4]);
-	assert.deepEqual(await host.upload("m-1", "/tmp/computerd", bytes, ctx), { ok: true, value: undefined });
-	assert.deepEqual(await host.setLabels("m-1", { "agentrun.computer.deadline": "x" }, ctx), { ok: true, value: undefined });
+	assert.equal(await host.upload("m-1", "/tmp/computerd", bytes, ctx), undefined);
+	const end = new Date("2026-11-15T10:00:00Z");
+	assert.equal(await host.extend("m-1", end, ctx), undefined);
 	assert.deepEqual(rec.calls, [
 		["files.upload", "m-1", "/tmp/computerd", bytes],
-		["updateLabels", "m-1", { set: { "agentrun.computer.deadline": "x" } }],
+		["updateLabels", "m-1", { set: { [DEADLINE_LABEL]: end.toISOString() } }],
 	]);
 });
 
@@ -264,7 +251,7 @@ test("the conformance module reads only its COMPUTER_BOXD_* names, after the liv
 	await assert.rejects(createProvider({ env: { [BOXD_ENV.key]: KEY } }), /AGENTRUN_COMPUTER_LIVE_BOXD=1/);
 	const provider = await createProvider({ env: { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd });
 	assert.equal(provider.capabilities().maxLifetimeMs, 30 * 60_000);
-	assert.equal((await createHost({ env: { [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd })).id, "boxd");
+	assert.equal((await createHost({ env: { [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd })).descriptor.id, "boxd");
 });
 
 test("the sweep's scope names the org, the region and the key by its sha256 prefix, so a before file of another is refused", () => {

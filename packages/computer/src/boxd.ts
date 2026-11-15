@@ -3,13 +3,13 @@
 // boxd's agent runs every command in a machine, so computerd is a child. The daemon, the bridge, the probe, idempotent
 // create, extend and delete-then-wait-gone are the shared adapter's (./hosted/provider.ts).
 import { BOXD, BOXD_DEFAULT_IMAGE } from "./descriptors/boxd.js";
-import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { HostedProvider, type HostedOptions, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
+import { DEADLINE_LABEL, show } from "./drift.js";
+import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { HostedProvider, type HostedOptions, MAX_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
-import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
-import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
-import { type ComputerErrorCode, ok, type Result } from "./result.js";
+import { dateOf } from "./hosted/values.js";
+import type { ComputerSpec, Refusal } from "./provider.js";
+import type { ComputerErrorCode } from "./result.js";
 
 /** A machine as the SDK reports it (Machine, models.d.ts), as far as this host reads it. */
 export interface BoxdMachine {
@@ -17,14 +17,8 @@ export interface BoxdMachine {
 	name: string;
 	status: string;
 	labels: Record<string, string>;
-	egressAllow: string[];
-	/** Seconds of idleness before standby, hibernation and destruction; 0 is never. */
-	idle: { suspendAfter: number; hibernateAfter: number; destroyAfter: number };
-	resources: { vcpu: number; memoryBytes: number };
-	networking: { isolated: boolean };
 	org: { id: string; name: string } | null;
-	deleteAt: Date | null;
-	source?: { kind: string; name: string } | null;
+	createdAt: Date | null;
 }
 
 /** A streamed exec (ExecStream, exec.d.ts): stdout is the stream itself. */
@@ -54,7 +48,7 @@ export interface BoxdMachines {
 /** The SDK's Boxd class: given the key, the address and the region ("" is home) so it reads none from the environment. */
 export type BoxdClientClass = new (options: { apiKey: string; baseURL: string; region: string; timeout: number; maxRetries?: number }) => { readonly machines: BoxdMachines };
 
-export interface BoxdProviderOptions extends Omit<HostedOptions, "label"> {
+export interface BoxdProviderOptions extends HostedOptions {
 	/** The boxd API key: the caller passes it; the provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
 	Boxd: BoxdClientClass;
@@ -87,9 +81,6 @@ export async function create(options: BoxdOptions): Promise<BoxdProvider> {
 /** The conformance CLI's module for boxd. */
 export const conformance = () => import("./conformance/boxd.js");
 
-export const MOUNT: readonly MountKind[] = BOXD.mounts;
-export const CAPABILITIES: readonly KindCapabilities[] = BOXD.capabilities;
-
 const DAY_MS = 24 * 60 * 60_000;
 const DEFAULT_BASE_URL = "https://boxd.sh:9443";
 /** The adapter's default requestMs and createMs: the SDK bounds a call by its client's timeout, so each client takes one. */
@@ -107,14 +98,25 @@ const IMAGE_UID = 1000;
 /** Standby (suspended) wakes on the next call, and a migration keeps the machine: both run. */
 const STATES: Readonly<Record<string, Machine["state"]>> = {
 	...{ pending: "starting", starting: "starting", running: "running", suspended: "running", migrating: "running" },
-	...{ hibernated: "stopped", stopped: "stopped", failed: "failed", destroyed: "going" },
+	...{ hibernated: "stopped", stopped: "stopped", failed: "gone", destroyed: "gone" },
 };
 
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
+/** A machine as the adapter reads one: its labels, its state, and when boxd made it. */
+function machineOf(machine: BoxdMachine): Machine {
+	const state = STATES[machine.status];
+	const created = dateOf(machine.createdAt);
+	return {
+		id: machine.id,
+		labels: { ...machine.labels },
+		state: state ?? "gone",
+		...(created ? { createdAt: created } : {}),
+		...(state === "gone" || state === undefined ? { why: `boxd reads its status as ${show(machine.status)}` } : {}),
+	};
+}
 
 /** boxd's machines as a MachineHost (../host.ts). */
 class BoxdHost implements MachineHost {
-	readonly id = "boxd";
+	readonly descriptor = BOXD;
 	readonly facts: HostFacts = {
 		daemon: "child",
 		isolation: "microvm",
@@ -123,14 +125,7 @@ class BoxdHost implements MachineHost {
 		maxLifetimeMs: 30 * DAY_MS,
 		arch: "amd64",
 		vendorAgentPorts: [AGENT_PORT],
-		networkReadBack: true,
-		network: [...BOXD.network],
-		mounts: [...MOUNT],
-		release: ["delete"],
-		labelRules: { key: LABEL_KEY },
 	};
-	/** The labels each create of this process wrote, by machine id: a snapshot's restore merges in its own. */
-	readonly #written = new Map<string, Set<string>>();
 
 	constructor(
 		readonly machines: BoxdMachines,
@@ -139,8 +134,17 @@ class BoxdHost implements MachineHost {
 		readonly options: { org?: string; size?: { vcpu: number; memory: string }; deleteTimer: boolean },
 	) {}
 
-	/** An isolated machine (on none of the org's networks), with no standby, which would freeze a quiet computer. */
-	async create(req: MachineRequest): Promise<Result<{ id: string }>> {
+	errorCode(error: unknown): ComputerErrorCode {
+		return codeOf(error);
+	}
+
+	/**
+	 * An isolated machine (on none of the org's networks) with no standby, which would freeze a quiet computer. Once it is
+	 * ready: nothing out (the allowlist ["none"]) and no hibernation, since boxd's idle timers watch traffic and a computer
+	 * may have none. A throw after the machine exists leaves it to the adapter, which lists by the labels and deletes it.
+	 */
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
+		if (req.egress) throw new HostError("invalid", "a boxd computer reaches nothing outside, and this request asks it to");
 		const { org, size, deleteTimer } = this.options;
 		const made = await this.creator.create({
 			name: req.name,
@@ -151,43 +155,38 @@ class BoxdHost implements MachineHost {
 			...(req.image === BOXD_DEFAULT_IMAGE ? {} : { fromSnapshot: req.image }),
 			...(deleteTimer ? { deleteAfter: Math.ceil((Date.parse(req.labels[MAX_LABEL] ?? "") - Date.now()) / 1000) + 300 } : {}),
 		});
-		this.#written.set(made.id, new Set(Object.keys(req.labels)));
-		return ok({ id: made.id });
+		await this.machines.waitUntilReady(made.id, { timeout: ctx.timeoutMs });
+		await this.machines.setEgressAllow(made.id, ["none"]);
+		await this.machines.setAutoHibernateTimeout(made.id, 0);
+		return { id: made.id };
 	}
 
-	/** machines.get takes an id alone, so a machine of another org is none of this provider's. */
-	async get(id: string): Promise<Result<Machine | undefined>> {
+	/** machines.get takes an id alone, so a machine of another org is none of this provider's. Not found is none (adapter). */
+	async get(id: string): Promise<Machine | undefined> {
 		const { org } = this.options;
-		try {
-			const machine = await this.machines.get(id);
-			return ok(org === undefined || machine.org?.name === org || machine.org?.id === org ? this.#machineOf(machine) : undefined);
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
-			throw error;
-		}
+		const machine = await this.machines.get(id);
+		return org === undefined || machine.org?.name === org || machine.org?.id === org ? machineOf(machine) : undefined;
 	}
 
-	async list(labels: Record<string, string>): Promise<Result<Machine[]>> {
+	async list(labels: Record<string, string>): Promise<Machine[]> {
 		const { org } = this.options;
 		const listed = await this.machines.list({ ...(org === undefined ? {} : { org }), labels });
-		return ok([...listed].map((machine) => this.#machineOf(machine)));
+		return [...listed].map(machineOf);
 	}
 
-	async delete(id: string): Promise<Result<void>> {
-		this.#written.delete(id);
+	/** Not found is ok. */
+	async delete(id: string): Promise<void> {
 		try {
 			await this.machines.delete(id);
 		} catch (error) {
 			if (codeOf(error) !== "not_found") throw error;
 		}
-		return ok(undefined);
 	}
 
 	/** One streamExec, its line the argv quoted. boxd runs it as the image's user; the adapter's scripts sudo to root. */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }): Promise<Result<MachineProcess>> {
+	async exec(id: string, argv: readonly string[]): Promise<MachineProcess> {
 		const stream = this.machines.streamExec(id, { command: shellLine(argv) });
-		if (!stdin) stream.end();
-		return ok({
+		return {
 			stdout: stream,
 			stderr: stream.stderr,
 			write: async (bytes) => stream.write(bytes),
@@ -195,74 +194,35 @@ class BoxdHost implements MachineHost {
 			wait: () => stream.wait().catch(() => -1),
 			// The server kills the process group (TERM, then KILL); close is safe twice (exec.d.ts).
 			kill: async () => stream.close(),
-		});
-	}
-
-	async upload(id: string, path: string, bytes: Uint8Array): Promise<Result<void>> {
-		await this.machines.files.upload(id, path, bytes);
-		return ok(undefined);
-	}
-
-	readonly errorCode = codeOf;
-
-	/** Ready for exec, nothing out, and no hibernation: boxd's idle timers watch traffic, and a computer may have none. */
-	async prepare(id: string, ctx: HostCall): Promise<Result<void>> {
-		await this.machines.waitUntilReady(id, { timeout: ctx.timeoutMs });
-		await this.machines.setEgressAllow(id, ["none"]);
-		await this.machines.setAutoHibernateTimeout(id, 0);
-		return ok(undefined);
-	}
-
-	/** The janitor's deadline label, at extend. */
-	async setLabels(id: string, labels: Record<string, string>): Promise<Result<void>> {
-		await this.machines.updateLabels(id, { set: labels });
-		return ok(undefined);
-	}
-
-	check(spec: ComputerSpec): Refusal[] {
-		const image = (spec as { image?: unknown } | null)?.image;
-		if (typeof image !== "string" || image === "") return [];
-		if (!IMAGE.test(image)) return [{ field: "image", message: `an image is "${BOXD_DEFAULT_IMAGE}" (boxd's own Ubuntu 24.04), or the name of a boxd snapshot` }];
-		if (image !== BOXD_DEFAULT_IMAGE && this.options.size) return [{ field: "image", message: `a machine restored from a snapshot has the snapshot's size, and this provider names one: it takes only "${BOXD_DEFAULT_IMAGE}"` }];
-		return [];
-	}
-
-	/** The machine as the adapter reads one; boxd's own create options read back wrong are its drift. */
-	#machineOf(machine: BoxdMachine): Machine {
-		const labels = { ...machine.labels };
-		const drift: string[] = [];
-		const differ = (field: string, declared: unknown, actual: unknown) => drift.push(`${field}: declared ${show(declared)}, read back ${show(actual)}`);
-		if (machine.name !== labels[NAME_LABEL]) differ("name", labels[NAME_LABEL], machine.name);
-		if (!machine.networking.isolated) differ("isolated", true, machine.networking.isolated);
-		const { suspendAfter, hibernateAfter, destroyAfter } = machine.idle;
-		for (const [field, after] of Object.entries({ "auto-suspend": suspendAfter, "auto-hibernate": hibernateAfter, "auto-destroy": destroyAfter })) if (after !== 0) differ(field, 0, after);
-		if (machine.deleteAt && !(new Date(machine.deleteAt).getTime() >= Date.parse(labels[MAX_LABEL] ?? ""))) drift.push(`delete-after: boxd deletes it at ${show(machine.deleteAt)}, before the most it may live (${show(labels[MAX_LABEL])})`);
-		const snapshot = machine.source?.kind === "snapshot" ? machine.source.name : undefined;
-		if ((labels[IMAGE_LABEL] ?? BOXD_DEFAULT_IMAGE) !== (snapshot ?? BOXD_DEFAULT_IMAGE)) differ("snapshot", labels[IMAGE_LABEL], snapshot);
-		const written = this.#written.get(machine.id);
-		for (const key of Object.keys(labels)) if (written && key.startsWith("agentrun.") && !written.has(key)) drift.push(`label ${key}: create wrote none, read back ${show(labels[key])} (from the snapshot)`);
-		const { vcpu, memoryBytes } = machine.resources;
-		const { size } = this.options;
-		if (size && (vcpu !== size.vcpu || memoryBytes !== Number.parseInt(size.memory, 10) * 1024 ** 3)) differ("size", size, { vcpu, memoryBytes });
-		const state = STATES[machine.status];
-		return {
-			id: machine.id,
-			labels,
-			state: state ?? "failed",
-			...(state === undefined ? { why: `boxd reads its status as ${show(machine.status)}` } : {}),
-			network: networkOf(machine.egressAllow),
-			...(snapshot === undefined ? {} : { image: { resolved: snapshot } }),
-			size: { cpus: vcpu, memoryMb: memoryBytes / 1024 ** 2 },
-			...(drift.length > 0 ? { drift } : {}),
 		};
 	}
-}
 
-/** none is the allowlist ["none"], open is none at all; a list of hosts is another network, in words. */
-function networkOf(allow: string[]): NetworkPolicy {
-	if (allow.length === 0) return "open";
-	if (allow.length === 1 && allow[0] === "none") return "none";
-	return { other: `an egress allowlist of ${allow.length} entries, which this provider never makes` };
+	async upload(id: string, path: string, bytes: Uint8Array): Promise<void> {
+		await this.machines.files.upload(id, path, bytes);
+	}
+
+	/** The janitor's deadline label; the adapter holds it to the most the machine may live and reads it back. */
+	async extend(id: string, endsAt: Date): Promise<void> {
+		await this.machines.updateLabels(id, { set: { [DEADLINE_LABEL]: endsAt.toISOString() } });
+	}
+
+	/**
+	 * An image is "default" or a snapshot's name; the size is the provider's (vcpu, memory), never the spec's; a label
+	 * name is one boxd takes.
+	 */
+	check(spec: Partial<ComputerSpec>): Refusal[] {
+		const refusals: Refusal[] = (["cpus", "memoryMb"] as const)
+			.filter((field) => spec[field] !== undefined)
+			.map((field) => ({ field, message: `a boxd computer's size is the provider's vcpu and memory options, not the spec's ${field}` }));
+		const { image, labels } = spec;
+		if (typeof image === "string" && image !== "") {
+			if (!IMAGE.test(image)) refusals.push({ field: "image", message: `an image is "${BOXD_DEFAULT_IMAGE}" (boxd's own Ubuntu 24.04), or the name of a boxd snapshot` });
+			else if (image !== BOXD_DEFAULT_IMAGE && this.options.size) refusals.push({ field: "image", message: `a machine restored from a snapshot has the snapshot's size, and this provider names one: it takes only "${BOXD_DEFAULT_IMAGE}"` });
+		}
+		const keys = labels !== null && typeof labels === "object" ? Object.keys(labels).filter((key) => !LABEL_KEY.test(key)) : [];
+		if (keys.length > 0) refusals.push({ field: "labels", message: `boxd takes label names of 1 to 63 of a-z, 0-9 and ._/-, not starting boxd/: ${keys.map((key) => show(key)).join(", ")}` });
+		return refusals;
+	}
 }
 
 /** The SDK names its errors (errors.d.ts); an APIStatusError carries its gRPC code (3 invalid argument, 4 deadline
@@ -293,6 +253,6 @@ export class BoxdProvider extends HostedProvider {
 		const machines = new Boxd({ ...client, timeout: rest.timeouts?.requestMs ?? REQUEST_MS }).machines;
 		const creator = new Boxd({ ...client, timeout: rest.timeouts?.createMs ?? CREATE_MS, maxRetries: 0 }).machines;
 		const size = vcpu === undefined ? undefined : { vcpu, memory: memory as string };
-		super(new BoxdHost(machines, creator, { org, size, deleteTimer }), { ...rest, label: "boxd", maxLifetimeMs });
+		super(new BoxdHost(machines, creator, { org, size, deleteTimer }), { ...rest, maxLifetimeMs });
 	}
 }
