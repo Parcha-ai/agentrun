@@ -23,7 +23,7 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
 export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
-export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; run_memory_mib: number };
+export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number };
 
 
 const offered = new WeakMap<object, Promise<HarnessCapability[]>>();
@@ -74,7 +74,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       // Each harness's model when a definition names none, as a save and a run resolve it (runnable.ts): none for a
       // harness that does not run here, or that no model here would run on.
       const { harnessModel } = await import("./runnable.js");
-      const { pickerCandidates } = await import("./model-form.js");
+      const { pickerCandidates, freeCandidates } = await import("./model-form.js");
       return Promise.all(base.map(async (offer): Promise<HarnessCapability> => {
         const resolved = offer.available ? await harnessModel(env, offer.id, undefined, true) : undefined;
         // The models a person may pick for it (model-form.ts), each in the form it takes: those its entry's own choice
@@ -82,6 +82,8 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         // so the picker never offers one a save would refuse. None for a harness that does not run here.
         const entry = harnessOf(env, offer.id)!;
         const models: string[] = [];
+        // Its free models (model-form.ts freeCandidates) are offered after the others, by the same checks.
+        const free = offer.available ? await freeCandidates(env, offer.id) : [];
         if (offer.available) {
           // Each choice passes what a save and a run ask, by construction: the save's own shape check (MODEL_REF), the
           // harness's own choice of it, and, on an adapter's wire, providerFor, the function a run starts with. A model
@@ -92,7 +94,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           const { ADAPTER_FACTS } = await import("./adapter-facts.js");
           const { FAUX_ENV } = await import("./model.js");
           const facts = ADAPTER_FACTS.find((f) => f.id === offer.id);
-          for (const id of pickerCandidates(env, offer.id)) {
+          for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);
             if (!chosen || !("model" in chosen || chosen.needs === "key")) continue;
@@ -106,7 +108,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
             models.push(id);
           }
         }
-        return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, run_memory_mib: entry.runMib };
+        return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib };
       }));
     })();
     offered.set(env, offers);
