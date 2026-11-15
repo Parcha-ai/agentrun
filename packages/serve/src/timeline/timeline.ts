@@ -88,7 +88,7 @@ export type TimelineEvent = {
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
-export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
+export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true; /** The call of the harness's own a recorded call ran inside (CallStartData.parent: Codex's code-mode `exec`). */ parentCall?: string };
 /** The call a nested call (the kernel's NestedCalls: a script's, tools_call's) was made in, read off its id
  *  (`<callId>/<key>`); undefined for a call the model made itself. */
 export const nestingCallOf = (callId: string): string | undefined => {
@@ -954,8 +954,10 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          // Recorded managed calls derive their nesting from the id; SDK calls keep their validated explicit parent.
-          const nesting = (entry.recordedCall ? nestingCallOf(id) : undefined) ?? str(obj(entry.data)?.parentCallId);
+          // A call the loop's record kept for a tool that nests (a script's, tools_call's) sits under that tool's call; one
+          // made inside a call of the harness's own (Codex's `exec`) under that call, which its record names. SDK calls keep
+          // their validated explicit parent.
+          const nesting = (entry.recordedCall ? (entry.parentCall ?? nestingCallOf(id)) : undefined) ?? str(obj(entry.data)?.parentCallId);
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };

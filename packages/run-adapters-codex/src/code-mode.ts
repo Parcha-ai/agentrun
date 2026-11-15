@@ -9,6 +9,7 @@
 //  - answers, after a recovery, a `never` call the log already holds a completed outcome for from the log, one re-issue for each;
 //  - answers a cut-off `exec` with a custom tool call output built from the nested calls the log holds for it, and runs nothing;
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
+import type { OwnCalls } from "@parcha/agentrun-kernel";
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
 import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
@@ -61,6 +62,9 @@ export interface CodeModeDeps {
   /** How often the barrier looks again for a script's line, and what a declined call is told. */
   tries: number;
   declined: string;
+  /** The host's record of each `exec` (SessionIO.ownCalls): its row from its rollout lines, and each nested call it makes
+   *  named under it before the call reaches the gate. */
+  ownCalls?: OwnCalls;
 }
 
 interface Dangling {
@@ -183,7 +187,25 @@ export function codeMode(deps: CodeModeDeps) {
   /** After a recovery: the `never` calls the log holds a completed outcome for, by tool and arguments, until the turn ends. Each answers one re-issue. */
   const recovered = new Map<string, { tool: string; text: string; sent?: string }[]>();
   for (const line of deps.lines) scripts.note(line);
-  machine.onRolloutLine?.((line) => scripts.note(line));
+  /** Each `exec` whose row this drive opened on the host's record (SessionIO.ownCalls): its end waits for that write. */
+  const rows = new Map<string, Promise<void>>();
+  /** The host's row of the `exec` `exec`, opened once with its script (`{ script }`, as codemode's own input is held), from
+   *  its rollout line or, before that line is in the rollout, from the proxy's announcement. */
+  const openRow = (exec: string, input: string | undefined): Promise<void> => {
+    const own = deps.ownCalls;
+    if (!own) return Promise.resolve();
+    let row = rows.get(exec);
+    if (!row) rows.set(exec, (row = own.opened(exec, "exec", input === undefined ? {} : { script: input })));
+    return row;
+  };
+  // Only the lines read live: an `exec` of the log restored is on the host's record already, ended by its own resume.
+  machine.onRolloutLine?.((line) => {
+    const said = scripts.note(line);
+    const own = deps.ownCalls;
+    if (!said || !own) return;
+    if (said.kind === "opened") void openRow(said.exec, said.input).catch((error) => deps.log("codex: an exec's row was not written", { exec: said.exec, error: String(error) }));
+    else void (rows.get(said.exec) ?? Promise.resolve()).then(() => own.ended(said.exec, said.output, said.failed)).catch((error) => deps.log("codex: an exec's end was not written", { exec: said.exec, error: String(error) }));
+  });
 
   /** The script a nested call is tied to now, as the log and the proxy's latest answer have it. */
   const tieNow = () => scripts.tie(machine.announcedExec?.(), (id) => logged.has(id));
@@ -273,6 +295,13 @@ export function codeMode(deps: CodeModeDeps) {
             const tie = tieNow();
             const exec = execOf.get(callId) ?? (tie.kind === "tied" || tie.kind === "held" ? tie.exec : undefined);
             if (exec) execOf.set(callId, exec);
+            // On the host's record the call sits under its exec's row, written first (from the proxy's announcement when the
+            // exec's line is not in the rollout yet), as a codemode script's calls sit under its call on every other harness.
+            // A call tied to no known exec names none: no parent is made up.
+            if (exec && exec !== UNWATCHED && deps.ownCalls) {
+              await openRow(exec, scripts.inputOf(exec) ?? machine.announcedInput?.(exec)).catch((error) => deps.log("codex: an exec's row was not written", { exec, error: String(error) }));
+              deps.ownCalls.nestedIn(callId, exec);
+            }
             // Never the unwatched-answer marker: a call tied to no known exec is journaled with none.
             journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: openTurn(ctx.state())?.since ?? -1, tool: String(p.tool), args: p.arguments ?? {} } satisfies Tie);
           }

@@ -208,6 +208,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         })),
         // The host's gate, asked about each host-tool call before its intent is written.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!({ ...call, tool: hostName(call.tool) }) } : {}),
+        // The host's record of a code-mode `exec`: its row, and its script's calls under it.
+        ...(io.ownCalls ? { ownCalls: io.ownCalls } : {}),
         builtins: false,
         // Codex's bundled skills (imagegen, skill-installer, ...), which it writes under `$CODEX_HOME/skills/.system` at every
         // start, are off in every session, skills or not: the model is shown the host's skills and no others.
