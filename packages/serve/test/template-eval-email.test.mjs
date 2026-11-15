@@ -153,24 +153,36 @@ test("an email case with no new message starts as the package's schedule's run, 
   assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
 });
 
-test("on folders, email_file with archive false is refused and nothing moves; the refused call still counts as a call", { timeout: 600_000 }, async (t) => {
+test("email_file with archive false keeps the message in INBOX on both layouts: refused on folders (the refused call still counts), a label on gmail; a grader of one layout grades that layout's run alone", { timeout: 600_000 }, async (t) => {
   const dir = await mailPackage(t, {
     reply: {
       ...REPLY_CASE,
-      fixture: { ...REPLY_CASE.fixture, layouts: ["folders"] },
-      graders: { "kept.md": "---\ntype: mailbox\nmessage_id: \"<a2@example.com>\"\nin: INBOX\n---\n", "tried.md": "---\ntype: tool_used\ntool: email_file\nargs: { archive: false }\ncount: 1\n---\n" },
+      fixture: { ...REPLY_CASE.fixture, layouts: ["gmail", "folders"] },
+      graders: {
+        "kept.md": "---\ntype: mailbox\nmessage_id: \"<a2@example.com>\"\nin: INBOX\n---\n",
+        "tried.md": "---\ntype: tool_used\ntool: email_file\nargs: { archive: false }\ncount: 1\n---\n",
+        "labelled.md": "---\ntype: mailbox\nmessage_id: \"<a2@example.com>\"\nin: Ignored\nlayouts: [gmail]\n---\n",
+        "unlabelled.md": "---\ntype: mailbox\nmessage_id: \"<a2@example.com>\"\nnot_in: [Ignored]\nlayouts: [folders]\n---\n",
+      },
     },
   });
   const manifest = join(dir, "agent.md");
   writeFileSync(manifest, readFileSync(manifest, "utf8").replace('"archive":true', '"archive":false'));
   const report = await evalTemplate({ dir, cases: ["reply"], serve: { faux: FAUX } });
-  const [run] = report.cases[0].runs;
-  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
-  const [filed] = run.calls.filter((call) => call.tool === "email_file");
-  assert.match(String(filed.result), /pass archive: true to move it/, JSON.stringify(filed));
-  assert.deepEqual(run.mailbox_after.moved, [], "nothing moved");
-  assert.equal(graderOf(run, "kept.md").pass, true, graderOf(run, "kept.md").reason);
-  assert.equal(graderOf(run, "tried.md").pass, true, graderOf(run, "tried.md").reason);
+  const runs = Object.fromEntries(report.cases[0].runs.map((run) => [run.layout, run]));
+  for (const run of Object.values(runs)) {
+    assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+    for (const file of ["kept.md", "tried.md"]) assert.equal(graderOf(run, file).pass, true, `${run.layout} ${file}: ${graderOf(run, file).reason}`);
+  }
+  const [refused] = runs.folders.calls.filter((call) => call.tool === "email_file");
+  assert.match(String(refused.result), /pass archive: true to move it/, JSON.stringify(refused));
+  assert.deepEqual(runs.folders.mailbox_after.moved, [], "nothing moved");
+  // Each layout's own grader graded its run, and is not a grader of the other's: the case passes on both.
+  assert.equal(graderOf(runs.gmail, "labelled.md").pass, true, graderOf(runs.gmail, "labelled.md").reason);
+  assert.equal(graderOf(runs.folders, "unlabelled.md").pass, true, graderOf(runs.folders, "unlabelled.md").reason);
+  assert.equal(graderOf(runs.folders, "labelled.md"), undefined);
+  assert.equal(graderOf(runs.gmail, "unlabelled.md"), undefined);
+  assert.equal(report.cases[0].pass, true, JSON.stringify(report.cases[0].runs.map((run) => run.graders)));
 });
 
 test("a trigger that watches a folder gets the new message there, a folder the fixture names empty is on the account, and on folders email_file with no archive moves the message", { timeout: 600_000 }, async (t) => {
@@ -224,6 +236,11 @@ test("an email case checks when it is read: its fixture, an email tool, the trig
     reply: { ...REPLY_CASE, fixture: { ...REPLY_CASE.fixture, layouts: ["outlook"], mailboxes: { INBOX: [{ ...INBOX[0], message_id: "a1@example.com" }] } } },
     lost: { ...REPLY_CASE, fixture: { ...REPLY_CASE.fixture, trigger: "Evening digest" } },
     said: { ...REPLY_CASE, yaml: "max_cost_usd: 1\n" },
+    scoped: {
+      ...REPLY_CASE,
+      fixture: { ...REPLY_CASE.fixture, layouts: ["folders"] },
+      graders: { "unrun.md": "---\ntype: mailbox\nmessage_id: \"<a2@example.com>\"\nin: INBOX\nlayouts: [gmail]\n---\n", "outlook.md": "---\ntype: regex\npattern: x\nlayouts: [outlook]\n---\n" },
+    },
   });
   writeFileSync(join(bad, "evals", "said", "prompt.md"), "---\ndescription: A prompt of its own.\n---\nReply to it.\n");
   const said = problems(bad);
@@ -231,6 +248,8 @@ test("an email case checks when it is read: its fixture, an email tool, the trig
   assert.ok(said.some((p) => /reply\/fixtures\/mailbox\.json: .*message_id is a Message-ID in angle brackets/.test(p)), said.join("\n"));
   assert.ok(said.some((p) => /lost\/fixtures\/mailbox\.json: trigger Evening digest is not one of the package's triggers \(New mail, Morning digest\)/.test(p)), said.join("\n"));
   assert.ok(said.some((p) => /said\/prompt\.md: an email case's run is started by the package's trigger/.test(p)), said.join("\n"));
+  assert.ok(said.some((p) => /scoped\/graders\/unrun\.md: layouts names gmail, which the case's fixture does not run on \(folders\)/.test(p)), said.join("\n"));
+  assert.ok(said.some((p) => /scoped\/graders\/outlook\.md: layouts is a list of gmail and folders, each once/.test(p)), said.join("\n"));
 
   const toolless = await mailPackage(t, { reply: REPLY_CASE });
   const manifest = join(toolless, "agent.md");

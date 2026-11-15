@@ -187,7 +187,12 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
     so a run that searches once more than the case needs still passes).
   - `file_exists`: `path` in the run's work folder.
   - `mailbox`, on an `email` case: `message_id` is `in` a mailbox (or, on gmail, under a label) after the run, and in
-    none of `not_in` (a list); `INBOX`, `Drafts` and `Sent` name the account's own on either layout.
+    none of `not_in` (a list); `INBOX`, `Drafts` and `Sent` name the account's own on either layout. `in: INBOX` is
+    the check that a message stayed in the inbox on both layouts: a gmail label keeps it there, a folders move does not.
+
+  On an `email` case any grader may say `layouts` (`[gmail]`, `[folders]`): it grades the runs of those layouts alone,
+  where a package's right behaviour differs by server (on folders, `tool_used` `email_file` `not_called`; on gmail,
+  `count: 1` with `args: {archive: false}`). On a run of another layout it is not one of the run's graders.
 
   The answer's shape needs no grader: every completed run of a package with `output` is held to its schema.
 

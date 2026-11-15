@@ -22,7 +22,7 @@ import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
 import type { EvalFakes } from "./runner/adapter-run-spec.js";
-import { type EvalClock, evalClock, type Layout, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
+import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
 import type { EmailFaux } from "./email/email-faux.js";
 import { EMAIL_TOOLS } from "./email/names.js";
 import type { MonidFake } from "./runner/monid-run.js";
@@ -86,12 +86,16 @@ const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email", s
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
 
-export type Grader =
+export type Grader = (
   | { file: string; type: "llm"; rubric: string; target?: string }
   | { file: string; type: "regex"; pattern: string; flags: string; expect: "match" | "no_match"; target?: string }
   | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; args?: Json }
   | { file: string; type: "file_exists"; path: string }
-  | { file: string; type: "mailbox"; messageId: string; in?: string; notIn: string[] };
+  | { file: string; type: "mailbox"; messageId: string; in?: string; notIn: string[] }
+) & {
+  /** An email case's layouts this grader grades the runs of; absent, every run. */
+  layouts?: Layout[];
+};
 /** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
  *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
@@ -198,12 +202,25 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
 
 /** A grader file checked, by its type's fields. */
 function graderOf(p: Package, file: string, text: string, bad: (message: string) => void): Grader | undefined {
+  const grader = graderOfType(p, file, text, bad);
+  const front = frontOf(text);
+  const layouts = grader && typeof front !== "string" ? front.data.layouts : undefined;
+  if (layouts === undefined || !grader) return grader;
+  // Graded on the runs of these layouts of an email case alone (eval-mailbox.ts LAYOUTS), where a package's right
+  // behaviour differs by server: on the others it is not a grader of the run at all.
+  if (!Array.isArray(layouts) || !layouts.length || !layouts.every((l) => (LAYOUTS as readonly unknown[]).includes(l)) || new Set(layouts).size !== layouts.length) return bad(`${file}: layouts is a list of ${LAYOUTS.join(" and ")}, each once`), undefined;
+  return { ...grader, layouts: layouts as Layout[] };
+}
+
+function graderOfType(p: Package, file: string, text: string, bad: (message: string) => void): Grader | undefined {
   const front = frontOf(text);
   if (typeof front === "string") return bad(`${file}: ${front}`), undefined;
   const { data, body } = front;
   const type = data.type;
   if (typeof type !== "string" || !Object.hasOwn(GRADER_FIELDS, type)) return bad(`${file}: type is one of ${Object.keys(GRADER_FIELDS).join(", ")}`), undefined;
-  for (const field of unknown(data, GRADER_FIELDS[type]!)) bad(`${file}: a ${type} grader has no field ${field}: its fields are ${GRADER_FIELDS[type]!.join(", ")}`);
+  // Every grader may name the layouts it grades (graderOf); its own fields are its type's.
+  const fields = [...GRADER_FIELDS[type]!, "layouts"];
+  for (const field of unknown(data, fields)) bad(`${file}: a ${type} grader has no field ${field}: its fields are ${fields.join(", ")}`);
   const target = data.target;
   if (target !== undefined && !(typeof target === "string" && TARGET.test(target))) bad(`${file}: target is a field of the answer's JSON (a.b for a nested one)`);
   const targeted = typeof target === "string" ? { target } : {};
@@ -414,7 +431,10 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     for (const entry of readdirSync(join(root, "graders"), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
       const grader = graderOf(pkg, `${at}/graders/${entry.name}`, readFileSync(join(root, "graders", entry.name), "utf8"), bad);
+      const unrun = grader?.layouts?.filter((layout) => email && !email.layouts.includes(layout)) ?? [];
       if (grader?.type === "mailbox" && c.email === undefined) bad(`${at}/graders/${entry.name}: a mailbox grader reads the case's fake mailbox, and the case has no email`);
+      else if (grader?.layouts && c.email === undefined) bad(`${at}/graders/${entry.name}: layouts grades the runs of an email case's layouts, and the case has no email`);
+      else if (unrun.length) bad(`${at}/graders/${entry.name}: layouts names ${unrun.join(", ")}, which the case's fixture does not run on (${email!.layouts.join(", ")})`);
       else if (grader) graders.push({ ...grader, file: entry.name });
     }
     if (problems.length > before) continue;
@@ -1280,6 +1300,8 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const graders: GraderResult[] = output ? [output] : [];
   for (const grader of one.graders) {
     stopped();
+    // A grader of some layouts is not one of a run on another.
+    if (grader.layouts && !(record.mailbox && grader.layouts.includes(record.mailbox.after.layout))) continue;
     if (grader.type !== "llm") {
       graders.push({ grader: grader.file, type: grader.type, cost_usd: null, ...gradeDeterministic(grader, record, Object.keys(one.mcp)) });
       continue;
