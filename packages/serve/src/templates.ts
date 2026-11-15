@@ -24,6 +24,7 @@ import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { MOVE_FIELD } from "./trigger-composio.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
@@ -81,6 +82,9 @@ const SAMPLES = { string: "x", number: 1, integer: 1, boolean: true } as const;
 const FORMAT_SAMPLES: Record<string, string> = { uri: "https://example.com", email: "someone@example.com", hostname: "example.com", date: "2026-01-01", "date-time": "2026-01-01T00:00:00Z", uuid: "00000000-0000-4000-8000-000000000000", cron: "0 9 * * *", timezone: "UTC" };
 /** A scalar's sample: its first choice, else one of its format, else one of its type. */
 const sampleOf = (spec: { type?: unknown; enum?: unknown; format?: unknown }): unknown => (Array.isArray(spec.enum) ? spec.enum[0] : FORMAT_SAMPLES[spec.format as string] ?? SAMPLES[spec.type as ScalarType]);
+/** A composio trigger's fields this server sets when it makes the trigger on Composio (composio-triggers.ts). */
+const COMPOSIO_SET = ["instance_id", "hook", MOVE_FIELD] as const;
+
 /** An agent id in the shape an apply gives a trigger's target, for that check. */
 const SAMPLE_AGENT = `agt_${"0".repeat(24)}`;
 // semver.org's own expression, SemVer 2.0.0.
@@ -666,6 +670,11 @@ export function readPackage(from: string | PackageFiles): Package {
     if (triggerNames.has(name)) bad(MANIFEST, `triggers[${i}]: two triggers are named ${name}`);
     triggerNames.add(name);
     if (!isObject(target) || target.kind !== "start_run" || target.agent_id !== undefined) bad(MANIFEST, `triggers[${i}].target is a start_run with no agent_id: the agent is the one the package makes`);
+    // What makes a composio trigger on Composio is this server's to set, at the create: a package carrying it would run on
+    // an instance made elsewhere, or move the project's subscription here unasked.
+    const source = isObject(trigger) ? trigger.source : undefined;
+    const set = isObject(source) && source.kind === "composio" ? COMPOSIO_SET.filter((field) => source[field] !== undefined) : [];
+    if (set.length) bad(MANIFEST, `triggers[${i}].source holds ${set.join(" and ")}, which this server sets when it makes a composio trigger on Composio: a template can't carry ${set.length > 1 ? "them" : "it"}. Leave ${set.length > 1 ? "them" : "it"} out, or make the trigger from the console on this server (Triggers → New app trigger) once the agent is made.`);
   });
   if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;

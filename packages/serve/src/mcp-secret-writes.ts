@@ -68,4 +68,7 @@ registerSecretWrite("previewMcpServer", () => false);
 // whatever the body (the listing sends the key too, and only the session may type one).
 registerSecretWrite("listComposioTools", () => true);
 registerSecretWrite("saveComposioServer", () => true);
+// A Composio server's webhook subscription (composio-triggers.ts): a rotate seals its new secret, a delete drops it.
+registerSecretWrite("rotateComposioSecret", () => true);
+registerSecretWrite("deleteComposioSubscription", () => true);
 registerNotSecretWrite("refreshMcpServer", "A refresh lists the saved server's tools again with its sealed credential, and writes no credential.");

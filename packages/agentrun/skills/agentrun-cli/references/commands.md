@@ -355,6 +355,12 @@ A code that pairs a person's own computer with this server.
 
 Route: `POST /computers/pairings`.
 
+### `agentrun local delete-composio-subscription NAME`
+
+Delete the Composio project's webhook subscription, once no trigger uses it.
+
+Route: `DELETE /settings/mcp-servers/{name}/composio/subscription`.
+
 ### `agentrun local delete-computer COMPUTER_ID`
 
 Remove a paired computer: its token ends and its socket closes.
@@ -385,6 +391,18 @@ Whether run folders are on Archil disks (Mode 2), the settings, and whether its 
 
 Route: `GET /workspace/archil`.
 
+### `agentrun local list-composio-events NAME`
+
+List a saved Composio server's toolkit's events, for a composio trigger.
+
+Route: `GET /settings/mcp-servers/{name}/composio/events`.
+
+### `agentrun local list-composio-triggers NAME`
+
+A saved Composio server's triggers, each with its instance's state on Composio.
+
+Route: `GET /settings/mcp-servers/{name}/composio/triggers`.
+
 ### `agentrun local list-computer-choices PROVIDER`
 
 The values a computer provider's picked keys offer, read from the vendor.
@@ -396,6 +414,21 @@ Route: `GET /computers/{provider}/choices`.
 Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved.
 
 Route: `GET /computers`.
+
+### `agentrun local receive-hook-composio HOOK`
+
+Fire a Composio trigger: a request it checks, no token.
+
+Route: `POST /hooks/composio/{hook}`.
+
+- `--body JSON|@FILE|-` (*/*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of */*; any other than JSON is sent as given.
+
+### `agentrun local rotate-composio-secret NAME`
+
+Rotate the Composio project's webhook subscription's secret, and keep the new one.
+
+Route: `POST /settings/mcp-servers/{name}/composio/rotate-secret`.
 
 ### `agentrun local test-computer PROVIDER`
 
@@ -700,7 +733,7 @@ Route: `GET /runs/{run_id}/timeline`.
 - `--after INTEGER` (integer): The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.
 - `--wait-ms INTEGER` (integer): JSON only. How long to hold the request for a change after `after`.
 - `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500); has_more says when another waits.
-- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
+- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
 
