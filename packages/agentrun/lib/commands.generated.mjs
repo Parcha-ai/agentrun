@@ -991,6 +991,31 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
+      "replay"
+    ],
+    "operationId": "getLearnedWorkflowReplay",
+    "method": "GET",
+    "path": "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}",
+    "pathParams": [
+      "agent_id",
+      "name",
+      "digest",
+      "replay_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A replay of a learned workflow's revision: running, done or failed, its counts and its score"
+  },
+  {
+    "command": [
+      "learning",
       "retire"
     ],
     "operationId": "retireLearningFile",

@@ -273,6 +273,12 @@ Route: `POST /agents/{agent_id}/learning/evals`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun learning replay AGENT_ID NAME DIGEST REPLAY_ID`
+
+A replay of a learned workflow's revision: running, done or failed, its counts and its score.
+
+Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
+
 ### `agentrun learning retire AGENT_ID FILE`
 
 Retire a note, a skill or a workflow draft: out of every later run, kept in history.
