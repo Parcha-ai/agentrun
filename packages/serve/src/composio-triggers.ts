@@ -11,8 +11,9 @@
 // - Making a trigger goes in order, subscription, instance, save, and a failure undoes what came before it. Pausing,
 //   resuming and deleting follow on Composio once the change holds here, and so does the server turning a trigger off
 //   itself (triggers.ts); what Composio could not do is said, with what to do by hand.
-// - One project's steps run one at a time (serial): a create's setup, its save here and its undo, a pause, a delete. Each
-//   reads the triggers holding what it would undo or turn off as they are then, so it never removes what another holds.
+// - One project's steps run one at a time (serial): a create's setup, its save here and its undo, a pause, a delete, a
+//   rotate and the subscription's delete. Each reads the triggers holding what it would undo, turn off or delete as they
+//   are then, so it never removes what another holds, and a pause or resume sets the instance as its triggers now stand.
 // No public address (AGENTRUN_PUBLIC_URL): Composio can't reach this server, so making one is refused before Composio is
 // asked anything.
 import { createHash, randomBytes } from "node:crypto";
@@ -134,8 +135,12 @@ export class ComposioTriggers implements TriggerUpstream {
     try {
       const credential = await this.deps.credential(String(source.server), "field");
       await this.serial(credential.key, async () => {
-        // Off only once every trigger holding it is off.
-        if (!on && (await this.leftWith(instance, id)) === "keep") return;
+        // Set from the triggers holding it as they stand once this step has the turn, not from what was asked (a pause
+        // that waited behind a later resume): on while one of them is on, off once every one is. None left: the delete
+        // that took it has its own step.
+        const holding = (await this.deps.holders()).filter((h) => h.source.instance_id === instance);
+        if (!holding.length) return;
+        on = holding.some((h) => h.enabled);
         await this.ask(credential)(`turning the trigger instance ${on ? "on" : "off"}`, "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: on ? "enable" : "disable" });
       });
       return undefined;
@@ -185,50 +190,60 @@ export class ComposioTriggers implements TriggerUpstream {
     const credential = await this.deps.credential(name, "route");
     const mine = (await this.deps.holders()).filter((h) => h.source.server === name);
     const ask = this.ask(credential);
-    let states: Map<string, "on" | "off"> | undefined;
+    // What Composio answered, and whether it answered for every instance: one it didn't answer for is unknown, not missing.
+    const states = new Map<string, "on" | "off">();
+    let read = false;
     let subscription: Json | null = null;
     let failed: string | undefined;
     try {
       const sub = await this.subscriptionOf(ask);
       subscription = sub ? { ours: this.oursOf(sub.webhook_url) !== undefined, webhook_url: sub.webhook_url } : null;
       const ids = [...new Set(mine.map((h) => instanceOf(h.source)))];
-      states = new Map();
       // A page's worth of ids asked at a time, each answer read to its last page.
       for (let i = 0; i < ids.length; i += PAGE) {
         const listed = await this.every(ask, "reading the trigger instances", `/api/v3/trigger_instances/active?trigger_ids=${ids.slice(i, i + PAGE).map(enc).join(",")}&show_disabled=true`);
         for (const item of listed) if (isObject(item) && text(item.id)) states.set(text(item.id), item.disabled_at ? "off" : "on");
       }
+      read = true;
     } catch (error) {
       failed = String((error as Error)?.message ?? error);
     }
-    const triggers = mine.map((h) => ({ id: h.id, name: h.name, enabled: h.enabled, event: h.source.event, instance_id: h.source.instance_id, on_composio: states ? (states.get(instanceOf(h.source)) ?? "missing") : "unknown" }));
+    const triggers = mine.map((h) => ({ id: h.id, name: h.name, enabled: h.enabled, event: h.source.event, instance_id: h.source.instance_id, on_composio: states.get(instanceOf(h.source)) ?? (read ? "missing" : "unknown") }));
     return { triggers, subscription, ...(failed ? { composio_error: failed } : {}) };
   }
 
   /** POST /settings/mcp-servers/{name}/composio/rotate-secret: the subscription's new secret, kept; none answered. */
   async rotate(name: string): Promise<{ rotated: true }> {
-    const ask = this.ask(await this.deps.credential(name, "route"), "the old secret still signs");
-    const sub = await this.subscriptionOf(ask);
-    const hook = this.need(sub);
-    const rotated = await ask("rotating the webhook subscription's secret", "POST", `/api/v3/webhook_subscriptions/${enc(sub!.id)}/rotate_secret`);
-    const secret = text(rotated.secret);
-    if (!secret) throw new ApiError("upstream_failed", "Composio gave no new secret: the old one still signs.");
-    await this.keep(hook, secret);
-    this.deps.say({ condition: "composio_secret_rotated", server: name, hook });
-    return { rotated: true };
+    const credential = await this.deps.credential(name, "route");
+    // In the project's turn: a create's older read of the subscription can't write the old secret back over the new one.
+    return this.serial(credential.key, async () => {
+      const ask = this.ask(credential, "the old secret still signs");
+      const sub = await this.subscriptionOf(ask);
+      const hook = this.need(sub);
+      const rotated = await ask("rotating the webhook subscription's secret", "POST", `/api/v3/webhook_subscriptions/${enc(sub!.id)}/rotate_secret`);
+      const secret = text(rotated.secret);
+      if (!secret) throw new ApiError("upstream_failed", "Composio gave no new secret: the old one still signs.");
+      await this.keep(hook, secret);
+      this.deps.say({ condition: "composio_secret_rotated", server: name, hook });
+      return { rotated: true as const };
+    });
   }
 
   /** DELETE /settings/mcp-servers/{name}/composio/subscription: the project's subscription deleted on Composio, and its
    *  secret here; refused while a trigger uses it. */
   async forget(name: string): Promise<{ deleted: true }> {
-    const ask = this.ask(await this.deps.credential(name, "route"));
-    const sub = await this.subscriptionOf(ask);
-    const hook = this.need(sub);
-    const using = (await this.deps.holders()).filter((h) => h.source.hook === hook);
-    if (using.length) throw new ApiError("composio_in_use", `The project's webhook subscription is used by ${using.map((h) => h.name).join(", ")}: delete ${using.length > 1 ? "them" : "it"} first.`, { details: { triggers: using.map((h) => ({ id: h.id, name: h.name })) } });
-    await ask("deleting the webhook subscription", "DELETE", `/api/v3/webhook_subscriptions/${enc(sub!.id)}`);
-    await this.deps.sealed.remove(hook);
-    return { deleted: true };
+    const credential = await this.deps.credential(name, "route");
+    // In the project's turn: a create still making its instance holds the subscription by the time this reads who uses it.
+    return this.serial(credential.key, async () => {
+      const ask = this.ask(credential);
+      const sub = await this.subscriptionOf(ask);
+      const hook = this.need(sub);
+      const using = (await this.deps.holders()).filter((h) => h.source.hook === hook);
+      if (using.length) throw new ApiError("composio_in_use", `The project's webhook subscription is used by ${using.map((h) => h.name).join(", ")}: delete ${using.length > 1 ? "them" : "it"} first.`, { details: { triggers: using.map((h) => ({ id: h.id, name: h.name })) } });
+      await ask("deleting the webhook subscription", "DELETE", `/api/v3/webhook_subscriptions/${enc(sub!.id)}`);
+      await this.deps.sealed.remove(hook);
+      return { deleted: true as const };
+    });
   }
 
   /** The triggers that use saved server `name`: a server that has any is not deleted (refused, naming them). */
