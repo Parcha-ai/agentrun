@@ -330,6 +330,38 @@ test("on a vendor's desktop, a script cut by the runner's end after a shell comm
   assert.equal(methods.filter((one) => one === "apps.launch").length, 1, `the cut open was never sent again: ${JSON.stringify(methods)}`);
 });
 
+test("on a vendor's desktop, a script cut by the runner's end tells each call it made before the cut as it answered live, byte for byte: a command by its value, a file's write (no value) by its answer's words, never null", async (t) => {
+  const said = { exitCode: 0, stdout: Buffer.from("shell-ok-7731\n").toString("base64"), stderr: "", timedOut: false, truncated: false };
+  // Live: the command's value, as the script read it and returned it, and the write's answer, as its own row keeps it.
+  const first = await desktop({ more: VENDOR });
+  first.computer.overrides["exec.run"] = () => said;
+  const { requests: live, server: liveServer } = await codemodeRun(t, [{ call: CODEMODE, args: { script: "const ran = await computer.shell.run('echo shell-ok-7731');\nawait computer.files.write('/workspace/notes.txt', 'Pears: 41');\nreturn ran;" } }, { say: "done" }], first.tools, () => "allow", undefined, { computer: first.run.computer });
+  const value = lastResult(live).text;
+  assert.match(value, /shell-ok-7731/, `the live value holds the command's output: ${value}`);
+  const wrote = nestedRows(await runTimeline(liveServer, "run-1", ctx)).filter((row) => row.kind === "tool_result")[1]?.tool_result_preview;
+  assert.equal(wrote, "wrote /workspace/notes.txt", "the write answered in words, live");
+  // Cut: the same command and write, then an app's open the first runner never sees answered; the rerun tells both from
+  // their records.
+  const { computer, run, tools } = await desktop({ more: VENDOR });
+  computer.overrides["exec.run"] = () => said;
+  let stuck;
+  let bound;
+  const reached = Promise.race([new Promise((resolve) => (stuck = resolve)), new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the script never reached its app's open within 30 s")), 30_000)))]).finally(() => clearTimeout(bound));
+  computer.overrides["apps.launch"] = () => {
+    stuck();
+    return new Promise(() => {});
+  };
+  const script = "const ran = await computer.shell.run('echo shell-ok-7731');\nawait computer.files.write('/workspace/notes.txt', 'Pears: 41');\nawait computer.apps.open('firefox');\nreturn ran;";
+  const { requests } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, () => "allow", reached, { computer: run.computer });
+  const result = lastResult(requests);
+  const told = (n) => new RegExp(`^${n}\\. computer_op completed: (.*)\\. Its effect is done; it was not run again\\.$`, "m").exec(result.text)?.[1];
+  assert.equal(told(1), value, `the recorded command is told with its live value: ${result.text}`);
+  assert.equal(told(2), JSON.stringify(wrote), `the recorded write is told with its live answer: ${result.text}`);
+  const methods = methodsOf(computer);
+  assert.equal(methods.filter((one) => one === "exec.run").length, 1, "the command ran once");
+  assert.equal(methods.filter((one) => one === "files.write").length, 1, "the file was written once");
+});
+
 test("on a vendor's desktop whose agent's bash is set to ask, a script's computer.shell.run parks the run on a person's answer, asked about as bash, and nothing runs on the computer", async (t) => {
   const { computer, run, tools } = await desktop({ more: VENDOR });
   const { runners } = await stores({ runners: 1 });
