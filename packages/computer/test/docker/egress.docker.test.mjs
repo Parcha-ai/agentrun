@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DockerProvider } from "../../dist/docker.js";
 import { newRequest } from "./request.mjs";
 import { EGRESS_IMAGE, sweep } from "../../dist/index.js";
