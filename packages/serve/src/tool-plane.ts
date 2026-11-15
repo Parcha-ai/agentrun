@@ -32,10 +32,10 @@ import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { canonicalPin, defaultPermission, isCatalogTool, isPinKeys, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY, type ToolEffect } from "./tool-gate.js";
+import { canonicalPin, defaultPermission, isPinKeys, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY, type ToolEffect } from "./tool-gate.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { EMAIL_SCOPES, SCOPED_TOOLS } from "./email/names.js";
-import { isMcpName, mcpNameOf, parseToolName } from "./tool-names.js";
+import { isCatalogName, isMcpName, mcpNameOf, parseToolName } from "./tool-names.js";
 
 /** An email read tool's scope (email/names.ts). */
 type EmailScope = (typeof EMAIL_SCOPES)[number];
@@ -63,7 +63,7 @@ export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** The permissions `name` may be set to: ask is offered for the tools whose approved call the kernel runs itself, outside
  *  the model's turn (tool-list.ts `askable`) and for catalog tools. Any other (browser, ask_person, the call-only ones) is
  *  allow or deny. */
-export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : isAskable(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : isAskable(name) || isCatalogName(name) ? PERMISSIONS : ["allow", "deny"]);
 /** A tool's permission as this server applies it to an agent that sets none, as capabilities and an MCP server's read
  *  give it: the one in force under the server's settings (`permission`), the owner's default (`default_permission`) and
  *  those it may be set to. An agent's read gives the same, the agent's own layer over it (agentTools). */
@@ -102,7 +102,7 @@ export const DECISION_PROVIDER_KEYS: readonly string[] = ["jev", "parallel", "op
  *  decision provider's (DECISION_PROVIDER_KEYS), a
  *  catalog tool (`mcp:<server>/<tool>`, `monid:<provider>/<endpoint>`), or a group's wildcard (`mcp:<server>/*`,
  *  `monid:<provider>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (isTableTool(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name));
+const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (isTableTool(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogName(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
 export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** An email read tool's scope, an agent's own only (email/tools.ts): its email run's thread (the default), or the whole account. */ scope?: EmailScope; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };

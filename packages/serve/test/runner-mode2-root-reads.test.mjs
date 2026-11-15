@@ -133,7 +133,7 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness ? { harness } : {}), tools, ...(monid ? { monidPin: MONID_PIN } : {}) } });
+  await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness ? { harness } : {}), tools }, ...(monid ? { monidPin: MONID_PIN } : {}) });
   const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   // Mode 2: the server's Archil settings, and its account key sealed under the runner's seal key, as the server saves them.

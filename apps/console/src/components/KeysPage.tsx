@@ -1,4 +1,5 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { RunError } from "@/components/RunError";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { SecretRow } from "@/components/SecretRow";
@@ -10,6 +11,7 @@ import { Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
 import { keyHelp } from "@/lib/keyHelp";
+import type { HarnessInfo } from "@/lib/models";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, SecretMeta, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
@@ -42,7 +44,9 @@ export const KEY_ADVICE = "We recommend an OpenRouter key with a dollar cap and 
  *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `onChange`
  *  follows each save and removal (the server's tools and models may change with its keys). */
 /** `writable`: this is the owner's password session (session.secrets_writable), the one that may paste a key. */
-export function KeysPage({ v2, onChange, writable, whyNot = "sign_in" }: { v2: Client; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
+/** `plan`: the ChatGPT plan's row (ChatGPTRow), first among the model keys. `harnesses`: the capabilities' harnesses,
+ *  listed under the keys as what runs here. */
+export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, harnesses }: { v2: Client; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ReactNode; harnesses?: readonly HarnessInfo[] }) {
   const [view, setView] = useState<ToolKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [open, setOpen] = useState<{ id: string; mode: "edit" | "remove" } | null>(null);
@@ -111,9 +115,10 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in" }: { v2: C
           <section key={g.label} aria-label={g.label}>
             {groups.length > 1 && <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">{g.label}</h2>}
             {g.kind === "model" && <p className="mb-2 text-body text-muted-foreground">{KEY_ADVICE}</p>}
-            <ul className="border">{g.keys.map(row)}</ul>
+            <ul className="border">{g.kind === "model" && plan}{g.keys.map(row)}</ul>
           </section>
         ))}
+        {harnesses && <WhatRunsHere harnesses={harnesses} />}
       </div>
     </div>
   );

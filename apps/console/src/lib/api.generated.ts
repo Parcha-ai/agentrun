@@ -141,6 +141,7 @@ export interface components {
       default_model: string | null;
       steer: boolean;
       reason?: string;
+      needs?: ("key" | "chatgpt")[];
       installs?: "on_first_use";
     }[];
     tools: {
@@ -216,6 +217,10 @@ export interface components {
     so_far_usd?: number;
     unpriced?: number;
     overshoot_bound_usd?: number;
+    plan?: {
+      requests: number;
+      tokens: number;
+    };
   };
   Definition: unknown & components["DefinitionInput"];
   DefinitionInput: {
@@ -375,7 +380,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "external_body_conflict" | "learned_not_active";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "external_body_conflict" | "learned_not_active" | "replay_conflict";
   ExternalRef: {
     source: string;
     kind: string;
@@ -1078,6 +1083,8 @@ export interface components {
       expect?: "met" | "unmet";
     }[];
     computer_calls_dropped?: number;
+    tool_input?: Record<string, unknown>;
+    tool_result_text?: string | null;
     learning?: {
       state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
       reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
@@ -1685,6 +1692,7 @@ export interface operations {
       email?: string;
       plan?: string;
       authorize_url?: string;
+      expires_at?: string;
       models?: string[];
     };
   };
@@ -1883,6 +1891,7 @@ export interface operations {
       email?: string;
       plan?: string;
       authorize_url?: string;
+      expires_at?: string;
       models?: string[];
     };
   };
@@ -1930,6 +1939,32 @@ export interface operations {
         store: "ok" | "does_not_open";
         disk: "ok" | "below_floor" | "cannot_check";
       };
+    };
+  };
+  getLearnedWorkflowReplay: {
+    body: never;
+    answer: {
+      replay: string;
+      workflow: string;
+      digest: string;
+      status: "running" | "done" | "failed";
+      inputs: number;
+      answered: number;
+      handed_back: number;
+      failed: number;
+      skipped_write: number;
+      alone: number;
+      score: {
+        n: number;
+        agree: number;
+        agent_acc: number;
+        wf_acc: number;
+        delta: number;
+        handed_back: number;
+      };
+      cost_usd: number | null;
+      decided?: "promote" | "hold" | "superseded";
+      reason?: string;
     };
   };
   getLearningBatch: {
@@ -3136,9 +3171,16 @@ export interface operations {
             inputs: number;
             no_read_only_hint: boolean;
           }[];
+          outcomes?: {
+            answered: number;
+            handed_back: number;
+            failed: number;
+            skipped_write: number;
+          };
         };
         runs?: string[];
         inputs?: string[];
+        replay_id?: string;
         refit?: {
           from: string;
           guards: {
@@ -3150,6 +3192,8 @@ export interface operations {
           }[];
         };
         checked?: number;
+        since?: number;
+        held_on?: string[];
         commit?: string;
         superseded_by?: string;
       }[];
@@ -4222,13 +4266,25 @@ export interface operations {
   };
   signOutChatGPT: {
     body: never;
-    answer: never;
+    answer: {
+      revoked: boolean;
+      message?: string;
+    };
   };
   startChatGPTSignIn: {
     body: never;
     answer: {
       authorize_url: string;
       expires_at: string;
+    };
+  };
+  startLearnedWorkflowReplay: {
+    body: {
+      inputs?: "held" | number;
+    };
+    answer: {
+      replay: string;
+      inputs: number;
     };
   };
   startMcpOAuth: {

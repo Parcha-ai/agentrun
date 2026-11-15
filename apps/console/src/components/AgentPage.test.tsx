@@ -568,6 +568,34 @@ describe("AgentPage, the model on a gateway server", () => {
   });
 });
 
+// An agent on the server's ChatGPT plan says so where its model shows: its own plan model, or the plan's model the server
+// names as its harness's default (D5 keeps the plan the default when signed in), in the Model picker's words.
+describe("AgentPage, the model on a ChatGPT plan", () => {
+  const signedIn = [{ id: "pi", default_model: "chatgpt/gpt-6.1-sol" }, { id: "codex", default_model: "chatgpt/gpt-6.1-sol" }, { id: "claude-agent", default_model: "anthropic/claude-x" }];
+  const on = (harness: string, model?: string): Agent => {
+    const a = agentFixture("invoice-checker");
+    const { model: _m, ...definition } = a.definition;
+    return { ...a, definition: { ...definition, harness, ...(model ? { model } : {}) } };
+  };
+  const modelOf = (page: Awaited<ReturnType<typeof open>>) => [...page.host.querySelectorAll("dt")].find((t) => t.textContent === "Model")!.nextElementSibling as HTMLElement;
+  it("an agent whose model is chatgpt/<id> reads \"<id> · on your ChatGPT plan\", the full id in its title", async () => {
+    const page = await open(on("claude-agent", "chatgpt/gpt-6-luna"), { harnesses: signedIn });
+    expect([modelOf(page).textContent, modelOf(page).title]).toEqual(["gpt-6-luna · on your ChatGPT plan", "chatgpt/gpt-6-luna"]);
+  });
+  it("an agent naming no model, on a harness whose default here is the plan's, reads the same, as the default", async () => {
+    const codex = await open(on("codex"), { harnesses: signedIn });
+    expect([modelOf(codex).textContent, modelOf(codex).title]).toEqual(["gpt-6.1-sol · on your ChatGPT plan (default)", "chatgpt/gpt-6.1-sol"]);
+    act(() => root?.unmount());
+    // A harness whose default is a key's model says nothing of the plan.
+    const claude = await open(on("claude-agent"), { harnesses: signedIn });
+    expect(modelOf(claude).textContent).toBe("anthropic/claude-x (default)");
+  });
+  it("an agent pinned to a key's model says nothing of the plan, though the server is signed in", async () => {
+    const page = await open(on("codex", "openai/gpt-6.1-sol"), { harnesses: signedIn });
+    expect(modelOf(page).textContent).toBe("openai/gpt-6.1-sol");
+  });
+});
+
 // A harness the server can't run says why on the agent's page, where its Run would fail: the reason the server gives
 // (capabilities' harnesses[].reason), and a Run that does not send.
 describe("AgentPage, an agent whose harness the server can't run", () => {

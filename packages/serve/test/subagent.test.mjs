@@ -132,6 +132,16 @@ test("past the deferral threshold, a child is offered the catalog tools it was g
   assert.equal(offered.answer, "Results: Offered: mcp__fake__add", "the child is offered the tool it was given");
 });
 
+test("an MCP server's wildcard is no grant: the save refuses mcp:<server>/*, so no subagent is ever handed one", async (t) => {
+  const { api } = await setup(t, { mcp: true, runner: false });
+  const refused = await api("POST", "/agents", agent("wildcard", { tools: ["read", "mcp:fake/*", "subagent"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "input_invalid");
+  assert.deepEqual(refused.body.error.fields.map(({ field, reason }) => [field, reason]), [["definition.tools[1]", "not_an_option"]]);
+  assert.match(refused.body.error.fields[0].message, /^mcp:fake\/\* is not an MCP tool's name: mcp:<server>\/<tool>/);
+  assert.equal((await api("GET", "/agents/wildcard")).status, 404, "nothing saved");
+});
+
 test("a session name gives the child that one tool alone; its catalog name gives every tool of it", () => {
   const BROWSER = ["browser_read", "browser_click", "browser_upload", "run"];
   const options = { granted: ["read", "browser", "mcp:fake/add"], sessionNames: (catalog) => (catalog === "browser" ? BROWSER : [catalog === "mcp:fake/add" ? "mcp__fake__add" : catalog]) };

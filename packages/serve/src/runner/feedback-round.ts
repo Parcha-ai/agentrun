@@ -41,11 +41,12 @@ export function feedbackRoundOf(grade: { readonly correct: boolean; readonly pat
   return undefined;
 }
 
-/** The grade's words as the round says them: its `label`, else that it was wrong and the fields a right answer
- *  holds (`expected`): a right grade opens a round only with a label (feedbackRoundOf), so none reaches here without one. */
+/** The grade's words as the round says them: its `label`, else the fields a right answer holds (`expected`), else
+ *  "(no words)". Never the verdict: feedbackAsk and the compile ask each say it once. (A right grade opens a round only
+ *  with a label (feedbackRoundOf), so none reaches here without one.) */
 export function feedbackWords(label: string | undefined, expected: Readonly<Record<string, unknown>> | undefined): string {
   if (label?.trim()) return label.trim();
-  return `A reviewer graded this run's answer wrong.${expected ? ` A right answer holds: ${JSON.stringify(expected)}` : ""}`;
+  return expected ? `A right answer holds: ${JSON.stringify(expected)}` : "(no words)";
 }
 
 /** The feedback round a steer's body asks for (`body.feedback`, the server's own: server.ts gradeRun writes it, and the

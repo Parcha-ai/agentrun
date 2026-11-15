@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
+import { ChatGPTRow } from "@/components/ChatGPTSignIn";
 import { KeysPage } from "@/components/KeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
@@ -35,7 +36,9 @@ import { computerRefusal } from "@/lib/computerAsk";
 import { stepsBack, trackHistory } from "@/lib/back";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
+import { chatGPTView } from "@/lib/chatgpt";
 import { createConnection } from "@/lib/connection";
+import type { ChatGPTView } from "@/lib/v2";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
 import { waitingOf } from "@/lib/learning";
 import { asksPerson, FAILED_WINDOW_MS, failureCount, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
@@ -601,6 +604,23 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
   }, [v2, modelsReady]);
+  // The server's ChatGPT sign-in (chatgpt/1), read each time no model is ready: the first screen's card and the bar offer it
+  // first. Null before it is read and on a server without it.
+  const [plan, setPlan] = useState<ChatGPTView | null>(null);
+  useEffect(() => {
+    if (modelsReady !== false) return;
+    let live = true;
+    v2.chatGPT().then((body) => { if (live) setPlan(chatGPTView(body)); }, () => { if (live) setPlan(null); });
+    return () => { live = false; };
+  }, [v2, modelsReady]);
+  // The first screen's card stays from a sign-in's start until the person is done with OpenAI's words on usage, though the
+  // server has its model by then.
+  const [planShown, setPlanShown] = useState(false);
+  const onPlan = (v: ChatGPTView) => {
+    setPlan(v);
+    if (v.state === "pending" || v.state === "signed_in") setPlanShown(true);
+    if (v.state === "signed_in") void readCaps();
+  };
   return (
     <ScheduleNames.Provider value={scheduleNames}>
     <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
@@ -619,7 +639,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
-      {caps?.models.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
+      {caps?.models.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
     </>}>
       {where.section === "playground" && startError
         ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
@@ -631,12 +651,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
-              : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+              : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
+                  plan={<ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />} />}
           </Settings>
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+            {caps && (caps.models.ready === false || planShown) && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+              plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}

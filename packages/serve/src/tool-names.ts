@@ -92,9 +92,6 @@ export function mcpServerOf(name: string): string | undefined {
   return parsed?.kind === "mcp" || parsed?.kind === "mcp-server" ? parsed.server : undefined;
 }
 
-/** Whether `name` is an MCP server's wildcard, `mcp:<server>/*`. */
-export const isMcpWildcard = (name: string): boolean => parseToolName(name)?.kind === "mcp-server";
-
 /** Why a grant of an MCP server's tool is refused by its name alone, said after the grant (`mcp:<server>/<tool> ...`): the
  *  one place the console's picker and the save's blockers (runnable.ts) both read it. `hands` is the harnesses' own tools'
  *  server. */
@@ -107,9 +104,6 @@ export function mcpWireProblem(server: string, tool: string): string | undefined
 }
 /** MCP_HANDS_WORDS or mcpWireProblem's, whichever refuses the name; undefined when neither does. */
 export const mcpGrantNameProblem = (server: string, tool: string): string | undefined => (server === "hands" ? MCP_HANDS_WORDS : mcpWireProblem(server, tool));
-/** Why a harness's own MCP client drops or retypes `tool` of `server` (its facts' schemaProblems, `dropped` the first):
- *  the words a save's blocker and a saved server's read both say. */
-export const mcpDroppedWords = (server: string, tool: string, harness: string, dropped: string): string => `The MCP server ${server}'s tool ${tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`;
-/** Why the harness drops or retypes the pinned monid endpoint `tool`'s input (its facts' schemaProblems, `dropped` the
- *  first, under the endpoint's wire name): the words a save refuses its grant with. */
-export const monidDroppedWords = (tool: string, harness: string, dropped: string): string => `The monid endpoint ${tool} cannot be offered on ${harness}: ${dropped.replace(/^monid__\S+: /, "")}. Grant its provider's other endpoints by name, or pick another harness.`;
+/** Why `harness` drops or retypes the input of the catalog tool `tool` (its facts' schemaProblems, `dropped` the first,
+ *  said under the tool's wire name): the words a save's blocker and a saved MCP server's read both say. */
+export const droppedWords = (tool: string, harness: string, dropped: string): string => `The tool ${tool} cannot be offered on ${harness}: ${dropped.replace(/^[A-Za-z0-9_-]+: /, "")}.`;

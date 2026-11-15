@@ -291,6 +291,13 @@ export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER
 /** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
 export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
 
+/**
+ * What follows the tools note when the session has skills. The notes above say the app's tools are the model's only ones,
+ * and Skill is not one of those: a model that reads them has no reason to reach for it. This names Skill as its tool and
+ * says when to use it, as the on-demand listing does for a harness that reads its skills' files (serve's ON_DEMAND).
+ */
+export const SKILLS_NOTE = `The Skill tool is also yours: it loads one of this app's skills, listed to you as agentrun:<name> with what each is for. When a skill fits the step you are on, or your instructions name one, load it with Skill before you act on that step, and follow it; read its other files with read_skill_file.`;
+
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
 
@@ -788,7 +795,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, skills ? SKILLS_NOTE : undefined, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),

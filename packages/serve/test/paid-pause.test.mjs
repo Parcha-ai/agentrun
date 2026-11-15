@@ -135,7 +135,7 @@ test("opencode: a paid call the cap refuses for room pauses the run, its result 
   const { api, store } = await serve(t, { faux: undefined });
   // Saved through the store with its pin as a save would make it: a save here would read monid's listing on the network.
   const pin = { [SEARCH]: { description: "Look a person up.", input: { type: "object", properties: { body: { type: "object" } } }, usd: 1 } };
-  await store.agents.create({ id: "paid-opencode", name: "paid-opencode" }, { id: "rev-paid-opencode", kind: "agentic", body: { instructions: "Answer briefly.", skills: {}, tools: [SEARCH], harness: "opencode", toolSettings: ALLOWED, monidPin: pin } });
+  await store.agents.create({ id: "paid-opencode", name: "paid-opencode" }, { id: "rev-paid-opencode", kind: "agentic", body: { instructions: "Answer briefly.", skills: {}, tools: [SEARCH], harness: "opencode", toolSettings: ALLOWED }, monidPin: pin });
   const started = await api("POST", "/agents/paid-opencode/runs", { input: { content: ASK }, max_cost_usd: 0.5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;

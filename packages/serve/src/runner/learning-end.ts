@@ -45,7 +45,7 @@ import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
-import { getMcpServer, listMcpServers } from "../mcp-store.js";
+import { getMcpServer } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline, withFeedback, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
@@ -54,7 +54,7 @@ import { pendingFeedbackOf } from "./feedback-round.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
-import { isMcpWildcard, mcpNameOf } from "../tool-names.js";
+import { mcpNameOf } from "../tool-names.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
  *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a
@@ -298,14 +298,6 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
   return held;
 }
 
-/** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
- *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
-async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
-  const rows = await listMcpServers(store).catch(() => [] as McpServerRow[]);
-  const byName = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
-  return (server) => byName.get(server) ?? [];
-}
-
 /** What each of `tools` takes and gives a workflow's call node, in the server's own words for it (tools.ts ToolEntry's
  *  summary): the draft ask's `describe`. An MCP tool (`mcp:<server>/<tool>`, LS-07) is described by its server's listing
  *  as the store keeps it: what it does, the schema it takes and, when it lists one, the one it gives (reflect.ts cuts
@@ -520,17 +512,15 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   // The agent's output schema, which a learned workflow's answer is served shaped to (answer-json.ts answerAsServed): the
   // compile turn is told it and a draft's dry run holds its answer to it.
   const shaped = body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {};
-  const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
+  const [{ learnedDraftTools }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
   // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
   // SETTINGS_UNREAD, which permissionFrom honours (no ask is lifted over a deny the row may hold).
   const server = (await loadToolSettings(deps.store)).settings;
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
-  // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
-  const granted = (body.tools ?? []).some(isMcpWildcard) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
   // `deniedBy`: where each deny was set (the agent's tool settings, the server's, a default), which a left-out draft's
   // words name.
-  const { tools, gated, deniedBy, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
+  const { tools, gated, deniedBy, asked } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
   // A draft's decision nodes (LS-07): the host's decision providers, each held to the gate by its bare id as the run's
   // gate holds it (tool-plane.ts DECISION_PROVIDER_KEYS); deny alone refuses one.
   const providers = await deps.decisionProviders?.();

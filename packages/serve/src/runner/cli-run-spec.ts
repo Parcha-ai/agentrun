@@ -77,7 +77,6 @@ import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import { monidForClaim, withMonid } from "./monid-run.js";
-import type { MonidPin } from "../monid.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -96,8 +95,6 @@ type RevisionBody = {
   readonly tools?: readonly string[];
   readonly toolSettings?: unknown;
   readonly harness?: string;
-  /** Its monid endpoints as monid listed them at the save (monid.ts MonidPin). */
-  readonly monidPin?: MonidPin;
   readonly model?: string;
   readonly approvals?: Approvals;
   readonly skills?: Record<string, unknown>;
@@ -527,7 +524,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const held = run.redact ? heldRedactor(run.redact) : cut;
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the redactors as the web tools' do.
-  const monid = monidForClaim(body.monidPin, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined);
+  const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, held)) });
   const webNames = granted.filter(isWebHostTool);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
@@ -547,7 +544,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   })), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
-  await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
+  await replayClaimed(deps.store, runRow.agentId, claim.runId, launch, firstChoice);
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsFor, learn/replay-calls.ts).
   const replay = await replayCallsFor(deps.store, claim.runId, launch, context);

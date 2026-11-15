@@ -102,33 +102,59 @@ test("a commit answered Unanswered that lands after the first read-back is still
   const { server, runners: [one] } = await stores({ runners: 1 });
   await queue(server, "run-1");
   const store = observed(one, recorder());
-  let late = 0;
+  // The order is driven by the runner's own calls, never by a timer: the claim's commit is answered Unanswered with
+  // nothing landed; the sweep's first read-back finds nothing; only once that read has returned does the commit land
+  // (before the runner sees the read's answer); a later pass must then find it and give it back.
+  let commit; // the first claimMany's arguments, held until the commit lands
+  let landed; // the late commit's claims, once landed
+  const reads = [];
   const wrapped = {
     ...store,
     runs: {
       ...store.runs,
       async claimMany(runner, k, options) {
-        // Answered Unanswered with nothing landed yet: the commit lands 100 ms later, after the first read-back. Polls
-        // between find nothing to claim (the pending commit holds the run); once it landed, claims are real again.
-        if (late === 0) {
-          late = -1;
-          setTimeout(() => {
-            void store.runs.claimMany(runner, k, options).then(() => (late = -2));
-          }, 100);
+        if (!commit) {
+          commit = { runner, k, options };
           throw unanswered();
         }
-        if (late === -1) return [];
+        // Polls before the commit landed find nothing to claim: the pending commit holds the run.
+        if (!landed) return [];
         return store.runs.claimMany(runner, k, options);
+      },
+      async claimsOf(runner) {
+        const held = await store.runs.claimsOf(runner);
+        reads.push(held.map((claim) => claim.epoch));
+        if (commit && !landed) landed = await store.runs.claimMany(commit.runner, commit.k, commit.options);
+        return held;
       },
     },
   };
   const events = [];
-  const runner = startRunner({ store: wrapped, createLoop: faux.createLoop, name: "runner-a", onEvent: (event) => events.push(event), ...TIMING });
+  let ended;
+  const end = new Promise((resolve) => (ended = resolve));
+  const runner = startRunner({
+    store: wrapped,
+    createLoop: faux.createLoop,
+    name: "runner-a",
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === "released" && event.runId === "run-1" && event.end === "ended") ended(event);
+    },
+    ...TIMING,
+  });
   t.after(() => runner.close());
-  const run = await until(async () => {
-    const row = await server.runs.get("run-1");
-    return row.state === "ended" ? row : undefined;
-  }, `run-1 ended in 3 s, long before the ${STEADY_LEASE.leaseMs} ms lease`, 3_000);
+  // No short wall-clock bound: the lease (60 s) is twice the test's own timeout, so a run that ends at all was given back
+  // by a pass, never by the lease running out. The 25 s guard only names what a run that never ends means.
+  let guard;
+  const ran = await Promise.race([end.then(() => true), new Promise((resolve) => (guard = setTimeout(() => resolve(false), 25_000)))]);
+  clearTimeout(guard);
+  assert.ok(ran, `run-1 was never given back by a later pass: held at epoch 1 until the lease (reads ${JSON.stringify(reads)}, landed ${JSON.stringify(landed?.map((claim) => claim.epoch))})`);
+  const run = await server.runs.get("run-1");
+  assert.deepEqual(reads[0], [], "the first read-back ran before the commit landed and found nothing");
+  assert.deepEqual(landed?.map((claim) => claim.epoch), [1], "the late commit landed the claim at epoch 1");
+  assert.ok(reads.slice(1).some((epochs) => epochs.includes(1)), `a later pass read the landed claim back: ${JSON.stringify(reads)}`);
+  assert.ok(events.some((event) => event.type === "error" && event.step === "claim" && /given back/.test(event.message) && /epoch 1/.test(event.message)), JSON.stringify(events.filter((event) => event.type === "error")));
+  assert.equal(run.state, "ended");
   assert.ok(run.epoch >= 2, `the late claim was given back and the run taken again: epoch ${run.epoch}`);
 });
 

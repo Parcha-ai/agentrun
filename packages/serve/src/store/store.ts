@@ -11,6 +11,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
+import type { MonidPinBody } from "./agent-body.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
@@ -91,6 +92,8 @@ export interface NewRevision {
   /** The MCP tools the revision grants, pinned as their servers listed them when it was saved (mcp-gateway.ts McpPin), which
    *  every run of it calls; none when it grants none. */
   readonly mcpPin?: unknown;
+  /** Its monid endpoints, pinned as monid listed them when it was saved (agent-body.ts MonidPinBody); none for none. */
+  readonly monidPin?: MonidPinBody;
 }
 
 export interface RevisionRow {
@@ -111,6 +114,8 @@ export interface RevisionRow {
   readonly externalVersion: string | null;
   /** Its MCP pin as its save made it (NewRevision.mcpPin), or null for a revision that grants no MCP tool. */
   readonly mcpPin: unknown;
+  /** Its monid pin as its save made it (NewRevision.monidPin), or null for a revision that grants no monid endpoint. */
+  readonly monidPin: MonidPinBody | null;
 }
 
 /** How a run ended, beside its state. An ended run (state 'ended'): 'escalated' (it finished its work and waits for a
@@ -680,7 +685,7 @@ export interface Runs {
    *  revision's `note` is kept by its first use, as an edit's note is; it is not part of its body. */
   createInline(input: {
     agent: { id: string; name: string; description?: string | null; ref: string };
-    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string; mcpPin?: unknown };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string; mcpPin?: unknown; monidPin?: MonidPinBody };
     run: { id: string; origin?: RunOrigin };
     launch: RunLaunchInput;
   }): Promise<RunRow>;
@@ -964,6 +969,13 @@ export interface SealedKeys {
   replaceIf(name: string, was: Uint8Array, sealed: Uint8Array): Promise<boolean>;
   /** The key's row goes. */
   remove(name: string): Promise<void>;
+  /** The key's row goes only while it still holds `was` (the bytes as get read them), in one statement: true when it
+   *  went; false, removing nothing, when it changed since or is gone. */
+  removeIf(name: string, was: Uint8Array): Promise<boolean>;
+  /** The deadlines' clock now, in ms: the database's on Postgres, the store's own on SQLite (fence.ts storeNow). A lease
+   *  kept inside a sealed key's bytes (the ChatGPT sign-in's renewal) is stamped and judged by it, so every process
+   *  sharing the store judges it by one clock, whatever its own says. */
+  clock(): Promise<number>;
   /** Every saved key, by name (its bytes never opened here). */
   all(): Promise<SealedKeyRow[]>;
 }

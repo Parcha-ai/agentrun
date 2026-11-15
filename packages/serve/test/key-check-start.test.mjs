@@ -73,7 +73,7 @@ test("a monid key the server starts with is checked against monid's check fake: 
         assert.match(row.check.reason, /^Monid refused MONID_API_KEY \(401: Missing or invalid API key\) when this server started/);
         assert.ok(!JSON.stringify(row).includes(key), "no part of the key is shown");
       }
-      assert.deepEqual(monidCheckCalls.slice(before).map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/discover", available]], "one discover, through the check's fake");
+      assert.deepEqual(monidCheckCalls.slice(before).map((call) => [call.method, call.path, call.authorized]), [["GET", "/v1/endpoints", available]], "one read of the listing, through the check's fake");
       assert.deepEqual(filed(log), [], "the runs' fake saw no call");
     });
   }
