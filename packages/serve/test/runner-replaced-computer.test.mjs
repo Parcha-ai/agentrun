@@ -28,6 +28,7 @@ const { CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV } = await import("../dist/adapte
 const { computerDepsFrom, computerForClaim } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { routeOf } = await import("../dist/runner/model-route.js");
 const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
@@ -38,8 +39,12 @@ const DESKTOP = { kind: "desktop", provider: "faux-desktop" };
 const FAUX = fauxComputers();
 after(closeOpenSessions);
 
-/** The server message the model is told, exactly (Mode 1: no kept run folder). */
-const NOTE = "Your computer was replaced after the runner was lost: the earlier screen and its refs are gone, and files outside the run folder are gone. Look at the screen again before acting.";
+/** The server message the model is told, exactly (a desktop, Mode 1: no kept run folder), labelled as the server's. */
+const NOTE = "AgentRun server note: your computer was replaced. The earlier one is gone, with its screen and refs. Look at the screen again before acting.";
+/** Its row on the run's timeline: the server's, labelled once. */
+const ROW = "AgentRun: Your computer was replaced. The earlier one is gone, with its screen and refs. Look at the screen again before acting.";
+/** Every note of the replaced computer in a request's body (the regex stops at the reminder's closing tag). */
+const NOTES = /AgentRun server note: your computer was replaced[^<]*/g;
 const STATE_WORDS = "that state is from the replaced computer; observe again";
 
 const until = async (done, what, ms = 60_000) => {
@@ -68,7 +73,7 @@ const replacedClaim = (acts, inner = computerForClaim) => async (claim, store, d
   const client = made.computer.computer.client;
   const call = client.call.bind(client);
   client.call = (method, params, options) => (method === "input.actions" ? acts.push(params) : undefined, call(method, params, options));
-  return { ...made, replaced: { folderKept: false } };
+  return { ...made, replaced: { kind: "desktop", folderKept: false } };
 };
 
 async function storeWith(t, body, launch) {
@@ -96,7 +101,12 @@ async function ended(opened) {
   return (await runTimeline(opened.server, RUN, ctx)).map((one) => one.summary);
 }
 
-const reminders = (body) => (JSON.stringify(body).match(/Your computer was replaced[^<]*/g) ?? []);
+const reminders = (body) => (JSON.stringify(body).match(NOTES) ?? []);
+/** The server's rows of the replaced computer, each checked labelled once. */
+const serverRows = (said) => {
+  assert.ok(!said.some((summary) => summary?.includes("AgentRun server note")), `no row is labelled twice: ${JSON.stringify(said)}`);
+  return said.filter((summary) => summary?.startsWith("AgentRun: Your computer"));
+};
 
 test("pi: the model's first request on a replaced computer carries the server message once, the timeline shows it once, and an act at a point of the old screen is refused in words before the computer", { timeout: 120_000 }, async (t) => {
   const launch = { input: { content: "Look." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
@@ -116,8 +126,44 @@ test("pi: the model's first request on a replaced computer carries the server me
   assert.equal(requests.length, 2, "an act, then the answer");
   assert.deepEqual(requests.map((body) => reminders(body).length), [1, 0], "the first request carries it, the next does not");
   assert.equal(reminders(requests[0])[0], NOTE, "in its exact words");
-  assert.deepEqual(said.filter((summary) => summary?.startsWith("AgentRun: Your computer")), [`AgentRun: ${NOTE}`], "one row of the server's");
+  assert.deepEqual(serverRows(said), [ROW], "one row of the server's, labelled once");
   assert.ok(JSON.stringify(requests[1]).includes(STATE_WORDS), "the act at a point of the old screen is answered in words");
+  assert.deepEqual(acts, [], "no act reached the computer");
+});
+
+/** OpenRouter's Chat Completions endpoint for a free model, a stand-in (nothing leaves loopback): a computer_act call,
+ *  then an answer; each request's body kept in `bodies`. */
+const openRouterFree = (bodies) => async (input, init) => {
+  const url = String(input instanceof Request ? input.url : input);
+  if (url !== "https://openrouter.ai/api/v1/chat/completions") return new Response("not here", { status: 404 });
+  bodies.push(JSON.parse(input instanceof Request ? await input.text() : String(init?.body ?? "{}")));
+  const chunk = (fields) => `data: ${JSON.stringify({ id: `gen-${bodies.length}`, object: "chat.completion.chunk", created: 1, model: "inclusionai/ling-3.2-flash:free", ...fields })}\n\n`;
+  const act = { index: 0, id: "call_1", type: "function", function: { name: "computer_act", arguments: JSON.stringify({ steps: [{ click: [10, 20] }] }) } };
+  const said = bodies.length === 1
+    ? chunk({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [act] }, finish_reason: null }] }) + chunk({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })
+    : chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: null }] }) + chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+  const usage = chunk({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 } });
+  return new Response(`${said}${usage}data: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+};
+
+test("pi on a free route (OpenRouter's ling-3.2-flash:free, the runner's own route, under a cap): the model's first request carries the server message once, in its words, and the timeline shows it once", { timeout: 120_000 }, async (t) => {
+  const launch = { input: { content: "Look." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "openrouter", modelId: "inclusionai/ling-3.2-flash:free" }, maxCostUsd: 1 };
+  const opened = await storeWith(t, { tools: ["read"] }, launch);
+  const bodies = [];
+  const route = await routeOf("openrouter/inclusionai/ling-3.2-flash:free", { OPENROUTER_API_KEY: "not-a-secret-openrouter" }, "default", undefined, openRouterFree(bodies));
+  assert.deepEqual([route.cost.input, route.cost.output], [0, 0], "a free model");
+  const acts = [];
+  const deps = { env: {}, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: replacedClaim(acts), computerDeps: FAUX_DEPS };
+  const runner = startRunner({
+    store: opened.store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
+    createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+  });
+  t.after(() => runner.close().catch(() => {}));
+  const said = await ended(opened);
+  assert.equal(bodies.length, 2, "an act, then the answer, both to OpenRouter");
+  assert.deepEqual(bodies.map((body) => reminders(body)), [[NOTE], []], "the first request carries it in its words, the next does not");
+  assert.deepEqual(serverRows(said), [ROW], "one row of the server's, labelled once");
+  assert.ok(JSON.stringify(bodies[1]).includes(STATE_WORDS), "the act at a point of the old screen is answered in words");
   assert.deepEqual(acts, [], "no act reached the computer");
 });
 
@@ -147,8 +193,8 @@ test("a CLI harness (opencode): its first main-model request carries the server 
   t.after(() => runner.close().catch(() => {}));
   const said = await ended(opened);
   assert.ok(bodies.length >= 1, "a request was sent");
-  assert.deepEqual(bodies.map((body) => (body.match(/Your computer was replaced after the runner was lost/g) ?? []).length), [1, ...bodies.slice(1).map(() => 0)], "the first request carries it, no later one");
-  assert.deepEqual(said.filter((summary) => summary?.startsWith("AgentRun: Your computer")), [`AgentRun: ${NOTE}`], "one row of the server's");
+  assert.deepEqual(bodies.map((body) => (body.match(NOTES) ?? []).length), [1, ...bodies.slice(1).map(() => 0)], "the first request carries it, no later one");
+  assert.deepEqual(serverRows(said), [ROW], "one row of the server's, labelled once");
 });
 
 test("a CLI harness (codex): its first main-model request carries the server message once, the timeline shows it once, and its computer_act at a point of the old screen is refused in words before the computer", { timeout: 120_000 }, async (t) => {
@@ -187,8 +233,8 @@ test("a CLI harness (codex): its first main-model request carries the server mes
   t.after(() => runner.close().catch(() => {}));
   const said = await ended(opened);
   assert.ok(bodies.length >= 1, "a request was sent");
-  assert.deepEqual(bodies.map((body) => (body.match(/Your computer was replaced after the runner was lost/g) ?? []).length), [1, ...bodies.slice(1).map(() => 0)], "the first request carries it, no later one");
-  assert.deepEqual(said.filter((summary) => summary?.startsWith("AgentRun: Your computer")), [`AgentRun: ${NOTE}`], "one row of the server's");
+  assert.deepEqual(bodies.map((body) => (body.match(NOTES) ?? []).length), [1, ...bodies.slice(1).map(() => 0)], "the first request carries it, no later one");
+  assert.deepEqual(serverRows(said), [ROW], "one row of the server's, labelled once");
   assert.ok(JSON.stringify(await runTimeline(opened.server, RUN, ctx)).includes(STATE_WORDS), "the act is answered in words");
   assert.deepEqual(acts, [], "no act reached the computer");
 });

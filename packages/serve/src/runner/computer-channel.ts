@@ -18,16 +18,20 @@ export type LoopComputer = {
   readonly client: ComputerClient;
   readonly hello?: HelloResult;
   readonly hold?: ComputerHold;
+  /** The claim made it the run's own (computer-for-claim.ts ClaimComputer.made): the loop records its kind in the run's
+   *  journal (COMPUTER_MADE), so a later claim knows the run had one. */
+  readonly own?: true;
 };
 
-/** The loop's computer for a claim's (computerForClaim's `computer` and `held`): none for no computer or a browser. */
-export function loopComputerOf(computer: RunComputer | undefined, held: HeldComputer | undefined): LoopComputer | undefined {
+/** The loop's computer for a claim's (computerForClaim's `computer`, `held` and `made`): none for no computer or a browser. */
+export function loopComputerOf(computer: RunComputer | undefined, held: HeldComputer | undefined, made?: string): LoopComputer | undefined {
   if (!computer || computer.kind === "browser") return undefined;
   return {
     kind: computer.kind,
     client: computer.computer.client,
     ...("hello" in computer ? { hello: computer.hello } : {}),
     ...(held && held.kind === computer.kind ? { hold: held.hold } : {}),
+    ...(made === computer.kind ? { own: true as const } : {}),
   };
 }
 

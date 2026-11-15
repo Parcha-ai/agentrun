@@ -7,7 +7,7 @@ export { DECISION_SESSION, overCapOf, paidCalls, ROUTERS, runCap, TOOL_SESSION, 
 export { ANSWER_TOKENS_LEAST, CAP_TOLERANCE, FIT_TOLERANCE, STOP_ALLOWANCE_TOKENS, THINKING_BUDGET_LEAST, inputBound, mostOutput, pricingOf, ratesFor, requestPrice, type Pricing } from "./price.js";
 export { CAP_REFUSAL_CODE, SPEND_CAP_REACHED, SUGGESTED_RAISE_FACTOR, centsMoney, leastMoney, money, OVER_CAP_END, overCapEnd, overCapMessage, overCapWords, paidRefusal, raiseFigure, raiseTo, spentMoney, suggestedRaise } from "./words.js";
 export { checkRaise, followUpOf, parkOf, takeRaises, type BudgetPending, type Park, type RaiseCheck, type RaiseState } from "./park.js";
-export { WRAP_UP_FACTOR, WRAP_UP_LEAST_FACTOR, WRAP_UP_STEP0_ANSWER_TOKENS, typicalCost, wrapUpDue, wrapUpWords } from "./wrap-up.js";
+export { SERVER_NOTE_LABEL, WRAP_UP_FACTOR, WRAP_UP_LEAST_FACTOR, WRAP_UP_STEP0_ANSWER_TOKENS, typicalCost, wrapUpDue, wrapUpWords } from "./wrap-up.js";
 export { CapStop, createStepWaits, type StepWaits } from "./steps.js";
 export { memoryMarks, type CapMark, type CapMarks, type EndMark, type StartMark, type ToldMark, type WaitMark } from "./marks.js";
 export { ownCostsOf, spendOf, toldIn, type Spend } from "./recover.js";

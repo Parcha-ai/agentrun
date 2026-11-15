@@ -7,10 +7,11 @@
 // be had is refused in words with code computer_unavailable; kind none, or no setting where the server's default is none,
 // is no computer.
 //
-// A run's own computer does not outlive its claim: a later claim (a runner lost, a crash, a server's stop) makes a new
-// one. When it replaces an earlier claim's (`replaced`: one this claim let go of, or a desktop or a phone the run's
-// journal says came up, earlierUp), the ready line says so, and the run's tools and model are told (run-tools.ts, the
-// adapter loop's computer note).
+// A run's own computer does not outlive its claim: a later claim (a runner lost, a crash, a server's stop, a park's
+// resume) makes a new one. The claim that makes one says its kind (`made`), which the adapter loop records in the run's
+// journal. When a later claim's replaces an earlier claim's (`replaced`: one this claim let go of, or one the run's
+// journal says an earlier claim made, hadComputer), the ready line says so, and the run's tools and model are told
+// (run-tools.ts, the adapter loop's computer note).
 //
 // A provider is made with its keys (the server's environment's, else the store's sealed keys, through the composer's
 // keyOf: computer-deps.ts), by the names the registry declares, through serve's own
@@ -161,11 +162,11 @@ export interface ComputerForClaimDeps {
   /** Told what became of the agent's own computer at the claim (a persistent setting): made, attached from an earlier
    *  run, or made again because the one this server kept is gone. The run's caller says it on the run's timeline. */
   readonly onComputerNote?: (words: string) => void;
-  /** Whether the run's journal says an earlier claim's desktop or phone came up (its hold's up entry, computer-journal.ts):
-   *  asked only at a later claim that makes a fresh desktop or phone and found no older computer of the run to let go,
-   *  as after a server's stop, where the earlier claim let its own go at its end. The caller gives it only to a claim
-   *  that took over a running run (never a parked run's resume). Absent: not asked. */
-  readonly earlierUp?: () => Promise<boolean>;
+  /** Whether the run's journal says an earlier claim made the run a computer of its own (ClaimComputer.made, recorded by
+   *  the adapter loop: computer-journal.ts hadComputer): asked at a later claim that makes a fresh one, before anything
+   *  is rented, so a claim that finds no older computer of the run to let go (the earlier claim let its own go at its
+   *  end: a server's stop, a park) still knows it replaces one. Absent: not asked. */
+  readonly hadComputer?: () => Promise<boolean>;
   readonly signal?: AbortSignal;
 }
 
@@ -181,12 +182,19 @@ export interface ClaimComputer {
   /** The computer is a new one that replaced an earlier claim's (Replaced): what was on that one is gone. Absent: the
    *  run's first, or the agent's own or a paired computer, which are the same computer at every claim. */
   readonly replaced?: Replaced;
+  /** The claim made the run a computer of its own, of this kind: never the agent's own (a persistent setting), a paired
+   *  computer or --faux's launch, nor a browser (its sessions are the browser tool's). The adapter loop records it in the
+   *  run's journal, which is how a later claim knows the run had one (hadComputer). */
+  readonly made?: MadeKind;
   release(why?: ViewEnd): Promise<void>;
 }
 
-/** A computer the claim made fresh in place of an earlier claim's: `folderKept`, the run's folder is on Archil (Mode 2)
- *  and mounted in it, so the folder is kept. */
-export type Replaced = { readonly folderKept: boolean };
+/** The kinds of computer a claim makes the run fresh. */
+export type MadeKind = "desktop" | "sandbox" | "phone";
+
+/** A computer the claim made fresh in place of an earlier claim's: its kind, and `folderKept`, the run's folder is on
+ *  Archil (Mode 2) and mounted in it, so the folder is kept. */
+export type Replaced = { readonly kind: MadeKind; readonly folderKept: boolean };
 
 /** A computer that cannot be had, with the code the run fails with and the server's words. */
 const unavailable = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
@@ -568,6 +576,8 @@ export async function computerForClaim(
   let madeBy: ProviderEntry | undefined;
   /** Set when the computer this claim made fresh replaced an earlier claim's. */
   let replaced: Replaced | undefined;
+  /** The kind of the computer this claim made the run fresh (ClaimComputer.made). */
+  let ownKind: MadeKind | undefined;
   /** A vendor's provider (or a local one's), made with the keys and the configuration the setting selected: that
    *  configuration is built by its own create() options (Orgo's Windows: { os: "windows" }), beside the keys'. */
   const vendorProvider = async (entry: ProviderEntry, keys: Readonly<Record<string, string>>, configuration: { readonly options?: Readonly<Record<string, unknown>> }): Promise<ComputerProvider> => {
@@ -641,14 +651,15 @@ export async function computerForClaim(
         }, signal);
       } else {
         deps.onStarting?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none"> });
-        // A fresh computer in place of an earlier claim's: one this claim let go of (its runner lost, a crash), or a
-        // desktop's or a phone's the run's journal says came up (its claim let it go at its end: a server's stop). The
-        // journal is read before anything is rented, so a read that fails leaves nothing to let go. A paired computer is
-        // the same one at every claim.
-        const journalSays = !pairedRow && (kind === "desktop" || kind === "phone") && launch.epoch > 1 && (await deps.earlierUp?.()) === true;
+        // A fresh computer in place of an earlier claim's: one this claim let go of (its runner lost, a crash), or one the
+        // run's journal says an earlier claim made (that claim let it go at its end: a server's stop, a park). The journal
+        // is read before anything is rented, so a read that fails leaves nothing to let go. A paired computer is the same
+        // one at every claim, and is no computer of the run's own.
+        const journalSays = !pairedRow && launch.epoch > 1 && (await deps.hadComputer?.()) === true;
         const fresh = await providerLaunch(provider, launch, spec, signal);
         launched = fresh;
-        if (!pairedRow && (fresh.releasedOlder || journalSays)) replaced = { folderKept: deps.mode === 2 && mount !== undefined };
+        if (!pairedRow) ownKind = kind as MadeKind;
+        if (!pairedRow && (fresh.releasedOlder || journalSays)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined };
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
       madeBy = entry;
@@ -711,6 +722,7 @@ export async function computerForClaim(
     ...(hold ? { hold } : {}),
     ...(held ? { held } : {}),
     ...(replaced ? { replaced } : {}),
+    ...(ownKind ? { made: ownKind } : {}),
     release: (why: ViewEnd = "released") =>
       (released ??= (async () => {
         await Promise.resolve(view?.close(why)).catch(() => undefined);

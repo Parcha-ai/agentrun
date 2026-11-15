@@ -174,11 +174,12 @@ export const BROWSER_CHARGE = "browser";
 export const chargedTool = (row: TimelineEvent): string | undefined =>
   !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" && row.tool_name !== null && BROWSER_STEPS.has(row.tool_name) ? BROWSER_CHARGE : undefined;
 /** The spend cap's wrap-up (serve's cap.ts): the run's model was told once, near its cap, to finish (`words`, what it was
- *  told). A row of its own, the server's ("AgentRun: …"); no request, no cost. */
+ *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
+ *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
 /** The run's model was told once, on its first request after its claim gave it a computer in place of an earlier
- *  claim's, that the old one's screen, refs and files are gone (`words`, what it was told). A row of its own, the
- *  server's, as the wrap-up's; no request, no cost. */
+ *  claim's, that the old one is gone with what was on it (`words`, what it was told after the label, as the wrap-up's).
+ *  A row of its own, the server's, as the wrap-up's; no request, no cost. */
 export const COMPUTER_NOTE = "agentrun.computer_note";
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
