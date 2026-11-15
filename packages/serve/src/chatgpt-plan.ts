@@ -2,16 +2,17 @@
 // own flow (its `openai` provider's OAuth: a loopback callback on 127.0.0.1:1455, or the final redirect URL pasted back),
 // never one of ours. One sign-in per server: its credential is sealed whole in one row (CHATGPT_PLAN_ROW), and its access
 // token goes to api.openai.com/v1/responses as a bearer, billed to the plan. Whoever holds the store and the seal key reads
-// it per request (the server, its runners); a token within REFRESH_MARGIN_MS of its end is renewed once (one refresh in
-// flight per refresh token in this process), re-read first so a renewal another holder made is taken, and sealed again.
-// A refusal of the renewal (a refresh token spent or revoked) marks the sign-in expired: nothing retries it. No token
+// it per request (the server, its runners, in their own processes or containers); a token within REFRESH_MARGIN_MS of its
+// end is renewed once across all of them: one renewal per refresh token in a process, and one holder at a time across
+// processes, by a lease on the row taken with a compare-and-set on its sealed bytes (ChatGPTPlan.renew). A refusal of the renewal (a refresh token spent or revoked) marks the sign-in expired: nothing retries it. No token
 // value is logged, journaled, put in a view or an error: each one read joins the redaction list (secrets.ts holdSecret).
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { CredentialUnavailable } from "@parcha/agentrun-kernel/host";
 import { holdSecret } from "./secrets.js";
 import { registerSecretWrite } from "./secret-writes.js";
-import { getSealedKey, putSealedKey, removeSealedKey } from "./server-keys.js";
-import type { SealedKeys, Settings } from "./store/index.js";
+import { putSealedKey, removeSealedKey } from "./server-keys.js";
+import { type SealedKeys, sealColumn, sealedAt, type Settings, STORE_WRITE_DEADLINE_MS, unsealColumn } from "./store/index.js";
 
 // Every operation of the sign-in is the owner's session's alone (secret-writes.ts), the token in none of them: its view
 // holds no token, but a pending sign-in's link is the owner's to open.
@@ -34,6 +35,15 @@ const AGENT_NAME = "AgentRun";
 const HOST_ID_SETTING = "chatgpt_host_id";
 const PENDING_MS = 10 * 60_000;
 const REFRESH_MARGIN_MS = 5 * 60_000;
+/** The longest one refresh call at OpenAI may take: its holder gives it up by then. */
+const REFRESH_CALL_MS = 15_000;
+/** A refresh lease's length: the call, the write back (STORE_WRITE_DEADLINE_MS) and 5 s spare, so a lease never lapses
+ *  while its holder may still spend the token. Judged on each reader's own clock: a reader whose clock runs ahead of the
+ *  holder's by more than the spare could take a live lease. */
+const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 5_000;
+/** How often a reader waiting on a peer's renewal reads the row again. */
+const LEASE_WAIT_MS = 200;
+const RENEW_LATER = "OpenAI could not renew the ChatGPT sign-in just now: try again in a moment.";
 /** Where pi-ai's flow sends the browser at its end: the address a person pastes back from a remote server. */
 const REDIRECT = new URL("http://127.0.0.1:1455/auth/callback");
 
@@ -42,7 +52,8 @@ export type PlanState = "signed_out" | "pending" | "signed_in" | "expired";
 export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; models?: string[] };
 
 type Credential = { type: "oauth"; access: string; refresh: string; expires: number; clientId: string; scopes?: string[] };
-type Row = { v: 1; state: "signed_in" | "expired"; credential: Credential; email?: string; plan?: string; models: string[] };
+/** The sealed row. `lease`: a renewal in flight, its holder and its end (ms, on the holder's clock). */
+type Row = { v: 1; state: "signed_in" | "expired"; credential: Credential; email?: string; plan?: string; models: string[]; lease?: { holder: string; until: number } };
 
 /** The words a run or a request gets when there is no plan token to send. */
 export const SIGNED_OUT = "This server is not signed in to ChatGPT: sign in under Settings → Model keys, or name a model on a key.";
@@ -111,7 +122,7 @@ type Pending = { abort: AbortController; state: string; authorizeUrl: string; ex
 
 export interface ChatGPTPlanDeps {
   /** `settings`: where a server keeps its host id, for a sign-in; a runner, which never signs in, has none. */
-  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove">; readonly settings?: Pick<Settings, "putIfAbsent"> };
+  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove" | "replaceIf">; readonly settings?: Pick<Settings, "putIfAbsent"> };
   readonly sealKey: Buffer;
   readonly now?: () => number;
   /** Told after a sign-in, a sign-out or an expiry changed the state. */
@@ -153,16 +164,33 @@ export class ChatGPTPlan implements PlanReader {
 
   /** The row as sealed now, opened; none with none saved or one that does not open. */
   private async read(): Promise<Row | undefined> {
-    const text = await getSealedKey(this.deps.store, this.deps.sealKey, CHATGPT_PLAN_ROW);
-    if (text === undefined) return undefined;
+    return (await this.readSealed())?.row;
+  }
+
+  /** The row as sealed now, opened, with the bytes it was read as (what a compare-and-set on it compares). */
+  private async readSealed(): Promise<{ row: Row; bytes: Uint8Array } | undefined> {
+    const bytes = await this.deps.store.sealedKeys.get(CHATGPT_PLAN_ROW);
+    if (bytes === undefined) return undefined;
     try {
-      const row = JSON.parse(text) as Row;
+      const row = JSON.parse(unsealColumn(this.deps.sealKey, sealedAt.sealedKey(CHATGPT_PLAN_ROW), bytes).toString("utf8")) as Row;
       if (row?.v !== 1 || !row.credential?.access || !row.credential.refresh) return undefined;
       this.hold(row.credential);
-      return row;
+      return { row, bytes };
     } catch {
       return undefined;
     }
+  }
+
+  /** `row` sealed as the store keeps it: fresh bytes at each seal. */
+  private seal(row: Row): Uint8Array {
+    return sealColumn(this.deps.sealKey, sealedAt.sealedKey(CHATGPT_PLAN_ROW), JSON.stringify(row));
+  }
+
+  /** `row` saved only while the store still holds `was` (SealedKeys.replaceIf): the bytes it was saved as, or none when
+   *  the row had changed. */
+  private async swap(was: Uint8Array, row: Row): Promise<Uint8Array | undefined> {
+    const bytes = this.seal(row);
+    return (await this.deps.store.sealedKeys.replaceIf(CHATGPT_PLAN_ROW, was, bytes)) ? bytes : undefined;
   }
 
   private async write(row: Row): Promise<void> {
@@ -305,45 +333,94 @@ export class ChatGPTPlan implements PlanReader {
     this.snapshot = row;
     if (!row) throw new PlanUnavailable(SIGNED_OUT);
     if (row.state === "expired") throw new PlanUnavailable(EXPIRED);
-    if (row.credential.access !== this.refusedAccess && row.credential.expires - this.now() > REFRESH_MARGIN_MS) return row.credential.access;
+    if (this.fresh(row)) return row.credential.access;
+    // One renewal per refresh token in this process; across processes, the row's lease (renew).
     const key = row.credential.refresh;
     let flight = flights.get(key);
     if (!flight) {
-      flight = this.renew(row).finally(() => flights.delete(key));
+      flight = this.renew(key).finally(() => flights.delete(key));
       flights.set(key, flight);
     }
     return flight;
   }
 
+  /** Whether `row`'s access token may be sent as it is: OpenAI has not refused it here, and it has more than 5 minutes left. */
+  private fresh(row: Row): boolean {
+    return row.credential.access !== this.refusedAccess && row.credential.expires - this.now() > REFRESH_MARGIN_MS;
+  }
+
   /** OpenAI answered 401 to `sent`: the row read again, and the next token() renews it only when the row still holds
-   *  `sent` (another holder that renewed already has put a new one there). */
+   *  `sent` (another holder that renewed already has put a new one there, which is sent instead). */
   async refused(sent: string): Promise<void> {
     const row = await this.read();
     if (row?.state === "signed_in" && row.credential.access === sent) this.refusedAccess = sent;
   }
 
-  private async renew(seen: Row): Promise<string> {
-    // Read again: another holder of this store may have renewed it already, spending the refresh token seen.
-    const now = await this.read();
-    if (!now) throw new PlanUnavailable(SIGNED_OUT);
-    if (now.credential.refresh !== seen.credential.refresh) {
-      this.snapshot = now;
-      if (now.state === "expired") throw new PlanUnavailable(EXPIRED);
-      if (now.credential.access !== this.refusedAccess && now.credential.expires - this.now() > REFRESH_MARGIN_MS) return now.credential.access;
+  /** Renews the sign-in whose refresh token is `seen`, for any process that holds the store and the seal key (the server,
+   *  each runner). A refresh token is spent at its use, and one used twice makes OpenAI revoke the whole sign-in, so one
+   *  holder at a time takes a lease on the row (a compare-and-set on its sealed bytes) before it spends the token. The
+   *  others adopt the pair it writes back: meanwhile they send the current token while it has not ended, and wait for the
+   *  new pair once it has. A lease whose holder died lapses after REFRESH_LEASE_MS, and the next reader takes it. */
+  private async renew(seen: string): Promise<string> {
+    const holder = randomUUID();
+    const giveUp = this.now() + REFRESH_LEASE_MS + REFRESH_CALL_MS;
+    for (;;) {
+      const read = await this.readSealed();
+      if (!read) throw new PlanUnavailable(SIGNED_OUT);
+      const { row, bytes } = read;
+      this.snapshot = row;
+      if (row.state === "expired") throw new PlanUnavailable(EXPIRED);
+      // A peer renewed it since: its pair is the row's now.
+      if (row.credential.refresh !== seen && this.fresh(row)) return row.credential.access;
+      if (row.lease && row.lease.until > this.now()) {
+        if (row.credential.access !== this.refusedAccess && row.credential.expires > this.now()) return row.credential.access;
+        if (this.now() > giveUp) throw new PlanUnavailable(RENEW_LATER);
+        await sleep(LEASE_WAIT_MS);
+        continue;
+      }
+      const leased: Row = { ...row, lease: { holder, until: this.now() + REFRESH_LEASE_MS } };
+      // Changed since it was read (a peer leased or renewed it, or the owner signed in again): read it again.
+      const mine = await this.swap(bytes, leased);
+      if (!mine) continue;
+      return this.renewUnder(leased, mine);
     }
+  }
+
+  /** The renewal itself, under this holder's lease on `row` (sealed as `bytes`). Every write back is a compare-and-set
+   *  against the leased row, so a sign-out or a new sign-in meanwhile is never overwritten: ours is dropped. */
+  private async renewUnder(row: Row, bytes: Uint8Array): Promise<string> {
+    const { lease: _, ...bare } = row;
     const { openaiProvider } = await import("@earendil-works/pi-ai/providers/openai");
     let next: Credential;
     try {
-      next = (await openaiProvider().auth.oauth!.refresh(now.credential, AbortSignal.timeout(30_000))) as Credential;
+      next = (await openaiProvider().auth.oauth!.refresh(bare.credential, AbortSignal.timeout(REFRESH_CALL_MS))) as Credential;
     } catch (error) {
-      if (!refusedForGood(error)) throw new PlanUnavailable("OpenAI could not renew the ChatGPT sign-in just now: try again in a moment.");
-      await this.write({ ...now, state: "expired" });
-      this.deps.log?.({ chatgpt: "expired" });
-      await this.deps.changed?.();
+      if (!refusedForGood(error)) {
+        // No answer, or a fault at OpenAI: the token may be unspent, so the lease is given back for the next try.
+        await this.swap(bytes, bare).catch(() => undefined);
+        throw new PlanUnavailable(RENEW_LATER);
+      }
+      const expired: Row = { ...bare, state: "expired" };
+      if (await this.swap(bytes, expired)) {
+        this.snapshot = expired;
+        this.deps.log?.({ chatgpt: "expired" });
+        await this.deps.changed?.();
+      }
       throw new PlanUnavailable(EXPIRED);
     }
-    await this.write({ ...now, credential: { ...now.credential, ...next } });
-    return next.access;
+    const renewed: Row = { ...bare, credential: { ...bare.credential, ...next } };
+    this.hold(renewed.credential);
+    if (await this.swap(bytes, renewed)) {
+      this.snapshot = renewed;
+      return renewed.credential.access;
+    }
+    // The owner signed out or in again while it renewed: the row's state wins.
+    const now = await this.read();
+    this.snapshot = now;
+    if (!now) throw new PlanUnavailable(SIGNED_OUT);
+    if (now.state === "expired") throw new PlanUnavailable(EXPIRED);
+    if (this.fresh(now)) return now.credential.access;
+    throw new PlanUnavailable(RENEW_LATER);
   }
 
   /** Signs out: any sign-in waiting cancelled, the session revoked at OpenAI (its documented revocation endpoint, with the

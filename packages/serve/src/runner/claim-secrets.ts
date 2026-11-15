@@ -25,8 +25,8 @@ const CANDIDATES: readonly string[] = [...new Set([...RUN_SECRETS, ...DECISION_K
 /** What claimSecrets reads the keys from: the one store (its sealed keys) and the runner's seal key, and the runner's base
  *  environment (its own, with no server secret in it: those are the store's). */
 export interface ClaimSecretsDeps {
-  /** `put` and `remove` for the ChatGPT sign-in alone, which a run renews and seals again (chatgpt-plan.ts). */
-  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove"> };
+  /** `put`, `replaceIf` and `remove` for the ChatGPT sign-in alone, which a run renews and seals again (chatgpt-plan.ts). */
+  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove" | "replaceIf"> };
   /** The runner's seal key: with none, no saved key is opened, and only the environment's values are read. */
   readonly sealKey: Buffer | undefined;
   readonly env?: NodeJS.ProcessEnv;
