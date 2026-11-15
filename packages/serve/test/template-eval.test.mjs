@@ -291,6 +291,96 @@ test("an llm grader sees each call's whole arguments, a web_fetch's URL with its
   assert.deepEqual(fetched?.arguments, { url, headers: { Authorization: "Bearer [redacted]" }, github: "[redacted]" }, JSON.stringify(run.calls));
 });
 
+/** The fixture package copied with web_search and web_fetch granted, and one case `name` whose case.yaml says `web` and
+ *  whose prompt makes `calls` ([tool, args]) in order, then answers. `files`: more files in the case, by path. */
+async function webPackage(t, name, web, calls, files = {}) {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const manifest = readFileSync(join(dir, "agent.md"), "utf8");
+  writeFileSync(join(dir, "agent.md"), manifest.replace("tools: [read, write, ask_person]", "tools: [read, write, ask_person, web_search, web_fetch]"));
+  const at = join(dir, "evals", name);
+  mkdirSync(join(at, "graders"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), `parameters:\n  team: blue\nweb: ${web}\n`);
+  const lines = calls.map(([tool, args]) => `Call ${tool} with ${JSON.stringify(args)}`).join("\n");
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: Searches and reads the web.\n---\n${lines}\nAnswer:\nWEB done\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "web"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "searched.md"), `---\ntype: tool_used\ntool: web_search\ncount: ${calls.filter(([tool]) => tool === "web_search").length}\n---\n`);
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(at, path)), { recursive: true });
+    writeFileSync(join(at, path), text);
+  }
+  return dir;
+}
+/** A call's result as the model read it: its JSON line. */
+const resultOf = (call) => JSON.parse(call.result.split("\n")[0]);
+
+test("a web: unavailable case's run gets the real failed-search words on every web_search, a failed page on every web_fetch, and never the network", { timeout: 300_000 }, async (t) => {
+  const { RATE_LIMITED } = await import("../dist/exa-keyless.js");
+  const dir = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "industrial robotics deals this week" }], ["web_search", { query: "robotics funding" }], ["web_fetch", { url: "https://deals.example.test/week" }]]);
+  const report = await evalTemplate({ dir, cases: ["search-failed"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  const searches = run.calls.filter((call) => call.tool === "web_search");
+  assert.equal(searches.length, 2, JSON.stringify(run.calls));
+  for (const search of searches) assert.deepEqual(resultOf(search), { error: RATE_LIMITED }, search.result);
+  const [fetched] = run.calls.filter((call) => call.tool === "web_fetch");
+  assert.equal(resultOf(fetched).ok, false, fetched.result);
+  assert.equal(resultOf(fetched).url, "https://deals.example.test/week");
+  assert.equal(resultOf(fetched).error, "fetch failed", fetched.result);
+  // The calls count as any call does.
+  assert.equal(graderOf(run, "searched.md").pass, true, graderOf(run, "searched.md").reason);
+});
+
+test("a web: fixture answers a matching query and a fetched URL from the case, and a query or URL it does not match gets its default", { timeout: 300_000 }, async (t) => {
+  const hit = { url: "https://news.example.test/robot-deal", title: "Acme raises $40M", snippet: "Acme raised $40M for warehouse robots.", published: "2026-11-12" };
+  const fixture = {
+    search: { answers: [{ query: "robot", results: [hit] }, { query: "^outage", error: "Parallel's search answered 503" }], default: { results: [] } },
+    fetch: { answers: [{ url: hit.url, title: "Acme raises $40M", text: "Acme raised $40M for warehouse robots on 12 November." }, { url: "https://news.example.test/gone", status: 404, text: "" }], default: { error: "fetch failed" } },
+  };
+  const dir = await webPackage(t, "web-fixture", "fixtures/web.json", [
+    ["web_search", { query: "Robot funding rounds" }],
+    ["web_search", { query: "outage at the exchange" }],
+    ["web_search", { query: "weather in Lisbon" }],
+    ["web_fetch", { url: hit.url }],
+    ["web_fetch", { url: "https://news.example.test/gone" }],
+    ["web_fetch", { url: "https://elsewhere.example.test/" }],
+  ], { "fixtures/web.json": JSON.stringify(fixture) });
+  const report = await evalTemplate({ dir, cases: ["web-fixture"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  const [robot, outage, weather] = run.calls.filter((call) => call.tool === "web_search").map(resultOf);
+  assert.deepEqual({ ...robot, provider: undefined }, { provider: undefined, query: "Robot funding rounds", results: [hit] });
+  assert.ok(["native", "exa-keyless", "parallel"].includes(robot.provider), robot.provider);
+  assert.deepEqual(outage, { error: "Parallel's search answered 503" });
+  assert.deepEqual({ ...weather, provider: undefined }, { provider: undefined, query: "weather in Lisbon", results: [] });
+  const [page, gone, elsewhere] = run.calls.filter((call) => call.tool === "web_fetch").map(resultOf);
+  assert.equal(page.ok, true, JSON.stringify(page));
+  assert.equal(page.title, "Acme raises $40M");
+  assert.equal(page.text, "Acme raised $40M for warehouse robots on 12 November.");
+  assert.deepEqual([gone.ok, gone.status, gone.error], [false, 404, "the page answered 404"]);
+  assert.deepEqual([elsewhere.ok, elsewhere.error], [false, "fetch failed"]);
+  assert.equal(graderOf(run, "searched.md").pass, true, graderOf(run, "searched.md").reason);
+});
+
+test("a web: case checks: unavailable or a fixture file of the case whose answers are whole, and only on the eval's own server", async (t) => {
+  const dir = await webPackage(t, "web-bad", "fixtures/web.json", [["web_search", { query: "x" }]], { "fixtures/web.json": JSON.stringify({ search: { answers: [{ query: "(unclosed", results: [] }, { results: [] }], default: { results: [] } }, fetch: { answers: [{ url: "https://a.example.test/" }], default: { error: "x" } } }) });
+  const problems = (() => {
+    try {
+      readCases(dir, ["web-bad"]);
+    } catch (thrown) {
+      if (thrown instanceof CaseError) return thrown.problems.join("\n");
+      throw thrown;
+    }
+    return "";
+  })();
+  assert.match(problems, /web-bad\/fixtures\/web\.json: search\.answers\.0\.query does not compile as a regular expression/);
+  assert.match(problems, /web-bad\/fixtures\/web\.json: search\.answers\.1 is \{query, results\} or \{query, error\}/);
+  assert.match(problems, /web-bad\/fixtures\/web\.json: fetch\.answers\.0 is \{url, status\?, title\?, text\} or \{url, error\}/);
+  const missing = await webPackage(t, "web-missing", "fixtures/none.json", [["web_search", { query: "x" }]]);
+  assert.throws(() => readCases(missing, ["web-missing"]), (e) => e instanceof CaseError && /web-missing\/case\.yaml: web is unavailable, or a fixture file in the case \(not "fixtures\/none\.json"\)/.test(e.message));
+  const named = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "x" }]]);
+  await assert.rejects(evalTemplate({ dir: named, cases: ["search-failed"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/search-failed: web fakes the web tools on the eval's own server alone: run it without --server/.test(e.message));
+});
+
 test("a grader's prompt stays under its cap: the longest results lose their middle first, then the middle calls, and the list says so", () => {
   const grader = { file: "g.md", type: "llm", rubric: "Pass if it fetched the page." };
   const call = (i, result) => ({ tool: "web_fetch", arguments: { url: `https://example.test/${i}` }, status: "success", result });
