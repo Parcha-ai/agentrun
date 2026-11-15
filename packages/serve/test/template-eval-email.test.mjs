@@ -158,7 +158,9 @@ test("a schedule case run more than once fires each run on the case's own date, 
     "digest-dated": {
       fixture: { description: "Two threads in the inbox, for the morning digest on its day.", account: { address: "agent@acme.example" }, mailboxes: { INBOX } },
       graders: { "found.md": "---\ntype: regex\npattern: \"<b1@example\\\\.com>\"\n---\n", "dated.md": "---\ntype: llm\n---\nPass if the answer starts with \"DIGEST\".\n" },
-      yaml: "now: \"2026-11-14T08:30:00Z\"\n",
+      // The case's clock on the schedule's own time, as a scheduled run's case says it: the run fires for that time, never
+      // the schedule's next one (a day later) because the next time is strictly after the clock.
+      yaml: "now: \"2026-11-14T09:00:00Z\"\n",
     },
   });
   const report = await evalTemplate({ dir, cases: ["digest-dated"], runs: 3, serve: { faux: FAUX } });
@@ -168,8 +170,8 @@ test("a schedule case run more than once fires each run on the case's own date, 
     assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
     assert.match(run.answer, /^DIGEST \{"messages":\[\{"message_id":"<b1@example\.com>"/, `run ${run.run}: its mail`);
   }
-  // Each run's input says the schedule time it fired for: the case's day's 09:00, run 1 as run 3 (the daily schedule's next
-  // time after the case's clock), never a later day the trigger clock reached on an earlier run.
+  // Each run's input says the schedule time it fired for: the case's own 09:00, run 1 as run 3, never a later day the
+  // trigger clock reached on an earlier run.
   const fired = graderInputs().flatMap((input) => /\(Started by the schedule "Morning digest" for ([^)]*)\.\)/.exec(input)?.[1] ?? []);
   assert.deepEqual(fired, ["Nov 14, 2026, 9:00 AM UTC", "Nov 14, 2026, 9:00 AM UTC", "Nov 14, 2026, 9:00 AM UTC"], fired.join(" | "));
 });

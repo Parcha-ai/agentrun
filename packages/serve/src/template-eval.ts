@@ -1285,7 +1285,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // An email case with a clock of its own: the trigger clock goes to the case's `now` before the apply makes the trigger
   // (and before it is turned on), so its next time, and the run's "Started by ... for <time>" line, is the case's date on
   // every run. Left where the run before took it, a schedule's next time is a later day each run, with no mail of the case.
-  if (mail && one.now !== undefined) ctx.clock?.set(instantOf(one.now)!);
+  // A millisecond before it: a schedule's next time is strictly after the clock, so a case whose `now` is the schedule's
+  // own time (an evening digest's 18:00) fires for that time, not the next day's.
+  if (mail && one.now !== undefined) ctx.clock?.set(instantOf(one.now)! - 1);
   // Approvals never, for the eval's own agent only: a run that stopped at its first ask would measure nothing. The
   // package's default (ask, say, for a template whose tools cost money) is the owner's at install, and stays as it is;
   // the report says how it was measured.
