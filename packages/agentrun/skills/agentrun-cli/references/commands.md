@@ -137,6 +137,85 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## connectors
+
+### `agentrun connectors complete-remote-command CONNECTOR_ID COMMAND_ID`
+
+Complete a source command once under its valid lease.
+
+Route: `POST /connectors/{connector_id}/commands/{command_id}/complete`.
+
+- `--lease-token STRING` (string, required)
+- `--error STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors enroll-remote-connector`
+
+Create a ten-minute one-use connection code.
+
+Route: `POST /connectors/enrollment`.
+
+- `--label STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors import-remote-target CONNECTOR_ID`
+
+Import an explicitly selected source-native agent reference.
+
+Route: `POST /connectors/{connector_id}/import`.
+
+- `--target-id STRING` (string, required)
+- `--name STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors list-remote-connectors`
+
+List remote source machines and imported agent targets.
+
+Route: `GET /connectors`.
+
+### `agentrun connectors poll-remote-connector CONNECTOR_ID`
+
+Renew active source leases and claim one command without replay.
+
+Route: `POST /connectors/{connector_id}/poll`.
+
+- `--worker-id STRING` (string, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors register-remote-connector`
+
+Exchange a one-use enrollment code for a connector-scoped credential.
+
+Route: `POST /connectors`.
+
+- `--installation-id STRING` (string, required)
+- `--operation-id STRING` (string, required)
+- `--label STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors remote-command-events CONNECTOR_ID COMMAND_ID`
+
+Append an ordered idempotent native event batch for a valid command lease.
+
+Route: `POST /connectors/{connector_id}/commands/{command_id}/events`.
+
+- `--lease-token STRING` (string, required)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors revoke-remote-connector CONNECTOR_ID`
+
+Revoke a source connector and stop its outstanding commands.
+
+Route: `DELETE /connectors/{connector_id}`.
+
 ## files
 
 ### `agentrun files create`
