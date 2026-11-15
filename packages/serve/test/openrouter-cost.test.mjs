@@ -178,6 +178,23 @@ test("a text-tools model's reply that ends in an error with no usage after it wr
   assert.deepEqual({ usd: first.usage.usd, end: first.ended.end, label: first.ended.label }, { usd: 0, end: "nothing", label: "refused" }, JSON.stringify(first.ended));
 });
 
+test("a text-tools re-ask that writes and then fails with no usage leaves the request's total unknown, never the earlier tries' sum", async (t) => {
+  // The first reply opens a call block holding no call it can read (asked again), with its usage (and, in one variant, its
+  // cost); the re-ask writes content and then fails with none. The re-ask ran: a total of the first try alone undercounts.
+  const broken = '<function_calls>\n<parameter name="zzz">1</parameter>\n</function_calls>';
+  for (const extra of [{}, { cost: 0.0001, is_byok: false }]) {
+    const bodies = [
+      chunk({ choices: [{ index: 0, delta: { role: "assistant", content: broken }, finish_reason: null }] }) + chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) + chunk({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, ...extra } }) + "data: [DONE]\n\n",
+      contentChunk() + failedChunk() + "data: [DONE]\n\n",
+    ];
+    let asked = 0;
+    const fetch = async () => new Response(bodies[Math.min(asked++, 1)], { status: 200, headers: { "content-type": "text/event-stream" } });
+    const booked = await bookedOn(t, await routeOf(TEXT_TOOLS, OR_ALONE, "default", undefined, fetch), READ_TOOL);
+    assert.equal(asked, 2, "asked again");
+    unknownWithWords(booked, `the re-ask failed after it wrote (first try ${JSON.stringify(extra)})`);
+  }
+});
+
 test("a text-tools model's reply that ends in an error after thinking alone, no usage, is booked unknown too", async (t) => {
   const route = await routeOf(TEXT_TOOLS, OR_ALONE, "default", undefined, upstream(reasoningChunk() + failedChunk() + "data: [DONE]\n\n").fetch);
   unknownWithWords(await bookedOn(t, route, READ_TOOL), "thinking, then the error");

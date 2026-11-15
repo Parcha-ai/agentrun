@@ -339,14 +339,18 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                 }
                 const message = (event.type === "done" ? event.message : event.error) ?? {};
                 if (event.type === "error") {
-                  sendHeld({ began: began || (message.content ?? []).length > 0, message });
+                  const wrote = began || (message.content ?? []).length > 0;
+                  sendHeld({ began: wrote, message });
                   // The tries so far were paid, and this one's usage too: their sum, with their stated cost while each
-                  // try that reported tokens stated one.
+                  // try that reported tokens stated one. A try that wrote and then failed with no usage and no cost ran at
+                  // a cost nobody said: the sum of the tries before it would undercount the request, so none is sent
+                  // and the request's total is unknown (the cap's hold covers every try).
                   const given = message.usage;
-                  const tokens = { input: used.input + (given?.input ?? 0), output: used.output + (given?.output ?? 0), cacheRead: used.cacheRead + (given?.cacheRead ?? 0), cacheWrite: used.cacheWrite + (given?.cacheWrite ?? 0) };
                   const own = reportedOf(given);
-                  const said = given && given.input + given.output + (given.cacheRead ?? 0) + (given.cacheWrite ?? 0) > 0;
-                  const cost = reported === undefined || (said && own === undefined) ? undefined : reported + (own ?? 0);
+                  const said = given !== undefined && given.input + given.output + (given.cacheRead ?? 0) + (given.cacheWrite ?? 0) > 0;
+                  const unsaid = wrote && !said && own === undefined;
+                  const tokens = unsaid ? undefined : { input: used.input + (given?.input ?? 0), output: used.output + (given?.output ?? 0), cacheRead: used.cacheRead + (given?.cacheRead ?? 0), cacheWrite: used.cacheWrite + (given?.cacheWrite ?? 0) };
+                  const cost = unsaid || reported === undefined || (said && own === undefined) ? undefined : reported + (own ?? 0);
                   sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"), tokens, cost !== undefined && cost > 0 ? cost : undefined);
                   break;
                 }
