@@ -37,10 +37,7 @@ async function endOf(t, stream) {
   return ends[0];
 }
 
-test("a translation's failure in words ends as an answer that ended in an error, its words the reason, at an unknown cost as before", async (t) => {
-  const ended = await endOf(t, `${START}event: error\ndata: 429 Rate limited upstream.\n\n`);
-  assert.deepEqual(ended, { end: 'answered', usd: null, label: 'error', reason: '429 Rate limited upstream.' });
-});
+// The words error itself, at an unknown cost as before, its end saying the error: provider-cost.test.mjs.
 
 test("a guard: a provider's own error event (JSON) before any token is read as before, a refusal at nothing", async (t) => {
   const ended = await endOf(t, `${START}event: error\ndata: {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited."}}\n\n`);
