@@ -163,7 +163,7 @@ test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on
   await addFake(t, api, "fake", fake);
   const refused = await retried(api)("POST", "/agents",agent("claude-pick", { harness: "claude-agent", tools: ["mcp:fake/pick"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.match(JSON.stringify(refused.body), /tool pick cannot be offered on claude-agent: \/anyOf: the Claude Agent CLI drops a tool whose root has anyOf/);
+  assert.match(JSON.stringify(refused.body), /The tool mcp:fake\/pick cannot be offered on claude-agent: \/anyOf: the Claude Agent CLI drops a tool whose root has anyOf/);
   assert.equal((await retried(api)("POST", "/agents",agent("pi-pick", { tools: ["mcp:fake/pick"] }))).status, 201, "pi takes the schema whole");
 });
 
@@ -177,7 +177,7 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
   assert.ok(listed?.input_schema?.properties?.name?.not, `the server listed the not: ${JSON.stringify(listed)}`);
   const refused = await retried(api)("POST", "/agents",agent("codex-greet", { harness: "codex", tools: ["mcp:fake/greet"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.match(JSON.stringify(refused.body), /tool greet cannot be offered on codex: \/properties\/name\/not: not is not supported by Codex 0\.164\.0 \(it drops or retypes it\)/);
+  assert.match(JSON.stringify(refused.body), /The tool mcp:fake\/greet cannot be offered on codex: \/properties\/name\/not: not is not supported by Codex 0\.164\.0 \(it drops or retypes it\)/);
   assert.equal((await retried(api)("POST", "/agents",agent("pi-greet", { tools: ["mcp:fake/greet"] }))).status, 201, "pi takes the schema whole");
   // A nearby shape Codex takes: a bound it only strips (minLength) is no refusal; the server still checks it.
   fake.tools.name = { description: "Names anyone.", input: { type: "object", properties: { name: { type: "string", minLength: 2 } }, required: ["name"] }, run: ({ name }) => ({ content: [{ type: "text", text: `named ${name}` }] }) };

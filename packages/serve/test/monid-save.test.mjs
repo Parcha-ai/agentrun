@@ -18,7 +18,7 @@ const USAGE = (tool) => `${tool} is priced by usage: monid can't cap what it cha
 /** The pin the agent `id`'s current revision holds, as its runs read it. */
 const pinOf = async (store, id) => {
   const [current] = (await store.agents.revisions(id)).slice(-1);
-  return current.body.monidPin;
+  return current.monidPin;
 };
 
 test("monid:apollo/* resolves at the save to the endpoints monid lists for apollo, each pinned with its input and price", async (t) => {
@@ -85,7 +85,7 @@ test("an inline agent's version already run keeps the pin its first run stamped:
   assert.equal(await inspects(), 1, "a later run of the version reads its stored pin, not monid's listing now");
   const next = await api("POST", "/runs", { ...inline, external: { ...inline.external, version: 2 } });
   assert.equal(next.status, 202, JSON.stringify(next.body));
-  assert.equal(await inspects(), 2, "a new version is pinned at its first run");
+  assert.equal(await inspects(), 1, "a new version's first run is its save: one granting what the agent's current revision grants carries that pin, nothing read");
 });
 
 test("an edit that leaves the monid grants as they were reads nothing of monid's and keeps the pin; a grant it adds is read alone", async (t) => {
@@ -139,7 +139,7 @@ test("an endpoint whose input the agent's harness refuses is refused at the save
     const [issue, ...more] = saved.body.error.fields;
     assert.deepEqual(more, [], "the one endpoint, once");
     assert.equal(issue.field, "definition.tools[1]", JSON.stringify(issue));
-    assert.match(issue.message, /^The monid endpoint monid:tagger\/tag cannot be offered on codex: \/properties\/body\/patternProperties: patternProperties is not supported by Codex/, issue.message);
+    assert.match(issue.message, /^The tool monid:tagger\/tag cannot be offered on codex: \/properties\/body\/patternProperties: patternProperties is not supported by Codex/, issue.message);
   }
   assert.equal((await api("GET", "/agents/tagger-codex")).status, 404, "nothing saved");
   const pi = await api("POST", "/agents", agent("tagger-pi", { tools: ["monid:tagger/*"] }));

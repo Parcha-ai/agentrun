@@ -80,7 +80,7 @@ test("a saved server's read says why a grant of a tool is refused (grant_problem
     const byName = Object.fromEntries(view.tools.map((tool) => [tool.name, tool]));
     assert.deepEqual(byName[long].grant_problems, { "*": `mcp:wide/${long} is too long: mcp__wide__${long} must be at most 52 characters, the budget every harness's tool names share.` });
     assert.deepEqual(Object.keys(byName.pick.grant_problems), ["claude-agent"], "only the harness whose own client drops the shape");
-    assert.match(byName.pick.grant_problems["claude-agent"], /^The MCP server wide's tool pick cannot be offered on claude-agent: .*root has anyOf/);
+    assert.match(byName.pick.grant_problems["claude-agent"], /^The tool mcp:wide\/pick cannot be offered on claude-agent: .*root has anyOf/);
     assert.equal(byName.plain.grant_problems, undefined);
   }
   const refused = await retried(api)("POST", "/agents", agent("wide-long", { tools: [`mcp:wide/${long}`] }));
