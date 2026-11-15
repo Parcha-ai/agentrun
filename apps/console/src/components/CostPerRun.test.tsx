@@ -12,6 +12,13 @@ import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const sample = SAMPLE as unknown as LearningCost;
+// The sample with run 44's cost unknown, as a server reads it: no times-cheaper figure, the run named in `withheld`.
+const unknownRun: LearningCost = {
+  ...sample,
+  runs: sample.runs.map((r) => (r.n === 44 ? { ...r, cost_usd: null, total_usd: null } : r)),
+  unknown_cost_runs: 1,
+  summary: { ...sample.summary, after: { runs: 59, mean_usd: 0.127661 }, times_cheaper: null, hand_backs: { ran: 59, back: 3 }, withheld: { unknown: 1, at_most: 0 } },
+};
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
@@ -27,8 +34,9 @@ const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {})
 
 describe("the chart's arithmetic", () => {
   it("plots only runs whose all-in cost is known", () => {
-    expect(plotted(sample.runs)).toHaveLength(79);
-    expect(plotted(sample.runs).some((r) => r.n === 44)).toBe(false);
+    expect(plotted(sample.runs)).toHaveLength(80);
+    expect(plotted(unknownRun.runs)).toHaveLength(79);
+    expect(plotted(unknownRun.runs).some((r) => r.n === 44)).toBe(false);
   });
   it("draws a trailing mean, fewer runs at the start", () => {
     const points = plotted([run(1, "agent", 1), run(2, "agent", 3), run(3, "agent", 5), run(4, "workflow", 1)]);
@@ -49,7 +57,7 @@ describe("the chart's arithmetic", () => {
   it("ticks whole runs and finds the run nearest a point", () => {
     expect(runTicks(1, 80, 7)).toEqual([1, 20, 40, 60, 80]);
     expect(runTicks(3, 3)).toEqual([3]);
-    expect(nearest(plotted(sample.runs), 44.2)).toBe(43);
+    expect(nearest(plotted(unknownRun.runs), 44.2)).toBe(43);
   });
   it("says a dollar figure with two to four places under a dollar", () => {
     expect([usd(0), usd(0.5), usd(0.1405), usd(0.00004), usd(2.399)]).toEqual(["$0", "$0.50", "$0.1405", "<$0.0001", "$2.40"]);
@@ -157,7 +165,8 @@ describe("CostChart", () => {
     expect(legend).toContain("Handed back 5");
     expect(legend).toContain("Learned workflow 56");
     const dots = [...host.querySelectorAll("svg[aria-hidden] circle")].filter((c) => c.getAttribute("r") === "3");
-    expect(dots).toHaveLength(79);
+    expect(dots).toHaveLength(80);
+    expect([...draw(unknownRun).querySelectorAll("svg[aria-hidden] circle")].filter((c) => c.getAttribute("r") === "3")).toHaveLength(79);
     expect(new Set(dots.map((c) => c.getAttribute("class")))).toEqual(new Set(["fill-chart-agent", "fill-chart-handed-back", "fill-chart-workflow"]));
   });
   it("shows a run's readout as the arrow keys step to it, and a table of every run", () => {
@@ -169,7 +178,9 @@ describe("CostChart", () => {
     expect(live).toMatch(/^Run 21, \$0\.\d+ all-in, Learned workflow: sort-invoice, Learned revision [0-9a-f]{7}$/);
     const rows = host.querySelectorAll("details tbody tr");
     expect(rows).toHaveLength(80);
-    expect(rows[43]!.textContent).toContain("unknown");
+    expect(rows[43]!.textContent).not.toContain("unknown");
+    act(() => root?.unmount());
+    expect(draw(unknownRun).querySelectorAll("details tbody tr")[43]!.textContent).toContain("unknown");
   });
   it("draws the execution mix on the run axis: a column a block, a segment a path it took, the last block's share said", () => {
     const host = draw(sample);
