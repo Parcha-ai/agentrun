@@ -1853,40 +1853,37 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           carried = note ? { ...note, at: Date.now() } : undefined;
           return note?.words;
         };
-        /** Told: the note's row, once, the server's. The note is the run's told from here, before the row is written, so
-         *  no request takes it again meanwhile. */
-        const tell = async (told: NonNullable<typeof carried>): Promise<void> => {
+        /** Told: the note is the run's told at once (no request takes it again), and its row, once, the server's, is
+         *  what is returned to write: after the request is booked, so a finished request's hold never waits on the row. */
+        const tell = (told: NonNullable<typeof carried>): (() => Promise<void>) | undefined => {
+          let kind = CAP_WRAPUP;
+          let data: Record<string, unknown>;
+          let what: string;
           if (told.freeLimit !== undefined) {
-            const { freeLimit } = told;
-            if (toldFreeLimits.has(freeLimit)) return;
-            toldFreeLimits.add(freeLimit);
-            try {
-              await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words: rowWords(told.words), freeLimit } as unknown as JsonValue }), context);
-              await deps.flush();
-            } catch (error) {
-              console.warn(`[runner] the free-limit wrap-up's row was not written (the note was answered): ${said(error)}`);
-            }
-            return;
-          }
-          if (told.cap === undefined) {
+            if (toldFreeLimits.has(told.freeLimit)) return undefined;
+            toldFreeLimits.add(told.freeLimit);
+            data = { words: rowWords(told.words), freeLimit: told.freeLimit };
+            what = "the free-limit wrap-up's row";
+          } else if (told.cap === undefined) {
             computerWords = undefined;
+            kind = COMPUTER_NOTE;
+            data = { words: rowWords(told.words) };
+            what = "the replaced computer's note row";
+          } else {
+            const { leftUsd, capUsd } = told.cap;
+            if (toldAt(capUsd)) return undefined;
+            toldCaps.push(capUsd);
+            data = { words: rowWords(told.words), leftUsd, capUsd };
+            what = "the wrap-up's row";
+          }
+          return async () => {
             try {
-              await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: COMPUTER_NOTE, data: { words: rowWords(told.words) } as unknown as JsonValue }), context);
+              await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind, data: data as unknown as JsonValue }), context);
               await deps.flush();
             } catch (error) {
-              console.warn(`[runner] the replaced computer's note row was not written (the note was answered): ${said(error)}`);
+              console.warn(`[runner] ${what} was not written (the note was answered): ${said(error)}`);
             }
-            return;
-          }
-          const { leftUsd, capUsd } = told.cap;
-          if (toldAt(capUsd)) return;
-          toldCaps.push(capUsd);
-          try {
-            await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words: rowWords(told.words), leftUsd, capUsd } as unknown as JsonValue }), context);
-            await deps.flush();
-          } catch (error) {
-            console.warn(`[runner] the wrap-up's row was not written (the note was answered): ${said(error)}`);
-          }
+          };
         };
         /** The wrap-up due for a request about to be sent: the cap's, with what is left and the cap it is told under, else
          *  the free limit's. */
@@ -2196,13 +2193,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // waits: the proxy calls this as its client has the end, so a client's retry finds the note told or on offer.
             const held = carried?.turn !== undefined && carried.turn === ticket?.turn ? carried : undefined;
             if (held) carried = undefined;
+            // An answer the model gave, not the provider's error inside one (a stream ended in an error event: the
+            // client drops it and asks again).
+            const row = held && ended?.end === "answered" && ended.label !== "error" ? tell(held) : undefined;
             try {
-              // An answer the model gave, not the provider's error inside one (a stream ended in an error event: the
-              // client drops it and asks again).
-              if (held && ended?.end === "answered" && ended.label !== "error") await tell(held);
               await hooks.beforeBooking?.();
               await port.afterRequest(usage, ticket, ended);
             } finally {
+              if (row) await row();
               unbooked = Math.max(0, unbooked - 1);
               if (unbooked === 0) for (const wake of bookedAll.splice(0)) wake();
             }
