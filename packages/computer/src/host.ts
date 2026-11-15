@@ -122,8 +122,9 @@ export interface MachineRequest {
 	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
 	lifetimeMs: number;
 	/**
-	 * Whether the machine reaches out: true only for an Archil computer's root, which reaches Archil. Its tools'
-	 * network is init's own, none, read from inside, either way.
+	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
+	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts). Its tools' own network
+	 * is init's, loopback alone, read from inside, either way.
 	 */
 	egress: boolean;
 	/** facts.daemon "pid1" alone: the machine's main process (the entrypoint that waits for the daemon, then becomes init). */

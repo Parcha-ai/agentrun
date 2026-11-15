@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { createClient } from "@/lib/client";
 import type { ToolKey, ToolKeys } from "@/lib/v2";
@@ -48,7 +48,7 @@ function server(views: ToolKeys[], write: (call: Call) => Response | Promise<Res
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
 async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -70,6 +70,58 @@ async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) 
 }
 
 describe("KeysPage", () => {
+  it("Paste reads the clipboard into only the selected field and waits for Save", async () => {
+    const readText = vi.fn().mockResolvedValue(FAKE);
+    vi.stubGlobal("navigator", { clipboard: { readText } });
+    const { v2, calls } = server([view({})]);
+    const page = await open(v2);
+    const target = page.row("Browserbase").querySelector('[data-secret="tool:BROWSERBASE_PROJECT_ID"]')!;
+    await page.click(target, /^Paste$/);
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(page.input("BROWSERBASE_PROJECT_ID").value).toBe(FAKE);
+    expect(page.input("BROWSERBASE_API_KEY").value).toBe("");
+    expect(document.activeElement).toBe(page.input("BROWSERBASE_PROJECT_ID"));
+    expect(page.host.innerHTML).not.toContain(FAKE);
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+    expect(page.button(page.row("Browserbase"), /^Save$/)?.disabled).toBe(false);
+    await page.click(page.row("Browserbase"), /^Save$/);
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ values: { BROWSERBASE_PROJECT_ID: FAKE } });
+  });
+
+  it.each(["empty", "denied", "unavailable"])("leaves a focused manual-paste field when clipboard is %s", async (mode) => {
+    vi.stubGlobal("navigator", mode === "unavailable" ? {} : { clipboard: { readText: () => mode === "denied" ? Promise.reject(new Error("denied")) : Promise.resolve("") } });
+    const { v2, calls } = server([view({})]);
+    const page = await open(v2);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    expect(page.input("PARALLEL_API_KEY").value).toBe("");
+    expect(document.activeElement).toBe(page.input("PARALLEL_API_KEY"));
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+  });
+
+  it("does not replace manual typing while a clipboard read is pending", async () => {
+    let resolve!: (text: string) => void;
+    vi.stubGlobal("navigator", { clipboard: { readText: () => new Promise<string>((r) => { resolve = r; }) } });
+    const { v2 } = server([view({})]);
+    const page = await open(v2);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    await page.type("PARALLEL_API_KEY", OTHER);
+    await act(async () => resolve(FAKE));
+    expect(page.input("PARALLEL_API_KEY").value).toBe(OTHER);
+  });
+
+  it("does not paste a delayed read into a field reopened after Cancel", async () => {
+    let resolve!: (text: string) => void;
+    const readText = vi.fn().mockImplementationOnce(() => new Promise<string>((r) => { resolve = r; })).mockResolvedValue("");
+    vi.stubGlobal("navigator", { clipboard: { readText } });
+    const { v2 } = server([view({})]);
+    const page = await open(v2);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    await page.click(page.row("Parallel"), /^Cancel$/);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    await act(async () => resolve(FAKE));
+    expect(page.input("PARALLEL_API_KEY").value).toBe("");
+  });
+
   it("shows each field set or not set, and where it comes from", async () => {
     const { v2 } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "console"), BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "env") })]);
     const page = await open(v2);

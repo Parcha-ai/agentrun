@@ -324,7 +324,9 @@ __all__ = [
     "GetLearningCostResponseSummaryAfter",
     "GetLearningCostResponseSummaryBefore",
     "GetLearningCostResponseSummaryHandBacks",
+    "GetLearningCostResponseSummaryReplay",
     "GetLearningCostResponseSummaryTakeover",
+    "GetLearningCostResponseSummaryWithheld",
     "GetLearningCostResponseWorkflowsItem",
     "GetLearningCostResponseWorkflowsItemByHand",
     "GetLearningCostResponseWorkflowsItemServed",
@@ -3110,6 +3112,7 @@ class GetLearningCostResponseRunsItem(TypedDict):
     workflow: str | None
     learned_revision: str | None
     cost_usd: float | None
+    cost_upper_bound: bool
     learning_usd: float | None
     total_usd: float | None
 
@@ -3139,6 +3142,8 @@ class GetLearningCostResponseSummary(TypedDict):
     after: GetLearningCostResponseSummaryAfter | None
     times_cheaper: float | None
     hand_backs: GetLearningCostResponseSummaryHandBacks | None
+    withheld: GetLearningCostResponseSummaryWithheld | None
+    replay: GetLearningCostResponseSummaryReplay | None
 
 
 class GetLearningCostResponseSummaryTakeover(TypedDict):
@@ -3159,6 +3164,18 @@ class GetLearningCostResponseSummaryAfter(TypedDict):
 class GetLearningCostResponseSummaryHandBacks(TypedDict):
     ran: int
     back: int
+
+
+class GetLearningCostResponseSummaryWithheld(TypedDict):
+    unknown: int
+    at_most: int
+
+
+class GetLearningCostResponseSummaryReplay(TypedDict):
+    n: int
+    workflow_pct: float
+    agent_pct: float
+    cleared: bool
 
 
 class ListLearningEvalsResponse(TypedDict):

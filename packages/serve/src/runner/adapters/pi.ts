@@ -121,6 +121,15 @@ export interface PiAdapterOptions {
 }
 
 const PROVIDER = "agentrun-session";
+
+/** The input tokens pi (the @earendil-works/pi-* 1.5.2 packages serve pins) sends in a run's first model request before
+ *  the agent's own prompt: pi writes no system prompt of its own, so it is serve's (the environment line and the wrapper
+ *  around the agent's instructions) and the host's code mode tool, which every run is offered, with no tool granted.
+ *  Counted with o200k_base on the first request a run sent through its spec to a scripted provider on gpt-6.1-sol, 286
+ *  tokens, stated at 280 so its date line never puts it over (test/cap-save-warning.test.mjs keeps it at or under that
+ *  count). A save under a cap prices a least step on it (cap-short.ts). */
+export const PI_BASE_INPUT_TOKENS = 280;
+
 /** A host tool's value (HostTool's `structured`) in its pi result's details, which the model never reads: what a call
  *  nested in tools_call or a script reads (piNested). */
 const HOST_VALUE = "agentrun.value";
@@ -308,6 +317,26 @@ async function withSearches(api: Wire, price: NonNullable<PiAdapterOptions["pric
 function mandatoryThinking(own: Parameters<typeof getSupportedThinkingLevels>[0] | undefined, asked: SessionSpec["thinking"]): SessionSpec["thinking"] {
   if ((asked && (asked as string) !== "off") || !own || getSupportedThinkingLevels(own).includes("off")) return asked;
   return clampThinkingLevel(own, "off") as SessionSpec["thinking"];
+}
+
+/** The reasoning settings of the first request a pi session on `route` sends at thinking `level` (the run's effort; none,
+ *  pi's default): on Messages its `thinking` block (budgeted where the session's model reasons, which puts Claude's
+ *  thinking minimum in its least output) and any `output_config`, on Responses its `reasoning`. Read from the body pi-ai
+ *  builds for the session's own model (sessionOn's, at the same level), which is never sent: its payload hook stops it
+ *  before any request. A save under a cap prices its least output on these (cap-short.ts). */
+export async function piReasoningOf(route: { readonly provider: { readonly api: Wire }; readonly model: string; readonly like?: PiAdapterOptions["like"] }, level: string | undefined): Promise<Record<string, unknown>> {
+  const models = createModels();
+  models.setProvider(sessionProvider(route.provider.api, { url: "https://pi-reasoning.invalid", key: "unsent" }, route.model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
+  const model = models.getModel(PROVIDER, route.model);
+  if (!model) throw new Error(`no session model ${route.model}`);
+  // A run's spec carries its level as the session's thinking (adapter-run-spec.ts), as here.
+  const thinking = mandatoryThinking(model, level as SessionSpec["thinking"]);
+  let built: Record<string, unknown> | undefined;
+  const unsent = new Error("built, never sent");
+  const options = { ...(thinking && (thinking as string) !== "off" ? { reasoning: thinking } : {}), onPayload: (payload: unknown) => { built = payload as Record<string, unknown>; throw unsent; } };
+  await models.completeSimple(model, { messages: [{ role: "user", content: "", timestamp: 0 }] } as never, options as never).catch(() => undefined);
+  if (!built) throw new Error(`pi-ai built no request for ${route.model}`);
+  return Object.fromEntries(["thinking", "output_config", "reasoning"].filter((key) => built![key] !== undefined).map((key) => [key, built![key]]));
 }
 
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */

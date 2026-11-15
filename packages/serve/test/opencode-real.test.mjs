@@ -12,8 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
+import { o200kTokens } from "@parcha/agentrun-kernel/host";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
-import { openCodeAdapter } from "../dist/harness-opencode/index.js";
+import { OPENCODE_BASE_INPUT_TOKENS, openCodeAdapter } from "../dist/harness-opencode/index.js";
 import { findOpenCode } from "../dist/harness-opencode/binary.js";
 import { BODY_KEYS } from "../dist/harness-opencode/host/policy.js";
 import { verifyOpenCodeBinary } from "../dist/harness-opencode/verify.js";
@@ -183,6 +184,32 @@ function ephemeralLow() {
     return 32768;
   }
 }
+
+// The pinned OpenCode's own input before the agent's prompt (versions.ts OPENCODE_BASE_INPUT_TOKENS, what a save under a
+// cap prices a least step on): its first request's system text, the agent's prompt and its working directory's path left
+// out, counted with o200k_base, with no tool of its own offered. The stated figure is at or under it, and within 16 tokens.
+test("on the pinned OpenCode, the stated base input is at or under what its first request carries before the agent's prompt, within 16 tokens", { skip, timeout: 120_000 }, async () => {
+  const PROMPT = "You answer. PROMPT-MARK";
+  const seen = [];
+  const fetch = async (_url, init) => {
+    const i = seen.length;
+    seen.push(JSON.parse(init.body));
+    return new Response(answer({ text: "ok" }, i), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const a = openCodeAdapter({ model: "gpt-6.1-sol", provider: { origin: "https://provider.invalid", credential: () => "provider-secret" }, sessionsDir: join(ROOT, "base"), fetch });
+  const store = memorySessionStore();
+  const io = { writer: await store.open("base"), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, cwd: mkdtempSync(join(ROOT, "base-work-")), onEvent: () => {} };
+  const session = await a.open({ key: "base", label: "task", system: [PROMPT], tools: [], context: "fresh" }, io);
+  await session.send("Hi.");
+  assert.deepEqual(await session.turnEnd(), { status: "completed" });
+  await session.close();
+  const first = seen[0];
+  assert.deepEqual(first.tools ?? [], [], "no tool of its own is offered");
+  const system = first.input.filter((item) => item.role === "system" || item.role === "developer").map((item) => (typeof item.content === "string" ? item.content : JSON.stringify(item.content))).join("\n");
+  assert.ok(system.includes(PROMPT), "the agent's prompt is in the system text");
+  const measured = await o200kTokens(system.replace(PROMPT, "").replace(io.cwd, ""));
+  assert.ok(OPENCODE_BASE_INPUT_TOKENS <= measured && measured - OPENCODE_BASE_INPUT_TOKENS <= 16, `stated ${OPENCODE_BASE_INPUT_TOKENS}, measured ${measured}`);
+});
 
 test("the drives' port is below the host's ephemeral range wherever it starts: under a range from 20000 every pick is below 20000, and a range that leaves no port below it fails by name", async () => {
   for (let i = 0; i < 20; i++) {

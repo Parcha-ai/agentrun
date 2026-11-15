@@ -79,6 +79,9 @@ function fauxVendor() {
       if (!one) return { ok: false, error: { code: "gone", message: `no computer ${id}` } };
       return { ok: true, value: { client: one.desk.client, hello: one.desk.hello, close: async () => {} } };
     },
+    async watch() {
+      return { ok: true, value: { input: async () => ({ ok: true, value: { done: 0 } }), close: async () => {} } };
+    },
     async release(ref, how) {
       calls.push(["release", ref.id, how]);
       if (how === "delete") {
@@ -92,8 +95,10 @@ function fauxVendor() {
 }
 
 /** run-1 on a desktop whose tools ask (the `desktop` key), run by a runner on the pi spec with a scripted model: a
- *  screenshot, then an answer. Rests parked on the screenshot's ask. */
-async function parkedRun(t) {
+ *  screenshot, then an answer. Rests parked on the screenshot's ask. With `asks`, the agent's body and the script that
+ *  parks it instead (an ask_person). `views`: each live view the claims open, by the closes it gets (a stand-in for
+ *  computer-live.ts openComputerView). */
+async function parkedRun(t, { asks, views } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-park-keeps-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -104,16 +109,16 @@ async function parkedRun(t) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: DESKTOP, tools: ["read"], toolSettings: { desktop: { permission: "ask" } } } });
+  await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: DESKTOP, ...(asks?.body ?? { tools: ["read"], toolSettings: { desktop: { permission: "ask" } } }) } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Look." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } } });
   // Someone can answer an ask (server-approvers.ts APPROVERS_KEY), so it parks.
   await server.settings.put("approvers", { approvers: true });
   await server.flush?.();
   const requests = [];
-  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin([{ call: "computer_screenshot", args: {} }, { say: "done" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
+  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(asks?.script ?? [{ call: "computer_screenshot", args: {} }, { say: "done" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const vendor = fauxVendor();
   const clock = { offset: 0 };
-  const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf }, now: () => Date.now() + clock.offset };
+  const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf }, now: () => Date.now() + clock.offset, ...(views ? { openComputerView: async () => { const closes = []; views.push(closes); return { ok: true, view: { close: (why) => void closes.push(why) } }; } } : {}) };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
@@ -126,7 +131,7 @@ async function parkedRun(t) {
   assert.equal(row.state, "parked", JSON.stringify(row));
   const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   const [ask] = records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
-  assert.ok(ask, "parked on the screenshot's ask");
+  if (!asks) assert.ok(ask, "parked on the screenshot's ask");
   return { server, vendor, clock, requests, ask };
 }
 
@@ -196,4 +201,36 @@ test("a denial while parked goes on on the same desktop, the call refused: the r
   assert.deepEqual(creates(one.vendor), ["d1"], "no new desktop");
   await deleted(one.vendor, ["d1"], "let go at the run's end");
   assert.deepEqual(said.filter((summary) => summary.startsWith("AgentRun: Your computer")), []);
+});
+
+/** The one close of the parking claim's view: parked for `cause`, kept until about 10 minutes from the park. */
+function parkedClose(views, cause, from) {
+  assert.equal(views.length, 1, "one view opened before the park");
+  assert.equal(views[0].length, 1, `closed once at the park: ${JSON.stringify(views[0])}`);
+  const [why] = views[0];
+  assert.equal(why.parked, cause, `the view's end says the run waits for its ${cause}, never "ended": ${JSON.stringify(why)}`);
+  assert.ok(why.until >= from + KEEP_MS && why.until <= Date.now() + KEEP_MS, `kept until 10 minutes from the park: ${why.until - from}`);
+}
+
+test("a park on a tool's approval closes the desktop's live view saying it waits for approval and is kept; the resume in time reopens it on the same desktop", { timeout: 120_000 }, async (t) => {
+  const views = [];
+  const from = Date.now();
+  const one = await parkedRun(t, { views });
+  parkedClose(views, "approval", from);
+  await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
+  await ends(one);
+  assert.deepEqual(creates(one.vendor), ["d1"], "the same desktop");
+  assert.equal(views.length, 2, "the resume opened the view again");
+  assert.ok(views[1].every((why) => typeof why === "string"), `the resumed view closed at the run's end, not parked: ${JSON.stringify(views[1])}`);
+});
+
+test("a park on ask_person closes the desktop's live view saying it waits for an answer and is kept", { timeout: 120_000 }, async (t) => {
+  const views = [];
+  const from = Date.now();
+  const one = await parkedRun(t, { views, asks: { body: { tools: ["ask_person"] }, script: [{ call: "ask_person", args: { question: "Which tab?" } }, { say: "done" }] } });
+  parkedClose(views, "answer", from);
+  await one.server.command(RUN, { kind: "steer", body: { text: "the first" } });
+  await ends(one);
+  assert.deepEqual(creates(one.vendor), ["d1"], "the same desktop");
+  assert.equal(views.length, 2, "the resume opened the view again");
 });

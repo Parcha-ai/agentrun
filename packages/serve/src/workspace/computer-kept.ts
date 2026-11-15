@@ -1,9 +1,9 @@
-// A desktop or a phone kept through its run's park. A run's own computer goes with its claim, and a park releases the
-// claim; so a run that parked for a person (a tool's approval, a cap raise, a question) would resume on a new machine,
-// with nothing the agent set up on the old one. Instead, the claim that parks keeps a desktop or a phone it made (or took
-// back) for KEEP_MS: an answer within that time resumes the run on the same machine, its screen, files and programs as
-// they were (computer-for-claim.ts: the claim's park, and the resumed claim's re-attach). After it, the kept computer is
-// ended, and a later resume makes a new one, said as any replaced computer is, and why.
+// A desktop, a phone or a sandbox kept through its run's park. A run's own computer goes with its claim, and a park
+// releases the claim; so a run that parked for a person (a tool's approval, a cap raise, a question) would resume on a new
+// machine, with nothing the agent set up on the old one. Instead, the claim that parks keeps a desktop, a phone or a
+// sandbox it made (or took back) for KEEP_MS: an answer within that time resumes the run on the same machine, its screen,
+// files and programs as they were (computer-for-claim.ts: the claim's park, and the resumed claim's re-attach). After it,
+// the kept computer is ended, and a later resume makes a new one, said as any replaced computer is, and why.
 //
 // One server setting per run holds it (`computer_kept:<run id>`): its provider, its kind, its ref, the claim epoch its
 // labels carry, and the time it is kept until. The claim that parks writes it; the claim that resumes in time takes it
@@ -14,14 +14,47 @@
 // failed or hung mid-way) is deleted again at the janitor's next pass. A row whose run is final is removed, its computer
 // deleted first.
 //
-// Only a desktop or a phone is kept. A sandbox is not: its folder is the run's (bound from this machine, or on Archil),
-// and what lives outside it is the price of a park. An agent's own computer and a paired one outlive every claim already,
-// and are never kept here; a runner lost, a crash or a server's stop still gives a new one.
+// A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
+// the rest of the machine (its other files, its processes). An agent's own computer and a paired one outlive every claim
+// already, and are never kept here; a runner lost, a crash or a server's stop still gives a new one.
+//
+// While the run is parked, its owner's live view says what it waits for and that the computer is kept, until when, then
+// that it wasn't kept once its time passed (parkedWords, lapsedWords): the viewer's page, as the claim's park closes it
+// (computer-live.ts), and the console's Screen tab, until when from the park's row on the run's timeline
+// (computerKeptWords) and its lapse from GET /v2/runs/{id}/computer (computer-view.ts lapsedOf).
 import type { ComputerProvider } from "@parcha/agentrun-computer";
 import { FINAL_STATES, type Settings, type Store } from "../store/index.js";
 
-/** How long a park keeps the run's desktop or phone for its resume: 10 minutes. */
+/** How long a park keeps the run's computer for its resume: 10 minutes. */
 export const KEEP_MS = 10 * 60_000;
+/** KEEP_MS in words. */
+export const KEEP_WORDS = `${KEEP_MS / 60_000} minutes`;
+
+/** What a run parked for: a tool's approval, an answer to its question (ask_person), a raise of its spend cap, its turn
+ *  ended at a refusal of the cap's (paused there), or its learned workflow's call's approval. */
+export type ParkCause = "approval" | "answer" | "cap" | "refusal" | "workflow";
+
+/** The live view's end at a park: why it parked, and the time its computer is kept until (ms). */
+export type ParkedEnd = { readonly parked: ParkCause; readonly until: number };
+
+/** What the person is waited for, by the park's cause. */
+const WAITING: Record<ParkCause, string> = {
+  approval: "Waiting for your approval.",
+  answer: "Waiting for your answer.",
+  cap: "Waiting for you to raise the spend cap.",
+  refusal: "Paused: the next step doesn't fit the spend cap. Waiting for you to raise it.",
+  workflow: "Waiting for your approval of the workflow's step.",
+};
+
+/** The live view's words while the run is parked with its computer kept, such as "Waiting for your approval. The desktop
+ *  is kept for 10 minutes." */
+export const parkedWords = (kind: string, cause: ParkCause): string => `${WAITING[cause]} The ${kind} is kept for ${KEEP_WORDS}.`;
+
+/** Why the run's computer at its resume is a new one: the one kept at its park was ended at its time. */
+export const computerLapsedWords = (kind: string): string => `The ${kind} wasn't kept: ${KEEP_WORDS} passed.`;
+
+/** The live view's words once the kept computer's time passed, the run still parked. */
+export const lapsedWords = (kind: string): string => `${computerLapsedWords(kind)} A new one starts when the run goes on.`;
 /** The settings key prefix of the kept computers, one row per run. */
 export const KEPT_PREFIX = "computer_kept:";
 /** The settings key of `runId`'s kept computer. */
@@ -32,7 +65,7 @@ export const keptKeyOf = (runId: string): string => `${KEPT_PREFIX}${runId}`;
  *  not have finished; `ended`: it is gone. Either way no claim takes it. */
 export type Kept = {
   readonly provider: string;
-  readonly kind: "desktop" | "phone";
+  readonly kind: "desktop" | "phone" | "sandbox";
   readonly id: string;
   readonly name: string;
   readonly epoch: number;
@@ -52,7 +85,7 @@ export type KeptSettings = Pick<Settings, "get" | "put" | "replaceIf" | "removeI
 export function keptOf(value: unknown): Kept | undefined {
   if (!value || typeof value !== "object") return undefined;
   const { provider, kind, id, name, epoch, until, ending, ended } = value as Record<string, unknown>;
-  if (typeof provider !== "string" || (kind !== "desktop" && kind !== "phone") || typeof id !== "string" || typeof name !== "string") return undefined;
+  if (typeof provider !== "string" || (kind !== "desktop" && kind !== "phone" && kind !== "sandbox") || typeof id !== "string" || typeof name !== "string") return undefined;
   if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || typeof until !== "number" || !Number.isFinite(until)) return undefined;
   if (ended === true) return { provider, kind, id, name, epoch, until, ended: true };
   return { provider, kind, id, name, epoch, until, ...(ending === true ? { ending: true as const } : {}) };

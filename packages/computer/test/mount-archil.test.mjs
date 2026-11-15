@@ -55,11 +55,10 @@ function fakeRoot(answers = {}) {
 
 const released = (refs = []) => async () => ok({ released: refs, kept: [], unproven: [] });
 
-test("archilRefusals: an Archil spec takes network none, the run and epoch labels, the helper's shapes and a disk token, in words that never hold the token", () => {
+test("archilRefusals: an Archil spec takes the run and epoch labels, the helper's shapes and a disk token, in words that never hold the token; the network is the provider's to take", () => {
 	assert.deepEqual(archilRefusals(SPEC), []);
+	for (const network of ["open", { allow: ["example.com"] }]) assert.deepEqual(archilRefusals({ ...SPEC, network }), [], `${JSON.stringify(network)}: the descriptor's forms decide, not the mount`);
 	const cases = [
-		[{ network: "open" }, /network/, "network open"],
-		[{ network: { allow: ["1.1.1.1/32"] } }, /network/, "an allowlist"],
 		[{ labels: { [EPOCH_LABEL]: "3" } }, /agentrun\.run/, "no run label"],
 		[{ labels: { [RUN_LABEL]: RUN } }, /agentrun\.epoch/, "no epoch label"],
 		[{ labels: { ...LABELS, [EPOCH_LABEL]: "03" } }, /agentrun\.epoch/, "an epoch that is not one"],

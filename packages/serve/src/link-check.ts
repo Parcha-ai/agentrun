@@ -5,7 +5,7 @@
 // sets equal, and each value equal, except that a call's value read as "…" (a timeline read elides query values,
 // scrubUrls) matches any value for its key. Structural only: whether a cited item is in scope stays the rubric's call.
 import { lastJsonBlock } from "./answer-json.js";
-import { scrubUrl } from "./timeline/index.js";
+import { scrubUrl, TEXT_URL, URL_TAIL as TRAILING, urlEnd } from "./timeline/index.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 
@@ -16,8 +16,6 @@ export type CheckedCall = { tool: string; name?: string; arguments?: unknown; re
 export type CanonicalUrl = { base: string; query: Map<string, string[]> };
 
 const ELIDED = "…";
-const TEXT_URL = /https?:\/\/[^\s"`<>\\]+/gi;
-const TRAILING = ".,;:!?*)]}'";
 
 type Obj = Record<string, unknown>;
 const isObj = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -49,16 +47,6 @@ export function urlMatches(cited: CanonicalUrl, called: CanonicalUrl): boolean {
     if (mine.length !== values.length || mine.some((value, i) => value !== values[i])) return false;
   }
   return true;
-}
-
-/** A URL found in text less the punctuation that ends a sentence around it; a closing bracket it opened stays. */
-function trimmed(raw: string): string {
-  let url = raw;
-  for (let last = url.at(-1); last && TRAILING.includes(last); last = url.at(-1)) {
-    if (last === ")" && url.split("(").length >= url.split(")").length) break;
-    url = url.slice(0, -1);
-  }
-  return url;
 }
 
 /** The forms a URL found in plain text may end at, longest first: as found, then less one trailing punctuation mark at a
@@ -157,7 +145,7 @@ export function linkCheck(answer: string, calls: readonly CheckedCall[]): string
   const matchOf = (cited: CanonicalUrl) => called.findIndex((urls) => urls.some((url) => urlMatches(cited, url)));
   for (const forms of citedLinks(answer)) {
     // The longest form that matches a call is the link; with none, a plain-text one less the punctuation around it.
-    let [link, at] = [forms.length > 1 ? trimmed(forms[0]!) : forms[0]!, -1];
+    let [link, at] = [forms.length > 1 ? forms[0]!.slice(0, urlEnd(forms[0]!)) : forms[0]!, -1];
     for (const form of forms) {
       const canonical = canonicalUrl(form);
       const i = canonical ? matchOf(canonical) : -1;

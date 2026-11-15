@@ -1,8 +1,9 @@
-// A sandbox run resumed on a fresh sandbox after its earlier claim deleted its own (a server's clean stop, a park): the
-// provider lists no older computer of the run, so the one fact the later claim has is the run's journal, where the earlier
-// claim's pass recorded the computer it made (agentrun.computer.made). The resumed claim's ready line says it's a new
-// sandbox, and the model's first request after the resume carries the server's note once, in the sandbox's words; the
-// first claim gets neither. Through the runner, its store and the spec builder pi really uses (adapter-run-spec.ts); the
+// A sandbox run resumed on a fresh sandbox after its earlier claim deleted its own (a server's clean stop): the provider
+// lists no older computer of the run, so the one fact the later claim has is the run's journal, where the earlier claim's
+// pass recorded the computer it made (agentrun.computer.made). The resumed claim's ready line says it's a new sandbox,
+// and the model's first request after the resume carries the server's note once, in the sandbox's words; the first claim
+// gets neither. A park keeps the sandbox 10 minutes (computer-kept.ts): a resume within them goes on on the same one, what
+// it holds outside the run's folder still there, never called new; one after them is told as after a stop. Through the runner, its store and the spec builder pi really uses (adapter-run-spec.ts); the
 // sandbox is a loopback stand-in for Docker's (the kind registry is workspace-kinds-fixture.mjs), and the model a script.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -64,7 +65,17 @@ function sandboxes() {
     async create(spec) {
       const ref = { id: `c${made.length + 1}`, name: `c${made.length + 1}` };
       made.push(ref.id);
-      held.set(ref.id, { ref, labels: spec.labels, computer: fakeComputer(spec.mount.path) });
+      // The sandbox's own /tmp, outside the run's folder: `cat /tmp/<name>` prints what it holds, else fails.
+      const tmp = new Map();
+      const computer = fakeComputer(spec.mount.path);
+      let argv = [];
+      computer.overrides["process.start"] = (params) => ((argv = params.argv), { id: "p1", pid: 42 });
+      computer.overrides["process.read"] = ({ stream, offset }) => {
+        const file = /cat \/tmp\/(\S+)/.exec(argv.join(" "))?.[1];
+        const text = stream === "stdout" && offset === 0 && file && tmp.has(file) ? tmp.get(file) : "";
+        return { data: Buffer.from(text).toString("base64"), nextOffset: offset + Buffer.byteLength(text), dropped: 0, exited: true };
+      };
+      held.set(ref.id, { ref, labels: spec.labels, computer, tmp });
       return { ok: true, value: ref };
     },
     async connect(ref) {
@@ -95,9 +106,12 @@ async function opened(t, body = {}) {
   await server.agents.create({ id: "agent-1", name: "Box" }, { id: "rev-1", kind: "agentic", body: { instructions: "Work.", computer: { kind: "sandbox", provider: "docker" }, ...body } });
   const launch = { input: { content: "Work." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  // Someone can answer an ask (server-approvers.ts APPROVERS_KEY), so a tool's ask parks.
+  await server.settings.put("approvers", { approvers: true });
   await server.flush?.();
   const docker = sandboxes();
-  const computerDeps = { kinds: KINDS, providers: { docker: () => docker.provider }, spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }), check: { readBackOf } };
+  const clock = { offset: 0 };
+  const computerDeps = { kinds: KINDS, providers: { docker: () => docker.provider }, spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }), check: { readBackOf }, now: () => Date.now() + clock.offset };
   /** A runner named `name` on its own store connection, its model `fetch`. */
   const start = async (name, fetch) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -118,7 +132,13 @@ async function opened(t, body = {}) {
     const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
     return JSON.stringify(records).match(/agentrun\.computer\.made/g)?.length ?? 0;
   };
-  return { server, docker, start, settled, summaries, made };
+  /** The run's open ask, at its park. */
+  const ask = async () => {
+    const row = await server.runs.get(RUN);
+    const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
+    return records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data).at(-1);
+  };
+  return { server, docker, clock, start, settled, summaries, made, ask };
 }
 
 const reminders = (body) => JSON.stringify(body).match(NOTES) ?? [];
@@ -167,19 +187,66 @@ test("a server's clean stop mid-request, then a restart: the resumed sandbox run
   assert.equal(await run.made(), 2, "each claim's pass recorded the sandbox it made");
 });
 
-test("a park and its resume: a parked sandbox run is released with its sandbox deleted, and the resume on a fresh one is told, as after a server's stop", { timeout: 120_000 }, async (t) => {
+const HOLD = "The sandbox is kept for 10 minutes while you decide.";
+const SAME = `${READY} It's the same sandbox, as the wait left it.`;
+const LAPSED_NEW = `${READY} The sandbox wasn't kept: 10 minutes passed. It's a new sandbox: the one before is gone, with what was on it.`;
+const BASH_ASKS = { tools: ["bash"], toolSettings: { bash: { permission: "ask" } } };
+const CAT = [{ call: "bash", args: { command: "cat /tmp/outside-1" } }, { say: "done" }];
+
+/** A sandbox run parked on its bash's ask, a file left in the sandbox's /tmp (outside the run's folder) before it. */
+async function parkedOnBash(t) {
+  const run = await opened(t, BASH_ASKS);
+  const requests = [];
+  await run.start("runner-a", scriptedOrigin(CAT, requests));
+  const parked = await run.settled(["parked"]);
+  assert.equal(parked.state, "parked");
+  const ask = await run.ask();
+  assert.ok(ask, "parked on the bash's ask");
+  return { run, requests, ask };
+}
+
+test("a sandbox run parked on bash's ask and approved within 10 minutes goes on on the same sandbox: no create, the file outside its folder still there, no replaced row, no note", { timeout: 120_000 }, async (t) => {
+  const { run, requests, ask } = await parkedOnBash(t);
+  assert.deepEqual([...run.docker.held.keys()], ["c1"], "the park kept the sandbox");
+  run.docker.held.get("c1").tmp.set("outside-1", "left before the park");
+  run.clock.offset = 60_000;
+  await run.server.command(RUN, { kind: "approve", body: { approval: ask.callId } });
+  await run.settled(["ended"]);
+  assert.deepEqual(run.docker.made, ["c1"], "no create at the resume");
+  assert.match(JSON.stringify(requests.at(-1)), /left before the park/, "the approved bash read the file on the same sandbox");
+  assert.deepEqual(requests.map(reminders).flat(), [], "no note to the model");
+  const said = await run.summaries();
+  assert.equal(said.filter((summary) => summary === HOLD).length, 1, `the park said it is kept: ${JSON.stringify(said)}`);
+  assert.deepEqual(said.filter((summary) => summary?.startsWith("The sandbox is ready")), [READY, SAME], "the resume said it is the same one");
+  assert.deepEqual(serverRows(said), [], "no replaced row");
+  assert.equal(run.docker.held.size, 0, "the run's end let it go");
+});
+
+test("a sandbox run approved after 10 minutes goes on on a new sandbox: the kept one let go, said once with why, the replaced row and the note once", { timeout: 120_000 }, async (t) => {
+  const { run, requests, ask } = await parkedOnBash(t);
+  run.docker.held.get("c1").tmp.set("outside-1", "left before the park");
+  run.clock.offset = 10 * 60_000 + 1_000;
+  const first = requests.length;
+  await run.server.command(RUN, { kind: "approve", body: { approval: ask.callId } });
+  await run.settled(["ended"]);
+  assert.deepEqual(run.docker.made, ["c1", "c2"], "a new sandbox");
+  assert.doesNotMatch(JSON.stringify(requests.slice(first)), /left before the park/, "the file went with the kept one");
+  assert.deepEqual(requests.slice(first).map(reminders), [[NOTE], ...requests.slice(first + 1).map(() => [])], "the model told once");
+  const said = await run.summaries();
+  assert.deepEqual(said.filter((summary) => summary?.startsWith("The sandbox is ready")), [READY, LAPSED_NEW], "said once, with why");
+  assert.deepEqual(serverRows(said), [ROW], "the replaced row once");
+  assert.equal(run.docker.held.size, 0, "nothing left");
+});
+
+test("an ask_person park keeps the sandbox too: the answer goes on on the same one", { timeout: 120_000 }, async (t) => {
   const run = await opened(t, { tools: ["ask_person"] });
   const requests = [];
   await run.start("runner-a", scriptedOrigin([{ call: "ask_person", args: { question: "Which region?" } }, { say: "done" }], requests));
-  const parked = await run.settled(["parked"]);
-  assert.equal(parked.state, "parked");
-  assert.equal(run.docker.held.size, 0, "the park let the sandbox go");
-  assert.deepEqual(requests.map((body) => reminders(body).length), [0], "the first claim's request carries none");
+  await run.settled(["parked"]);
+  assert.equal(run.docker.held.size, 1, "kept at the park");
   await sendCommand(run.server, RUN, { kind: "steer", body: { text: "us-west-2" } });
   await run.settled(["ended"]);
-  assert.deepEqual(run.docker.made, ["c1", "c2"], "the resume made a fresh sandbox");
-  assert.deepEqual(requests.slice(1).map(reminders), [[NOTE], ...requests.slice(2).map(() => [])], "the resume's first request carries it once; no later one");
-  const said = await run.summaries();
-  assert.deepEqual(said.filter((summary) => summary?.startsWith("The sandbox is ready")), [READY, NEW_ONE]);
-  assert.deepEqual(serverRows(said), [ROW]);
+  assert.deepEqual(run.docker.made, ["c1"], "the same sandbox");
+  assert.deepEqual(requests.map(reminders).flat(), []);
+  assert.deepEqual(serverRows(await run.summaries()), []);
 });

@@ -12,7 +12,7 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
-import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
+import { type CostReplay, costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
 import { PAST_RUNS, type PastRun, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
@@ -28,7 +28,7 @@ import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
 import { promotedOf } from "../learn/compile.js";
-import { gradesOf, gradeView, promotionsOf } from "../learn/promote.js";
+import { championOf, gradesOf, gradeView, type PromotionRecord, promotionsOf, withinBar } from "../learn/promote.js";
 import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
@@ -235,7 +235,20 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
   const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd]))));
-  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
+  const replay = servingReplayOf(await promotionsOf(store.settings, agentId), runs);
+  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs, replay), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
+}
+
+/** The replay the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
+ *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's `replay` numbers
+ *  and whether they cleared the bar (withinBar, promotion's own). Null when no run was served, nothing serves now (held,
+ *  or never promoted), or it was promoted with no replay (a dry run). */
+export function servingReplayOf(records: readonly PromotionRecord[], runs: readonly CostRun[]): CostReplay | null {
+  const name = runs.findLast((run) => (run.path === "workflow" || run.path === "handed_back") && run.workflow !== null)?.workflow;
+  const score = name ? championOf(records, name)?.replay : undefined;
+  if (!score) return null;
+  const pct = (acc: number) => Math.round(acc * 1000) / 10;
+  return { n: score.n, workflow_pct: pct(score.wf_acc), agent_pct: pct(score.agent_acc), cleared: withinBar(score) };
 }
 
 /** What run `runId`'s learning spent, as its cost per run counts it, over every round a follow-up opened (roundsOf): what
@@ -304,7 +317,10 @@ export async function costRunOf(store: Store, run: RunRecord, n: number): Promis
   const started = await learningStartOfRun(store, run.id);
   // Its figures are what the batch reads: a run with no path named is placed as the agent's here, and left out by the series.
   const { path, workflow } = pathOfRow(run.metrics, started) ?? { path: "agent" as const, workflow: null };
-  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...(await allInOf(store, run)) };
+  const { cost_usd, learning_usd, total_usd } = await allInOf(store, run);
+  // The run row's stored bound (RunRow.costAtMostUsd, written with a null cost_usd): its cost counts a request cut at what its cap held.
+  const cost_upper_bound = typeof run.costAtMostUsd === "number";
+  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, cost_usd, cost_upper_bound, learning_usd, total_usd };
 }
 
 /** The runs the money rule reads for agent `agentId` (runner/workflow-first.ts costLineOf), one set for the run's launch

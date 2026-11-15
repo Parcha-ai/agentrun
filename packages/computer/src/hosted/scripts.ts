@@ -66,15 +66,17 @@ export function installerOf(output: string): string | undefined {
  *  them (Daytona's toolbox, E2B's envd), which runs commands as root for whoever reaches it: a network of their own,
  *  their loopback alone, no vsock, no other process of their uid (src/isolation.ts). Init holds every process and ends
  *  them at the deadline. A display, when given, is init's DISPLAY, the X display its screen and input methods drive; a
- *  maximum, when given, is the most deadline.extend may move the deadline to. */
+ *  maximum, when given, is the most deadline.extend may move the deadline to; a network form, when given (open, or
+ *  allow: and a list), has init start the egress proxy that serves it before it leaves the machine's network
+ *  (./network.ts). */
 const INIT_SCRIPT = [
 	"# agentrun-computer: init",
-	// The display is v, not x: held() assigns x, and runs before the exec that reads it.
-	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}",
+	// The display is v, not x: held() assigns x, and runs before the exec that reads it. The network form is n.
+	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}; n=${8-}",
 	HELD,
 	'held "$d" >&2 || exit 6',
 	ROOT,
-	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"}`,
+	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"} \${n:+--network "$n"}`,
 ].join("\n");
 
 /** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
@@ -230,10 +232,10 @@ export function hostedCommands({
 	nonce = "",
 	sockets = SESSION_BUSES,
 	rootOnly = [],
+	network = "",
 }: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[]; rootOnly?: readonly string[] } = {}): HostedCommands {
-	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
-	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
-	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network });
+	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline]), ...(network === "" ? [] : ["--network", network])];
 	return {
 		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", sha256, nonce] : [])]),
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
@@ -256,6 +258,17 @@ export interface ChildCommandOptions {
 	display?: string;
 	/** The most deadline.extend may move the deadline to, an ISO time; none, and the deadline cannot move. */
 	maxDeadline?: string;
+	/** The network form init's egress proxy serves (./network.ts networkFormOf): open, or allow: and a list; none, no proxy. */
+	network?: string;
+}
+
+/** The init script's arguments: the daemon, the deadline, the user, home and the socket's folder, then the display, the
+ *  maximum and the network form, each empty when not given, where any of them is. */
+function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "" }: ChildCommandOptions): string[] {
+	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
+	if (network !== "") init.push(display, maxDeadline, network);
+	else if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
+	return init;
 }
 
 /**
@@ -263,9 +276,8 @@ export interface ChildCommandOptions {
  * its sha256 printed), init (long-lived) and stdio (one per connection). Each is one string for a shell, `sh -c` with
  * every argument quoted.
  */
-export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "" }: ChildCommandOptions = {}) {
-	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
-	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
+export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "" }: ChildCommandOptions = {}) {
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network });
 	return {
 		install: shellCommand(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR]),
 		init: shellCommand(INIT_SCRIPT, init),

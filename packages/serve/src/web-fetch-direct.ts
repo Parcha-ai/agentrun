@@ -14,6 +14,7 @@
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "typebox";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
+import { TEXT_URL, urlEnd } from "./timeline/util.js";
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
@@ -141,6 +142,106 @@ export function linksWithin(links: Iterable<string>): Pick<Page, "links" | "link
   return { links: kept, ...(omitted ? { links_omitted: omitted } : {}) };
 }
 
+/** Where a link starts: a markdown link's target (after its "]("), or a URL written out, as the timeline finds one
+ *  (TEXT_URL, the same pattern, not a copy of it). */
+const LINK_AT = new RegExp(`\\]\\(|${TEXT_URL.source}`, "gi");
+/** The five entities XML names, and its numeric references: an XML body's URLs are read with them undone. */
+const XML_ENTITY = /&(?:(quot|amp|lt|gt|apos)|#(\d{1,7})|#x([0-9a-f]{1,6}));/gi;
+const NAMED: Record<string, string> = { quot: '"', amp: "&", lt: "<", gt: ">", apos: "'" };
+/** An XML attribute, its value in double quotes (kept as it is, so an "='" in its query is never taken for an attribute)
+ *  or in single quotes (the second group). */
+const ATTRIBUTE = /(\s[^\s=<>"'/]+\s*=\s*)(?:"[^"]*"|'([^'<]*)')/g;
+
+/** Where a markdown link's target (the text after its "](") ends: at whitespace or at the ")" that closes the link, so
+ *  parentheses it holds in pairs (a wiki title's) stay. */
+function targetEnd(text: string, from: number, to: number): number {
+  let end = from;
+  for (let depth = 0; end < to && !/\s/.test(text[end]!); end++) {
+    if (text[end] === "(") depth++;
+    else if (text[end] === ")" && depth-- === 0) break;
+  }
+  return end;
+}
+
+/** Every link `text` holds, in order, as written: a markdown link's target (`[text](url)`, targetEnd), and a URL written
+ *  out (TEXT_URL), less its tail (urlEnd, the timeline's). A URL written out that runs into a "](" is a link written as
+ *  its own text (`[https://a](https://a)`): what follows each "](" in it is a target. Each link is looked for from where
+ *  the last one ended, so no character is scanned twice: one pass, however many unclosed "](" a hostile page holds. */
+function* hrefsIn(text: string): Generator<string> {
+  const at = new RegExp(LINK_AT.source, "gi");
+  for (let found = at.exec(text); found; found = at.exec(text)) {
+    if (found[0] === "](") {
+      const end = targetEnd(text, found.index + 2, text.length);
+      yield text.slice(found.index + 2, end);
+      at.lastIndex = end;
+      continue;
+    }
+    const [written, ...targets] = found[0].split("](");
+    yield written!.slice(0, urlEnd(written!));
+    for (const target of targets) yield target.slice(0, targetEnd(target, 0, target.length));
+  }
+}
+
+/** `text` with XML's entities undone, where it is XML (an Atom or RSS feed, a sitemap): an attribute's
+ *  `href="https://a/?x=1&amp;y=2"` is the URL `https://a/?x=1&y=2`, and an escaped `&lt;a href=&quot;…&quot;&gt;` in a
+ *  feed's content ends its URL at the quote. Any other text as it is. One pass, so `&amp;lt;` is `&lt;`. */
+function xmlUndone(text: string): string {
+  if (!/^\s*<[?!A-Za-z]/.test(text)) return text;
+  // A single-quoted attribute (`href='https://a/b'`) ends at its quote as a double-quoted one does: its value holds no
+  // "'" or "<" (XML writes them as entities), so it is requoted whole, before its entities are undone. Attributes are
+  // read in order, each whole, so a double-quoted value (`href="https://a/?q='b'"`) is passed over as it is.
+  const requoted = text.replace(ATTRIBUTE, (attribute, name: string, single: string | undefined) => (single === undefined ? attribute : `${name}"${single}"`));
+  return requoted.replace(XML_ENTITY, (entity, name: string | undefined, decimal: string | undefined, hex: string | undefined) => {
+    if (name) return NAMED[name.toLowerCase()]!;
+    const code = Number.parseInt(decimal ?? hex!, decimal ? 10 : 16);
+    return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
+
+/** A JSON body's links as written, in the body's order: each string value's (hrefsIn), one that is a URL whole taken as
+ *  it is; undefined for a text that is not JSON. Read from the parsed body, so an escape (`\/`) never hides or cuts one. */
+function jsonHrefs(text: string): Iterable<string> | undefined {
+  // An object, an array or one string: the bodies that can hold a URL (a string body is one, or holds some).
+  if (!/^\s*[[{"]/.test(text)) return undefined;
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return (function* () {
+    // A stack, not recursion: a deeply nested body never overflows it.
+    const stack = [body];
+    while (stack.length) {
+      const next = stack.pop();
+      // A string that is one URL whole is all of it, its last character too: a field holding a link means the link.
+      const whole = typeof next === "string" ? next.trim() : "";
+      if (typeof next === "string") yield* /^https?:\/\//i.test(whole) && !/\s/.test(whole) ? [whole] : hrefsIn(next);
+      else if (typeof next === "object" && next !== null) {
+        const values = Object.values(next);
+        for (let i = values.length - 1; i >= 0; i--) stack.push(values[i]);
+      }
+    }
+  })();
+}
+
+/** The absolute http(s) URLs a page's text holds, each once and without its fragment, in order (linksWithin keeps those
+ *  within the caps and counts the rest): markdown link targets and URLs written out (hrefsIn), an XML body's read with its
+ *  entities undone (an Atom entry's `<link href>`), or, for a JSON body, those of its string values (jsonHrefs). A
+ *  Parallel read's markdown and a direct fetch's body that is not HTML are read so; an HTML page's links are readPage's,
+ *  its link targets. */
+export function* linksOf(text: string): Generator<string> {
+  const seen = new Set<string>();
+  for (const href of jsonHrefs(text) ?? hrefsIn(xmlUndone(text))) {
+    const link = /^https?:\/\//i.test(href) ? URL.parse(href) : null;
+    if (!link) continue;
+    link.hash = "";
+    if (seen.has(link.href)) continue;
+    seen.add(link.href);
+    yield link.href;
+  }
+}
+
 /** A page read once, before any part of it is taken: its final url, status and title, its Text, the links its first part
  *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. */
 export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text" } & Text;
@@ -168,7 +269,7 @@ export async function readDirect(url: unknown, options: Omit<PublicFetchOptions,
     if (answer.body === null) return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error: `the page answered ${answer.status}` });
     // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
     const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
-    const page = read ?? { title: "", text: answer.body, links: [] };
+    const page = read ?? { title: "", text: answer.body, links: linksOf(answer.body) };
     return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...textOf(page.text, !read?.truncated), ...(read?.truncated ? { html_chars: read.html_chars! } : {}), ...(read?.converted === "text" ? { converted: "text" as const } : {}), ...linksWithin(page.links) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });

@@ -4,14 +4,16 @@
 // A builder that throws part-way never hands the loop a spec to release, so specBuilt lets go what was made by then, the
 // same way, and throws the builder's own error unchanged: a credential minted for the run is revoked and a computer made
 // for it let go, never left to the credential's 24 h ttl or the computer's lifetime. Each is let go at most once.
+import type { ParkCause } from "../workspace/computer-kept.js";
 
 /** One part a spec holds, by how it is let go. */
 type Held = {
   readonly tools?: { end(): Promise<void> };
   /** The run's checkout of its pull request (pr-checkout.ts), removed from its folder while the Workspace still answers. */
   readonly checkout?: { end(): Promise<void> } | undefined;
-  /** `park`: its release at the run's park, true when it kept the computer (computer-for-claim.ts ClaimComputer.park). */
-  readonly computer?: { release(): Promise<void>; park?(): Promise<boolean>; readonly keeps?: string };
+  /** `park`: its release at the run's park, for its cause, true when it kept the computer (computer-for-claim.ts
+   *  ClaimComputer.park). */
+  readonly computer?: { release(): Promise<void>; park?(cause: ParkCause): Promise<boolean>; readonly keeps?: string };
   readonly archil?: { revoke(): Promise<void> } | undefined;
   readonly ws?: { end(): Promise<void> };
   /** The claim's Archil keys, dropped from memory last, once nothing more reads the disk (the CLI spec's). */
@@ -44,18 +46,18 @@ export class SpecHolds {
   /** Everything held let go, once: the tools' end (background processes ended, scratch swept), the pull request's
    *  checkout removed, the computer, the Archil mount credential (idempotent: the computer's release revokes it too), the
    *  Workspace's end, the CLI's scratch, then the claim's keys where they are held. A second call waits for the first and
-   *  does nothing more. At a park (`parked`), a computer that keeps (a desktop or a phone) is kept for the resume first:
-   *  the tools' end is left out (the processes they started and their output live on it) and so is the revoke (its mount
-   *  writes on); a keep that fails lets it go as above. */
-  release(how?: { readonly parked?: boolean }): Promise<void> {
-    return (this.#released ??= this.#releaseAll(how?.parked === true));
+   *  does nothing more. At a park (`parked`, its cause), a computer that keeps (a desktop, a phone or a sandbox) is kept
+   *  for the resume first: the tools' end is left out (the processes they started and their output live on it) and so is
+   *  the revoke (its mount writes on); a keep that fails lets it go as above. */
+  release(how?: { readonly parked?: ParkCause }): Promise<void> {
+    return (this.#released ??= this.#releaseAll(how?.parked));
   }
 
-  async #releaseAll(parked: boolean): Promise<void> {
+  async #releaseAll(parked: ParkCause | undefined): Promise<void> {
     const { tools, checkout, computer, archil, ws, scratch, keys } = this.#held;
     const log = this.#log;
-    const kept = parked && computer?.keeps !== undefined && computer.park
-      ? await computer.park().catch((error: unknown) => {
+    const kept = parked !== undefined && computer?.keeps !== undefined && computer.park
+      ? await computer.park(parked).catch((error: unknown) => {
           log(`the run's computer could not be kept: ${words(error)}`);
           return false;
         })

@@ -31,7 +31,7 @@ import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
-import { KEEP_MS } from "./computer-kept.js";
+import { computerLapsedWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -220,23 +220,28 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
 
 /** The network a computer of `kind` on `entry` asks for: what the run allows (its box_allow), narrowed to "none" when its
  *  provider makes "none" but not what the run allows. A launch that names no box_allow (a row from before every launch
- *  was stamped with it) allows what this server allows now (`current`), never "open"; a sandbox with none still has no
- *  network, as it always had. A remote computer (Daytona's or E2B's, each one whose capabilities' network is ["none"])
- *  runs its programs in a network of their own, so an open or listed network is one it refuses at create; "none" reaches
- *  less than the run allows, never more. Under "none", the operator's word for no network at all, a computer whose
+ *  was stamped with it) allows what this server allows now (`current`); a sandbox with none still has no
+ *  network, as it always had. A hosted computer (Agent37's, E2B's, Modal's, Daytona's) takes the list as Docker's does,
+ *  through the egress proxy its init starts; one whose capabilities' network is ["none"] alone (Orgo's) runs its
+ *  programs in a network of their own with no way out, so it gets "none", which reaches less than the run allows, never
+ *  more, and Settings says so (computers.ts NO_NETWORK_WORDS). Under "none", the operator's word for no network at all, a computer whose
  *  provider makes no "none" (a cloud phone, a hosted browser, Local Chrome) is refused in words (noNetworkRefusal), as
  *  the run's start refuses it (resolve-computer.ts computerReadiness). A vendor-hosted computer that runs only on the
  *  vendor's own network (its capabilities' network is ["open"]) is "open" under a list, the default or the operator's,
  *  since this server's list can't reach it, and Settings says so (computers.ts networkWords). A browser whose provider
  *  makes both "open" and "allow" (Local Chrome, behind its own egress proxy) is held to the operator's list
  *  (`boxAllowSet`, the launch's, or this server's now for a launch that names no box_allow) and is "open" under the
- *  default list, which is a sandbox's package-install list and no browsing policy. */
+ *  default list, which is a sandbox's package-install list and no browsing policy. A desktop, whose browser is one, is
+ *  "open" under the default list too, where its provider makes "open" (Docker's, Agent37's, E2B's, Modal's, Daytona's). */
 function networkOf(entry: ProviderEntry, kind: ComputerKindOf, run: ComputerRun, current: () => readonly string[] | "none", currentSet: () => boolean): ComputerSpec["network"] {
   const boxAllow = run.boxAllow ?? (kind === "sandbox" ? "none" : current());
   const set = run.boxAllow !== undefined ? run.boxAllowSet === true : currentSet();
   if (boxAllow === "none" && needsNetwork(run.networks)) throw refused(noNetworkRefusal(entry.label, kind));
   if (vendorNetworkOnly(run.networks)) return "open";
   if (kind === "browser" && boxAllow !== "none" && run.networks?.includes("open") && run.networks.includes("allow")) return set ? { allow: [...boxAllow] } : "open";
+  // A desktop's browser is a browser: under the default list it is "open" where its provider makes open (public internet
+  // only, through the egress proxy). The operator's or the launch's list and none apply to it as they are, below.
+  if (kind === "desktop" && !set && boxAllow !== "none" && run.networks?.includes("open")) return "open";
   const allowed: ComputerSpec["network"] = boxAllow === "none" ? "none" : { allow: [...boxAllow] };
   const form = allowed === "none" ? "none" : "allow";
   return run.networks && !run.networks.includes(form) && run.networks.includes("none") ? "none" : allowed;
@@ -268,15 +273,9 @@ export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: Co
   return `${ready}${lapsed} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
 
-/** The minutes a park keeps the run's desktop or phone (computer-kept.ts KEEP_MS), in words. */
-const KEEP_MINUTES = `${KEEP_MS / 60_000} minutes`;
-
-/** The run's timeline phase as its run parks with its desktop or phone kept (ClaimComputer.keeps), such as "The desktop
- *  is kept for 10 minutes while you decide." */
-export const computerKeptWords = (kind: KeptKind): string => `The ${kind} is kept for ${KEEP_MINUTES} while you decide.`;
-
-/** Why the run's computer at its resume is a new one: the one kept at its park was ended at its time. */
-export const computerLapsedWords = (kind: string): string => `The ${kind} wasn't kept: ${KEEP_MINUTES} passed.`;
+/** The run's timeline phase as its run parks with its computer kept (ClaimComputer.keeps), such as "The desktop is kept
+ *  for 10 minutes while you decide." */
+export const computerKeptWords = (kind: KeptKind): string => `The ${kind} is kept for ${KEEP_WORDS} while you decide.`;
 
 /** What the run's model is told, once, on its next request after its claim gave it a computer that replaced an earlier
  *  claim's (the adapter loop's computer note), labelled as the server's (SERVER_NOTE_LABEL): a desktop's or a phone's
