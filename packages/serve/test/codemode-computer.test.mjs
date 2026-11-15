@@ -75,7 +75,8 @@ const methodsOf = (computer) => computer.calls.map(([method]) => method).filter(
  *  got, and the server's store. With `restartAt`, the first runner shuts down once it settles and a second one takes the
  *  run on. `options.computer`: the run's computer as its scripts get it bound (RunTools.computer); `options.settled`: the
  *  run's state it waits for (default ended); `options.adapter`: the run's adapter in pi's place, or `options.adapterOf(run)`
- *  makes it; `options.record`: the run's record as its harness keeps it ("loop" for a CLI's). */
+ *  makes it; `options.record`: the run's record as its harness keeps it ("loop" for a CLI's); `options.beforeNext(server)`:
+ *  what happens between the first runner's shutdown and the second's start (with `restartAt`). */
 async function codemodeRun(t, script, computerTools, gate = () => "allow", restartAt = undefined, options = {}) {
   const { server, runners: stores_ } = await stores({ runners: 2 });
   await queue(server, "run-1");
@@ -97,6 +98,7 @@ async function codemodeRun(t, script, computerTools, gate = () => "allow", resta
     await restartAt;
     // A shutdown mid-script: the claim lets the run go, its codemode call unsettled in its journal.
     await runner.close();
+    await options.beforeNext?.(server);
     const next = startRunner({ store: stores_[1], createLoop: loop, name: "runner-b", ...TIMING });
     t.after(() => next.close());
   }
@@ -467,7 +469,7 @@ function codexScript(calls) {
 }
 
 /** A desktop run on Codex (its stand-in app server) whose one code-mode `exec` runs `calls` (codexScript): its computer and
- *  the server's store. `options.gate`, `options.settled` and `options.restartAt` as codemodeRun takes them;
+ *  the server's store. `options.gate`, `options.settled`, `options.restartAt` and `options.beforeNext` as codemodeRun takes them;
  *  `options.computer(computer)` sets the desktop up before the run starts. */
 async function codexRun(t, calls, options = {}) {
   const { resolveHarness } = await import("../dist/runner/adapters/index.js");
@@ -482,7 +484,7 @@ async function codexRun(t, calls, options = {}) {
   const harness = resolveHarness("codex");
   const fetch = codexScript(calls);
   const adapterOf = (run_) => harness.adapter({ run: run_, model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "not-a-secret" }, price: () => 0, sessionsDir, fetch }, { standIn: { command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "responses" } } });
-  const { server } = await codemodeRun(t, [], tools, options.gate ?? (() => "allow"), options.restartAt, { computer: run.computer, adapterOf, record: harness.record, ...(options.settled ? { settled: options.settled } : {}) });
+  const { server } = await codemodeRun(t, [], tools, options.gate ?? (() => "allow"), options.restartAt, { computer: run.computer, adapterOf, record: harness.record, ...(options.settled ? { settled: options.settled } : {}), ...(options.beforeNext ? { beforeNext: options.beforeNext } : {}) });
   return { computer, server };
 }
 
@@ -602,6 +604,49 @@ test("on Codex, a script cut by the runner's end mid-call: the call cut off ends
   assert.ok(rows.indexOf(cut) < rows.indexOf(end), `the exec's end sorts after its call's end: ${seen}`);
   assert.equal(end.tool_status, "failed", `cut at a call that never reported, the exec reads failed: ${end.summary}`);
   assert.match(end.tool_result_preview ?? "", /^The exec was cut short after these calls/, `its end tells what the model was told: ${end.tool_result_preview}`);
+});
+
+/** The exec's one end on `rows` and the rows of its calls: each of them before it, and it read interrupted in the words
+ *  every harness gives a call cut off. */
+function endedInterruptedAfterCalls(rows) {
+  const seen = rowsSeen(rows);
+  const ends = rows.filter((row) => row.kind === "tool_result" && row.tool_use_id === "call_exec");
+  assert.equal(ends.length, 1, `the exec has one end, never left open: ${seen}`);
+  const [end] = ends;
+  const under = rows.filter((row) => row.parent_tool_use_id === "call_exec");
+  assert.ok(under.length > 0, `its calls have rows: ${seen}`);
+  assert.ok(under.every((row) => rows.indexOf(row) < rows.indexOf(end)), `the exec's end sorts after every row of its calls: ${seen}`);
+  assert.equal(end.tool_result_preview, INTERRUPTED_TEXT, `the exec reads interrupted: ${end.summary}`);
+}
+
+test("on Codex, a run stopped while its exec's call waits for a person's approval: the run's end closes the exec interrupted, after its call's rows, never left open", async (t) => {
+  const { runners } = await stores({ runners: 1 });
+  const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-stop-"));
+  dirs.push(folder);
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none");
+  const { computer, server } = await codexRun(t, [{ tool: "computer_op", args: { op: "shell.run", args: { command: "echo hi" } } }], { gate, settled: "parked" });
+  await sendCommand(server, "run-1", { kind: "stop" });
+  await until(async () => {
+    const now = await server.runs.get("run-1");
+    return now.state === "stopped" && now.runner === null && now;
+  }, "the run stopped", 30_000);
+  assert.equal(methodsOf(computer).filter((method) => method === "exec.run").length, 0, "the waiting command never ran");
+  endedInterruptedAfterCalls(await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, server, "run-1", ctx));
+});
+
+test("on Codex, a run a crash cut mid-call and the next claim ends without resuming Codex's thread (stopped meanwhile): the exec is closed interrupted, after its cut call's rows, never left open", async (t) => {
+  let stuck;
+  let bound;
+  const reached = Promise.race([new Promise((resolve) => (stuck = resolve)), new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the script never reached its app's open within 30 s")), 30_000)))]).finally(() => clearTimeout(bound));
+  const hang = (computer) => {
+    computer.overrides["apps.launch"] = () => {
+      stuck();
+      return new Promise(() => {});
+    };
+  };
+  const stop = (server) => sendCommand(server, "run-1", { kind: "stop" });
+  const { server } = await codexRun(t, [{ tool: "computer_op", args: { op: "apps.open", args: { id: "firefox" } } }], { restartAt: reached, computer: hang, beforeNext: stop, settled: "stopped" });
+  endedInterruptedAfterCalls(await runTimeline(server, "run-1", ctx));
 });
 
 test("a desktop run whose codemode is set to deny, under surface code too, lists the step tools and computer_op: with no script to call them, the computer stays in the model's reach", async (t) => {
