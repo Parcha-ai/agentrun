@@ -191,6 +191,18 @@ test("the run record keeps each guard's row as metrics.guards; a workflow whose 
   assert.deepEqual(providersNamed([{ node: "agent", guard: { signal: "self", threshold: 0.5 } }]), []);
 });
 
+// A replay run's call rerun after a park and refused by the gate before any node ran keeps an entry of its own (nodes [],
+// ended failed). The call's guard rows are its last entry's that ran a node, so the first attempt's checks stay in the
+// run's metrics, which refit and replay read.
+test("a call rerun and refused before any node ran keeps its earlier attempt's guard rows", () => {
+  const row = { node: "answer", signal: "self", self: 0.6, p: 0.6, threshold: 0.65, escalated: true };
+  const entries = [
+    { kind: LEARNED_NODES, data: { call: "call-1", workflow: "answer", nodes: [{ label: "answer", kind: "agent", status: "escalated", duration_ms: 9, guard: row }], guards: [row] } },
+    { kind: LEARNED_NODES, data: { call: "call-1", workflow: "answer", nodes: [], ended: "failed" } },
+  ];
+  assert.deepEqual(guardsOf(entries), [{ ...row, workflow: "answer" }]);
+});
+
 // Review on #2639: the trace keeps at most LEARNED_NODES_MAX nodes for the call's timeline row, but every guard check is
 // kept beside it (`guards`), so a map over more items than that still gives the run's metrics (and the promotion replay
 // and threshold refit that read them) every check, and the hand-back names the check that handed back past the cap.
