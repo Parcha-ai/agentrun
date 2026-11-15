@@ -477,7 +477,7 @@ const compiledBlock = ({ output = "answer", tools } = {}) => `\`\`\`\`workflow a
   v: 2, name: "answer",
   schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Answer: { type: "object", properties: { answer: { type: "number" }, confidence: { type: "number" } }, required: ["answer", "confidence"] } },
   input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
-  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: output, tier: "fast", ...(tools ? { tools } : {}) }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: output, ...(tools ? { tools } : {}) }] },
 })}\n\`\`\`\``;
 
 test("compile: a draft the checks refuse goes back with their words, up to 3 times; the fixed draft is proposed beside the note, every attempt recorded", async (t) => {
@@ -547,7 +547,7 @@ const shapedBlock = (out) => `\`\`\`\`workflow answer\n---\ndescription: Picks a
   v: 2, name: "answer",
   schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Out: out },
   input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
-  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the merchant's category code.", out: "Out", as: "answer", tier: "fast" }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the merchant's category code.", out: "Out", as: "answer" }] },
 })}\n\`\`\`\``;
 
 test("compile against the agent's output schema: a draft answering part of the object fails its dry run in the schema's words and the retry that answers the whole object is kept; with no output schema the partial draft is kept at once", async (t) => {
