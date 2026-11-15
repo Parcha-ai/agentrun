@@ -195,7 +195,7 @@ test("a preferred model this server does not know is not used, said in a warning
   assert.equal(unknown.model, "openrouter/openai/gpt-6-luna", "the fast tier's");
   assert.equal(unknown.warning, "model.prefer openrouter/nobody/no-such-model:free is not used: this server does not know that model. The agent runs on this server's model for the fast tier. overrides.model picks another.");
   assert.deepEqual(await packageModel(env, { tier: "fast", prefer: "openrouter/inclusionai/ling-3.2-flash:free" }, "pi"), { model: "openrouter/inclusionai/ling-3.2-flash:free" });
-  assert.equal((await packageModel({ OPENAI_API_KEY: "fake-test-key" }, { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "pi")).warning, undefined, "one that lacks only a key: no warning");
+  assert.equal((await packageModel({ OPENAI_API_KEY: "fake-test-key" }, { tier: "fast", prefer: "openrouter/inclusionai/ling-3.1-flash" }, "pi")).warning, undefined, "one that lacks only a key: no warning");
 });
 
 test("on a gateway server, a package's model is never one the gateway has not said it serves: a bare gateway id is left to the server's default, and a preferred model is not used, said in a warning", async () => {
