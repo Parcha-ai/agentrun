@@ -82,24 +82,32 @@ test("a codemode script sees the run's tools and nothing else of the run: no pro
   assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "undefined", "undefined", "function", false], answer.text);
 });
 
-test("a script tests for a tool with typeof: a name the run has no tool by reads \"undefined\", and calling it still throws the words that name the run's tools", async () => {
+test("a script tests for a tool with typeof: a name the run has no tool by reads \"undefined\"", async () => {
+  const nested = { call: async () => ({ text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "return [typeof tools.missing, typeof tools['no-such-tool'], typeof tools?.missing, typeof tools.write_file, `${typeof tools.missing}`, 'typeof tools.missing', typeof tools.missing === 'undefined' ? 'absent' : 'there', 'missing' in tools, 'write_file' in tools];";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "function", "undefined", "typeof tools.missing", "absent", false, true], answer.text);
+  // Nothing around the script can be shadowed by it: its own `Object`, `Proxy` or `undefined` change no answer.
+  const shadowed = await codemode.call({ script: "const Object = {};\nlet Proxy, Reflect;\nlet undefined = 'set';\nreturn [typeof tools.write_file, typeof tools.missing];" }, { signal: new AbortController().signal, nested });
+  assert.equal(shadowed.isError, undefined, shadowed.text);
+  assert.deepEqual(shadowed.structured, ["function", "undefined"], shadowed.text);
+});
+
+test("calling a tool the run doesn't have fails with an error that names it and lists the run's tools; nothing is called", async () => {
   const calls = [];
   const nested = { call: async (name) => (calls.push(name), { text: "ran", fresh: true }), memo: async (_key, value) => value };
   const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
-  const script = "return [typeof tools.missing, typeof tools['no-such-tool'], typeof tools?.missing, typeof tools.write_file, `${typeof tools.missing}`, 'typeof tools.missing', typeof tools.missing === 'undefined' ? 'absent' : 'there'];";
-  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
-  assert.equal(answer.isError, undefined, answer.text);
-  assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "function", "undefined", "typeof tools.missing", "absent"], answer.text);
-  for (const called of ["return await tools.missing({});", "const one = tools.missing;\nreturn await one({});"]) {
+  for (const called of ["return await tools.missing({});", "const one = tools.missing;\nreturn await one({});", "if (typeof tools.missing !== 'function') throw new Error('no missing tool');"]) {
     const refused = await codemode.call({ script: called }, { signal: new AbortController().signal, nested });
     assert.equal(refused.isError, true, refused.text);
-    assert.match(refused.text, /tools\.missing does not exist\. Available: write_file, web_search, send_email, read_file\./, `${called}: today's words, naming the run's tools`);
+    assert.match(refused.text, /The script read tools\.missing, which this run doesn't have\. Its tools are: write_file, web_search, send_email, read_file\./, called);
   }
   assert.deepEqual(calls, [], "nothing was called");
-  // The check names nothing a script can shadow: its own `Object` or `undefined` change no answer.
-  const shadowed = await codemode.call({ script: "const Object = {};\nlet undefined = 'set';\nreturn [typeof tools.write_file, typeof tools.missing];" }, { signal: new AbortController().signal, nested });
-  assert.equal(shadowed.isError, undefined, shadowed.text);
-  assert.deepEqual(shadowed.structured, ["function", "undefined"], shadowed.text);
+  // A failure that is no TypeError and names no name it read keeps its own words alone.
+  const other = await codemode.call({ script: "typeof tools.missing;\nthrow new Error('out of paper');" }, { signal: new AbortController().signal, nested });
+  assert.match(other.text, /The script failed: out of paper$/, other.text);
 });
 
 test("a script reads a nested call's value: its structured value, else its one text part parsed when that is a JSON object or array, else its text", async () => {
