@@ -10,8 +10,8 @@ import { schemaProblems } from "./schema-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
 const FREE = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free";
-/** A free model pi's catalog does not list. */
-const UNLISTED = "openrouter/inclusionai/ling-3.2-flash:free";
+/** A model neither pi's catalog nor serve's own free list names. */
+const UNLISTED = "openrouter/nobody/no-such-model:free";
 const WARNING = "Free models may keep and train on what you send. Your email goes to whoever serves this model.";
 const NOTE = "Turn on OpenRouter Settings → Privacy → ZDR only.";
 
@@ -154,4 +154,43 @@ test("a choice whose model this server can't run is 409 naming the model, never 
   assert.equal(searched.body.error.code, "agent_not_runnable");
   assert.deepEqual(searched.body.error.fields.map((f) => [f.field, f.reason]), [["secrets.PARALLEL_API_KEY", "not_set_up_here"]]);
   assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing was made");
+});
+
+/** A package that prefers `prefer` on pi, its tier fast. */
+const preferring = (prefer) => `---
+name: inbox
+version: 1.0.0
+description: Sorts an inbox.
+harness: [pi]
+model: { tier: fast, prefer: ${prefer} }
+---
+Sort the inbox.
+`;
+
+test("a package whose model.prefer this server can't run is 409 naming the model and the fix, never the tier's model in its place", async (t) => {
+  // A fast tier model is here (an OpenAI key and AGENT_MODEL_FAST): the old silent fallback had one to swap in.
+  withEnv(t, { OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-6-luna" }, ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "AGENT_MODEL", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, templates: await packageDir(t, preferring("openrouter/particle-ai/particle-1")) });
+  const before = (await api("GET", "/agents")).body.agents.length;
+  const keyless = await api("POST", "/templates/inbox/apply", {});
+  assert.equal(keyless.status, 409, JSON.stringify(keyless.body));
+  assert.equal(keyless.body.error.code, "agent_not_runnable");
+  assert.deepEqual(keyless.body.error.fields.map((f) => [f.field, f.reason]), [["model", "not_set_up_here"]]);
+  const { message, fields: [field] } = keyless.body.error;
+  assert.match(message, /The inbox template prefers openrouter\/particle-ai\/particle-1, which this server can't run on pi: no OpenRouter key is saved here\. Nothing was created\./);
+  assert.equal(field.fix, "Save an OpenRouter key in Settings → Model keys, or apply with overrides.model.");
+  assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing was made");
+  // The fix it names works: a model of the owner's own.
+  const own = await api("POST", "/templates/inbox/apply", { overrides: { model: "openai/gpt-6-luna" } });
+  assert.equal(own.status, 201, JSON.stringify(own.body));
+});
+
+test("a model.prefer no catalog here lists is 409 naming it, and the fix is another model, not a key", async (t) => {
+  withEnv(t, { OPENROUTER_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openrouter/openai/gpt-6-luna" }, ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AGENT_MODEL", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, templates: await packageDir(t, preferring(UNLISTED)) });
+  const unknown = await api("POST", "/templates/inbox/apply", {});
+  assert.equal(unknown.status, 409, JSON.stringify(unknown.body));
+  assert.equal(unknown.body.error.code, "agent_not_runnable");
+  assert.match(unknown.body.error.message, new RegExp(`prefers ${UNLISTED.replace(/[.:/]/g, "\\$&")}, which this server can't run on pi: no model catalog here lists it\\. Nothing was created\\.`));
+  assert.equal(unknown.body.error.fields[0].fix, "Apply with overrides.model.");
 });
