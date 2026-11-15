@@ -1865,7 +1865,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         /** A main-model request as the run's cap prices it at admission (RunCap.asked: its model, its whole input uncached),
          *  for the wrap-up's note and what the run keeps back to answer. A request the note takes is measured as its client
-         *  sent it (NoteRequest), by its bytes. */
+         *  sent it (NoteRequest), by the input count its admission reads (a provider's or a local count, else its bytes). */
         const pricedOf = (model: string, asked?: Omit<PricedRequest, "model">) => theCap().asked({ ...asked, model });
         /** A main-model request's figures as the run's cap prices them (kernel cap requestFigures), for what it keeps back. */
         const figuresOf = (model: string, asked?: Omit<PricedRequest, "model">): RequestFigures | undefined => {
@@ -1894,8 +1894,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // figures), one request at a time: from its take until that request's admission ends, then, admitted carrying it
         // (`turn`), until that request ends. Told once that request is answered (afterRequest); given back for the next
         // request by a refusal, a dropped note, or an end with no answer (an error status, a 429, a lost or cut stream).
-        // A request that took it and left before its admission (its client gone while the proxy counted its tokens, a body
-        // the proxy refused) gives it back as it goes (noteReturned). WRAP_UP_OFFER_MS is only the backstop for a take that
+        // A request that took it and left before its admission (a note its policy could not place, an error) gives it back
+        // as it goes (noteReturned). WRAP_UP_OFFER_MS is only the backstop for a take that
         // never reaches its admission and is never given back: past it, a later request may take the note. An admitted
         // request always ends (the proxy books each one once), so no backstop is needed from there.
         let carried: (ServerNote & { at: number; turn?: number }) | undefined;

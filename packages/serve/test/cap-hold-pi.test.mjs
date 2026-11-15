@@ -171,6 +171,102 @@ test("a code review's merge step on sol: a pi parent at $2 with $0.62 spent, who
   assert.ok(spent <= CODE_CAP + 1e-12, `the run's records count $${spent} on a $${CODE_CAP} cap`);
 });
 
+/** A code review's three requests on sol, the wrap-up's case: step 0 reads the review skill; step 1 writes a script that
+ *  pastes the diff into one codemode call and hits the 32,000-token output ceiling mid-string, so its arguments are cut and
+ *  its tool result is the parse error echoing the 117 KB it got; step 2 answers. Before step 2 the run has spent $0.44
+ *  ($0.10, then $0.34), and step 2's body (the pasted diff, the skill, the echo) is past 272,000 bytes. The wrap-up's note
+ *  is priced on the input count admission reads (the local count), never on the bytes: on its bytes step 2's least is
+ *  past the tier, about $1.45, and a $2 run was told to finish with $1.56 left and answered with no review. */
+const REVIEW_DIFF = typescriptDiff(157_000);
+const SKILL = `# Review\n\n${"Start eight independent reviewers on the change, merge what they find, and return the findings as JSON.\n".repeat(64)}`.slice(0, 6_717);
+/** What step 1 streams for codemode's arguments: the script's JSON, cut 116,891 bytes in, inside its string. */
+const CUT_ARGS = JSON.stringify({ script: `const diff = String.raw\`${REVIEW_DIFF}\`;\nconst found = await Promise.all(reviewers.map((r) => r(diff)));` }).slice(0, 116_891);
+
+/** The provider for that review: what each step bills, and every body sent. */
+function reviewOrigin(sent) {
+  return async (url, init = {}) => {
+    if (String(url).includes("count_tokens")) return new Response("{}", { status: 404 });
+    const text = String(init.body ?? "");
+    const body = JSON.parse(text);
+    sent.push({ body, bytes: Buffer.byteLength(text, "utf8") });
+    const step = (body.messages ?? []).filter((message) => message.role === "assistant").length;
+    const start = (input) => ({ type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: input, output_tokens: 1 } } });
+    if (step === 0) {
+      return sse([
+        start(40_000),
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_skill", name: "read", input: {} } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ path: ".agents/skills/review/SKILL.md" }) } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 2_000 } },
+        { type: "message_stop" },
+      ]);
+    }
+    if (step === 1) {
+      return sse([
+        start(10_000),
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_script", name: "codemode", input: {} } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: CUT_ARGS } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 32_000 } },
+        { type: "message_stop" },
+      ]);
+    }
+    return answer(body, step, { input_tokens: 90_000, output_tokens: 400 });
+  };
+}
+
+/** The review run on sol at `capUsd`: its rows, what the cap was asked, every body sent and the run's spend. */
+async function reviewRun(t, capUsd) {
+  const sent = [];
+  const read = { name: "read", replaySafe: true, ask: false, run: async () => SKILL };
+  // codemode is pi's own tool: the script call goes to it, and its arguments never parse.
+  const spec = (_claim, run) => ({
+    adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch: reviewOrigin(sent), price }),
+    session: { key: "root", label: "root", system: ["Review the pasted diff with eight reviewers and return the review JSON."], tools: hostTools({ read }), context: "fresh" },
+    input: `Review this diff (no pull request behind it):\n\n${REVIEW_DIFF}`,
+    hooks: quiet,
+    gate: () => "allow",
+  });
+  const { row, asked, store } = await capRun(t, { specOf: () => spec, cap: specCap(capUsd), runCap: { capUsd: () => capUsd, modelOf: () => SOL_CAP }, ms: 60_000 });
+  const spent = await spentOf(store);
+  t.diagnostic(`${row.state} ${JSON.stringify(row.summary ?? row.error ?? null).slice(0, 400)}: spent $${spent.toFixed(4)}; bodies ${JSON.stringify(sent.map((one) => one.bytes))}`);
+  t.diagnostic(`asked: ${JSON.stringify(asked.map((one) => ({ inputTokensMax: one.request?.inputTokensMax, noted: one.request?.noted, answer: one.answer && ("refuse" in one.answer ? { refuse: one.answer.refuse } : { holdUsd: Number(one.answer.holdUsd?.toFixed(4)), outputTokensMax: one.answer.outputTokensMax }) })))}`);
+  return { row, asked, sent, spent };
+}
+/** The text of every block of `body`'s messages, a tool result's inner blocks included. */
+const textsOf = (body) => body.messages.flatMap((message) => (Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }])).flatMap((block) => (block.type === "tool_result" ? (Array.isArray(block.content) ? block.content : [{ text: block.content }]) : [block])).map((block) => String(block.text ?? ""));
+const SPENT_BEFORE_ANSWER = 0.44;
+
+test("a code review on sol at $2 whose script call is cut at the output ceiling: with $0.44 spent, its answer request (past 272,000 bytes, the cut call's 117 KB error echo in it) gets no wrap-up note, since its least on the count admission reads is $0.25, under half the $1.56 left", { timeout: 90_000 }, async (t) => {
+  const { row, asked, sent, spent } = await reviewRun(t, 2);
+  assert.ok(Math.abs(price(SOL, { input: 40_000, output: 2_000 }) + price(SOL, { input: 10_000, output: 32_000 }) - SPENT_BEFORE_ANSWER) < 1e-9, "the two steps before the answer are billed $0.44");
+  assert.equal(sent.length, 3, "three requests: the skill, the cut script, the answer");
+  const last = sent[2];
+  const echo = textsOf(last.body).find((text) => text.includes("Received arguments"));
+  assert.ok(echo && echo.length > 100_000, `the answer request carries the cut call's error with its arguments echoed (${echo?.length} characters)`);
+  assert.ok(last.bytes > 272_000, `the answer request is ${last.bytes} bytes: past Sol's 272,000-token tier on its bytes`);
+  // Admission bounds it by its local count, well under the tier, so its least is a cache write at $2.50 a million and
+  // Sol's least answer.
+  const bound = asked[2].request.inputTokensMax;
+  const least = (bound * 2.5 + 1_024 * 10) / 1e6;
+  t.diagnostic(`bound ${bound}; least $${least.toFixed(4)}; left $${(2 - SPENT_BEFORE_ANSWER).toFixed(2)}; typical $0.34`);
+  assert.ok(bound < 272_000 && 2 * least < 2 - SPENT_BEFORE_ANSWER, `admitted at ${bound} tokens, a least of $${least.toFixed(4)}: twice it is under the $1.56 left`);
+  assert.equal(asked[2].request.noted, undefined, "the answer request is admitted carrying no note");
+  assert.equal(textsOf(last.body).some((text) => text.includes("AgentRun server note")), false, "and no note is in what it sent");
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(spent <= 2 + 1e-12, `the run's records count $${spent} on a $2 cap`);
+});
+
+test("the same review at $1: its first request (160 KB, some 53,000 tokens on its count) gets no step-0 note, and its answer request, with $0.56 left, under three typical steps of $0.34, carries the wrap-up note", { timeout: 90_000 }, async (t) => {
+  const { row, asked, sent, spent } = await reviewRun(t, 1);
+  assert.equal(sent.length, 3, "three requests: the skill, the cut script, the answer");
+  assert.deepEqual(sent.slice(0, 2).map((one) => textsOf(one.body).some((text) => text.includes("AgentRun server note"))), [false, false], "the first two requests carry no note");
+  assert.ok(textsOf(sent[2].body).some((text) => text.includes("AgentRun server note: About $0.56 left of this run's budget: finish now with your answer.")), "the answer request carries the note, with what is left");
+  assert.equal(asked[2].request.noted, true, "admitted carrying it");
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(spent <= 1 + 1e-12, `the run's records count $${spent} on a $1 cap`);
+});
+
 test("pi on GPT-6.1 Sol through OpenRouter at $1.50, $0.10 spent: a request whose body is past 272,000 bytes after a long page is admitted on its local count and answers, never past the cap", { timeout: 60_000 }, async (t) => {
   const sent = [];
   const { row, asked, store } = await capRun(t, { specOf: () => specOf(origin(sent)), cap: specCap(CAP), runCap: { capUsd: () => CAP, modelOf: () => SOL_CAP }, ms: 40_000 });
