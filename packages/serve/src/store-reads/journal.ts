@@ -236,7 +236,7 @@ async function catalogNamed(store: Store, runId: string, rows: TimelineEvent[]):
   if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return rows;
   const run = await store.runs.get(runId);
   const pinned = Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
-  const monid = Object.keys(((run && (await store.agents.revision(run.revisionId)))?.body as { monidPin?: object } | undefined)?.monidPin ?? {});
+  const monid = Object.keys((run && (await store.agents.revision(run.revisionId)))?.monidPin ?? {});
   const catalog = new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
   return rows.map((row) => (row.tool_name !== null && catalog.has(row.tool_name) ? { ...row, tool_name: catalog.get(row.tool_name)! } : row));
 }

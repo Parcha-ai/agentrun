@@ -6,6 +6,7 @@
 // exists, no Modal client is constructed unless a test says so, and nothing reaches the network.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,11 @@ const APP = "computers";
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The box image the release publishes, tagged with box/recipe.mjs's hash: the Dockerfile, then the helper it copies, 12 hex. */
+const BOX_IMAGE = `ghcr.io/parcha-ai/agentrun-box:${createHash("sha256")
+	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.digest("hex")
+	.slice(0, 12)}`;
 const ENTRYPOINT_MARK = "# agentrun-computer: entrypoint";
 const dir = mkdtempSync(join(tmpdir(), "computer-modal-"));
 const DAEMON_PATH = join(dir, "computerd-linux-amd64");
@@ -141,6 +147,24 @@ test("capabilities, as before the move: a linux VM whose lifetime Modal enforces
 	assert.deepEqual(rec.calls, []);
 });
 
+test("Modal's descriptor says it prepares its image and names no default image: every Modal sandbox starts from the box image", async () => {
+	assert.equal(MODAL.prepareImage, true);
+	assert.equal(MODAL.defaultImage, undefined, "every Modal computer starts from the image prepareImage answers");
+	assert.equal("MODAL_DEFAULT_IMAGE" in (await import("../dist/descriptors/index.js")), false);
+	assert.equal("MODAL_DEFAULT_IMAGE" in (await import("../dist/index.js")), false);
+});
+
+test("prepareImage answers the box image's public registry tag with no SDK call and no wait told (Modal pulls it at create), and create starts from it by images.fromRegistry", async () => {
+	const { provider, rec } = setup();
+	const waits = [];
+	assert.deepEqual(await provider.prepareImage({ onWait: (...said) => waits.push(said) }), { ok: true, value: BOX_IMAGE });
+	assert.deepEqual(await provider.prepareImage(), { ok: true, value: BOX_IMAGE }, "no context: the same tag");
+	assert.deepEqual(rec.calls, [], "no Modal call: nothing to pull ahead of the first create");
+	assert.deepEqual(waits, [], "never told a pull: the claim waits on create, and a warm workspace waits on nothing");
+	await create(provider, { ...SPEC, image: BOX_IMAGE });
+	assert.deepEqual(rec.calls.find(([name]) => name.startsWith("images."))?.slice(0, 2), ["images.fromRegistry", BOX_IMAGE]);
+});
+
 test("the constructor refuses, in words, what would make a computer it cannot vouch for", () => {
 	const make = (options) => () => new ModalProvider({ sdk: recorder().sdk, app: APP, ...options });
 	assert.throws(() => new ModalProvider({ sdk: {}, app: APP }), /options\.sdk must be a Modal client; it lacks apps\.fromName/);
@@ -210,12 +234,13 @@ test("lifetime: maxLifetimeMs caps what check takes, in words, and create refuse
 });
 
 test("Modal takes 10 tags on a sandbox, the adapter's own among them: past that check() refuses in words with no SDK call, and create refuses the same words before any SDK call", async () => {
-	const six = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`l${n}`, "v"]));
-	const five = Object.fromEntries(Object.entries(six).slice(1));
-	// Each spec past the limit: the count is create's own, the caller's labels with the adapter's (five, and a GPU's).
+	const seven = Object.fromEntries([1, 2, 3, 4, 5, 6, 7].map((n) => [`l${n}`, "v"]));
+	const six = Object.fromEntries(Object.entries(seven).slice(1));
+	// Each spec past the limit: the count is create's own, the caller's labels with the adapter's (four with no
+	// max-deadline, as Modal has no extend; and a GPU's).
 	for (const [spec, own] of [
-		[{ ...SPEC, labels: six }, 5],
-		[{ ...SPEC, labels: five, gpu: { type: "T4", count: 1 } }, 6],
+		[{ ...SPEC, labels: seven }, 4],
+		[{ ...SPEC, labels: six, gpu: { type: "T4", count: 1 } }, 5],
 	]) {
 		const { provider, rec } = setup();
 		const refusals = provider.check(spec);
@@ -229,9 +254,9 @@ test("Modal takes 10 tags on a sandbox, the adapter's own among them: past that 
 		assert.deepEqual(rec.calls, [], "create refused before any SDK call: no app lookup, no listing, no sandboxes.create");
 	}
 	const at = setup();
-	assert.deepEqual(at.provider.check({ ...SPEC, labels: five }), [], "ten labels in all are Modal's limit, taken");
+	assert.deepEqual(at.provider.check({ ...SPEC, labels: six }), [], "ten labels in all are Modal's limit, taken");
 	assert.deepEqual(at.rec.calls, []);
-	await create(at.provider, { ...SPEC, labels: five });
+	await create(at.provider, { ...SPEC, labels: six });
 	assert.equal(Object.keys(at.rec.params().tags).length, 10, "ten tags go to Modal");
 });
 
@@ -282,7 +307,9 @@ test("create asks Modal for one VM sandbox in the app: the entrypoint as its com
 	assert.equal(params.tags.team, "a");
 	assert.equal(params.tags[COMPUTER], "1");
 	assert.match(params.tags[NAME], /^computer-[0-9a-f]{12}$/);
-	assert.deepEqual(Object.keys(params.tags).sort(), ["agentrun.computer", "agentrun.computer.deadline", "agentrun.computer.image", "agentrun.computer.max-deadline", "agentrun.computer.name", "team"]);
+	// No max-deadline tag: Modal has no extend, the tag's one reader, so none of its 512 bytes go to it.
+	assert.deepEqual(Object.keys(params.tags).sort(), ["agentrun.computer", "agentrun.computer.deadline", "agentrun.computer.image", "agentrun.computer.name", "team"]);
+	assert.ok(init.includes("--max-deadline"), "init still holds the most its deadline may reach");
 	assert.ok(!rec.names().includes("sandboxes.fromId"), "nothing was made, so nothing is read back");
 });
 
@@ -363,9 +390,9 @@ test("create of an Archil computer: Modal's network stays on for root to reach A
 	noToken(rec.calls, "what the SDK was handed");
 });
 
-test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id fit; past the bound check() refuses in words, before any SDK call", async () => {
+test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id on the box image fit; past the bound check() refuses in words, before any SDK call", async () => {
 	const archilSpec = (agent, image) => ({ ...SPEC, image, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: { ...MOUNT, folder: `agents/${agent}/runs/${RUN}/work` } });
-	for (const spec of [archilSpec("qa35e-modal-mwdsumo1", "registry.example/agentrun-archil:qa36"), archilSpec("a".repeat(128), "debian:bookworm-slim")]) {
+	for (const spec of [archilSpec("qa35e-modal-mwdsumo1", "registry.example/agentrun-archil:qa36"), archilSpec("a".repeat(128), BOX_IMAGE)]) {
 		const { provider, rec } = setup();
 		assert.deepEqual(provider.check(spec), []);
 		await create(provider, spec);

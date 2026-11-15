@@ -70,10 +70,6 @@ export default async function fakeMonid(url, init = {}) {
   if (process.env.AGENTRUN_TEST_FAUX_MONID_STATUS) return json(Number(process.env.AGENTRUN_TEST_FAUX_MONID_STATUS), { code: Number(process.env.AGENTRUN_TEST_FAUX_MONID_STATUS), message: "This key may not use this endpoint." });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_DOWN) throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.monid.ai"), { code: "ENOTFOUND" }) });
   if (!authorized) return json(401, { code: 401, message: "Missing or invalid API key" });
-  if (path === "/v1/discover") {
-    const results = Array.from({ length: Math.min(body.limit ?? 5, 40) }, (_, i) => ({ provider: "faux", endpoint: i ? `/other/${i}` : "/person/enrich", description: body.query.includes("everything") ? "x".repeat(20_000) : "Enrich a person from a name and company.", score: 0.9 - i / 100, price: PRICE }));
-    return json(200, { results, query: body.query, count: results.length });
-  }
   if (path === "/v1/endpoints") {
     const from = Number(new URL(String(url)).searchParams.get("cursor") ?? 0);
     const items = LISTING.slice(from, from + PAGE).map(({ provider, endpoint, price }) => ({ provider, endpoint, displayName: endpoint, price }));

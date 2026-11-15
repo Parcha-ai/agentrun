@@ -8,10 +8,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { HOST_RESULT_MAX_CHARS } from '@parcha/agentrun-kernel';
 import { openDrive } from '@parcha/agentrun-kernel/kernel';
-import { openTurn, placeSubmissions, toolBridge } from '@parcha/agentrun-kernel/process';
+import { bridgeTool, openTurn, placeSubmissions, toolBridge } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { codexToolName } from '../dist/adapter.js';
 import { codeMode, NESTED_STREAM } from '../dist/code-mode.js';
-import { kernelTool } from '../dist/adapter.js';
+import { markParked } from '../dist/scripts.js';
+
+const codexTool = (host) => bridgeTool(host, { name: codexToolName(host.name), parked: markParked });
 
 const EXEC = 'call_exec_1';
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,7 +33,7 @@ async function cutBesidePark(siblings) {
   const hosts = siblings.map(({ name, answer }) => ({ name: `mcp__fake__${name}`, description: name, inputSchema: { type: 'object' }, replay: 'never', call: answer === 'hang' ? () => new Promise(() => {}) : async () => answer }));
   const write = { name: 'mcp__fake__file', description: 'Files one.', inputSchema: { type: 'object' }, replay: 'never', call: async () => ({ text: 'filed #10' }) };
   const gate = async (call) => (call.tool === 'mcp_fake__file' ? { ask: true } : 'allow');
-  const bridge = toolBridge(first, [...hosts, write].map(kernelTool), { live: false, serial: false, gate });
+  const bridge = toolBridge(first, [...hosts, write].map(codexTool),{ live: false, serial: false, gate });
   const live = {};
   for (const { id, name, answer } of siblings) {
     const called = bridge.call(`mcp_fake__${name}`, {}, id);
@@ -48,7 +51,7 @@ async function cutBesidePark(siblings) {
   const next = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
   const kept = [];
   const journal = { append: (stream, data) => kept.push([stream, data]), flush: async () => {}, read: async (stream) => [...(stream === NESTED_STREAM ? ties : []), ...kept.filter(([s]) => s === stream).map(([, data]) => data)].map((data) => ({ data })) };
-  const resumed = toolBridge(next, [...hosts, write].map(kernelTool), { live: false, serial: false, gate: async (call) => (call.tool === 'mcp_fake__file' ? { deny: DENIED } : 'allow') });
+  const resumed = toolBridge(next, [...hosts, write].map(codexTool),{ live: false, serial: false, gate: async (call) => (call.tool === 'mcp_fake__file' ? { deny: DENIED } : 'allow') });
   const injected = [];
   const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: resumed, log() {}, lines: [], rpc: () => ({ request: async (_method, params) => void injected.push(...params.items) }), guard: (p) => p, threadId: () => 't', tries: 1 });
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];

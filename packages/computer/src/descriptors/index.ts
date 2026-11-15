@@ -17,7 +17,6 @@ export { AGENT37, BROWSERBASE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, ORGO,
 export { AGENT37_BASE_TEMPLATE } from "./agent37.js";
 export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./daytona.js";
 export { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
-export { MODAL_DEFAULT_IMAGE } from "./modal.js";
 export { ORGO_BASE_IMAGE } from "./orgo.js";
 export { PHONE_GROUPS, PHONE_IMAGE } from "./phone-harness.js";
 export { BROWSER_IMAGE, LINUX_DESKTOP, SANDBOX } from "./shared.js";

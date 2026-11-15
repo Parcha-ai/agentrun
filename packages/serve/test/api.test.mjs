@@ -53,7 +53,8 @@ test("without a default model a revision that names none is refused before it st
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts\./);
+  // A server that signs in with ChatGPT says so too: pi runs on the plan.
+  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts; or sign in with ChatGPT \(Settings → Model keys\) to run it on your ChatGPT plan\./);
   assert.doesNotMatch(refused.body.error.message, /--faux|AGENT_MODEL/, "a person's words: no operator flags");
   assert.equal((await api("POST", "/agents", agent("keyless", { model: "openai/gpt-6.1-sol" }))).status, 201);
   const keyless = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });

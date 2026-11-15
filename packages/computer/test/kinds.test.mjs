@@ -104,6 +104,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	// Agent37 registers the published box image in the key's workspace before the first create; its computers are remote.
 	assert.deepEqual([extra.agent37.prepareImage, extra.agent37.local], [true, undefined]);
+	// Modal starts from the published box image's registry tag, which it pulls at the first create; its computers are remote.
+	assert.deepEqual([extra.modal.prepareImage, extra.modal.local], [true, undefined]);
 	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
 	// other provider declares one.
 	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
@@ -121,7 +123,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
 	for (const [id, fields] of Object.entries(extra)) {
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
-		if (id !== "docker" && id !== "agent37") assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (!["docker", "agent37", "modal"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
@@ -138,7 +140,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
 	const all = await import("../dist/descriptors/index.js");
-	const [daytona, modal, e2b, orgo, phone, browser] = [all, all, all, all, all, all];
+	const [daytona, e2b, orgo, phone, browser] = [all, all, all, all, all];
 	// Every entry's default images are its descriptor's, each for a kind it serves.
 	for (const [index, entry] of PROVIDERS.entries()) {
 		assert.deepEqual(entry.defaultImage, DESCRIPTORS[index].defaultImage, entry.id);
@@ -152,7 +154,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 	const expected = {
 		docker: undefined,
 		daytona: { sandbox: daytona.DAYTONA_DEFAULT_SNAPSHOT },
-		modal: { sandbox: modal.MODAL_DEFAULT_IMAGE },
+		modal: undefined,
 		e2b: { sandbox: e2b.E2B_BASE_TEMPLATE, desktop: e2b.E2B_DESKTOP_TEMPLATE },
 		agent37: undefined,
 		orgo: { desktop: orgo.ORGO_BASE_IMAGE },
@@ -166,11 +168,13 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 	}
 	// What each module's constant is: a constant that drifts shows here.
 	assert.deepEqual(
-		[daytona.DAYTONA_DEFAULT_SNAPSHOT, modal.MODAL_DEFAULT_IMAGE, e2b.E2B_BASE_TEMPLATE, e2b.E2B_DESKTOP_TEMPLATE, all.AGENT37_BASE_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
-		["default", "debian:bookworm-slim", "base", "desktop", "agent37-base", "linux", "android", "chromium"],
+		[daytona.DAYTONA_DEFAULT_SNAPSHOT, e2b.E2B_BASE_TEMPLATE, e2b.E2B_DESKTOP_TEMPLATE, all.AGENT37_BASE_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
+		["default", "base", "desktop", "agent37-base", "linux", "android", "chromium"],
 	);
-	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE).
-	assert.equal(PROVIDERS.find((entry) => entry.id === "docker").defaultImage, undefined);
+	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37 and Modal have none: each prepares
+	// the box image (prepareImage).
+	for (const id of ["docker", "agent37", "modal"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
+	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 });
 
 test("each entry's kinds are derived by serves() from its static capabilities, never written beside them", () => {

@@ -1,4 +1,4 @@
-// A claimed run's monid endpoints on the runner: one host tool per endpoint its revision's pin holds (monid.ts MonidPin,
+// A claimed run's monid endpoints on the runner: one host tool per endpoint its revision's pin holds (revisions.monid_pin,
 // made at the save), under its wire name (catalog.ts wireName), with the pinned description and input. A spec builder
 // joins them to the claim's MCP (mcp-run.ts ClaimMcp, withMonid), the loop's one seam for a catalog's tools: the loop
 // hands them to every harness as it hands every host tool, asks the gate about a call by its catalog name
@@ -19,10 +19,11 @@
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { fauxFetch } from "../decisions.js";
-import { chargeOf, estimateOf, FAUX_MONID_ENV, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText, uncharged } from "../monid.js";
+import { chargeOf, estimateOf, FAUX_MONID_ENV, MONID_KEY_ENV, type MonidAnswer, monidClient, monidText, uncharged } from "../monid.js";
 import { money } from "../cap.js";
 import { GIVEN_BACK, type PaidBooking, paidLedger, paidStep, stopRun, unbookedRefusal } from "../paid-calls.js";
-import { monidNameOf, parseToolName } from "../tool-names.js";
+import { monidNameOf } from "../tool-names.js";
+import type { MonidPinBody } from "../store/index.js";
 import type { Json } from "../validate.js";
 import type { Workspace } from "../workspace/index.js";
 import type { ClaimMcp } from "./mcp-run.js";
@@ -33,7 +34,7 @@ export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf">;
 /** One host tool per endpoint of `pin`, on the claim's environment `env` (its key, and the tests' fake under faux), an
  *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log;
  *  `capped`, whether the run has a spend cap now (its launch's, read at each call). */
-export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string, capped: () => boolean = () => false): ClaimMonid | undefined {
+export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string, capped: () => boolean = () => false): ClaimMonid | undefined {
   const names = Object.keys(pin ?? {});
   if (!pin || !names.length) return undefined;
   const catalog = new Map<string, string>();
@@ -173,12 +174,4 @@ export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefin
     fresh: async () => mcp?.fresh(),
     release: () => mcp?.release(),
   };
-}
-
-/** What a subagent may be given for the grant `grant` (subagent.ts sessionNames): for a provider's wildcard, every endpoint
- *  the revision's `pin` holds of that provider, by wire name; undefined for any other grant. */
-export function monidSessionNames(grant: string, pin: MonidPin | undefined): string[] | undefined {
-  const parsed = parseToolName(grant);
-  if (parsed?.kind !== "monid-provider") return undefined;
-  return Object.keys(pin ?? {}).filter((tool) => monidNameOf(tool)?.provider === parsed.provider).map(wireName);
 }
