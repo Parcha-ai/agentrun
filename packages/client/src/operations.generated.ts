@@ -3272,6 +3272,7 @@ export type ApplyTemplateBody = {
   grants?: Array<string>;
   overrides?: {
     model?: string;
+    choice?: string;
     approvals?: "ask" | "never";
   };
 };
@@ -3328,6 +3329,17 @@ export type ImportTemplateResponse = {
     model: {
       tier: "fast" | "balanced" | "strong";
       prefer?: string;
+      fast?: string;
+      strong?: string;
+      choices?: Array<{
+        id: string;
+        label: string;
+        model: string;
+        harness: string;
+        warning: string | null;
+        note: string | null;
+        secrets: Array<string>;
+      }>;
     } | null;
     effort: string | null;
     tools: Array<string> | null;
@@ -3409,6 +3421,17 @@ export type ListTemplatesResponse = {
     model: {
       tier: "fast" | "balanced" | "strong";
       prefer?: string;
+      fast?: string;
+      strong?: string;
+      choices?: Array<{
+        id: string;
+        label: string;
+        model: string;
+        harness: string;
+        warning: string | null;
+        note: string | null;
+        secrets: Array<string>;
+      }>;
     } | null;
     effort: string | null;
     tools: Array<string> | null;
