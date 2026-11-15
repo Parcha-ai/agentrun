@@ -12,7 +12,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
+import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
@@ -300,6 +300,15 @@ async function withSearches(api: Wire, price: NonNullable<PiAdapterOptions["pric
   return codex.withWebSearches(price);
 }
 
+/** The session's thinking level: the one asked (the run's effort), except that a model whose catalog says it can't stop
+ *  reasoning (its thinkingLevelMap's `off` is null: Claude Sonnet 5.5) is never left at off, pi's default. OpenRouter
+ *  refuses such a request ("Reasoning is mandatory"), so with none asked, or off, it thinks at its lowest supported level.
+ *  A model that can stop keeps none (pi's off). */
+function mandatoryThinking(own: Parameters<typeof getSupportedThinkingLevels>[0] | undefined, asked: SessionSpec["thinking"]): SessionSpec["thinking"] {
+  if ((asked && (asked as string) !== "off") || !own || getSupportedThinkingLevels(own).includes("off")) return asked;
+  return clampThinkingLevel(own, "off") as SessionSpec["thinking"];
+}
+
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
 async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context, tiers: TierProxies): Promise<AdapterSession> {
   const { run, model, like } = options;
@@ -393,8 +402,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // session's tools and the run's native extensions, on every open. A conversation a native tool opens takes this agent's
   // model (pi copies its owner's), so its requests go through this session's proxy.
   const instructions = spec.system.join("\n\n");
-  // Its thinking level, the session's (the run's effort), on every open; none leaves pi's default.
-  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}), ...(spec.thinking ? { thinkingLevel: spec.thinking } : {}) };
+  // Its thinking level, the session's (the run's effort), on every open; none leaves pi's default (off).
+  const thinking = mandatoryThinking(models.getModel(PROVIDER, model), spec.thinking);
+  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}), ...(thinking ? { thinkingLevel: thinking } : {}) };
   const root: Conversation = await run.harness.root(context, { agent } as never);
   await root.configure(agent as never, context);
 

@@ -31,8 +31,13 @@ export function wrapUpDue(cap: number, spent: number, held: number, typical: num
   return byTypical || byLeast ? { leftUsd } : undefined;
 }
 
+/** What every note the run's model is told by the server begins with (this wrap-up, and serve's note that its computer
+ *  was replaced), so the model names it as the server's, never as an error of its own conversation. The server's row
+ *  for such a note (serve's timeline, "AgentRun: …") is labelled already, and says the words after it. */
+export const SERVER_NOTE_LABEL = "AgentRun server note: ";
+
 /** The note's words, what is left to the cent; before any priced request, the budget and a short answer. */
 export const wrapUpWords = (leftUsd: number, nonePriced = false): string => {
   const left = centsMoney(Math.max(0, leftUsd));
-  return nonePriced ? `This run's budget is about ${left}, enough for little work: answer as soon as you can.` : `About ${left} left of this run's budget: finish now with your answer.`;
+  return `${SERVER_NOTE_LABEL}${nonePriced ? `This run's budget is about ${left}, enough for little work: answer as soon as you can.` : `About ${left} left of this run's budget: finish now with your answer.`}`;
 };

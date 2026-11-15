@@ -1863,6 +1863,21 @@ class SqliteStore implements Store {
     const at = this.#now();
     const state = run.state ?? "ended";
     return this.#db.transaction(async (tx) => {
+      for (const guard of [...(run.settingsGuards ?? [])].sort((a, b) => a.key.localeCompare(b.key))) {
+        // A no-op update takes the row's write lock on both SQLite and Postgres until the import commits. A source
+        // revoke/disconnect either commits first and refuses this write, or waits for this already-started import.
+        const setting = await tx.get<{ value: string }>("UPDATE settings SET value = value WHERE key = ? RETURNING value", guard.key);
+        const value = setting === undefined ? undefined : JSON.parse(setting.value);
+        if (!value || Object.entries(guard.fields).some(([field, expected]) => JSON.stringify(value[field]) !== JSON.stringify(expected))) {
+          throw new StoreConstraint("The source import grant changed before the history write committed.");
+        }
+      }
+      if (run.requireActiveAgent) {
+        // Archive updates this same row. It either commits first and refuses this import, or waits for this
+        // already-admitted history transaction; a read outside the transaction cannot establish that order.
+        const agent = await tx.get<{ id: string }>("UPDATE agents SET archived_at = archived_at WHERE id = ? AND archived_at IS NULL RETURNING id", run.agentId);
+        if (!agent) throw new StoreConstraint("The agent was archived before the history write committed.");
+      }
       // The ended run row, its launch row and its transcript's journal, all in this one transaction (the server's own
       // writer): a crash between them leaves nothing. The run is created at epoch 0 with no runner, and the journal's fence
       // passes for that one row, by the rowid its insert returned (the claim fence's inserted-here form).
