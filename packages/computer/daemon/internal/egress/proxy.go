@@ -11,7 +11,10 @@ package egress
 //   - a refusal is an answer, sent before any socket opens: 403 (or SOCKS reply 2) with the class in its reason;
 //   - plain HTTP goes to the request URI's host, the request line in origin form, its Host header that host;
 //   - SOCKS5 BIND and UDP ASSOCIATE are refused by name, and so is an HTTP upgrade;
-//   - connections open at once have a cap and connections in all a budget, each refused by name;
+//   - connections open at once have a cap and connections in all a budget, each refused by name; the clients answered at
+//     once have a cap too, one past it closed unread, and a request's head a size, past which it is refused 431;
+//   - an upload that waits for 100 Continue is told to go on, and the upstream's interim replies are dropped, so the
+//     client gets the final reply (Node's server does both for Docker's proxy);
 //   - a log line holds the host, the port, the address and the class, never a path, a query, a header or a body;
 //   - with a host list, a host off it and any port but 80 and 443 are refused before any lookup, so a name off the list
 //     never leaves the machine; an IP literal is reached only inside a CIDR on the list, of its own family.
@@ -24,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -44,6 +48,9 @@ type Options struct {
 	// MaxTunnels bounds the connections open at once; MaxConnections the connections in all, for the proxy's life.
 	MaxTunnels     int
 	MaxConnections int
+	// MaxClients bounds the connections answered at once, a handler and its buffers each, tunnels and requests still
+	// being read alike; one past it is closed unread. Default twice MaxTunnels: every tunnel and as many first requests.
+	MaxClients int
 	// Log takes one line per decision.
 	Log func(string)
 	// Lookup resolves a name to every address it has. Default the system resolver.
@@ -66,6 +73,10 @@ const (
 	resolveFor = 10 * time.Second
 	proxyDial  = 10 * time.Second
 )
+
+// maxHead bounds the bytes read for a request's head (its line and headers), as net/http's MaxHeaderBytes and Node's
+// header limit bound Docker's proxy's.
+const maxHead = 64 << 10
 
 type refusal struct {
 	status int
@@ -107,6 +118,10 @@ func Serve(l net.Listener, options Options) error {
 	if p.Local == nil {
 		p.Local = interfaceAddresses
 	}
+	if p.MaxClients <= 0 {
+		p.MaxClients = 2 * p.MaxTunnels
+	}
+	clients := make(chan struct{}, p.MaxClients)
 	for {
 		conn, err := l.Accept()
 		if errors.Is(err, net.ErrClosed) {
@@ -116,7 +131,16 @@ func Serve(l net.Listener, options Options) error {
 			time.Sleep(acceptPause)
 			continue
 		}
-		go p.handle(conn)
+		select {
+		case clients <- struct{}{}:
+			go func() {
+				defer func() { <-clients }()
+				p.handle(conn)
+			}()
+		default:
+			p.logLine("client", "-", 0, "-", "client cap")
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -137,17 +161,20 @@ func interfaceAddresses() []netip.Addr {
 
 func (p *proxy) handle(conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(greetFor))
-	reader := bufio.NewReader(conn)
+	// A request's head is read through head, whose budget is lifted once the head is in (a SOCKS greeting has its own).
+	head := &io.LimitedReader{R: conn, N: maxHead}
+	reader := bufio.NewReader(head)
 	first, err := reader.Peek(1)
 	if err != nil {
 		_ = conn.Close()
 		return
 	}
 	if first[0] == 5 {
+		head.N = math.MaxInt64
 		p.socks(conn, reader)
 		return
 	}
-	p.http(conn, reader)
+	p.http(conn, reader, head)
 }
 
 // offList is the refusal of a target off the list, or nil: checked before any lookup.
@@ -320,12 +347,17 @@ func dropHop(header http.Header) {
 
 var connectTarget = regexp.MustCompile(`^(?:\[([0-9A-Fa-f:.%a-zA-Z]+)\]|([^:\[\]/@\s]+)):(\d{1,5})$`)
 
-func (p *proxy) http(conn net.Conn, reader *bufio.Reader) {
+func (p *proxy) http(conn net.Conn, reader *bufio.Reader, head *io.LimitedReader) {
 	req, err := http.ReadRequest(reader)
+	if err != nil && head.N <= 0 {
+		refuseHTTP(conn, &refusal{status: 431, reason: "header too large", socks: 1})
+		return
+	}
 	if err != nil {
 		refuseHTTP(conn, &refusal{status: 400, reason: "not a request", socks: 1})
 		return
 	}
+	head.N = math.MaxInt64
 	_ = conn.SetReadDeadline(time.Time{})
 	if req.Method == http.MethodConnect {
 		found := connectTarget.FindStringSubmatch(req.RequestURI)
@@ -379,18 +411,33 @@ func (p *proxy) http(conn net.Conn, reader *bufio.Reader) {
 	}
 	defer upstream.Close()
 	defer conn.Close()
+	// An upload that waits for 100 Continue is told to go on here: the proxy carries its body on its own.
+	waits := req.ProtoAtLeast(1, 1) && strings.EqualFold(req.Header.Get("Expect"), "100-continue")
+	if waits {
+		if _, err := io.WriteString(conn, "HTTP/1.1 100 Continue\r\n\r\n"); err != nil {
+			return
+		}
+	}
 	// The request goes over the connection dialled to the checked address, in origin form, its Host the URI's host.
 	out := req.Clone(context.Background())
 	out.RequestURI = ""
 	out.Host = req.URL.Host
 	dropHop(out.Header)
+	if waits {
+		out.Header.Del("Expect")
+	}
 	out.Header.Set("Connection", "close")
 	out.Close = true
 	if err := out.Write(upstream); err != nil {
 		refuseHTTP(conn, &refusal{status: 502, reason: "upstream failed", socks: 1})
 		return
 	}
-	answer, err := http.ReadResponse(bufio.NewReader(upstream), out)
+	// The upstream's interim replies (100 Continue, 103 Early Hints) are dropped: the client gets the final one.
+	replies := bufio.NewReader(upstream)
+	answer, err := http.ReadResponse(replies, out)
+	for err == nil && answer.StatusCode >= 100 && answer.StatusCode < 200 && answer.StatusCode != http.StatusSwitchingProtocols {
+		answer, err = http.ReadResponse(replies, out)
+	}
 	if err != nil {
 		refuseHTTP(conn, &refusal{status: 502, reason: "upstream failed", socks: 1})
 		return

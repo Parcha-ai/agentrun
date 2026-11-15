@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,17 @@ func newHarness(t *testing.T, allow *Allow, names map[string][]string) *harness 
 					}
 					body := "path " + req.URL.Path + " host " + req.Host
 					_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\ncontent-length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body)
+					return
+				}
+				if strings.HasPrefix(line, "POST ") {
+					// An upload is answered with an interim 100 Continue first, then the final reply naming what came.
+					req, err := http.ReadRequest(bufio.NewReader(io.MultiReader(strings.NewReader(line), reader)))
+					if err != nil {
+						return
+					}
+					posted, _ := io.ReadAll(req.Body)
+					body := "posted " + string(posted) + " expect " + req.Header.Get("Expect")
+					_, _ = io.WriteString(conn, "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\ncontent-length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body)
 					return
 				}
 				_, _ = io.WriteString(conn, "echo "+line)
@@ -332,6 +344,104 @@ func TestTheTunnelCapRefusesOnePastItByName(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the slot did not come back: %q", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// An upload that waits for 100 Continue is told to go on, its body reaches the upstream without the Expect, and the
+// client gets the upstream's final reply past its interim 100.
+func TestOpenCarriesAnUploadThatWaitsFor100ContinueToItsFinalReply(t *testing.T) {
+	h := newHarness(t, nil, map[string][]string{"example.com": {"93.184.215.14"}})
+	conn, err := net.DialTimeout("tcp", h.address, wait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(wait))
+	_, _ = io.WriteString(conn, "POST http://example.com/upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n")
+	reader := bufio.NewReader(conn)
+	post := &http.Request{Method: http.MethodPost}
+	interim, err := http.ReadResponse(reader, post)
+	if err != nil || interim.StatusCode != 100 {
+		t.Fatalf("before the body: %v %v; want 100 Continue", interim, err)
+	}
+	_, _ = io.WriteString(conn, "hello")
+	answer, err := http.ReadResponse(reader, post)
+	if err != nil {
+		t.Fatalf("after the body: %v", err)
+	}
+	body, _ := io.ReadAll(answer.Body)
+	if answer.StatusCode != 200 || string(body) != "posted hello expect " {
+		t.Fatalf("the upload's reply: %d %q; want 200 and the body without an Expect", answer.StatusCode, body)
+	}
+}
+
+// A request's head past maxHead is refused 431 by name, with no lookup.
+func TestARequestHeadPastItsSizeIsRefusedByName(t *testing.T) {
+	h := newHarness(t, nil, map[string][]string{"example.com": {"93.184.215.14"}})
+	conn, err := net.DialTimeout("tcp", h.address, wait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(wait))
+	// Exactly maxHead bytes of a head that never ends: the proxy reads them all, so its close is a clean one.
+	start := "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nX-Big: "
+	go func() { _, _ = io.WriteString(conn, start+strings.Repeat("a", maxHead-len(start))) }()
+	answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("a head past its size: %v; want a 431", err)
+	}
+	if answer.StatusCode != 431 || answer.Header.Get("x-egress-refused") != "header too large" {
+		t.Fatalf("a head past its size: %d refused %q; want 431 header too large", answer.StatusCode, answer.Header.Get("x-egress-refused"))
+	}
+	if got := h.lookups(); len(got) != 0 {
+		t.Fatalf("looked up %q; want no lookup", got)
+	}
+}
+
+// The clients answered at once have a cap (twice the tunnel cap): one past it is closed unread and logged by name, and
+// a slot comes back when a client goes.
+func TestTheClientCapClosesOnePastItAndGivesItsSlotBack(t *testing.T) {
+	h := newHarness(t, nil, map[string][]string{"example.com": {"93.184.215.14"}})
+	dial := func() net.Conn {
+		conn, err := net.DialTimeout("tcp", h.address, wait)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		_ = conn.SetDeadline(time.Now().Add(wait))
+		return conn
+	}
+	// Eight clients that send nothing hold every slot, each in its first request.
+	var idle []net.Conn
+	for range 8 {
+		idle = append(idle, dial())
+	}
+	past := dial()
+	_ = past.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := past.Read(make([]byte, 1)); n != 0 || err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("a client past the cap: read %d, %v; want it closed at once", n, err)
+	}
+	h.mu.Lock()
+	logged := strings.Join(h.logged, "\n")
+	h.mu.Unlock()
+	if !strings.Contains(logged, "class=client cap") {
+		t.Fatalf("the log: %q; want a client cap line", logged)
+	}
+	_ = idle[0].Close()
+	deadline := time.Now().Add(wait)
+	for {
+		conn := dial()
+		_, _ = io.WriteString(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+		answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+		if err == nil && answer.StatusCode == 200 {
+			break
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatalf("the slot did not come back: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
