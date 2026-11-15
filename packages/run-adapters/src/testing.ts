@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
 /** The model proxy's own parts, for tests of a provider policy and of the proxy: the host API (./host) keeps only what a
  *  harness runs. */
-export { inputTokensMaxOf, matchRoute, parseStrict, reportedCostOf } from "./host/proxy.js";
+export { inputTokensMaxOf, matchRoute, parseStrict, reportedCostOf, streamErrorOf, usageCostOf } from "./host/proxy.js";
 
 /** A session store in memory: what one run's store holds, across the processes a test plays. Each `open` of a key
  *  counts one more holder at once, and a writer appends only while its count is the newest. `scope`: the run's identity

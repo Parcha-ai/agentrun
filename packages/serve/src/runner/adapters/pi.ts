@@ -86,7 +86,7 @@ export interface PiAdapterOptions {
    *  Messages or OpenAI's Responses) at `origin`, its credential, sent as `auth` says (Messages' default x-api-key;
    *  Responses' is always a bearer token). `api` is the one source of the session's wire: its policy, pi-ai's client and
    *  its port all read it. */
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void>; readonly usageCost?: boolean };
   /** The model pi asks for. */
   readonly model: string;
   /** The catalog's entry for the model: whether it reasons, its window and its output ceiling, as pi-ai's model of it. */
@@ -194,6 +194,8 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(redact ? { redact } : {}),
+    // An answer that states its cost (OpenRouter's) is booked at it, the price's figure beside it (model-route.ts).
+    ...(route.provider.usageCost ? { usageCost: true } : {}),
   }, randomBytes(32).toString("base64url"));
 }
 
@@ -523,8 +525,8 @@ export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS 
  *  Each one's end goes to the host (`ended`: PiSessionIO.nestedEnded), which keeps it on the run's record. */
 function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>, ended?: PiSessionIO["nestedEnded"]): NestedCalls {
   return {
-    async call(name, args, key) {
-      const result = await api.executeTool(name, args as JsonObject, context, { key });
+    async call(name, args, key, signal) {
+      const result = await api.executeTool(name, args as JsonObject, signal ? withAbortSignal(signal, context) : context, { key });
       const callId = `${api.callId}/${key}`;
       const codes = result.diagnostics.map((one) => one.code);
       const refused = (result.details as { [CALL_REFUSED]?: unknown } | undefined)?.[CALL_REFUSED] === true || codes.includes("blocked") || codes.includes("tool_unavailable");
@@ -550,7 +552,12 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
         fresh: touched.has(callId),
       };
     },
-    memo: (key, value) => api.memo(`nested:${key}`, value, context),
+    // A value given as a function is called only while the task holds none for `key`, so a rerun never calls it again.
+    async memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T> {
+      if (typeof value !== "function") return api.memo(`nested:${key}`, value, context) as Promise<T>;
+      const held = await api.memo(`nested:${key}`, context);
+      return (held !== undefined ? held : await api.memo(`nested:${key}`, await value(), context)) as T;
+    },
   };
 }
 

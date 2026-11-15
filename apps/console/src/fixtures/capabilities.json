@@ -265,7 +265,8 @@
       "timeline_page_rows": 500,
       "idempotency_ttl_s": 86400,
       "input_wait_s": null,
-      "max_cost_usd": null
+      "max_cost_usd": null,
+      "free_model_requests": 60
     },
     "places": {
       "modes": [

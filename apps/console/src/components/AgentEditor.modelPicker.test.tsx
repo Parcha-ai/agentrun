@@ -104,6 +104,27 @@ describe("AgentEditor, the Model picker", () => {
     expect((await optionsOf(picker(host, "Model")!)).map((o) => o.value)).toEqual(["", NEMO, FREE, CUSTOM]);
   });
 
+  it("the cap's note says the server's limit on requests for a free model, picked or the default; not for a plan's model or a paid one", async () => {
+    const FREE = "openrouter/inclusionai/ling-3.2-flash:free";
+    const withFree: EditorCaps = { ...caps, freeRequests: 60, harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5", FREE, "chatgpt/gpt-6.1-sol"], free_models: [{ id: FREE, context_window: 1_048_576 }] }, { id: "codex", available: true, default_model: "chatgpt/gpt-6.1-sol", models: ["chatgpt/gpt-6.1-sol"] }, { id: "opencode", available: true, default_model: FREE, models: [FREE], free_models: [{ id: FREE, context_window: 1_048_576 }] }] };
+    const noteOn = async (agent: Agent) => {
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      await act(async () => { root!.render(createElement(AgentEditor, { agent, caps: withFree, step: "settings", onSave: async () => null })); });
+      const said = host.querySelector('[data-note="free-requests"]')?.textContent ?? null;
+      act(() => root!.unmount());
+      root = undefined;
+      host.remove();
+      return said;
+    };
+    expect(await noteOn(agentOn("pi", FREE))).toBe("free model: up to 60 requests");
+    expect(await noteOn(agentOn("opencode"))).toBe("free model: up to 60 requests");
+    expect(await noteOn(agentOn("codex"))).toBeNull();
+    expect(await noteOn(agentOn("pi", "chatgpt/gpt-6.1-sol"))).toBeNull();
+    expect(await noteOn(agentOn("pi"))).toBeNull();
+    expect(await noteOn(agentOn("pi", "anthropic/claude-opus-5-5"))).toBeNull();
+  });
+
   it("a harness with no free model shows no Free only switch", async () => {
     const page = await open(agentOn("pi"));
     expect(page.host.querySelector('button[role="switch"][aria-label="Free models only"]')).toBeNull();

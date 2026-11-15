@@ -17,11 +17,11 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
-import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NestedCalls, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
-import { CAP_WRAPUP, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
+import { CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 
@@ -73,7 +73,6 @@ import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../por
  *  wrap-ups). None: nothing is. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions"> & { beside?(): Promise<number | null> };
 import { bookedIn } from "../paid-calls.js";
-import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { CODEMODE, defersCatalog, isCatalogWire, TOOLS_CALL, TOOLS_SEARCH } from "@parcha/agentrun-kernel";
@@ -83,7 +82,7 @@ import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, WRAP_UP_TEXT, wrappingUp } from "../wrap-up.js";
-import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
+import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
@@ -103,15 +102,22 @@ export type RaiseCheck =
   | { retry: true; resumed: boolean; raised?: undefined; refused?: undefined }
   | { refused: string; raised?: undefined; retry?: undefined };
 
-/** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
-export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
+/** The gate's answer for a call: run it, ask a person (`ask` with fields its card shows before the call's input: a
+ *  learned workflow's MCP actions), or refuse it (with the words the model reads, or generic ones). */
+export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string } | { readonly ask: Readonly<Record<string, unknown>> };
+
+/** An asked call's card: the gate's own fields (`shown`) first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES)
+ *  still names them whatever the input's size, then the call's input, which the model wrote, without any field of
+ *  theirs; a learned_workflow call's card fields (LEARNED_CARD_FIELDS) are only ever the gate's. */
+function cardOf<A extends Record<string, unknown> | undefined>(tool: string, shown: Readonly<Record<string, unknown>> | undefined, args: A): A | Record<string, unknown> {
+  if (!shown && tool !== LEARNED_WORKFLOW_TOOL) return args;
+  return { ...shown, ...Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !(shown && Object.hasOwn(shown, key)) && !(tool === LEARNED_WORKFLOW_TOOL && LEARNED_CARD_FIELDS.has(key)))) };
+}
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
  *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
  *  call run again after an earlier attempt that may have been sent, so a refusal's words never say nothing was sent. */
 export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean }) => GateAnswer | Promise<GateAnswer>) & {
   readonly askedAs?: (tool: string) => string;
-  /** What an asked call's card shows beside its input (a learned workflow's MCP calls it would make), if anything. */
-  readonly askedFor?: (tool: string, args: unknown) => Promise<Record<string, unknown> | undefined>;
   /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
    *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
   readonly permission?: (tool: string) => Promise<"allow" | "ask" | "deny">;
@@ -197,6 +203,11 @@ export interface AdapterRunSpec {
    *  (workspace/computer-hold.ts): the loop commits the hold's changes to the run's journal, which the server reads
    *  (computer-routes.ts), and applies the person's take-over and hand-back rows to it (runner/computer-journal.ts). */
   readonly computer?: LoopComputer;
+  /** What the model is told once its claim gave it a computer in place of an earlier claim's (computer-deps.ts
+   *  computerReplacedNote): placed in this pass's first main-model request that can carry a note, as the cap's wrap-up
+   *  is (ModelPort.note), so it reaches every harness mid-turn, and written as the server's row (COMPUTER_NOTE) once that
+   *  request is admitted with it. Absent: the computer is the run's first, or the same one. */
+  readonly computerNote?: string;
   /** The run's computer held for its owner (a run started with `hold: true`, computer-held.ts): the agent's first input
    *  waits for the owner's start, and the run's end waits for the owner's release (runner/held-run.ts). */
   readonly held?: HeldSpec;
@@ -997,13 +1008,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
    *  fresh (a parked token may have expired meanwhile). */
   let mcp: ClaimMcp | undefined;
-  /** The calls of this run a person approved (an ask answered allow, on this claim or read from the journal on a resume),
-   *  each with the arguments its approval card showed (its journaled ask's): an approval covers what that card named. */
-  const approvedCalls = new Map<string, Readonly<Record<string, unknown>>>();
-  /** Each answered call's ask as journaled (the card the person saw), set by answerOf as it reads or writes the answer. */
-  const askedArgs = new Map<string, unknown>();
-  /** An MCP tool of the run as the claim's pass wrapped it, by its catalog name (set once its tools are wrapped). */
-  let mcpHosted: HostCalls["mcp"] = () => undefined;
+  /** The calls of this run a person was asked about (their ask in the journal, on this claim or read on a resume), set as
+   *  the ask is read: one of them the gate lets through was let through by a person's answer. */
+  const askedCalls = new Set<string>();
   let mcpStale = false;
 
   /** Marks the raise's follow-up the server's (MESSAGE_ORIGIN, timeline/origin.ts) before it is sent: its own commit, the
@@ -1794,6 +1801,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return reserveOf(requestFigures(asked));
         };
         let bookingNow: ModelBooking | undefined;
+        // The replaced computer's note (spec.computerNote): `words` until a request carrying it is admitted, `offered`
+        // while one has taken it. It goes before the wrap-up: one note per request, so the wrap-up waits a request.
+        const computerNote: { words?: string; offered?: number } = spec.computerNote !== undefined ? { words: spec.computerNote } : {};
+        const takeNote = (model: string, asked?: NoteRequest): string | undefined => {
+          if (computerNote.words === undefined || reflecting) return wrapUpNote(model, asked);
+          // One request at a time carries it, as the wrap-up (below); WRAP_UP_OFFER_MS is the same backstop.
+          if (computerNote.offered !== undefined && Date.now() - computerNote.offered < WRAP_UP_OFFER_MS) return undefined;
+          if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
+          computerNote.offered = Date.now();
+          return computerNote.words;
+        };
         const wrapUpNote = (model: string, asked?: NoteRequest): string | undefined => {
           // The end-of-run turn comes after the run's answer: "finish now with your answer" is the job's note, never its.
           if (reflecting) return undefined;
@@ -1837,9 +1855,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           key: spec.session.key,
           label: spec.session.label,
           beforeRequest,
-          note: wrapUpNote,
+          note: takeNote,
           // A request that took it and left before its admission gives it back: the next request may take it at once.
           noteReturned: (note) => {
+            if (computerNote.words === note) computerNote.offered = undefined;
             if (capNote.offered?.words === note) capNote.offered = undefined;
           },
           onEvent: async (event) => {
@@ -1950,16 +1969,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               // By the name the gate before the intent asks it by: an MCP tool by its catalog name.
               const name = mcp?.catalogOf(tool.name) ?? tool.name;
               const asked = spec.gate.askedAs?.(name) ?? name;
-              const now = await spec.gate({ callId: toolContext.callId, tool: name as never, args: (args ?? {}) as Record<string, unknown> }, { replayed: true });
-              if (now === "deny") return { text: setToDenyText(asked, undefined, "server", "unknown"), isError: true };
-              if (typeof now === "object") return { text: now.deny, isError: true };
+              const given = await spec.gate({ callId: toolContext.callId, tool: name as never, args: (args ?? {}) as Record<string, unknown> }, { replayed: true });
+              if (given === "deny") return { text: setToDenyText(asked, undefined, "server", "unknown"), isError: true };
+              if (typeof given === "object" && "deny" in given) return { text: given.deny, isError: true };
+              // An ask with its card's own fields is an ask, its card as the gate shows it.
+              const shown = typeof given === "object" ? given.ask : undefined;
+              const now = shown ? "ask" : (given as "allow" | "ask");
               // Set to ask since (or asked, and answered before the crash): asked as any call is, as main's gate parked a
               // replayed call as a request of its own. Its answer stands; else the run parks on it, the call held unrun until
               // the claim lets it go; a deny says the earlier attempt may have taken effect. Asked and not answered yet, with
               // the setting at allow now: the setting answers the ask (allowedBySetting).
               const bySetting = now === "allow" && (await askStands(toolContext.callId));
               if (now === "ask" || bySetting) {
-                const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
+                const call = { callId: toolContext.callId, tool: name, args: cardOf(name, shown, (args ?? {}) as Record<string, unknown>) };
                 const price = mcp?.priceOf(name) ?? null;
                 const answer = bySetting ? await allowedBySetting(call, price, asked) : await answerOf(call, price, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
@@ -1978,14 +2000,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 flush: () => deps.flush(),
                 // Its paid requests booked under this call, on the run's one ledger (paid-calls.ts bookedIn, Ledger.paid); one
                 // refused for room pauses the run (Ledger.pause, the run's pause), as main's paidCall does.
-                // The calls it may make of the run's other tools (a learned workflow's MCP nodes: host-calls.ts), each as this
-                // loop wrapped it, and whether a person approved this call.
                 // The computer protocol calls it makes, kept beside it on the run's root (COMPUTER_CALLS) for its result
                 // row's computer_calls, before its result is written.
-                route: () => bookedIn({ call: toolContext.callId, paid, pause: ledger.pause }, () => withHostCalls({ mcp: mcpHosted, approved: approvedCalls.get(toolContext.callId) }, () => recordingCalls(
+                route: () => bookedIn({ call: toolContext.callId, paid, pause: ledger.pause }, () => recordingCalls(
                   () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }),
                   (calls, dropped) => keepCalls(toolContext.callId, calls, dropped),
-                ))),
+                )),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
@@ -2047,12 +2067,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ...(facts?.hostName ? { hostName: facts.hostName } : {}),
         });
         const tools: HostTool[] = [...own.map((one): HostTool => (offered && isCatalogWire(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
-        // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
-        mcpHosted = (catalog) => {
-          const wire = mcp?.tools.find((one) => mcp?.catalogOf(one.name) === catalog);
-          const host = wire && tools.find((one) => one.name === wire.name);
-          return host && ((args, ctx) => host.call(args, ctx));
-        };
         // The session's model port, counting what it admitted and has not booked yet (a stop's booking comes once the
         // session's proxy sees its upstream end, which can be after pi went idle).
         const port = booking.models;
@@ -2067,11 +2081,30 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               mcpStale = false;
               await mcp.fresh();
             }
-            // The wrap-up this request carries, taken off the offer now: its admission tells it; a refusal (the throw below)
-            // or a dropped note leaves it untold, to be offered to a later request.
-            const offer = (request as { noted?: boolean }).noted ? capNote.offered : undefined;
+            // The note this request carries: the replaced computer's when it took that one (only one is offered at a time,
+            // takeNote), else the wrap-up, taken off the offer now. Its admission tells it; a refusal (the throw below) or a
+            // dropped note leaves it untold, to be offered to a later request. The replaced computer's stays on offer until
+            // this admission ends, so no request that starts meanwhile carries it too.
+            const noted = (request as { noted?: boolean }).noted === true;
+            const computerTold = noted && computerNote.offered !== undefined ? computerNote.words : undefined;
+            const offer = noted && computerTold === undefined ? capNote.offered : undefined;
             if (offer) capNote.offered = undefined;
-            const ticket = await port.beforeRequest(request);
+            let ticket: Awaited<ReturnType<typeof port.beforeRequest>>;
+            try {
+              ticket = await port.beforeRequest(request);
+            } finally {
+              if (computerTold !== undefined) computerNote.offered = undefined;
+            }
+            // The replaced computer's note, told: once, its row the server's, made durable before the request leaves.
+            if (computerTold !== undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped) {
+              computerNote.words = undefined;
+              try {
+                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: COMPUTER_NOTE, data: { words: computerTold } as unknown as JsonValue }), context);
+                await deps.flush();
+              } catch (error) {
+                console.warn(`[runner] the replaced computer's note row was not written (the note went with the request): ${said(error)}`);
+              }
+            }
             unbooked += 1;
             // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
             if (ticket && (request as { side?: boolean }).side) notOwn.add(ticket.turn);
@@ -2176,7 +2209,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               if (answer !== "allow" && "deny" in answer) await record.refused(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), answer.deny);
               // A harness's own tool (Claude Code's WebSearch, which its provider runs) the gate held and a person now lets
               // run: the host runs nothing of this call, so the start it parked ends here; the harness's next call runs it.
-              else if (answer === "allow" && approvedCalls.has(call.callId) && !tools.some((one) => one.name === call.tool)) await record.end(call.callId, "done", OWN_TOOL_RELEASED);
+              else if (answer === "allow" && askedCalls.has(call.callId) && !tools.some((one) => one.name === call.tool)) await record.end(call.callId, "done", OWN_TOOL_RELEASED);
               return answer;
             }
           : nestedGate;
@@ -2404,9 +2437,36 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
          *  (its own entries are its record): its call goes on a record of its own for this step, the same entries. A claim
          *  that finds the entry or the call's end takes it as it is. Undefined: the run is its agent's (the tool is not the
          *  run's, or the gate denies it before anything is written); "park": the call waits for a person's approval. */
+        /** The session's tools as calls nested in the workflow served first (`outer`), with no harness to nest them: each
+         *  asked at the gate as its own tool under `<outer>/<key>` (a deny, its argument pins; an ask passes when the card
+         *  a person approved for `outer` named the tool, and any other is refused, since a workflow served first never parks
+         *  part way), then run as this loop wraps the tool (its record, its flush and booking, the stop's abort). The call
+         *  is never run again, so a value is its first run's as it is. */
+        const servedNested = (outer: string): NestedCalls => ({
+          async call(name, args, key, own) {
+            const tool = tools.find((one) => one.name === name);
+            if (!tool) return { text: `${name} is no tool of this run.`, isError: true, refused: true, fresh: true };
+            const callId = `${outer}/${key}`;
+            const catalog = mcp?.catalogOf(name) ?? name;
+            const asked = spec.gate?.askedAs?.(catalog) ?? catalog;
+            const given = (await spec.gate?.({ callId, tool: catalog as never, args })) ?? "allow";
+            if (given === "deny") return { text: setToDenyText(asked, undefined, "server", "no"), isError: true, refused: true, fresh: true };
+            if (typeof given === "object" && "deny" in given) return { text: given.deny, isError: true, refused: true, fresh: true };
+            if (given !== "allow" && !learnedApprovedTools(await approvedCardOver(callId, spec.gate?.askedAs?.(LEARNED_WORKFLOW_TOOL) ?? LEARNED_WORKFLOW_TOOL)).has(catalog)) {
+              return { text: `This ${asked} call needs a person's approval, which a learned workflow run first cannot wait for; it was not run.`, isError: true, refused: true, fresh: true };
+            }
+            const got = await tool.call(args, { callId, signal: own ? AbortSignal.any([stopAbort.signal, own]) : stopAbort.signal });
+            return { text: got.text, ...(got.isError ? { isError: true } : {}), ...(got.images?.length ? { images: got.images } : {}), ...(got.structured !== undefined ? { structured: got.structured } : {}), fresh: true };
+          },
+          memo: async (_key, value) => (typeof value === "function" ? value() : value),
+        });
         const serveFirst = async (first: WorkflowFirst): Promise<Served | "park" | undefined> => {
-          const learned = tools.find((tool) => tool.name === LEARNED_WORKFLOW_TOOL);
-          if (!learned) return undefined;
+          // The session's learned_workflow as this loop wraps a tool, but nesting nothing of the harness's: a call a crash
+          // cut is ended interrupted and handed back, never run again (its record's start is not marked `nests`).
+          const bare = spec.session.tools.find((tool) => tool.name === LEARNED_WORKFLOW_TOOL);
+          if (!bare || !tools.some((tool) => tool.name === LEARNED_WORKFLOW_TOOL)) return undefined;
+          const { nests: _nests, ...plain } = bare;
+          const learned = hosted(plain);
           const [on, theRoot, theGate] = [harness!, root!, gate!];
           const args = { name: first.name, input: first.input };
           const call = { callId: WORKFLOW_FIRST_CALL, tool: LEARNED_WORKFLOW_TOOL, args };
@@ -2432,7 +2492,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (!ended) {
             // A deny before anything is written leaves the run its agent's, as if the workflow were not there.
             const before = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args });
-            if (before === "deny" || typeof before === "object") return undefined;
+            if (before === "deny" || (typeof before === "object" && "deny" in before)) return undefined;
             if (spec.inputOrigin) await rec.input(spec.input, spec.inputOrigin);
             else await rec.person(spec.input);
           }
@@ -2450,7 +2510,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             } else {
               // A CLI's record takes the call's start and end inside the wrapper; pi's step record here.
               if (!record) await rec.start(WORKFLOW_FIRST_CALL, LEARNED_WORKFLOW_TOOL, args, false);
-              const got = await learned.call(args, { callId: WORKFLOW_FIRST_CALL, signal: stopAbort.signal } as never);
+              const got = await learned.call(args, { callId: WORKFLOW_FIRST_CALL, signal: stopAbort.signal, nested: servedNested(WORKFLOW_FIRST_CALL) } as never);
               answer = { text: got.text, isError: got.isError === true };
               if (!record) await rec.end(WORKFLOW_FIRST_CALL, stopAbort.signal.aborted ? "interrupted" : answer.isError ? "failed" : "done", answer.text);
             }
@@ -2811,7 +2871,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (call.nested !== true && (await wrapUp())) return { deny: WRAP_UP_TEXT };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
-      const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
+      const given = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
+      // An ask with its card's own fields (a learned workflow's MCP actions set to ask, each with its arguments' shape).
+      const shown = typeof given === "object" && "ask" in given ? given.ask : undefined;
+      let decision = shown ? ("ask" as const) : (given as Exclude<GateAnswer, { readonly ask: unknown }>);
+      // A call nested in a learned_workflow call a person approved, of an MCP tool that call's card named: its ask is
+      // answered by that approval, as the card they saw named it (never one built again now). Any other asks for itself.
+      if (call.nested === true && decision === "ask" && learnedApprovedTools(await approvedCardOver(call.callId, spec.gate?.askedAs?.(LEARNED_WORKFLOW_TOOL) ?? LEARNED_WORKFLOW_TOOL)).has(tool)) decision = "allow";
       // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's own;
       // an MCP call by its catalog name (tool) either way, never pi's wire name, and so are its call and its price.
       const asked = spec.gate?.askedAs?.(tool) ?? tool;
@@ -2835,31 +2901,35 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (decision === "allow" && !bySetting && parkPending && call.nested !== true) return { park: true };
       if (decision === "allow" && !bySetting) return "allow";
       // The card shows the call's input, and beside it what the gate says the call would do that the person approves too
-      // (a learned workflow's MCP calls set to ask: askedFor).
-      const shown = await spec.gate?.askedFor?.(tool, call.args);
-      // Shown first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES) still names them whatever the input's size.
-      // The gate's own fields win over any of the same name in the call's input, which the model wrote.
-      const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
+      // (a learned workflow's MCP actions set to ask: the gate's `ask`).
+      const args = cardOf(tool, shown, call.args);
       // The call on the record before its ask (beforeAsk), with the input its model gave it.
       await beforeAsk?.(call);
       // Its price on the card: a catalog tool's (an MCP tool's, a monid endpoint's pinned price), else none.
       const price = mcp?.priceOf(tool) ?? null;
-      // Marked destructive when the tool is, or when any MCP tool the one allow lets run is (the gate's `mcp_calls`, a
-      // learned workflow's MCP calls set to ask): that allow takes the second confirm too.
-      const covered = Array.isArray(shown?.mcp_calls) ? shown.mcp_calls.filter((name): name is string => typeof name === "string") : [];
-      const destructive = [asked, ...covered].some((name) => mcp?.effectOf(name) === "destructive");
+      // Marked destructive when the tool is, or when any MCP tool the one allow lets run is (the card's `mcp_calls`, a
+      // learned workflow's MCP actions set to ask): that allow takes the second confirm too.
+      const destructive = [asked, ...learnedApprovedTools(shown)].some((name) => mcp?.effectOf(name) === "destructive");
       const answer = bySetting ? await allowedBySetting({ ...call, tool, args }, price, asked) : await answerOf({ ...call, tool, args }, price, asked, destructive);
       if (answer === "park") return { park: true };
-      // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as
-      // approved with it (host-calls.ts), as far as the card they approved named it: its ask as journaled, the card they
-      // saw, never one built again now.
-      if (answer.approved) {
-        const seen = askedArgs.get(call.callId);
-        approvedCalls.set(call.callId, seen && typeof seen === "object" && !Array.isArray(seen) ? (seen as Record<string, unknown>) : {});
-      }
       if (answer.approved) return "allow";
       return { deny: replayed ? refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown") : deniedText(asked, answer.note) };
     };
+  }
+
+  /** The card a person approved for the learned_workflow call that `callId` (`<outer>/<key>`, its key never holding a
+   *  "/") is nested in: the ask journaled under that call's own id, answered with an allow. Keyed to that one call, so a
+   *  card approved for any other call (an earlier call of the same workflow among them) never passes it. None when its
+   *  outer call was not asked as learned_workflow, or its ask was denied or not answered. */
+  async function approvedCardOver(callId: string, learnedAs: string): Promise<unknown> {
+    const at = callId.lastIndexOf("/");
+    if (at <= 0) return undefined;
+    const outer = callId.slice(0, at);
+    const conversation = await harness!.root(context);
+    const entries = await entriesOf(gate!.journal, conversation.id, context);
+    const ask = findData<AskData>(entries, KINDS.ask, (data) => data.callId === outer);
+    const answer = ask && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === outer);
+    return ask?.tool === learnedAs && answer?.approved === true ? ask.args : undefined;
   }
 
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
@@ -2869,8 +2939,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
-    // The card the person answers is the ask as first journaled: kept for the caller, which scopes an approval to it.
-    if (first) askedArgs.set(call.callId, first.args);
+    if (first) askedCalls.add(call.callId);
     const known = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === call.callId);
     if (known) return known;
     // The ask names the call as the person is asked about it (`asked`: its settings key), so every reader of the ask (the
@@ -2941,9 +3010,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const data: AnswerData = { callId: call.callId, approved: true, decision: "allow", answeredAt: isoNow(), by: "setting" };
     if (row) inbox.splice(inbox.indexOf(row), 1);
     if (!(await landEntry(conversation, KINDS.answer, data, { take: row ? [row.id] : [] }))) return "park";
-    // The call's ask, as journaled: kept for the caller, which scopes an approval to it.
-    const first = findData<AskData>(await entriesOf(gate!.journal, conversation.id, context), KINDS.ask, (ask) => ask.callId === call.callId);
-    if (first) askedArgs.set(call.callId, first.args);
+    // A call whose ask stands (askStands): a person was asked about it.
+    askedCalls.add(call.callId);
     return data;
   }
 

@@ -14,7 +14,7 @@ import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDetermin
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
-import { KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
 const PKG = join(FIXTURES, "evalpkg");
@@ -283,6 +283,36 @@ test("a tool_used grader naming a monid endpoint the package does not grant by n
   assert.match(said, /graders\/other\.md: monid:faux\/tweets is not a monid endpoint the package grants by name \(it grants monid:faux\/person\/enrich\)/);
   assert.match(said, /graders\/wild\.md: monid:apollo\/people\/match is not a monid endpoint the package grants by name .*monid:apollo\/\* grants .* by monid's listing when the agent is saved, which is not read here: grant monid:apollo\/people\/match by name/);
   assert.match(said, /graders\/star\.md: monid:apollo\/\* is not a monid endpoint the package grants by name/);
+});
+
+test("a monid: unavailable case's monid call answers as monid unreachable does, unsent and uncharged, and no run of it reaches monid", { timeout: 300_000 }, async (t) => {
+  withEnv(t, { MONID_API_KEY: FAUX_MONID_KEY });
+  const dir = await monidPackage(t, ["monid:faux/person/enrich"], { "enriched.md": "type: tool_used\ntool: monid:faux/person/enrich\ncount: 1" });
+  writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
+  const before = fauxMonidCalls.length;
+  const report = await evalTemplate({ dir, cases: ["monid"], serve: { faux: FAUX, fauxMonid: FAUX_MONID } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  // monid-run.ts' own words for a call whose price can't be read because monid can't be reached (monid.ts failure).
+  const words = "monid:faux/person/enrich was not sent: monid's price for it could not be read before the call (monid could not be reached: fetch failed).";
+  assert.deepEqual(run.calls.map((call) => [call.tool, JSON.parse(call.result.split("\n")[0])]), [["monid:faux/person/enrich", { error: words }]], JSON.stringify(run.calls));
+  assert.equal(graderOf(run, "enriched.md").reason, "1 call of monid:faux/person/enrich; the grader expects exactly 1", "tool_used counts the call under its monid name");
+  // The save still reads monid's listing to pin the endpoint (free); the call itself sends nothing.
+  const sent = fauxMonidCalls.slice(before).map((call) => `${call.method} ${call.path}`);
+  assert.ok(!sent.some((line) => line === "POST /v1/run"), `no run reached monid: ${sent.join(", ")}`);
+});
+
+test("a monid: case checks: unavailable only, on a package that grants a monid endpoint, and only on the eval's own server", async (t) => {
+  const said = { "said.md": "type: regex\npattern: monid" };
+  const dir = await monidPackage(t, ["monid:faux/person/enrich"], said);
+  writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
+  assert.deepEqual(caseProblems(dir), [], "unavailable on a package that grants an endpoint reads");
+  await assert.rejects(evalTemplate({ dir, cases: ["monid"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/monid: monid fakes the package's monid endpoints on the eval's own server alone: run it without --server/.test(e.message));
+  writeFileSync(join(dir, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: down\n");
+  assert.match(caseProblems(dir).join("\n"), /evals\/monid\/case\.yaml: monid is unavailable \(not "down"\)/);
+  const bare = await monidPackage(t, ["web_search"], said);
+  writeFileSync(join(bare, "evals", "monid", "case.yaml"), "parameters:\n  team: blue\nmonid: unavailable\n");
+  assert.match(caseProblems(bare).join("\n"), /evals\/monid\/case\.yaml: monid fakes the package's monid endpoints, and it grants none/);
 });
 
 test("an llm grader sees each call's whole arguments, a web_fetch's URL with its query, and never a secret one carried", { timeout: 300_000 }, async (t) => {

@@ -12,9 +12,9 @@
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
-import type { BeforeRequest, HostTool, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
+import type { BeforeRequest, HostTool, NestedCalls, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import { decisionProvidersIn } from "../decisions.js";
 import type { Approvals } from "../approvals.js";
 import type { installForClaim, installSettled } from "../harness-install.js";
@@ -41,7 +41,7 @@ import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } fro
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
-import { learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
+import { type LearnedAction, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpCalls, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
@@ -71,10 +71,10 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, computerReadyWords, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { ScriptDecide } from "../workspace/computer-script.js";
-import type { RunComputerHold } from "./computer-journal.js";
+import { earlierUp, type RunComputerHold } from "./computer-journal.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -85,7 +85,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
-import { monidForClaim, withMonid } from "./monid-run.js";
+import { monidForClaim, type MonidFakes, withMonid } from "./monid-run.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -112,6 +112,8 @@ export interface ClaimComputer {
   readonly hold?: unknown;
   /** The run's desktop or phone and the person's hold on it: the spec's `computer` (AdapterRunSpec.computer). */
   readonly held?: RunComputerHold;
+  /** It replaced an earlier claim's computer (computer-for-claim.ts Replaced). */
+  readonly replaced?: { readonly folderKept: boolean };
   release(): Promise<void>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
@@ -201,12 +203,18 @@ export interface AdapterSpecDeps {
    *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
    *  maps onto it. Absent, or undefined for a run: the real clock. */
   readonly clockOf?: (agentId: string) => Date | undefined;
+  /** A template eval's monid fakes, by the agent a run is of (template-eval.ts, a case's `monid`): such a run's monid
+   *  endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). Only the eval's own runner, in
+   *  the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field maps onto it. */
+  readonly monidFakes?: MonidFakes;
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
  *  overhead its provider adds; the output ceiling is the route's when it carries one, else none. */
 export function capModelOf(route: ModelRoute): CapModel {
+  // A ChatGPT plan's route is billed to the plan: the one plan rule (planCapModel), a CLI's plan model's too.
+  if (route.provider.plan) return planCapModel(route.model, route.provider.api, route.outputCeiling ?? null);
   // A model serve has no price for carries placeholder zeros: the cap reads it as unknown (null), never as $0.
   const cost: RouteCost | undefined = route.unpriced ? undefined : route.cost;
   const price = cost
@@ -218,9 +226,8 @@ export function capModelOf(route: ModelRoute): CapModel {
         ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ inputTokensAbove: tier.inputTokensAbove, input: tier.input, output: tier.output, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite })) } : {}),
       }
     : null;
-  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead). A ChatGPT plan's route is
-  // billed to the plan: its requests cost the run no dollars (CapModel.plan), never an unknown price.
-  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.provider.plan ? { plan: true } : {}) };
+  // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
 /** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
@@ -284,9 +291,6 @@ export type RunPermissions = {
   readonly policy: (tool: string) => Permission;
   readonly denyFrom: (tool: string) => SettingFrom;
   readonly refresh: () => Promise<void>;
-  /** The gate's whole decision of one call with its arguments (RunGate.decide: its deny, its argument pins, its ask or a
-   *  refusal where no one can approve), as the run's own call of the tool gets it: a learned workflow's MCP node's. */
-  readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
 export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly script: ScriptDecide; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
@@ -308,40 +312,30 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
     current = await storeSettings(store);
     const decision = await gate.decide(call.tool, call.args, options);
-    // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings, decided for the whole call
-    // before any node runs, never mid-run: one set to deny refuses the call in the gate's words, nothing sent; one set to
-    // ask asks for the call, up front, on the run's one card (a running workflow can't park mid-call: it is never run
-    // again after a crash), and the person's allow lets that call's MCP nodes run, and only that call's.
-    // Checked whether the learned_workflow call is itself allowed or asked: a workflow that can't run is never put to a
-    // person.
+    // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings: one set to deny refuses the
+    // whole call in the gate's words before any node runs, nothing sent; the actions set to ask are put to a person on the
+    // call's one card, up front, each with its arguments' shape (learnedAskShown), and the person's allow passes the
+    // calls nested in this one of the tools that card named (adapter-loop.ts preIntentGate), and no other. Each MCP call
+    // is still asked at the gate as itself as it runs (its pins, a deny set since). Checked whether the learned_workflow
+    // call is itself allowed or asked: a workflow that can't run is never put to a person.
     if ((call.tool as string) !== LEARNED_WORKFLOW_TOOL || typeof decision === "object") return decision;
-    const tools = await mcpOf(call.args);
+    const actions = await mcpOf(call.args);
     const refused = (why: string) => ({ deny: `The learned workflow ${String((call.args as { name?: unknown }).name)} was not run: ${why}` });
-    const denied = tools.find((tool) => gate.policy(tool) === "deny");
-    if (denied) return refused(deniedText(denied, undefined, gate.denyFrom(denied)));
-    const asks = tools.filter((tool) => gate.policy(tool) === "ask");
+    const denied = actions.find(({ tool }) => gate.policy(tool) === "deny");
+    if (denied) return refused(deniedText(denied.tool, undefined, gate.denyFrom(denied.tool)));
+    const asks = actions.filter(({ tool }) => gate.policy(tool) === "ask");
     // An ask no one can answer (the server's accounts off) is refused at once in the gate's words, never parked.
-    if (asks.length && !approvers) return refused(noApproverText(asks[0]!, "no"));
-    // A card that could not name every MCP tool the person would approve (past its preview's bound) is never shown: the
-    // call is refused, so no allow covers a tool its approver did not see.
-    if (asks.length && !learnedAskFits(asks)) return refused(`its approval card can't name all ${asks.length} MCP tools it would call that are set to ask: set some of them to allow or deny for this agent.`);
-    return asks.length ? "ask" : decision;
+    if (asks.length && !approvers) return refused(noApproverText(asks[0]!.tool, "no"));
+    return asks.length ? { ask: learnedAskShown(asks) } : decision;
   };
-  /** The MCP tools the learned workflow a learned_workflow call names can call; none for another call or workflow. */
-  const mcpOf = async (args: unknown): Promise<string[]> => {
+  /** The MCP actions the learned workflow a learned_workflow call names can call; none for another call or workflow. */
+  const mcpOf = async (args: unknown): Promise<LearnedAction[]> => {
     const flow = learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
-    return flow ? learnedMcpTools(flow.workflow) : [];
+    return flow ? learnedMcpCalls(flow.workflow) : [];
   };
   // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
   // unchanged. The permissions are the learned workflow's (main's toolGate.policy and denyFrom), over the same settings.
-  const permissions: RunPermissions = { policy: (tool) => gate.policy(tool), denyFrom: (tool) => gate.denyFrom(tool), refresh: async () => { current = await storeSettings(store); }, decide: (tool, args) => gate.decide(tool, args) };
-  // What a learned_workflow call's card shows beside its own input: every MCP tool set to ask that the workflow can call,
-  // and that their arguments are decided while it runs, so the person sees what they approve.
-  const askedFor = async (tool: string, args: unknown): Promise<Record<string, unknown> | undefined> => {
-    if (tool !== LEARNED_WORKFLOW_TOOL) return undefined;
-    const asks = (await mcpOf(args)).filter((one) => gate.policy(one) === "ask");
-    return asks.length ? learnedAskShown(asks) : undefined;
-  };
+  const permissions: RunPermissions = { policy: (tool) => gate.policy(tool), denyFrom: (tool) => gate.denyFrom(tool), refresh: async () => { current = await storeSettings(store); } };
   // A tool's setting now, read from the store as each call's is (SessionIO.permission: Codex's live search, which runs
   // inside a model request, is offered only while it says allow). A read that fails is a deny, never the last good read's
   // allow: a deny saved since may be in what did not read, and no call reaches the gate to say otherwise.
@@ -354,7 +348,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return onComputer.decide(tool, args);
   };
-  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, permission, script, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), permissions, permission, script, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -449,7 +443,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
     // became of the agent's own computer (a persistent setting) is said on the run's timeline.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp), asked only of a claim
+    // that took the run over while it was running (a server's stop): a parked run's resume is no lost runner.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(claim.from === "running" ? { earlierUp: () => earlierUp(deps.journal(claim), context) } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -462,8 +458,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv).
   const bashPolicy = bashPolicyOf(body.toolSettings);
   // The computer's tools are the run's own host tools, as on every harness: the host's codemode (meta-tools.ts) calls them
-  // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is.
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
+  // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is. A computer that replaced an
+  // earlier claim's holds its acts to what it showed.
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   holds.hold({ tools });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
@@ -568,6 +565,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     },
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
+    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
+    freeRequests: freeModelRequestsOf(deps.env),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
   // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).
@@ -676,7 +675,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   gate.learn(workflows);
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the run's one redactor as the other non-hand tools'.
-  const monid = monidForClaim(revisionRow.monidPin ?? undefined, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined);
+  const monid = monidForClaim(revisionRow.monidPin ?? undefined, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, deps.monidFakes?.(runRow.agentId));
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, cut)) });
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, catalog, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
@@ -786,6 +785,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
     // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
     ...(loopComputer ? { computer: loopComputer } : {}),
+    // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
+    ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     workRoot: root,
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
@@ -925,7 +926,12 @@ export async function learnedWorkflowHostTool(opts: {
   if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
   const tiers = opts.tiers ?? new Map<string, LearnedTier>();
-  const mcpTools = (opts.mcp?.tools ?? []).map((one) => opts.mcp!.catalogOf(one.name)).filter((name): name is string => typeof name === "string");
+  // Each MCP tool of the run by its catalog name, to the name the session's tools hold it by: what an MCP node calls,
+  // nested in the workflow's call.
+  const mcpTools = new Map((opts.mcp?.tools ?? []).flatMap((one) => {
+    const catalog = opts.mcp!.catalogOf(one.name);
+    return typeof catalog === "string" ? [[catalog, one.name] as const] : [];
+  }));
   const byProvider = new Map([[PORT_PROVIDER, await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL)]]);
   for (const [tier, model] of tiers) if ("model" in model) byProvider.set(tierProvider(tier), await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL, tier));
   const modelOf = (tier: string | undefined) => {
@@ -940,8 +946,25 @@ export async function learnedWorkflowHostTool(opts: {
   const providers = await decisionProvidersIn(opts.env);
   const decisions = providers ? { decisions: { providers, book: opts.run.ledger.decisions, pause: (refusal: Refusal) => opts.run.ledger.pause(refusal) } } : {};
   // A call node's native web_search goes through the session's port too, labelled web_search, as the run's own does.
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}), ...(opts.replay ? { replay: opts.replay } : {}) });
-  return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, mcpTools, nestedOf: (callId) => nestedBy.get(callId), ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}), ...(opts.replay ? { replay: opts.replay } : {}) });
+  const host = hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx);
+  if (!host) return undefined;
+  // The tool nests calls (HostTool.nests): its MCP nodes are the session's tools called nested in it, which the harness
+  // hands each call (`nested`), each asked at the gate and recorded as its own; it runs again whole after a park or a
+  // crash, each node answered as it was the first time.
+  const nestedBy = new Map<string, NestedCalls>();
+  return {
+    ...host,
+    nests: true,
+    async call(args, context) {
+      if (context.nested) nestedBy.set(context.callId, context.nested);
+      try {
+        return await host.call(args, context);
+      } finally {
+        nestedBy.delete(context.callId);
+      }
+    },
+  };
 }
 
 /** The run's non-hand tools as HostTool[], bound through the ToolHost seam and wrapped as the hands are (host-tools.ts
