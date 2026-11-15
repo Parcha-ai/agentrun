@@ -33,8 +33,6 @@ async function loopServer(t, faux) {
 test("a free model looping on a failing tool is refused its 61st request: the run fails as at its cap, in the limit's words; 60 requests finish", { timeout: 300_000 }, async (t) => {
   withEnv(t, {}, [ENV]);
   const { api, run } = await loopServer(t, FREE_LOOP);
-  assert.equal((await api("GET", "/capabilities")).body.limits.free_model_requests, 60, "the capabilities report the default");
-
   const stopped = await run("Loop 60");
   assert.equal(stopped.view.status, "failed", JSON.stringify(stopped.view));
   assert.deepEqual(stopped.view.error && { code: stopped.view.error.code, message: stopped.view.error.message }, { code: "spend_cap_reached", message: words(60) });
@@ -44,6 +42,7 @@ test("a free model looping on a failing tool is refused its 61st request: the ru
   const finished = await run("Loop 59");
   assert.equal(finished.view.status, "completed", JSON.stringify(finished.view.error));
   assert.equal(finished.requests.length, 60, "at its 60th request it still runs, and answers");
+  assert.equal((await api("GET", "/capabilities")).body.limits.free_model_requests, 60, "the capabilities report the default");
 });
 
 test("a paid model in the same loop is not stopped by the limit", { timeout: 300_000 }, async (t) => {
@@ -58,11 +57,11 @@ test("a paid model in the same loop is not stopped by the limit", { timeout: 300
 test(`${ENV} moves the limit, and the capabilities say it`, { timeout: 120_000 }, async (t) => {
   withEnv(t, { [ENV]: "3" });
   const { api, run } = await loopServer(t, FREE_LOOP);
-  assert.equal((await api("GET", "/capabilities")).body.limits.free_model_requests, 3);
   const stopped = await run("Loop 5");
   assert.equal(stopped.view.status, "failed", JSON.stringify(stopped.view));
   assert.deepEqual(stopped.view.error && { code: stopped.view.error.code, message: stopped.view.error.message }, { code: "spend_cap_reached", message: words(3) });
   assert.equal(stopped.requests.length, 3);
+  assert.equal((await api("GET", "/capabilities")).body.limits.free_model_requests, 3);
 });
 
 test(`${ENV} as no whole number above 0 refuses the server's start, naming it`, async (t) => {
