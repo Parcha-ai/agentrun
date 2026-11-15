@@ -380,6 +380,33 @@ test("a failed read of the instances leaves every trigger's state at Composio un
   assert.deepEqual(listed.body.triggers.map((x) => x.on_composio), ["unknown", "unknown"], JSON.stringify(listed.body.triggers));
 });
 
+test("deleting the saved server while its first trigger waits on its instance: no trigger outlives its server, and Composio keeps nothing orphaned", async (t) => {
+  const s = await setup(t);
+  const upsert = s.composio.hold("/upsert", "POST");
+  const create = s.api("POST", "/triggers", issueTrigger());
+  await upsert.reached;
+  const remove = s.api("DELETE", "/settings/mcp-servers/gh");
+  // Deleted before the create answers, or waits for it: either way, the create answers after.
+  await Promise.race([remove, new Promise((r) => setTimeout(r, 1500))]);
+  upsert.release();
+  const [made, removed] = await Promise.all([create, remove]);
+  const kept = (await s.api("GET", "/triggers")).body.triggers.filter((x) => x.source.kind === "composio");
+  const server = (await s.api("GET", "/settings/mcp-servers/gh")).status;
+  if (made.status === 201) {
+    // The create won: the delete is refused, naming it, and the server stays.
+    assert.equal(removed.status, 409, `the server's delete is refused while its trigger uses it: ${JSON.stringify(removed.body)}`);
+    assert.equal(removed.body.error.code, "composio_in_use");
+    assert.equal(server, 200, "the server is kept");
+    assert.deepEqual(kept.map((x) => x.id), [made.body.id]);
+  } else {
+    // The delete won: the create is refused and undone on Composio.
+    assert.equal(kept.length, 0, "no trigger names the deleted server");
+    assert.equal(s.composio.instances.size, 0, "no instance left on Composio");
+    assert.equal(s.composio.subscriptions.length, 0, "no subscription left on Composio");
+  }
+  for (const trigger of kept) assert.equal(server, 200, `${trigger.id} names a saved server`);
+});
+
 test("a trigger the server turns off itself (its agent archived, a failure streak) is off on Composio too, as a pause is", async (t) => {
   const s = await setup(t);
   await made(s.api, "other");
