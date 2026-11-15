@@ -64,7 +64,7 @@ import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
+import { bookedSpend, cliModelWorked, cliRunMetrics, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
@@ -697,25 +697,26 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // (metrics.ts cliRunMetrics). Its cost is its booking's too: the harness's own record carries no per-request cost or
     // usage, so its model requests are counted at what the run's model proxy booked them at (bookedSpend over every
     // session of its journal), as a pi run's are at its answers' costs and tokens.
+    // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf), as
+    // the pi spec's: its model requests and its decisions (a learned workflow's, LS-07) at what they were booked at, and
+    // its paid tool calls (a Parallel extract or search, a monid call), booked in their own session; unknown when any part
+    // is. A run whose model answered or called a tool with no request booked (its requests went past its model proxy)
+    // spent what no booking read: unknown, never the $0 an empty booking sums to. One cheap read, apart from the metrics.
+    endCost: async () => {
+      const all = (await journalEntries(deps.journal(claim), context)) as never;
+      return endCostOf(runCostOf(all, { unbooked: cliModelWorked((await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context)) as never) }));
+    },
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      // Its tokens and model requests, and its model requests' cost, from one read of its booking (cliRunMetrics). Its
-      // model requests and its decisions (a learned workflow's, LS-07) at what they were booked at (bookedSpend), and its
-      // paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own session,
-      // are the run's cost (runEndCost: unknown when any part is), as the pi spec's.
+      // Its tokens and model requests from one read of its booking (cliRunMetrics).
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const booked = bookedSpend(all, "model");
       // Its tools from its record read as pi's entries (piShaped: the CLI's calls and results are its own kinds, which no
       // count reads as they are), an MCP tool called by a hashed wire name under its catalog name, as its timeline reads.
       const metrics = cliRunMetrics(piShaped(entries as never), booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}`, catalog: await hashedMcpOf(deps.store, claim.runId) });
-      // A run whose model answered or called a tool with no request booked (its requests went past its model proxy) spent
-      // what no booking read: unknown, never the $0 an empty booking sums to.
-      const model = booked.requests === 0 && cliModelWorked(entries as never) ? null : booked.usd;
-      // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
-      // session, and its decisions (a learned workflow's decision nodes) are the run's cost too, as the pi spec's.
-      const total = runEndCost({ model, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
-      // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never) } };
+      // Its cost is endCost's, read apart (an unknown one written as null, never left out: a follow-up's end clears the
+      // cost an earlier end stored).
+      return { metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never) } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),

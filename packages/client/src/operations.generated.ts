@@ -460,6 +460,7 @@ export type Cost = {
   free?: true;
   so_far_usd?: number;
   unpriced?: number;
+  upper_bound?: true;
   plan?: {
     requests: number;
     tokens: number;
@@ -895,6 +896,7 @@ export type TimelineUsage = {
   free?: true;
   so_far_usd?: number;
   unpriced?: number;
+  upper_bound?: true;
   not_metered?: number;
 };
 

@@ -1426,11 +1426,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
-  /** What a learning batch's loop reads of a run, from its view. */
+  /** What a learning batch's loop reads of a run, from its view. Its `cost_usd` is the exact cost: a batch's figures say
+   *  no "at most", so a view cost marked `upper_bound` reads null there, as the run's stored cost does (RunRow.costUsd). */
   const batchRunView = async (runId: string): Promise<RunSnap | undefined> => {
     const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
     if (!v) return undefined;
-    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
+    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" && v.cost.upper_bound !== true ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
   };
   // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
   // state is the store's settings, so a batch still running when the server stopped takes up again as it starts. Its reads
