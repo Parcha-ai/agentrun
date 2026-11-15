@@ -526,6 +526,8 @@ export interface ProxyRequest {
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
+  /** Aborted when its client goes before it is admitted (ModelRequest.signal): a wait for room ends then. */
+  signal?: AbortSignal;
 }
 
 export interface ModelProxyHooks {
@@ -1281,8 +1283,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let ticket: unknown;
     // The note, if this request carries it, is its admission's from here: told once admitted, given back by a refusal.
     if (noted) taken.note = undefined;
+    // A client that goes while its request waits for room under the run's cap (runBooking) takes it out of the line: it
+    // is never admitted, nothing is held or booked for it.
+    const left = new AbortController();
+    const onLeft = () => left.abort(new Error("the client went while its request waited for room under the run's cap"));
+    res.once("close", onLeft);
+    if (res.destroyed) onLeft();
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
+        signal: left.signal,
         // A side call: on another model than the session's, or the host's own (it counts toward no typical request). One on
         // the session's model that is no answer of the turn (a title, a summary, a child's: `answering`, the policy's
         // answers) is `unanswered`: booked as any request, but no answer the host keeps its reserve back for.
@@ -1297,6 +1306,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req, capRefusal(error) ? SPEND_CAP_REACHED : undefined);
+    } finally {
+      res.off("close", onLeft);
     }
     /** An admitted request that is not sent after all: refused to its client, and released, booked at nothing, so the
      *  runner's count agrees. */
