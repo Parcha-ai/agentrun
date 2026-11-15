@@ -277,7 +277,9 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           if (!signal?.aborted) throw error;
           // A pause keeps the node's work for the process that resumes it; any other stop ends that work, and a
           // request submitted as the stop landed is withdrawn once it is known.
-          const end = async () => { if (opened) await (await scope.conversation(opened.conversationId, base))?.abort(base).catch(() => undefined); };
+          // Best effort throughout: a task whose invocation has ended (the server closing under the run) refuses the read, and
+          // pi aborts what was in flight in that task's conversations as it ends, so there is nothing left to withdraw.
+          const end = async () => { try { if (opened) await (await scope.conversation(opened.conversationId, base))?.abort(base); } catch { /* nothing reachable to withdraw */ } };
           if (runStopOf(signal.reason)?.stop !== "pause") { await end(); void attempt.then(end, end); }
           throw signal.reason ?? error;
         } finally {

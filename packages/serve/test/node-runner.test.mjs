@@ -192,6 +192,40 @@ test('a pause leaves the node\'s work for the attempt\'s next entry; any other s
   }
 });
 
+test('a stop that lands as the task ends (its invocation closed under the node) still ends the call with the stop\'s own reason, and withdraws nothing it cannot reach: no rejection is left unhandled', async () => {
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    let asked;
+    const reachedModel = new Promise((resolve) => { asked = resolve; });
+    const { harness, nodes } = await rig([async (_context, options) => {
+      asked();
+      await new Promise((resolve) => options?.signal?.addEventListener('abort', resolve, { once: true }));
+      return submit({ verdict: 'buy' });
+    }, say('never asked')]);
+    // The owner task's invocation has ended once the stop lands: its scope refuses every read, as pi's does ("Task N invocation has ended").
+    let ended = false;
+    const under = hostScope(harness);
+    const scope = { ...under, conversation: async (id, context) => { if (ended) throw new Error('Task 29 invocation has ended'); return under.conversation(id, context); } };
+    const { runNode } = nodes.on(scope, ctx);
+    const stop = new AbortController();
+    const reason = runStoppedError('cancel');
+    const running = runNode(verdict({ signal: stop.signal }));
+    await reachedModel;
+    ended = true;
+    stop.abort(reason);
+    await assert.rejects(running, (error) => error === reason);
+    // Let the withdrawal that follows the attempt's end run.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await harness.close(ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled.map(String), [], 'the withdrawal of an ended task\'s node rejects nothing');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('a stop that lands while the host is still answering for the node ends the call at once: no conversation, no request', async () => {
   for (const asked of ['agent', 'record']) {
     const unanswered = new Promise(() => {});
