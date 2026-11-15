@@ -404,7 +404,7 @@ Route: `POST /agents/{agent_id}/learning/evals`.
 
 ### `agentrun learning replay AGENT_ID NAME DIGEST REPLAY_ID`
 
-A replay of a learned workflow's revision: running, done or failed, its counts and its score.
+Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab).
 
 Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
 

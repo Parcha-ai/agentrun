@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Bone } from "@/components/Skeleton";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Slider } from "@/components/ui/slider";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { guardVerdict, StepGuards } from "@/components/StepGuards";
 import { Chip } from "@/components/ui/chip";
+import { ReplayRevision, replayable } from "@/components/ReplayRevision";
 import { recordOf, refitOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { Client } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
@@ -30,17 +31,17 @@ export const STEP_MS = 1800;
 
 /** The learned workflows in use (`workflows`: the tab's list), one replay at a time, the first by default. Nothing when
  *  none is active. `v2` is read when it shows, and again on Try again. */
-export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], loop = null, cost = null }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; loop?: LearningLoop | null; cost?: Pick<LearningCost, "workflows"> | null }) {
+export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], loop = null, cost = null, onReplayed }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; loop?: LearningLoop | null; cost?: Pick<LearningCost, "workflows"> | null; onReplayed?: () => void }) {
   const active = workflows.filter((w) => w.status === "active").map((w) => w.name);
   const [picked, setPicked] = useState<string | null>(null);
   const name = picked !== null && active.includes(picked) ? picked : (active[0] ?? null);
   if (name === null) return null;
-  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} loop={loop} stopped={stoppedOf(cost, name)} />;
+  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} loop={loop} stopped={stoppedOf(cost, name)} onReplayed={onReplayed} />;
 }
 
 const TITLE = "Learned workflow";
 
-function Replay({ v2, agentId, name, choices, onPick, promotions, serving, loop, stopped }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null; stopped: string | null }) {
+function Replay({ v2, agentId, name, choices, onPick, promotions, serving, loop, stopped, onReplayed }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null; stopped: string | null; onReplayed?: () => void }) {
   const [data, setData] = useState<WorkflowRevisions | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [asked, setAsked] = useState(0);
@@ -61,17 +62,28 @@ function Replay({ v2, agentId, name, choices, onPick, promotions, serving, loop,
     <section className="border" aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
   );
   if (!data) return <section className="border" aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
-  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} loop={loop} stopped={stopped} /></section>;
+  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} loop={loop} stopped={stopped} replay={{ v2, agentId, onStarted: onReplayed, onDecided: () => { setAsked((n) => n + 1); onReplayed?.(); } }} /></section>;
 }
 
 /** The replay of a read: the controls, the step's line and date, its graph. `stopped`: the digest the money rule stopped
  *  running first (stoppedOf), which says Stopped where it would say Serving. */
-export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null, loop = null, stopped = null }: { data: WorkflowRevisions; stepMs?: number; promotions?: readonly Promotion[]; serving?: string | null; loop?: LearningLoop | null; stopped?: string | null }) {
+export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null, loop = null, stopped = null, replay }: { data: WorkflowRevisions; stepMs?: number; promotions?: readonly Promotion[]; serving?: string | null; loop?: LearningLoop | null; stopped?: string | null; replay?: { v2: Client; agentId: string; onStarted?: () => void; onDecided?: () => void } }) {
   const { steps, unreadable } = useMemo(() => replaySteps(data.revisions), [data.revisions]);
   const [at, setAt] = useState(Math.max(0, steps.length - 1));
   const [playing, setPlaying] = useState(false);
-  // A new read lands on the newest revision, the workflow as it is now.
-  useEffect(() => { setAt(Math.max(0, steps.length - 1)); setPlaying(false); }, [steps]);
+  // A new read lands on the newest revision, the workflow as it is now; a card that was on an older revision stays on it
+  // (by digest), so the replay it just ran keeps its decision on screen.
+  const shownAt = useRef(at);
+  shownAt.current = at;
+  const last = useRef(steps);
+  useEffect(() => {
+    const before = last.current;
+    last.current = steps;
+    const was = before[shownAt.current]?.digest ?? null;
+    const same = before === steps || shownAt.current >= before.length - 1 || was === null ? -1 : steps.findIndex((s) => s.digest === was);
+    setAt(same >= 0 ? same : Math.max(0, steps.length - 1));
+    setPlaying(false);
+  }, [steps]);
   useEffect(() => {
     if (!playing) return;
     const timer = setInterval(() => setAt((n) => Math.min(n + 1, steps.length - 1)), stepMs);
@@ -119,6 +131,7 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
             {record?.reason}
           </p>
         )}
+        {replay && step.digest && <ReplayRevision key={step.digest} v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={!replacedBy && replayable(standing)} resume={record?.decided === "replaying" ? (record.replay_id ?? null) : null} onStarted={replay.onStarted} onDecided={replay.onDecided} />}
       </div>
       {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
       <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">
