@@ -1,0 +1,99 @@
+// An llm grader of a run that searched or fetched reads a link check beside its calls: each link the answer cites,
+// matched in code against every url the run's web calls answered, so a rubric's "every cited link appears in the run's
+// calls" never rests on the grader judging URL equality. A fragment, a trailing slash, the query's order and the case of
+// the scheme and host are ignored; the query's keys must be the same, and a value a timeline read elided ("…") matches
+// any value for its key. A cited link is shown as a call's is, its query values elided. A run with no web call is graded
+// on the prompt it always was.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { graderInput } from "../dist/template-eval.js";
+
+const grader = { file: "from-the-calls.md", type: "llm", rubric: "Pass only if every cited link appears in the run's calls." };
+const read = { tool: "read", name: "read", arguments: { path: "SKILL.md" }, status: "success", result: "the method" };
+const search = (...urls) => ({ tool: "web_search", name: "web_search", arguments: { query: "q" }, status: "success", result: `${JSON.stringify({ provider: "parallel", query: "q", results: urls.map((url, i) => ({ url, title: `Hit ${i + 1}`, snippet: "words" })) })}\nCite the URL of each result you rely on.` });
+const fetch = (asked, page) => ({ tool: "web_fetch", name: "web_fetch", arguments: { url: asked }, status: "success", result: JSON.stringify({ ok: true, url: asked, status: 200, title: "A page", text: "Page text.", links: [], ...page }) });
+const run = (answer, ...calls) => ({ answer, calls, mcpCalls: [], files: [] });
+
+/** The link check's lines (its intro aside), or undefined when the prompt has none. */
+function checked(prompt) {
+  const at = prompt.indexOf("<link-check untrusted>\n");
+  if (at < 0) return undefined;
+  return prompt.slice(at, prompt.indexOf("\n</link-check>", at)).split("\n").slice(2);
+}
+
+const G2 = "https://www.g2.com/products/posthog/reviews";
+
+test("a cited link with a query matches a call's url whose query values the timeline elided, with the same keys only", () => {
+  const prompt = graderInput(grader, "task", run(`Reviews: ${G2}?_l=en&order=most_recent and ${G2}?_l=en&sort=recent.`, read, search(`${G2}?_l=…&order=…`)));
+  assert.deepEqual(checked(prompt), [`${G2}?_l=…&order=… — matches call 2`, `${G2}?_l=…&sort=… — no matching call`]);
+  // The block sits next to the calls, after them.
+  assert.ok(prompt.indexOf("</tool-calls>") < prompt.indexOf("<link-check untrusted>"));
+});
+
+test("a fragment, a trailing slash, the query's order and the case of scheme and host never stop a match; a different path, host, key or value does", () => {
+  const answer = [
+    "https://vendor.example/a/b/?y=2&x=1#pricing",
+    "https://vendor.example/a/c?x=1&y=2",
+    "https://other.example/a/b?x=1&y=2",
+    "https://vendor.example/a/b?x=1&y=3",
+    "https://vendor.example/a/b?x=1",
+    "https://vendor.example/docs#install",
+  ].join("\n");
+  const lines = checked(graderInput(grader, "task", run(answer, search("https://vendor.example/a/b?x=1&y=2", "https://vendor.example/docs/"))));
+  assert.deepEqual(lines, [
+    "https://vendor.example/a/b/?y=…&x=… — matches call 1",
+    "https://vendor.example/a/c?x=…&y=… — no matching call",
+    "https://other.example/a/b?x=…&y=… — no matching call",
+    "https://vendor.example/a/b?x=…&y=… — no matching call",
+    "https://vendor.example/a/b?x=… — no matching call",
+    "https://vendor.example/docs — matches call 1",
+  ]);
+  // The same link twice, once in upper case: one line.
+  const cased = checked(graderInput(grader, "task", run("HTTPS://Vendor.Example/a/b?x=1&y=2 and https://vendor.example/a/b?y=2&x=1", search("https://vendor.example/a/b?x=1&y=2"))));
+  assert.deepEqual(cased, ["HTTPS://Vendor.Example/a/b?x=…&y=… — matches call 1"]);
+});
+
+test("a fetch's asked url, its final url and its page's links all match; a page whose links were cut is named on a link that matches nothing", () => {
+  const moved = fetch("http://vendor.example/old", { url: "https://vendor.example/new", links: ["https://vendor.example/blog/post-1"] });
+  const cut = fetch("https://news.example/", { links: ["https://news.example/a"], links_cut: 40 });
+  const answer = "Sources: http://vendor.example/old, https://vendor.example/new, https://vendor.example/blog/post-1, https://news.example/z, https://news.example/a";
+  assert.deepEqual(checked(graderInput(grader, "task", run(answer, read, moved, cut))), [
+    "http://vendor.example/old — matches call 2",
+    "https://vendor.example/new — matches call 2",
+    "https://vendor.example/blog/post-1 — matches call 2",
+    "https://news.example/z — no matching call (call 3's links were cut)",
+    "https://news.example/a — matches call 3",
+  ]);
+  const twice = checked(graderInput(grader, "task", run("https://elsewhere.example/x", cut, read, cut)));
+  assert.deepEqual(twice, ["https://elsewhere.example/x — no matching call (calls 1 and 3's links were cut)"]);
+});
+
+test("cited links come from the answer's text and every string of its JSON, each once, shown with no query value, fragment or userinfo", () => {
+  const key = ["not-a-secret", "cited", "0123456789"].join("-");
+  const json = JSON.stringify({ sources: [{ url: "https://vendor.example/report" }, { url: `https://api.example/data?token=${key}&q=x` }], note: "see https://vendor.example/report#p2" }).replaceAll("/", "\\/");
+  const answer = `Read [the report](https://vendor.example/report). Also https://me:${key}@vendor.example/private.\n\n\`\`\`json\n${json}\n\`\`\``;
+  const prompt = graderInput(grader, "task", run(answer, search("https://vendor.example/report")));
+  assert.deepEqual(checked(prompt), [
+    "https://vendor.example/report — matches call 1",
+    "https://vendor.example/private — no matching call",
+    "https://api.example/data?token=…&q=… — no matching call",
+  ]);
+  assert.equal(prompt.slice(prompt.indexOf("<link-check")).includes(key), false);
+  // An answer that cites nothing says so; a link with a closing bracket of its own keeps it.
+  assert.deepEqual(checked(graderInput(grader, "task", run("No sources found.", search("https://vendor.example/")))), ["(the answer cites no http(s) link)"]);
+  assert.deepEqual(checked(graderInput(grader, "task", run("(see https://en.example/wiki/Foo_(bar)).", search("https://en.example/wiki/Foo_(bar)")))), ["https://en.example/wiki/Foo_(bar) — matches call 1"]);
+});
+
+test("a run with no web_search or web_fetch call is graded on the prompt it always was, with no link check", () => {
+  const bash = { tool: "bash", name: "bash", arguments: { command: "ls" }, status: "success", result: "notes.md" };
+  const prompt = graderInput(grader, "task", run("See https://vendor.example/a", bash));
+  assert.equal(prompt, ["Grade this run against the rubric.", `<rubric>\n${grader.rubric}\n</rubric>`, "<task untrusted>\ntask\n</task>", "<answer untrusted>\nSee https://vendor.example/a\n</answer>", '<tool-calls untrusted>\n1. bash {"command":"ls"} -> success: notes.md\n</tool-calls>'].join("\n\n"));
+});
+
+test("the link check counts against the prompt's cap: the calls give way, the check stays whole", () => {
+  const long = search(...Array.from({ length: 30 }, (_, i) => `https://vendor.example/story-${i}?ref=${"r".repeat(200)}`));
+  const answer = `https://vendor.example/story-29?ref=${"r".repeat(200)}`;
+  const prompt = graderInput(grader, "task", run(answer, long, long), 6_000);
+  assert.ok(prompt.length <= 6_000, String(prompt.length));
+  assert.deepEqual(checked(prompt), ["https://vendor.example/story-29?ref=… — matches call 1"]);
+});
