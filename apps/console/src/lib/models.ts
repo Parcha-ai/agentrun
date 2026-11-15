@@ -3,10 +3,11 @@ import { isPlanModel, PLAN_PROVIDER } from "@/lib/chatgpt";
 /** A model id as a person reads it: without the gateway's routing prefix, the full id kept for a title. `routePrefix` is
  *  exactly the one the server names (`models.route_prefix`, null with no gateway), never one read off an id, so a gateway
  *  id with no routing prefix (`anthropic/claude-x`) keeps its provider. Any other id (a provider's own, `openai/gpt-5`)
- *  is shown whole. A ChatGPT plan's model (`chatgpt/<id>`) says its id and who pays: "gpt-6.1-sol · ChatGPT plan", so a
- *  plan model and the same model on a key never read alike. */
+ *  is shown whole. A ChatGPT plan's model (`chatgpt/<id>`) says its id and who pays: "gpt-6.1-sol · on your ChatGPT
+ *  plan", so a plan model and the same model on a key never read alike. The one wording for a plan model, in the Model
+ *  picker, on an agent's page and on what a run's node ran on. */
 export function modelLabel(id: string, routePrefix: string | null | undefined): { text: string; title?: string } {
-  if (isPlanModel(id)) return { text: `${id.slice(PLAN_PROVIDER.length + 1)} · ChatGPT plan`, title: id };
+  if (isPlanModel(id)) return { text: `${id.slice(PLAN_PROVIDER.length + 1)} · on your ChatGPT plan`, title: id };
   return routePrefix && id.startsWith(`${routePrefix}/`) && id.length > routePrefix.length + 1 ? { text: id.slice(routePrefix.length + 1), title: id } : { text: id };
 }
 

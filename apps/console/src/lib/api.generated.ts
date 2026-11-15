@@ -4042,7 +4042,10 @@ export interface operations {
   };
   signOutChatGPT: {
     body: never;
-    answer: never;
+    answer: {
+      revoked: boolean;
+      message?: string;
+    };
   };
   startChatGPTSignIn: {
     body: never;

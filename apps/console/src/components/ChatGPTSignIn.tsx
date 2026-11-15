@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
 import { harnessLabel } from "@/lib/agentForm";
-import { chatGPTView, EXPIRED, MANAGE_USAGE_URL, PASTE_STEP, PLAN_IS_YOURS, PLAN_RUNS, signedInAs, SIGNED_OUT } from "@/lib/chatgpt";
+import { chatGPTView, EXPIRED, MANAGE_USAGE_URL, NOT_REVOKED, PASTE_STEP, PLAN_IS_YOURS, PLAN_RUNS, signedInAs, SIGNED_OUT } from "@/lib/chatgpt";
 import { type Client, ClientError } from "@/lib/client";
 import { clock } from "@/lib/format";
 import { type HarnessInfo, modelLabel } from "@/lib/models";
@@ -17,8 +17,8 @@ const POLL_MS = 2_000;
 
 const words = (e: unknown): string => (e instanceof ClientError ? e.message : e instanceof Error ? e.message : String(e));
 
-/** "Manage usage", to ChatGPT's settings in a new tab. */
-export const ManageUsage = () => <a href={MANAGE_USAGE_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">Manage usage</a>;
+/** "Manage usage" (or `children`), to ChatGPT's settings in a new tab. */
+export const ManageUsage = ({ children = "Manage usage" }: { children?: ReactNode }) => <a href={MANAGE_USAGE_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">{children}</a>;
 
 /** OpenAI's disclosure, word for word, then ours: shown at the first sign-in and on the Settings row. */
 export function PlanDisclosure() {
@@ -160,7 +160,8 @@ const STATE: Record<ChatGPTView["state"], { tone: ChipTone; words: string }> = {
 export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void }) {
   const [view, setView] = useState<ChatGPTView | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
+  // `settings`: the note says to act in ChatGPT's settings, which it links beside its words.
+  const [note, setNote] = useState<{ words: string; settings?: boolean } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -170,10 +171,13 @@ export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; wri
   if (!view) return null;
   const signOut = async () => {
     setProblem(null);
-    try { await v2.signOutChatGPT(); } catch (e) { setProblem(words(e)); return; }
+    let out: Awaited<ReturnType<Client["signOutChatGPT"]>>;
+    try { out = await v2.signOutChatGPT(); } catch (e) { setProblem(words(e)); return; }
     setConfirming(false);
     setView({ state: "signed_out" });
-    setNote(SIGNED_OUT);
+    // Signed out here either way. OpenAI didn't confirm the revocation: the server's words, and ChatGPT's settings beside
+    // them, where AgentRun is removed by hand. A server whose sign-out has no answer (204) says nothing of it.
+    setNote(typeof out === "object" && out?.revoked === false ? { words: out.message || NOT_REVOKED, settings: true } : { words: SIGNED_OUT });
     onChange?.();
   };
   const moved = (next: ChatGPTView) => {
@@ -202,7 +206,7 @@ export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; wri
           </div>
         )}
         {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
-        {note && <p className="text-body" role="status">{note}</p>}
+        {note && <p className="text-body" role="status">{note.words}{note.settings && <> <ManageUsage>ChatGPT settings</ManageUsage></>}</p>}
       </div>
     </li>
   );

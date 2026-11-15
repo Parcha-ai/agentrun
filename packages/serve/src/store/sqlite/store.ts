@@ -1307,6 +1307,13 @@ class SqliteStore implements Store {
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ?", params: [name] }]);
       },
+      removeIf: async (name, was) => {
+        const [result] = await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ? AND sealed = ?", params: [name, was] }]);
+        return result!.changes === 1;
+      },
+      // The deadlines' clock (fence.ts storeNow): read from the database where the dialect names its clock (Postgres),
+      // else the store's own.
+      clock: async () => (d.nowSql ? Number((await db.get<{ now: string | number }>(`SELECT ${d.nowSql} AS now`))!.now) : now()),
       all: async () => (await db.all<SealedKeyRecord>("SELECT name, sealed, updated_at FROM sealed_keys ORDER BY name")).map(sealedKeyOf),
     };
 
