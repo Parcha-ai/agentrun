@@ -5,13 +5,14 @@
 // would replace, is refused before anything runs. The agent and its grader are played by faux-template-eval.mjs.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { evalTemplate, readCases, startFake } from "../dist/template-eval.js";
 import { asOwner, scratch, serve } from "./support.mjs";
 import { ADDRESS, mailbox, saved } from "./email-support.mjs";
 import { schedule } from "./trigger-support.mjs";
+import { LEARN, learner, made } from "./learn-support.mjs";
 
 const PKG = new URL("./fixtures/templates-eval/evalpkg", import.meta.url).pathname;
 const FAUX = new URL("./fixtures/faux-template-eval.mjs", import.meta.url).pathname;
@@ -83,6 +84,44 @@ test("on an owner's data folder the eval's runs are that folder's server's: what
   const kept = await again.api("GET", `/agents/${own}`);
   assert.equal(kept.status, 200, JSON.stringify(kept.body));
   assert.equal(kept.body.archived_at ?? null, null, "the owner's agent is not");
+});
+
+test("on an owner's data folder the eval keeps the folder's saved API token: the same .token after an eval, and after one refused once the server started", { timeout: 300_000 }, async (t) => {
+  const { data } = await ownersFolder(t);
+  const token = readFileSync(join(data, ".token"), "utf8");
+  const report = await evalTemplate({ dir: PKG, cases: ["all-pass"], data, serve: { faux: FAUX } });
+  assert.equal(report.cases[0].runs[0].status, "completed", JSON.stringify(report.cases[0], null, 1));
+  assert.ok(existsSync(join(data, ".token")), "the folder's .token is still there");
+  assert.equal(readFileSync(join(data, ".token"), "utf8"), token, "and holds the token it held");
+  // Refused after its server started: the folder keeps an email account, which an email case's fake would replace.
+  const faux = await mailbox(t);
+  const again = await serve(t, { data });
+  await saved(asOwner(again), faux);
+  await again.stop();
+  await assert.rejects(evalTemplate({ dir: await mailPackage(), data, serve: { faux: FAUX } }), /keeps an email account/);
+  assert.equal(existsSync(join(data, ".token")) ? readFileSync(join(data, ".token"), "utf8") : null, token, "a refused eval keeps it too");
+});
+
+test("a data folder with learning work waiting (a batch running, its row's run not ended) is refused before anything runs: the eval's runner would claim it", { timeout: 120_000 }, async (t) => {
+  const data = join(await scratch(), "agents");
+  const first = await serve(t, { data, runner: false, learning: "on", faux: LEARN, batchPollMs: 50 });
+  const id = "owners-learner";
+  await made(first.api, learner(id));
+  const created = await first.api("POST", `/agents/${id}/learning/batches`, { inputs: ["q"], answer: "a", rows: [{ q: "One?", a: "1" }], max_cost_usd: 1 });
+  assert.equal(created.status, 202, JSON.stringify(created.body));
+  // The batch's first row has its run (queued: no runner here) before the server stops.
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    const read = await first.api("GET", `/agents/${id}/learning/batches/${created.body.id}`);
+    if (read.body.rows?.[0]?.run_id) break;
+    assert.ok(Date.now() < deadline, `the batch's row got no run: ${JSON.stringify(read.body)}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  await first.stop();
+  await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data, serve: { faux: FAUX } }), (error) => {
+    assert.match(error.message, /has work of its own: .*1 learning batch running/, error.message);
+    return true;
+  });
 });
 
 test("a data folder another server holds is refused before anything runs", { timeout: 120_000 }, async (t) => {

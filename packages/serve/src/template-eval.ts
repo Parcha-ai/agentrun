@@ -1023,7 +1023,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
       const work = await workOf(options.data).catch((error: unknown) => (removeTree(scratch!), Promise.reject(error)));
       if (work) {
         removeTree(scratch!);
-        throw new Error(`the server on ${options.data} has work of its own: ${work}, which the eval's server and runner would take up: disable its triggers and let its runs end (or stop them), then run the eval; or run it without --on-data`);
+        throw new Error(`the server on ${options.data} has work of its own: ${work}, which the eval's server and runner would take up: disable its triggers and let its runs and learning batches end (or stop them), then run the eval; or run it without --on-data`);
       }
     }
     const { startServe } = await import("./server.js");
@@ -1033,10 +1033,17 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const harnessInstall = sharedInstaller(join(process.env.TMPDIR ?? tmpdir(), EVAL_HARNESSES));
     // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
     // Its fakes stand in for the package's MCP needs (mcpStandIns): each is saved as the source and toolkit it fakes.
-    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
+    // A token of its own on a scratch folder. On the owner's folder none is given: a given token makes the server remove
+    // the folder's .token (server.ts), the owner's saved API token, so the eval's server reads the one the folder keeps,
+    // and a .token it had to make there (the folder had none) goes when it closes, the folder as it was.
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0, ...(options.data === undefined ? { token: randomBytes(24).toString("base64url") } : {}), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
+    const closeServe = async () => {
+      await serve.close();
+      if (options.data !== undefined && serve.tokenMade && serve.tokenFile) rmSync(serve.tokenFile, { force: true });
+    };
     // A runner beside it on the same data (the CLI start's server-and-runner, runner/beside.ts): a server alone takes runs
     // and leaves them queued, since on the one store a runner claims and runs each. Its runs' environment is this
     // process's, with the server's faux when the eval gave one (server.ts fauxEnvOf), so a faux eval never reaches a model.
@@ -1046,13 +1053,13 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
     const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
-      await serve.close();
+      await closeServe();
       removeTree(scratch!);
       throw error;
     });
     close = async () => {
       await beside.close();
-      await serve.close();
+      await closeServe();
     };
     api = apiOf(serve.baseUrl, serve.token);
     // An email case saves its fake mailbox as the server's email account, a secret write, which the API token never
@@ -1191,9 +1198,15 @@ async function workOf(data: string): Promise<string | undefined> {
   const store = await openStore({ dataDir: data, role: "server" });
   try {
     const triggers = (await store.triggers.all()).filter((one) => one.enabled && !one.disabled).length;
-    let runs = 0;
-    for (const state of ["queued", "running", "parked"] as const) runs += (await store.runs.list({ state })).length;
-    const said = [triggers ? `${triggers} enabled trigger${triggers === 1 ? "" : "s"}` : "", runs ? `${runs} run${runs === 1 ? "" : "s"} not ended` : ""].filter(Boolean);
+    // The runs not ended a list shows, and every run a runner would claim: the list leaves out built-in learning runs
+    // (a kept learning's), which the eval's runner claims as any other.
+    const runs = new Set<string>();
+    for (const state of ["queued", "running", "parked"] as const) for (const run of await store.runs.list({ state })) runs.add(run.id);
+    for (const id of await store.runs.claimable()) runs.add(id);
+    // A learning batch still running, which the eval's server would resume at its start (learning-batch.ts resume), its
+    // next rows' runs with it.
+    const batches = (await store.settings.all()).filter(({ key, value }) => /^learning_batch\/lb_[0-9a-f]{16}$/.test(key) && isObject(value) && value.status === "running").length;
+    const said = [triggers ? `${triggers} enabled trigger${triggers === 1 ? "" : "s"}` : "", runs.size ? `${runs.size} run${runs.size === 1 ? "" : "s"} not ended` : "", batches ? `${batches} learning batch${batches === 1 ? "" : "es"} running` : ""].filter(Boolean);
     return said.length ? said.join(", ") : undefined;
   } finally {
     await store.close();
