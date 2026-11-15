@@ -204,7 +204,8 @@ Over a cap is refused, never cut.
   read as the DSL reads them, its own inline definitions before the catalog; items and `anyOf`/`oneOf`/`allOf` read) and which fetches pages (a call step, under any chain, branch or body) must
   check each place in its answer holding quotes with an escalate whose `when` is the DSL's `quote_missing` reading
   them: its `path` and `field` the list and the field the schema puts them at. A quote key's schema is read shape by
-  shape (each `anyOf`/`oneOf`/`allOf` branch, each kind a `type` list names), each shape a place of its own, so
+  shape (each `anyOf`/`oneOf` branch, each kind a `type` list names; `allOf` members are one value, read together),
+  each shape a place of its own, so
   `quotes: string | [{quote}]` needs a check reading `quotes` and one reading `quotes` with `field` `quote`. Quotes no
   one `path` and `field` read (under two lists, in a map, in records with no `quote` key) are refused whatever checks
   run, as `quote_missing` would read none of them. The escalate is a step of the top-level chain after the last

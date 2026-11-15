@@ -266,9 +266,10 @@ const QUOTE_SITE_DEPTH = 16;
 
 /** Every place in `schema` (a draft's output schema, its `#/definitions/<id>` refs read from `schemas`) holding quotes: a
  *  `quote` or `quotes` property that is a string, a list of strings, or holds them deeper (`quotes: [{quote}]`). A quote
- *  key's value is read shape by shape: each `anyOf`/`oneOf`/`allOf` branch, and each kind a `type` list names (a string,
- *  and the list or record beside it), gives its own place, so `quotes: string | [{quote}]` holds quotes at `quotes` and
- *  at `quotes[].quote`. A shape holding structure where no `quote` key is found (records of other fields) holds quotes
+ *  key's value is read shape by shape: each `anyOf`/`oneOf` branch, and each kind a `type` list names (a string, and the
+ *  list or record beside it), gives its own place, so `quotes: string | [{quote}]` holds quotes at `quotes` and at
+ *  `quotes[].quote`. `allOf` members describe one value, so they are read together (the types all of them allow, the
+ *  properties and items any of them names). A shape holding structure where no `quote` key is found (records of other fields) holds quotes
  *  no check reads (`*`). `over` when there are more than QUOTE_SITES_MAX places or the schema nests past
  *  QUOTE_SITE_DEPTH keys: the places found are then not all of them, and the rule refuses rather than read a part as
  *  the whole. */
@@ -290,6 +291,20 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { site
     return true;
   };
   const around = new Set<unknown>();
+  /** `schema` and its `allOf` members (theirs too, refs resolved): the parts of one value, read together. */
+  const partsOf = (schema: Record<string, unknown>): Record<string, unknown>[] => {
+    const parts: Record<string, unknown>[] = [];
+    const take = (node: unknown): void => {
+      const part = resolve(node);
+      if (!isObject(part) || parts.includes(part) || (part !== schema && around.has(part))) return;
+      parts.push(part);
+      if (Array.isArray(part.allOf)) for (const inner of part.allOf) take(inner);
+    };
+    take(schema);
+    return parts;
+  };
+  /** One schema for the values several parts give one key, list or map: their `allOf`. */
+  const together = (values: unknown[]): unknown => (values.length === 1 ? values[0] : { allOf: values });
   /** Walks `node` at `at`; `quoted` when it is a quote key's value (or its items, or a branch of either). Whether it
    *  found a place holding quotes. */
   const walk = (node: unknown, at: string[], quoted = false): boolean => {
@@ -301,20 +316,33 @@ function quoteSitesOf(schema: unknown, schemas: Record<string, unknown>): { site
       over = true;
       return false;
     }
-    around.add(schema);
-    const types = typeof schema.type === "string" ? [schema.type] : Array.isArray(schema.type) ? schema.type as unknown[] : undefined;
-    const branches = (["anyOf", "oneOf", "allOf"] as const).flatMap((key) => (Array.isArray(schema[key]) ? schema[key] as unknown[] : []));
-    const shaped = schema.properties !== undefined || schema.items !== undefined || schema.additionalProperties !== undefined;
+    const parts = partsOf(schema);
+    for (const part of parts) around.add(part);
+    // The types every part allows; the other shapes an anyOf/oneOf branch allows, each read alone.
+    const typeLists = parts.flatMap((part) => (typeof part.type === "string" ? [[part.type as unknown]] : Array.isArray(part.type) ? [part.type as unknown[]] : []));
+    const types = typeLists.length ? typeLists.reduce((all, list) => all.filter((type) => list.includes(type))) : undefined;
+    const branches = parts.flatMap((part) => (["anyOf", "oneOf"] as const).flatMap((key) => (Array.isArray(part[key]) ? part[key] as unknown[] : [])));
+    const properties = new Map<string, unknown[]>();
+    const items: unknown[] = [];
+    const extra: unknown[] = [];
+    for (const part of parts) {
+      if (isObject(part.properties)) for (const [key, inner] of Object.entries(part.properties)) properties.set(key, [...(properties.get(key) ?? []), inner]);
+      if (part.items !== undefined) items.push(part.items);
+      if (part.additionalProperties !== undefined) extra.push(part.additionalProperties);
+    }
+    const shaped = properties.size > 0 || items.length > 0 || extra.length > 0;
     // A string here: a type naming it, or no type, branch or shape at all.
     let found = quoted && (types ? types.includes("string") : !branches.length && !shaped) && add(at);
     const structured = !types || types.includes("array") || types.includes("object");
     if (structured) {
-      if (isObject(schema.properties)) for (const [key, inner] of Object.entries(schema.properties)) found = walk(inner, [...at, key], QUOTE_KEYS.has(key)) || found;
-      if (isObject(schema.items)) found = walk(schema.items, [...at, "[]"], quoted) || found;
-      if (isObject(schema.additionalProperties)) found = walk(schema.additionalProperties, [...at, "*"], quoted) || found;
+      for (const [key, values] of properties) found = walk(together(values), [...at, key], QUOTE_KEYS.has(key)) || found;
+      const lists = items.filter(isObject);
+      if (lists.length) found = walk(together(lists), [...at, "[]"], quoted) || found;
+      const maps = extra.filter(isObject);
+      if (maps.length) found = walk(together(maps), [...at, "*"], quoted) || found;
     }
     for (const inner of branches) found = walk(inner, at, quoted) || found;
-    around.delete(schema);
+    for (const part of parts) around.delete(part);
     // A quote key's list or record holding no `quote` key and no string: its quotes are where no check reads them.
     if (quoted && structured && !found && (shaped || !branches.length)) found = add([...at, "*"]);
     return found;
