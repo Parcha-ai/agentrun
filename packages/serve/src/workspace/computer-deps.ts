@@ -31,7 +31,7 @@ import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
-import { KEEP_MS } from "./computer-kept.js";
+import { computerLapsedWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -268,15 +268,9 @@ export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: Co
   return `${ready}${lapsed} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
 
-/** The minutes a park keeps the run's desktop or phone (computer-kept.ts KEEP_MS), in words. */
-const KEEP_MINUTES = `${KEEP_MS / 60_000} minutes`;
-
-/** The run's timeline phase as its run parks with its desktop or phone kept (ClaimComputer.keeps), such as "The desktop
- *  is kept for 10 minutes while you decide." */
-export const computerKeptWords = (kind: KeptKind): string => `The ${kind} is kept for ${KEEP_MINUTES} while you decide.`;
-
-/** Why the run's computer at its resume is a new one: the one kept at its park was ended at its time. */
-export const computerLapsedWords = (kind: string): string => `The ${kind} wasn't kept: ${KEEP_MINUTES} passed.`;
+/** The run's timeline phase as its run parks with its computer kept (ClaimComputer.keeps), such as "The desktop is kept
+ *  for 10 minutes while you decide." */
+export const computerKeptWords = (kind: KeptKind): string => `The ${kind} is kept for ${KEEP_WORDS} while you decide.`;
 
 /** What the run's model is told, once, on its next request after its claim gave it a computer that replaced an earlier
  *  claim's (the adapter loop's computer note), labelled as the server's (SERVER_NOTE_LABEL): a desktop's or a phone's

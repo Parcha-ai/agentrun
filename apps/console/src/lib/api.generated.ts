@@ -2543,6 +2543,9 @@ export interface operations {
         at: string;
         why: string;
       };
+      kept?: {
+        until: string;
+      };
     } | {
       state: "live";
       kind: "browser" | "desktop" | "phone";

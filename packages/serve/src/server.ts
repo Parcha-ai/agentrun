@@ -59,7 +59,8 @@ import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, over
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
-import { type ComputerOf, computerView, type JournalEntry, sessionIn } from "./computer-view.js";
+import { type ComputerOf, computerView, type JournalEntry, keptOrLapsed, sessionIn } from "./computer-view.js";
+import { readKept } from "./workspace/computer-kept.js";
 import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
@@ -3405,6 +3406,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
         // none with its kind, never off as if the agent had none (#2170).
         const viewed = family === "computer" ? await runViewedKind(store, run.id) : undefined;
+        // A parked run's desktop or phone is no screen being opened: its claim let it go, or kept it for the resume
+        // (computer-kept.ts), which says so, until when, and once its time passed.
+        const parked = family === "computer" && !run.terminal && (await store.runs.get(run.id))?.state === "parked";
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
@@ -3414,7 +3418,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
-          session: (kind) => sessionIn(kind, entries, run.terminal),
+          session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
+          parked: async (kind) => (parked ? keptOrLapsed(kind, await readKept(store.settings, run.id).catch(() => undefined), Date.now()) : undefined),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.

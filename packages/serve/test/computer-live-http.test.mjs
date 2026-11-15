@@ -145,6 +145,41 @@ async function desktopRun(t, env = {}) {
   assert.match(said, /You handed the desktop back/);
 }
 
+// A run parked on its question with its desktop up keeps the desktop (computer-kept.ts): GET /computer says it is kept
+// until a time, its screen closed and no take-over, never ended; the run's computer is not ended; once the keep's time
+// passed, GET /computer says it wasn't kept, in the timeout's words.
+const LOOK_ASK = new URL("./fixtures/faux-desktop-look-ask.mjs", import.meta.url).pathname;
+test("a desktop run parked on its question: GET /computer is none, closed and kept until the keep's time, the run's computer not ended; past that time, ended in the timeout's words", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { E2B_API_KEY: "fake-test-key" }, ["E2B_API_KEY"]);
+  const desktop = fakeDesktopProvider();
+  const server = await serve(t, { accounts: true, openSetup: true, faux: LOOK_ASK, computers: { load: desktop.load } });
+  const owner = await clientOwnerSession(server);
+  const made = await server.api("POST", "/agents", agent("desk", { computer: { kind: "desktop", provider: "e2b" }, tools: ["ask_person"] }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const runId = (await server.api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } })).body.run_id;
+  const parkedAt = Date.now();
+  await until(async () => (await server.store.runs.get(runId))?.state === "parked", "the run parked on its question");
+  const get = async () => (await call(server.port, { path: `/v2/runs/${runId}/computer`, headers: { cookie: owner.cookie } })).json;
+  const kept = await get();
+  assert.deepEqual({ ...kept, kept: undefined }, { state: "none", kind: "desktop", hold: "agent", session: "closed", kept: undefined }, JSON.stringify(kept));
+  const until10 = Date.parse(kept.kept?.until ?? "");
+  assert.ok(until10 >= parkedAt + 600_000 && until10 <= Date.now() + 600_000, `kept 10 minutes from the park: ${kept.kept?.until}`);
+  const run = (await server.api("GET", `/runs/${runId}`)).body;
+  assert.equal(run.status, "input_required", JSON.stringify(run));
+  assert.notEqual(run.computer?.state, "ended", `the run's computer while parked: ${JSON.stringify(run.computer)}`);
+  assert.equal((await server.store.liveViewers.of(runId)).length, 0, "no viewer while parked: nothing to take over");
+
+  // The keep's time passed (its row read as the janitor would, past it).
+  const row = await server.store.settings.get(`computer_kept:${runId}`);
+  assert.ok(row, "the keep's row");
+  await server.store.settings.put(`computer_kept:${runId}`, { ...row, until: Date.now() - 1 });
+  const lapsed = await get();
+  assert.deepEqual({ ...lapsed, ended: { ...lapsed.ended, at: undefined } }, { state: "none", kind: "desktop", hold: "agent", session: "closed", ended: { at: undefined, why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." } }, JSON.stringify(lapsed));
+  assert.ok(Date.parse(lapsed.ended.at) <= Date.now(), "ended at the keep's time");
+  assert.equal((await server.api("POST", `/runs/${runId}/cancel`, {})).status < 300, true);
+  await until(async () => ["stopped", "ended", "failed"].includes((await server.store.runs.get(runId))?.state), "the run stopped");
+});
+
 // #2170: a desktop or phone run whose screen is not open (no runner has it, or its viewer does not answer) has a computer
 // all the same: GET /computer reads none with its kind, never off with "this run's agent has no computer".
 test("a desktop or phone run whose screen is not open reads none with its kind; only an agent with no computer reads off (#2170)", { timeout: 120_000 }, async (t) => {

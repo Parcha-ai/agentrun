@@ -494,6 +494,34 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
   });
 
+  it("a desktop kept at the run's park says what the run waits for and until when, never released or ended; past that time, that it wasn't kept", async () => {
+    const UNTIL = "2026-11-05T09:20:00Z";
+    const at = new Date(UNTIL).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    let read: RunComputer = DESKTOP_LIVE();
+    const p = await screen(async () => read, desktop, { tab: "screen" });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Parked on a tool's approval: its viewer closed, the desktop kept for the resume.
+    read = { state: "none", kind: "desktop", hold: "agent", session: "closed", kept: { until: UNTIL } };
+    const waiting = (kind: string) => ({ ...desktop, status: "input_required", state: "waiting", pending: { kind } } as unknown as Run);
+    await p.show(waiting("approval"));
+    await settle(100);
+    expect(p.panel()!.querySelector("iframe")).toBeNull();
+    expect(p.panel()!.textContent).toContain(`Waiting for your approval. The desktop is kept until ${at}.`);
+    expect(p.panel()!.textContent).not.toMatch(/released|ended/);
+    expect(p.button("Take over")).toBeUndefined();
+    await p.show(waiting("question"));
+    await settle(60);
+    expect(p.panel()!.textContent).toContain(`Waiting for your answer. The desktop is kept until ${at}.`);
+    await p.show(waiting("budget"));
+    await settle(60);
+    expect(p.panel()!.textContent).toContain(`Waiting for you to raise the spend cap. The desktop is kept until ${at}.`);
+    // Its time passed: not kept, and a new one starts when the run goes on.
+    read = { state: "none", kind: "desktop", hold: "agent", session: "closed", ended: { at: UNTIL, why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." } };
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on.");
+    expect(p.panel()!.textContent).not.toContain("released");
+  });
+
   it("a stopped run's desktop never reads as waited for; the follow-up's new desktop, booting while the run is queued, is waited for", async () => {
     let gone = false;
     const p = await screen(async () => (gone ? { state: "none", kind: "desktop", hold: "agent", session: "opening" } : DESKTOP_LIVE()), desktop, { tab: "screen" });
