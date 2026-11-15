@@ -245,10 +245,12 @@ const inputFilled = (value: unknown, given: Record<string, unknown>): unknown =>
   return value;
 };
 
-/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), the rest as text. */
+/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), its enabled the boolean its one
+ *  placeholder names, the rest as text. */
 const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
   const out = filled(trigger, given) as Json;
   if (isObject(trigger.target) && trigger.target.input !== undefined) out.target = { ...(out.target as Json), input: inputFilled(trigger.target.input, given) };
+  if (typeof trigger.enabled === "string" && WHOLE.test(trigger.enabled)) out.enabled = typedFilled(trigger.enabled, given);
   return out;
 };
 
@@ -650,8 +652,19 @@ export function readPackage(from: string | PackageFiles): Package {
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
+      : key === "enabled" && typeof value === "string" ? []
       : [[key, value] as const]);
     for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    // enabled is true, false, or one boolean parameter with a default, filled at apply (triggerFilled): the trigger is on
+    // or off by the owner's answer, and by the package's default when the apply leaves it out.
+    if (typeof trigger.enabled === "string") {
+      const rule = `triggers[${i}].enabled is true, false, or one placeholder alone, "\${parameters.<name>}", naming a boolean parameter with a default`;
+      const whole = WHOLE.exec(trigger.enabled);
+      const spec = whole && Object.hasOwn(fields, whole[1]!) ? fields[whole[1]!] : undefined;
+      if (!whole) bad(MANIFEST, rule);
+      else if (spec && spec.type !== "boolean") bad(MANIFEST, `${rule}: parameters.${whole[1]} is a ${spec.type as string}`);
+      else if (spec && spec.default === undefined) bad(MANIFEST, `${rule}: parameters.${whole[1]} has no default, and the trigger is on or off even when the apply leaves it out`);
+    }
     if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
         if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
@@ -753,7 +766,12 @@ export function readPackage(from: string | PackageFiles): Package {
     const whole = typeof value === "string" ? WHOLE.exec(value) : null;
     return !!whole && Object.hasOwn(fields, whole[1]!) && fields[whole[1]!]!.default === undefined;
   };
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  // A trigger's enabled given as text is said above, by its own rule, not again as POST /v2/triggers words it.
+  const saidEnabled = (field: string): boolean => {
+    const at = /^triggers\.(\d+)\.enabled$/.exec(field);
+    return !!at && typeof p.triggers[Number(at[1])]?.enabled === "string";
+  };
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (!saidEnabled(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }

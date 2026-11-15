@@ -11,6 +11,8 @@ const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoi
 // A record keeps no `alone`: proofOf counts it from the record (n - handed_back), so one stored before any replay said it
 // reads the same.
 const REPLAY = { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 };
+/** A replay's runs' outcomes with `skipped` of them stopped at a write. */
+const outcomes = (skipped: number) => ({ answered: 18, handed_back: 2, failed: 0, skipped_write: skipped });
 
 describe("markers on the run axis", () => {
   const runs = [1, 2, 3, 4, 5, 6].map((n) => run(n, n < 4 ? "agent" : "workflow"));
@@ -58,17 +60,17 @@ describe("a revision's standing and numbers", () => {
     expect(replayLine(record({ source: "dry_run", reason: "no graded input it fits: promoted on its dry run" }))).toBe("no graded input it fits: promoted on its dry run");
   });
   it("says how many replayed inputs were skipped, only when any were: the record's reason says why", () => {
-    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 0 } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
-    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 3 } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 3 skipped");
+    expect(replayLine(record({ replay: { ...REPLAY, outcomes: outcomes(0) } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
+    expect(replayLine(record({ replay: { ...REPLAY, outcomes: outcomes(3) } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 3 skipped");
     // Every input skipped: nothing was scored, the record's reason says why.
     const reason = "every one of its 5 graded inputs needs a write the recording doesn't have: a replay never runs a write, so nothing was replayed";
-    expect(replayLine(record({ decided: "hold", reason, replay: { ...REPLAY, n: 0, agree: 0, skipped_write: 5 } }))).toBe(reason);
+    expect(replayLine(record({ decided: "hold", reason, replay: { ...REPLAY, n: 0, agree: 0, outcomes: outcomes(5) } }))).toBe(reason);
   });
   it("says what a promotion was decided on: replayed n/of and how many alone, 0 replays answered, not replayed, refit rows; only a scored one is proven", () => {
     const of = Array.from({ length: 20 }, (_, i) => `g${i}`);
     const replayed = record({ replay: { ...REPLAY, of, n: 18, handed_back: 9 } });
     const dry = record({ source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" });
-    const none = record({ decided: "hold", replay: { ...REPLAY, of, n: 0, agree: 0, handed_back: 0, skipped_write: 20 } });
+    const none = record({ decided: "hold", replay: { ...REPLAY, of, n: 0, agree: 0, handed_back: 0, outcomes: outcomes(20) } });
     const refit = record({ source: "refit", replay: { ...REPLAY, n: 25, handed_back: 3 } });
     expect([replayed, none, dry, refit, record({ decided: "replaying" }), record({ decided: "hold", source: "graded" })].map(proofOf)).toEqual(["replayed 18/20 · 9 alone", "0 replays answered", "not replayed", "refit on 25 rows · 22 alone", null, null]);
     // A record that names no replayed runs says the count alone, never "/0".

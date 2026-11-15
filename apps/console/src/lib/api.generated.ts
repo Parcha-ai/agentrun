@@ -218,6 +218,7 @@ export interface components {
     basis: "charge" | "estimate";
     charge_state?: "held" | "settled" | "released" | null;
     cap_usd?: number | null;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
     plan?: {
@@ -1162,6 +1163,7 @@ export interface components {
   TimelineUsage: {
     usd: number | null;
     requests: number | null;
+    free?: true;
     so_far_usd?: number;
     unpriced?: number;
     not_metered?: number;
@@ -2063,11 +2065,12 @@ export interface operations {
       digest: string;
       status: "running" | "done" | "failed";
       inputs: number;
-      answered: number;
-      handed_back: number;
-      failed: number;
-      skipped_write: number;
-      alone: number;
+      outcomes: {
+        answered: number;
+        handed_back: number;
+        failed: number;
+        skipped_write: number;
+      };
       score: {
         n: number;
         agree: number;
@@ -3286,7 +3289,6 @@ export interface operations {
           handed_back: number;
           of?: string[];
           cost_usd?: number | null;
-          skipped_write?: number;
           skipped_tools?: {
             tool: string;
             inputs: number;

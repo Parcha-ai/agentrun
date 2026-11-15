@@ -402,6 +402,7 @@ export type Cost = {
   basis: "charge" | "estimate";
   charge_state?: "held" | "settled" | "released" | null;
   cap_usd?: number | null;
+  free?: true;
   so_far_usd?: number;
   unpriced?: number;
   plan?: {
@@ -822,6 +823,7 @@ export type TimelineKind = "thinking" | "text_block" | "tool_use" | "tool_result
 export type TimelineUsage = {
   usd: number | null;
   requests: number | null;
+  free?: true;
   so_far_usd?: number;
   unpriced?: number;
   not_metered?: number;
@@ -1379,7 +1381,6 @@ export type ListLearningPromotionsResponse = {
       handed_back: number;
       of?: Array<string>;
       cost_usd?: number | null;
-      skipped_write?: number;
       skipped_tools?: Array<{
         tool: string;
         inputs: number;
@@ -2062,11 +2063,12 @@ export type GetLearnedWorkflowReplayResponse = {
   digest: string;
   status: "running" | "done" | "failed";
   inputs: number;
-  answered: number;
-  handed_back: number;
-  failed: number;
-  skipped_write: number;
-  alone: number;
+  outcomes: {
+    answered: number;
+    handed_back: number;
+    failed: number;
+    skipped_write: number;
+  };
   score: {
     n: number;
     agree: number;
