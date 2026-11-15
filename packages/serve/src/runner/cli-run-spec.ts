@@ -46,7 +46,7 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { hadComputer } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
@@ -374,8 +374,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // whose computer is a browser is refused in words at its claim, before anything is made.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer), as the pi
-    // spec asks it.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // spec asks it. The computer a park kept, attached again, brings its mount credential with it (inheritMount).
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held, computer.made);
@@ -720,7 +720,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
-    // the computer's release). A run that minted none revokes nothing.
-    release: () => holds.release(),
+    // the computer's release). A run that minted none revokes nothing. At a park, a desktop or a phone is kept for the
+    // resume instead, its mount credential with it, as the pi spec's.
+    ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
+    release: (how) => holds.release(how),
   };
 }
