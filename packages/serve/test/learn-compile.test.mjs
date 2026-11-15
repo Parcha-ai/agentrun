@@ -725,6 +725,11 @@ test("quoteCheckProblems: a quote key whose schema is a union is read branch by 
   assert.deepEqual(quoteCheckProblems(unionDraft(nested, [STRING_READ, { path: "answer.quotes", field: "quotes" }])), [unread("quotes[].quotes[]")]);
   const textOnly = { anyOf: [{ type: "string" }, { type: "array", items: { type: "object", properties: { text: { type: "string" } } } }] };
   assert.deepEqual(quoteCheckProblems(unionDraft(textOnly, [STRING_READ, { path: "answer.quotes", field: "text" }])), [unread("quotes[]*")]);
+  // allOf members describe one value: read together, never one member alone.
+  assert.deepEqual(quoteCheckProblems(unionDraft({ allOf: [{ type: "array" }, { type: "array", items: { type: "string" } }] }, [STRING_READ])), [], "a list whose items one member names");
+  const splitRecord = { type: "array", items: { allOf: [{ type: "object", properties: { url: { type: "string" } } }, { properties: { quote: { type: "string" } } }] } };
+  assert.deepEqual(quoteCheckProblems(unionDraft(splitRecord, [RECORD_READ])), [], "records whose quote one member names");
+  assert.deepEqual(quoteCheckProblems(unionDraft({ allOf: [{ type: "array" }, { minItems: 1 }] }, [STRING_READ])), [unread("quotes*")], "a list no member names the items of");
 });
 
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
