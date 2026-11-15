@@ -325,7 +325,7 @@ function mandatoryThinking(own: Parameters<typeof getSupportedThinkingLevels>[0]
  *  before any request. A save under a cap prices its least output on these (cap-short.ts). */
 export async function piReasoningOf(route: { readonly provider: { readonly api: Wire }; readonly model: string; readonly like?: PiAdapterOptions["like"] }, level: string | undefined): Promise<Record<string, unknown>> {
   const models = createModels();
-  models.setProvider(sessionProvider(route.provider.api, { url: "http://127.0.0.1:9", key: "unsent" }, route.model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
+  models.setProvider(sessionProvider(route.provider.api, { url: "https://pi-reasoning.invalid", key: "unsent" }, route.model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
   const model = models.getModel(PROVIDER, route.model);
   if (!model) throw new Error(`no session model ${route.model}`);
   // A run's spec carries its level as the session's thinking (adapter-run-spec.ts), as here.

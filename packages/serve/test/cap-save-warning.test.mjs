@@ -63,7 +63,7 @@ test("pi on Claude Sonnet 5.5 through a gateway thinks with a budget, so its lea
   // thinking adds; with a step-0 step, $0.08402 in all (an answer alone, $0.06354). pi sends that model no
   // output_config, so the words name no effort. Sonnet 5.5 cannot stop reasoning, so with no effort saved pi thinks at
   // its lowest level, budgeted too.
-  withEnv(t, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/api/v1", AGENT_MODEL_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-5.5" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: "https://gateway.invalid/api/v1", AGENT_MODEL_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-5.5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const words = "This agent's cap of $0.075 is below what anthropic/claude-sonnet-5.5 needs for one more step and an answer, about $0.09: a run will wrap up at its first tool call.";
   for (const [id, thinking] of [["sonnet-medium", "medium"], ["sonnet-default", undefined]]) {
