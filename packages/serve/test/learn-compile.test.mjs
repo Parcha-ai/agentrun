@@ -678,6 +678,16 @@ test("quoteCheckProblems: a key a model step writes over the page a call fetched
   assert.deepEqual(quoteCheckProblems(many), ["the answer's schema (Answer) holds quotes in more than 8 places or nests past 16 keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one"]);
   delete many.schemas.Answer.properties.s8;
   assert.equal(quoteCheckProblems(many).length, 8, "eight places: each one named");
+  // A map collecting each item's whole state collects the state around it too, an answer written before it included.
+  const whole = citedDraft({ check: { pages: ["page", "more"] } });
+  whole.root.steps.splice(3, 0, { node: "map", label: "each", itemsPath: "links", as: "more", body: { node: "chain", steps: [{ node: "call", label: "get", via: "tool", tool: "web_fetch", args: { url: "{item}" }, out: "Page", as: "got", deadline_s: 30 }] } });
+  assert.deepEqual(quoteCheckProblems(whole), ['the quote_missing escalate "quotes" reads "more" as a page, which no call step fetched: its pages are the state keys its call steps write (page)']);
+  // Refs read as the DSL reads them: the answer schema's inline definitions first, then the catalog.
+  const inlineEvidence = (quoted) => citedDraft({ check: null, answer: { definitions: { Evidence: { type: "object", properties: quoted ? { quote: { type: "string" } } : { url: { type: "string" } } } } } });
+  const hidden = inlineEvidence(true);
+  delete hidden.schemas.Evidence;
+  assert.deepEqual(quoteCheckProblems(hidden), [NO_QUOTE_CHECK], "an inline definition holding the quotes");
+  assert.deepEqual(quoteCheckProblems(inlineEvidence(false)), [], "an inline definition shadowing the catalog's: no quotes");
   let deep = { type: "object", properties: { quote: { type: "string" } } };
   for (let i = 0; i < 17; i++) deep = { type: "object", properties: { inner: deep } };
   assert.match(quoteCheckProblems(citedDraft({ answer: { properties: { refunds: { type: "boolean" }, deep } } })).join("\n"), /nests past 16 keys/);

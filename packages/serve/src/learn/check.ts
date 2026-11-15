@@ -343,7 +343,8 @@ const holdsPage = (root: unknown, key: string, depth = 0): boolean => {
 };
 
 /** Whether what a node writes is a page as fetched: a call's result; a map's when each item's result (its resultPath's
- *  key, else its body's `as`, else the item's whole state, as answerTierProblems reads it) holds a page its body fetched;
+ *  key, else its body's `as`) holds a page its body fetched, never when it collects the item's whole state, which carries
+ *  the state around the map too (an answer written before it included);
  *  a composed workflow's when its child's answer does in the child's state. A model step's summary is no page. */
 function writesPage(node: Record<string, unknown>, depth = 0): boolean {
   if (depth > 16) return false;
@@ -352,9 +353,7 @@ function writesPage(node: Record<string, unknown>, depth = 0): boolean {
     const result = typeof node.resultPath === "string" && node.resultPath ? node.resultPath.split(".")[0] : undefined;
     const bodyAs = isNode(node.body) && typeof node.body.as === "string" && node.body.as ? node.body.as : undefined;
     const key = result ?? bodyAs;
-    if (key !== undefined) return holdsPage(node.body, key, depth);
-    const writers = stateWriters(node.body);
-    return writers.length > 0 && writers.every((writer) => writesPage(writer, depth + 1));
+    return key !== undefined && holdsPage(node.body, key, depth);
   }
   if (node.node === "workflow") {
     const child = isObject(node.workflow) ? node.workflow : {};
@@ -398,7 +397,10 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
   const schemas = isObject(workflow.schemas) ? workflow.schemas : schemasAround;
   const schemaId = typeof output.schemaId === "string" ? output.schemaId : "";
   if (!answerPath || !Object.hasOwn(schemas, schemaId) || depth > 8) return none;
-  const { sites: declared, over } = quoteSitesOf(schemas[schemaId], schemas);
+  // Its refs read as the DSL reads them (resolveSchemaForWorkflow): the schema's own inline definitions first, then the catalog.
+  const answerSchema = schemas[schemaId];
+  const inline = isObject(answerSchema) && isObject(answerSchema.definitions) ? answerSchema.definitions : {};
+  const { sites: declared, over } = quoteSitesOf(answerSchema, { ...schemas, ...inline });
   if ((!declared.length && !over) || !fetches(workflow.root)) return none;
   if (over) return { applies: true, checked: [], problems: [`the answer's schema (${schemaId.slice(0, 64)}) holds quotes in more than ${QUOTE_SITES_MAX} places or nests past ${QUOTE_SITE_DEPTH} keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one`] };
   const where = (site: QuoteSite) => `${schemaId}.${site.keys.join(".").replace(/\.(\[\]|\*)/g, "$1")}`.slice(0, 120);
