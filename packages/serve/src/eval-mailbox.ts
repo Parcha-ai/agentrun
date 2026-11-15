@@ -107,6 +107,9 @@ export async function seededFaux(fixture: MailboxFixture, layout: Layout, now?: 
   const faux = await startEmailFaux({ layout: layout === "gmail" ? "gmail" : "standard", ...(now ? { now: () => now } : {}) });
   try {
     for (const [mailbox, messages] of Object.entries(fixture.mailboxes)) for (const m of messages) seed(faux, layout, mailbox, m);
+    // A mailbox the fixture names with no message in it is there too, empty: a run files into it as into any folder.
+    // Made after the seeding, so a gmail label with messages is still carried out of the inbox by seed.
+    for (const mailbox of Object.keys(fixture.mailboxes)) faux.create(mailbox);
   } catch (error) {
     await faux.close();
     throw error;

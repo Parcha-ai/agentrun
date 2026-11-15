@@ -58,6 +58,8 @@ export type EmailFaux = {
   mailboxes(): string[];
   /** The mailbox `name` means ("Drafts" and "Sent" the layout's special-use folders), or undefined when there is none. */
   path(name: string): string | undefined;
+  /** The mailbox `name`, made empty as CREATE makes one when there is none (on the Gmail layout, a label's). */
+  create(name: string): void;
   /** Every message SMTP received, in order. */
   sent(): FauxSent[];
   /** Every IMAP command the fake was sent, tag left out (a LOGIN's password too). */
@@ -676,6 +678,9 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     },
     mailboxes: () => boxes.map((box) => box.name),
     path: (name) => resolve(name)?.name,
+    create(name) {
+      if (!resolve(name)) made(name);
+    },
     sent: () => delivered.map((m) => ({ ...m, to: [...m.to] })),
     commands: () => [...commandLog],
     refuseLogin(on) {

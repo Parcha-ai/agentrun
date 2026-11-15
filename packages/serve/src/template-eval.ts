@@ -1135,13 +1135,15 @@ type MailOf = { faux: EmailFaux; layout: Layout };
 async function triggerRun(ctx: Ctx, one: EvalCase, agentId: string, triggerId: string, mail: MailOf): Promise<{ runId: string; before: Snapshot }> {
   const { api, options } = ctx;
   const fixture = one.email!;
-  if (fixture.message) seed(mail.faux, mail.layout, "INBOX", fixture.message);
-  // What the account holds before the run: what it adds or moves is read against this.
-  const before = snapshot(mail.faux);
   const read = () => api("GET", `/triggers/${encodeURIComponent(triggerId)}`).then((answered) => expectOk(`reading the package's trigger ${fixture.trigger}`, answered));
   const firings = async () => (expectOk(`reading the firings of ${fixture.trigger}`, await api("GET", `/triggers/${encodeURIComponent(triggerId)}/firings`)).firings as Json[] | undefined) ?? [];
   const known = new Set((await firings()).map((f) => String(f.key)));
   const trigger = await read();
+  // The new message arrives where the trigger watches: its source's mailbox (INBOX by default).
+  const watched = isObject(trigger.source) && typeof trigger.source.mailbox === "string" ? trigger.source.mailbox : "INBOX";
+  if (fixture.message) seed(mail.faux, mail.layout, watched, fixture.message);
+  // What the account holds before the run: what it adds or moves is read against this.
+  const before = snapshot(mail.faux);
   if (typeof trigger.next_at !== "string") throw new ApiFailure(`the package's trigger ${fixture.trigger} has no next time to fire at${isObject(trigger.disabled) ? ` (it is off: ${String(trigger.disabled.detail ?? trigger.disabled.reason)})` : ""}`);
   ctx.clock!.to(Date.parse(trigger.next_at));
   const deadline = Date.now() + (options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS);

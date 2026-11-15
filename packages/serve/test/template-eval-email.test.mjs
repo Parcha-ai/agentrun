@@ -166,6 +166,23 @@ test("on folders, email_file with archive false is refused and nothing moves; th
   assert.equal(graderOf(run, "tried.md").pass, true, graderOf(run, "tried.md").reason);
 });
 
+test("a trigger that watches a folder gets the new message there, and a folder the fixture names empty is on the account", { timeout: 600_000 }, async (t) => {
+  const dir = await mailPackage(t, {
+    reply: {
+      ...REPLY_CASE,
+      fixture: { ...REPLY_CASE.fixture, layouts: ["folders"], mailboxes: { INBOX, Support: [] } },
+      graders: { "filed.md": "---\ntype: mailbox\nmessage_id: \"<a2@example.com>\"\nin: Ignored\nnot_in: [Support, INBOX]\n---\n" },
+    },
+  });
+  const manifest = join(dir, "agent.md");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("source: { kind: email, every_s: 60 }", "source: { kind: email, every_s: 60, mailbox: Support }"));
+  const report = await evalTemplate({ dir, cases: ["reply"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.deepEqual(run.mailbox_after.moved.map(({ message_id, before, after }) => ({ message_id, before, after })), [{ message_id: "<a2@example.com>", before: "Support", after: "Ignored" }]);
+  assert.equal(graderOf(run, "filed.md").pass, true, graderOf(run, "filed.md").reason);
+});
+
 test("an email case checks when it is read: its fixture, an email tool, the trigger it starts from, no prompt of its own, and only on the eval's own server", async (t) => {
   const problems = (dir) => {
     try {
