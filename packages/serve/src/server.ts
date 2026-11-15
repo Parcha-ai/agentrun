@@ -61,7 +61,8 @@ import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, over
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
-import { type ComputerOf, computerView, type JournalEntry, sessionIn } from "./computer-view.js";
+import { type ComputerOf, computerView, type JournalEntry, lapsedOf, sessionIn } from "./computer-view.js";
+import { readKept } from "./workspace/computer-kept.js";
 import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
@@ -157,7 +158,7 @@ import { readApprovers, writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
-import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
+import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
@@ -624,13 +625,18 @@ export const ROUTES: readonly Route[] = [
  *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
  *  launch would be; off, saying why, where it has none or its browser resolves unavailable here. Where the agent's
  *  computer is a browser, that browser, whose keys are the computer's (checked at the run's start), never the plane's.
+ *  A run whose agent's computer is a sandbox (`own`, its revision's kind) and has no browser has a computer with no
+ *  screen: off says so, never that its agent has none; its browser, where it has the tool, is its view, and why that
+ *  browser is unavailable is said as for any run.
  *  TODO: the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
-function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer", own?: string): ComputerOf {
   if (kept === ON_COMPUTER) return { kind: "browser" };
   const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
-  if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : "this run's agent has no computer" };
+  if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : own === "sandbox" ? SANDBOX_NO_SCREEN : "this run's agent has no computer" };
   return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
 }
+
+const SANDBOX_NO_SCREEN = "A sandbox has no screen: what the agent runs in it is on the timeline.";
 
 /** The run's kept browser vendor, over the store, as computerOf reads it: the vendor its launch plane resolved at start
  *  (the same source the runner's claim reads), normalized to the vendor name (keptVendor) so recheckPlane re-resolves it as
@@ -3417,7 +3423,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const kept = await keptBrowserOf(store, run.id);
         // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
         // none with its kind, never off as if the agent had none (#2170).
-        const viewed = family === "computer" ? await runViewedKind(store, run.id) : undefined;
+        const own = family === "computer" ? await runComputerKind(store, run.id) : undefined;
+        const viewed = own === "desktop" || own === "phone" ? own : undefined;
+        // A parked run's desktop or phone is no screen being opened: its claim let it go, or kept it for the resume
+        // (computer-kept.ts; the run's timeline says until when), and once its time passed, the timeout's words.
+        const parked = family === "computer" && !run.terminal && (await store.runs.get(run.id))?.state === "parked";
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
@@ -3426,8 +3436,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             }
             return computerViewerLink(store, sealKey, run.id, answers);
           },
-          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
-          session: (kind) => sessionIn(kind, entries, run.terminal),
+          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
+          session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
+          lapsed: async (kind) => (parked ? lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), Date.now()) : undefined),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.

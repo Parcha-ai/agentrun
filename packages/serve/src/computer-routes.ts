@@ -10,14 +10,14 @@
 // outlives the server that took it.
 import {
   type ComputerHoldAnswer, type ComputerCallOptions, type ComputerCallStore, computerAsk, computerHoldOf, entriesOf, handBackComputer, holdIn,
-  holdShown, runOver, runViewedKind, takeOverComputer, type ViewedKind,
+  holdShown, runComputerKind, runOver, runViewedKind, takeOverComputer, type ViewedKind,
 } from "./computer-commands.js";
 import { ApiError, invalid } from "./errors.js";
 import { unknownFields } from "./validate.js";
 import { HOLD_IDLE_MS, type HoldState } from "./workspace/computer-hold.js";
 
 export type { ViewedKind } from "./computer-commands.js";
-export { computerAsk, computerHoldOf, handBackComputer, runViewedKind, takeOverComputer };
+export { computerAsk, computerHoldOf, handBackComputer, runComputerKind, runViewedKind, takeOverComputer };
 
 /** The run's desktop or phone, as the store has it: for tl-browser's GET /v2/runs/{id}/computer to build on. */
 export type ComputerViewRead = {
