@@ -947,6 +947,15 @@ above the harness's highest runs at that highest (Codex and OpenCode stop at `xh
 (`src/effort-guidance.ts`): `low` answers directly, `medium` plans briefly and checks once, `high` plans each part, fills
 the gaps and reviews. A run with no level, or one above `high`, gets no note.
 
+### On a ChatGPT plan
+
+`DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
+`{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in). When
+OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm the
+revocation: remove AgentRun in your ChatGPT settings."}`. Signing in again revokes the sign-in it replaces, and a renewal
+that finishes after a sign-out revokes the tokens it got. Any process that holds the store and the seal key (the server,
+each runner) renews the sign-in, so it is as trusted as the server; the seal key already opens every sealed key.
+
 ## Tools
 
 A revision names its tools from one closed table (`src/tools.ts`): each name is how the run's process binds it and the
