@@ -271,8 +271,9 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
   const parent = dirname(dir);
   const prefix = `.${basename(dir)}-`;
   await mkdir(parent, { recursive: true });
-  // What an earlier install left part way: never read, removed now.
-  for (const name of await readdir(parent)) if (name.startsWith(prefix)) await writable(join(parent, name), true).then(() => rm(join(parent, name), { recursive: true, force: true }));
+  // What an earlier install left part way: never read, removed now if it can be (this install works in a fresh directory
+  // of its own, so one that can't be stays for a later sweep).
+  for (const name of await readdir(parent)) if (name.startsWith(prefix)) await removeLeftover(join(parent, name));
   const staging = await mkdtemp(join(parent, prefix));
   try {
     await copyFile(manifest, join(staging, "package.json"));
@@ -288,11 +289,20 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
     // Read-only once in place: a write into it by mistake fails. (The server's own uid could change that back; each CLI's
     // sha256 is checked at every run.)
     await writable(dir, false);
-    if (old) await writable(old, true).then(() => rm(old, { recursive: true, force: true }));
+    // The install is in: the one it replaced goes now if it can, else it stays aside (its name the sweep's) for later.
+    if (old) await removeLeftover(old);
   } catch (error) {
-    await rm(staging, { recursive: true, force: true });
+    // Why the install failed is the error, never why its staging stayed.
+    await removeLeftover(staging);
     throw error instanceof HarnessNotInstalled ? error : fail((error as Error).message);
   }
+}
+
+/** `path` and all under it made writable, then removed (retried a few times: a file can still be closing). One that can't
+ *  be removed now (an orphaned npm of a crashed server still writing into it, a folder that can't be read) stays: removing
+ *  what an install leaves is housekeeping, and never fails an install or hides why one failed. */
+async function removeLeftover(path: string): Promise<void> {
+  await writable(path, true).then(() => rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })).catch(() => undefined);
 }
 
 
