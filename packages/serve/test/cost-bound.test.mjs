@@ -92,8 +92,9 @@ test("a CLI run whose cut request was booked at its hold beside an answer of no 
 test("a CLI run whose every charge is counted, one at its hold: the usage row keeps the bound and says at most, as the view does", async (t) => {
   // Ended as its end writes it: the figure, and the bound beside it in the same patch.
   const { cost, usage, listed } = await endedRun(t, { harness: "claude-agent", root: cliRecord, records: booking(), costUsd: 0.26, costUpperBound: true });
-  assert.deepEqual([cost.usd, cost.upper_bound], [0.26, true], `the view: ${JSON.stringify(cost)}`);
-  assert.deepEqual(usage?.usage, { usd: 0.26, requests: 2, upper_bound: true }, `the usage row: ${JSON.stringify(usage)}`);
+  // Beside the bound, its exact part and the request counted at its hold, on the view and the row alike.
+  assert.deepEqual([cost.usd, cost.so_far_usd, cost.unpriced, cost.upper_bound], [0.26, 0.01, 1, true], `the view: ${JSON.stringify(cost)}`);
+  assert.deepEqual(usage?.usage, { usd: 0.26, requests: 2, so_far_usd: 0.01, unpriced: 1, upper_bound: true }, `the usage row: ${JSON.stringify(usage)}`);
   assert.match(usage.summary, /at most \$0\.2600 over 2 model requests/);
   assert.deepEqual([listed.costUsd, listed.costAtMostUsd], [undefined, 0.26], `the list says at most from the stored bound, never as its cost: ${JSON.stringify(listed)}`);
 });
@@ -106,7 +107,7 @@ test("a pi run whose cut request is marked at its hold beside an answer of no kn
 
 test("a pi run with a side request beside its cut request at its hold: the usage row joins them and keeps the bound, said at most", async (t) => {
   const { usage } = await endedRun(t, { harness: "pi", root: piRoot(), records: booking({ side: 0.002 }), costUsd: 0.262 });
-  assert.deepEqual(usage?.usage, { usd: 0.262, requests: 3, upper_bound: true }, `the usage row: ${JSON.stringify(usage)}`);
+  assert.deepEqual(usage?.usage, { usd: 0.262, requests: 3, so_far_usd: 0.012, unpriced: 1, upper_bound: true }, `the usage row: ${JSON.stringify(usage)}`);
   assert.match(usage.summary, /at most \$0\.2620 over 3 model requests/);
 });
 

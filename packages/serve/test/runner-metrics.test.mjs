@@ -120,10 +120,11 @@ test("bookedSpend counts a cut booked at its hold at that figure, marked at most
   const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
   const head = [e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 }), e(7, 2, "runner.request", { turn: 1, heldUsd: 0.04 }), e(7, 3, "runner.turn", { turn: 1, usd: 0.01, bookedUsd: 0.01, rule: "answered" }), e(7, 4, "runner.request", { turn: 2, heldUsd: 0.25 })];
   const bounded = [...head, e(7, 5, "runner.turn", { turn: 2, usd: null, cut: true, bookedUsd: 0.25, rule: "cut", atMost: true })];
-  assert.deepEqual(runCostOf(bounded), { usd: 0.26, known: 0.26, unpriced: 0, atMost: 1, requests: 2 });
+  // Its parts as one: the exact $0.01 known, the $0.25 hold bounded, never in `known`.
+  assert.deepEqual(runCostOf(bounded), { usd: 0.26, known: 0.01, bounded: 0.25, unpriced: 0, atMost: 1, requests: 2 });
   assert.deepEqual([bookedSpend(bounded, "model").atMost, bookedSpend(bounded, "model").known, bookedSpend(bounded, "model").bounded], [1, 0.01, 0.25], "the hold apart from the exact charges");
   const unbounded = [...head, e(7, 5, "runner.turn", { turn: 2, usd: null, cut: true })];
-  assert.deepEqual(runCostOf(unbounded), { usd: null, known: 0.01, unpriced: 1, atMost: 0, requests: 2 });
+  assert.deepEqual(runCostOf(unbounded), { usd: null, known: 0.01, bounded: 0, unpriced: 1, atMost: 0, requests: 2 });
 });
 
 test("bookedSpend reads an answer with no price of its own as a cost unknown, never the hold the cap booked it at ($0 with no cap)", async () => {

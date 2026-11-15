@@ -222,7 +222,8 @@ test("a request its runner was lost in, before any answer or usage, is booked at
   // The bound is stored beside the figure in the end's commit (the run row's cost_upper_bound), and the row reads it apart:
   // its exact cost unknown, the figure the most it can have cost. No reader of costUsd takes the bound for its cost.
   assert.deepEqual([row.costUsd, row.costAtMostUsd], [null, total], "the stored cost counts the cut at its hold, as the most the run can have cost, never as its cost");
-  assert.deepEqual({ usd: view.cost.usd, upper_bound: view.cost.upper_bound, unpriced: view.cost.unpriced }, { usd: total, upper_bound: true, unpriced: undefined }, `the view says the same figure, as the most it can be: ${JSON.stringify(view.cost)}`);
+  // Beside it, its exact part (the answered request's) and the one request counted at its hold.
+  assert.deepEqual({ usd: view.cost.usd, upper_bound: view.cost.upper_bound, so_far_usd: view.cost.so_far_usd, unpriced: view.cost.unpriced }, { usd: total, upper_bound: true, so_far_usd: REQUEST_USD, unpriced: 1 }, `the view says the same figure, as the most it can be: ${JSON.stringify(view.cost)}`);
   assert.deepEqual([listed.costUsd, listed.costAtMostUsd], [undefined, total], `the list row says at most, apart: ${JSON.stringify(listed)}`);
   assert.equal(usage?.usage?.upper_bound, true, `the usage row marks it: ${JSON.stringify(usage)}`);
   assert.match(usage.summary, /at most \$/, "and says it in words");
