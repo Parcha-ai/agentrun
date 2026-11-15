@@ -44,8 +44,11 @@ test("it counts as gpt-tokenizer's o200k_base did: special tokens' spellings as 
     ['<|endoftext|>', 7],
     ['Ünïcödé 日本語のテキスト 😀👨‍👩‍👧', 20],
     ["I've said it'S fine, they'LL go", 10],
-    // Characters Unicode 17 moved into a letter or number class: counted as Unicode 16 classed them.
+    // Characters Unicode 17 added to a letter or number class: counted as Unicode 16 classed them (on Node's own Unicode
+    // 17 classes U+10EFA takes the contraction after it, one token fewer).
     ['aʕb ʕʕ 1౜2', 14],
+    ["\u{10efa}'s", 6],
+    ["a\u{10efa}'s", 7],
     ['    indented\n\n\tcode();\r\n', 6],
     ['a'.repeat(10_000), 1_250],
     [JSON.stringify({ model: 'gpt-6.1-sol', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Look up the capital of France.' }] }] }), 42],
