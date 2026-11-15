@@ -61,7 +61,8 @@ const page = await settings.press(about.ref, { expect: { text: "Android version"
 return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /version/i.test(line)) };
 ```
 
-The tools are there too, as `tools.computer_observe(...)` and `tools.computer_act(...)`.
+App ids come from `computer.apps.list()`: call it before `computer.apps.open`. The tools are there too, as
+`tools.computer_observe(...)` and `tools.computer_act(...)`.
 
 **On Codex** there is no `codemode` and no `computer`: Codex runs scripts in its own code mode, which calls the tools in
 your list, and each call answers JSON text to parse. The phone's apps are `computer_op` there, one call per op with its
