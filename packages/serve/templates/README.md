@@ -117,7 +117,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   the exact URL; the first answer that matches is taken, else `default`. A `status` of 400 or more fails the fetch as
   that answer would. The calls show in the run's timeline as any other, so a `tool_used` grader counts them. Each
   harness gets the same fake: on claude-agent and codex their own web search is never offered to a `web:` case's runs.
-  Only the eval's own server honours `web`, so a case with it refuses to run with `--server`.
+  The package's `tools` must name `web_search` or `web_fetch`. Only the eval's own server honours `web`, so a case with
+  it refuses to run with `--server`.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",

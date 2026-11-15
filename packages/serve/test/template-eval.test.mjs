@@ -377,6 +377,14 @@ test("a web: case checks: unavailable or a fixture file of the case whose answer
   assert.match(problems, /web-bad\/fixtures\/web\.json: fetch\.answers\.0 is \{url, status\?, title\?, text\} or \{url, error\}/);
   const missing = await webPackage(t, "web-missing", "fixtures/none.json", [["web_search", { query: "x" }]]);
   assert.throws(() => readCases(missing, ["web-missing"]), (e) => e instanceof CaseError && /web-missing\/case\.yaml: web is unavailable, or a fixture file in the case \(not "fixtures\/none\.json"\)/.test(e.message));
+  // A package with no web tool, its tools named without one or not named at all (its computer's shell tools, or none).
+  for (const tools of ["tools: [read, write, ask_person]\n", ""]) {
+    const bare = await webPackage(t, "web-bare", "unavailable", [["web_search", { query: "x" }]]);
+    const manifest = readFileSync(join(bare, "agent.md"), "utf8");
+    writeFileSync(join(bare, "agent.md"), manifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", tools));
+    assert.notEqual(readFileSync(join(bare, "agent.md"), "utf8"), manifest);
+    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search and web_fetch, and the package's tools name neither/.test(e.message), JSON.stringify(tools));
+  }
   const named = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "x" }]]);
   await assert.rejects(evalTemplate({ dir: named, cases: ["search-failed"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/search-failed: web fakes the web tools on the eval's own server alone: run it without --server/.test(e.message));
 });

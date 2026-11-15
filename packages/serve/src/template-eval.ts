@@ -301,8 +301,8 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     let web: WebFake | undefined;
     if (c.web !== undefined) {
       const path = c.web === "unavailable" ? undefined : inside(root, c.web, "file");
-      // A package that names no tools gets the server's defaults, the web tools among them.
-      if (pkg.tools && !pkg.tools.includes(WEB_SEARCH_TOOL) && !pkg.tools.includes(WEB_FETCH_TOOL)) bad(`${at}/case.yaml: web fakes web_search and web_fetch, and the package grants neither`);
+      // Only a package that names a web tool has one: one that names no tools gets its computer's shell tools, or none.
+      if (!pkg.tools?.includes(WEB_SEARCH_TOOL) && !pkg.tools?.includes(WEB_FETCH_TOOL)) bad(`${at}/case.yaml: web fakes web_search and web_fetch, and the package's tools name neither`);
       else if (c.web === "unavailable") web = "unavailable";
       else if (!path) bad(`${at}/case.yaml: web is unavailable, or a fixture file in the case (not ${JSON.stringify(c.web)})`);
       else {
