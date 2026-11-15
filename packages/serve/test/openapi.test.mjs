@@ -135,10 +135,11 @@ test("the contract's operations are as vendored; this server's own are added and
       continue;
     }
     if (op.operationId === "getTimeline") {
-      // A page's limit: the contract's parameters, then this server's one, and the rest as vendored.
-      assert.deepEqual(Object.keys(changes), ["limit"]);
-      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
-      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["limit", "query", false]);
+      // A page's limit and a grader's calls=whole: the contract's parameters, then this server's two, the rest as vendored.
+      assert.deepEqual(Object.keys(changes), ["limit", "calls"]);
+      assert.deepEqual(op.parameters.slice(0, -2), original.parameters);
+      assert.deepEqual(op.parameters.slice(-2).map((p) => [p.name, p.in, p.required]), [["limit", "query", false], ["calls", "query", false]]);
+      assert.deepEqual(op.parameters.at(-1).schema, { enum: ["whole"] });
       const { parameters: _a, ...same } = rest;
       const { parameters: _b, ...vendoredSame } = original;
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");

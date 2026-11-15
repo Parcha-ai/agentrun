@@ -1,4 +1,5 @@
 import cronstrue from "cronstrue";
+import { type Accept, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
 import { ClientError } from "./client";
 import { clock } from "./format";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
@@ -196,26 +197,17 @@ export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}
 export const HOOK_URL_HINT = "This server's address as this page sees it: behind a proxy, use its public address.";
 /** What a webhook's signature check takes, in words. */
 export const SIGNATURE_WORDS: Record<"standard" | "github" | "composio", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)", composio: "Composio's (webhook-signature, keyed by its secret as given)" };
-/** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
 type HookSource = Extract<TriggerSource, { kind: "webhook" }>;
-type Accept = NonNullable<HookSource["accept"]>[number];
-type Where = NonNullable<Accept["where"]>[number];
-
-/** One `where` condition of a webhook's filter, in words: the JSON pointer into the request's body and what it must be. */
-const whereWords = (w: Where): string =>
-  "in" in w ? `${w.pointer} is one of ${w.in.map((v) => JSON.stringify(v)).join(", ")}`
-  : "exists" in w ? `${w.pointer} ${w.exists ? "is there" : "is absent"}`
-  : `${w.pointer} starts with ${JSON.stringify(w.prefix)}`;
-
-/** One accepted event: its name, its actions, and its conditions when it has them. */
-export const acceptWords = (a: Accept, conditions = true): string =>
-  `${a.event}${a.actions?.length ? ` (${a.actions.join(", ")})` : ""}${conditions && a.where?.length ? ` where ${a.where.map(whereWords).join(" and ")}` : ""}`;
+type GitHubSource = Extract<TriggerSource, { kind: "github" }>;
+/** A filter's rule in words, as its editor names each part (lib/accept.ts). */
+export { acceptWords };
 
 /** When a webhook fires, in one line: every signed request, or (with `accept`) only the ones its filter takes; a request
  *  the filter doesn't take is answered and starts nothing. */
 export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
+/** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
 export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event" };
 
 /** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
@@ -318,29 +310,87 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
   };
 }
 
-/** A new webhook's fields as typed: how its requests are signed, then the run each one starts (as a schedule's). */
-export type WebhookDraft = { name: string; signature: "standard" | "github" | "composio"; agentId: string; content: string; maxCost: string };
-export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", agentId: "", content: "", maxCost: "" });
+/** A new webhook's fields as typed: how its requests are signed, its filter (none: every signed request fires), then the
+ *  run each one starts (as a schedule's). */
+export type WebhookDraft = { name: string; signature: "standard" | "github" | "composio"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string };
+export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", accept: [], agentId: "", content: "", maxCost: "" });
 
-/** A new webhook's create body, or what is missing, by the field the server would name: bodyOf's rules for the run it
- *  starts. The URL and the signing secret are the server's, in the create's answer. */
-export function webhookBodyOf(d: WebhookDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
-  return createOf(d, { kind: "webhook", signature: d.signature }, {}, capOptional, "a webhook");
+/** A webhook's source with `rules` as its filter (none: no accept), its kind and signature as `was` has them. */
+export function webhookSourceOf(was: { signature?: HookSource["signature"] }, rules: readonly RuleDraft[]): { source: HookSource; issues: Record<string, string> } {
+  const { accept, issues } = acceptOf(rules);
+  return { source: { kind: "webhook", ...(was.signature !== undefined ? { signature: was.signature } : {}), ...(accept.length ? { accept } : {}) }, issues };
 }
 
-/** A new GitHub trigger's fields as typed: the picked events as "event:action" (GITHUB_EVENTS), then the run each starts. */
-export type GitHubDraft = { name: string; events: string[]; agentId: string; content: string; maxCost: string };
-export const emptyGitHub = (): GitHubDraft => ({ name: "", events: ["pull_request:opened"], agentId: "", content: "", maxCost: "" });
+/** A new webhook's create body, or what is missing, by the field the server would name: its filter's shape, and bodyOf's
+ *  rules for the run it starts. The URL and the signing secret are the server's, in the create's answer. */
+export function webhookBodyOf(d: WebhookDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const { source, issues } = webhookSourceOf({ signature: d.signature }, d.accept);
+  return createOf(d, source, issues, capOptional, "a webhook");
+}
 
-/** A new GitHub trigger's create body, or what is missing: `accept` groups the picked actions by event, in the list's order. */
-export function githubBodyOf(d: GitHubDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
-  const accept: { event: string; actions: string[] }[] = [];
-  for (const { event, action } of GITHUB_EVENTS.filter((e) => d.events.includes(`${e.event}:${e.action}`))) {
-    const rule = accept.find((a) => a.event === event);
-    if (rule) rule.actions.push(action);
-    else accept.push({ event, actions: [action] });
+/** A GitHub trigger's filter as typed: the picked events as "event:action" (GITHUB_EVENTS), each picked event's
+ *  conditions, and rules for events the picker doesn't offer (`other`), typed as a webhook's are. `read`, on a filter
+ *  being edited: its rules in the order they came (`event:<name>` for a picked event's, `other:<key>` for one of
+ *  `other`) and each picked event's rule as read, so what the person left goes back as it came. */
+export type GitHubPicks = { events: string[]; where: Record<string, ConditionDraft[]>; other: RuleDraft[]; read?: { order: string[]; rules: Record<string, Accept> } };
+/** A new GitHub trigger's fields as typed: its filter, then the run each event starts. */
+export type GitHubDraft = GitHubPicks & { name: string; agentId: string; content: string; maxCost: string };
+export const emptyGitHub = (): GitHubDraft => ({ name: "", events: ["pull_request:opened"], where: {}, other: [], agentId: "", content: "", maxCost: "" });
+
+/** The picker's events, one each, in the list's order. */
+export const GITHUB_EVENT_NAMES = [...new Set(GITHUB_EVENTS.map((e) => e.event))];
+
+/** A GitHub filter's rule as sent, with `id`: `event:<name>` for a picked event's, `other:<key>` for one of `other`. */
+export type GitHubRule = { id: string; event: string; actions: string | string[]; where: readonly ConditionDraft[]; was?: Accept };
+const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x) => b.includes(x));
+/** A GitHub filter's rules in the order they are sent: one per picked event (its picked actions and its conditions),
+ *  then the other rules. On a filter being edited, the rules read keep the order they came in, and a picked event's
+ *  actions their order while the same ones are ticked; new rules follow, in the list's order. */
+export function githubRulesOf(d: GitHubPicks): GitHubRule[] {
+  const picked: GitHubRule[] = GITHUB_EVENT_NAMES.flatMap((event) => {
+    const actions = GITHUB_EVENTS.filter((e) => e.event === event && d.events.includes(`${e.event}:${e.action}`)).map((e) => e.action);
+    if (!actions.length) return [];
+    const was = d.read?.rules[event];
+    return [{ id: `event:${event}`, event, actions: was?.actions && sameSet(actions, was.actions) ? [...was.actions] : actions, where: d.where[event] ?? [], ...(was ? { was } : {}) }];
+  });
+  const rules = [...picked, ...d.other.map((r) => ({ ...r, id: `other:${r.key}` }))];
+  const order = d.read?.order ?? [];
+  const at = (r: GitHubRule) => { const i = order.indexOf(r.id); return i < 0 ? order.length : i; };
+  return rules.map((r, i) => ({ r, i })).sort((a, b) => at(a.r) - at(b.r) || a.i - b.i).map(({ r }) => r);
+}
+
+/** A GitHub source with `d` as its filter, or the issues by field: it takes at least one event. */
+export function githubSourceOf(d: GitHubPicks): { source: GitHubSource; issues: Record<string, string> } {
+  const { accept, issues } = acceptOf(githubRulesOf(d));
+  if (!accept.length) issues["source.accept"] = "Pick at least one event.";
+  return { source: { kind: "github", accept }, issues };
+}
+
+/** A GitHub trigger's filter as the form holds it, to edit: a rule the picker can say (one of its events, by the first
+ *  rule for it, with only actions it offers) is ticked there with its conditions; any other is one of `other`. */
+export function githubPicksOf(accept: readonly Accept[]): GitHubPicks {
+  const out = { events: [], where: {}, other: [], read: { order: [], rules: {} } } as GitHubPicks & { read: NonNullable<GitHubPicks["read"]> };
+  for (const rule of accept) {
+    const offered = GITHUB_EVENTS.filter((e) => e.event === rule.event).map((e) => e.action);
+    const fits = !!rule.actions?.length && rule.actions.every((a) => offered.includes(a)) && new Set(rule.actions).size === rule.actions.length && !(rule.event in out.where);
+    if (!fits) {
+      const draft = ruleDraftOf(rule);
+      out.other.push(draft);
+      out.read.order.push(`other:${draft.key}`);
+      continue;
+    }
+    out.events.push(...rule.actions!.map((a) => `${rule.event}:${a}`));
+    out.where[rule.event] = (rule.where ?? []).map(conditionDraftOf);
+    out.read.order.push(`event:${rule.event}`);
+    out.read.rules[rule.event] = rule;
   }
-  return createOf(d, { kind: "github", accept }, accept.length ? {} : { "source.accept": "Pick at least one event." }, capOptional, "a GitHub trigger");
+  return out;
+}
+
+/** A new GitHub trigger's create body, or what is missing: its filter's shape, and bodyOf's rules for the run it starts. */
+export function githubBodyOf(d: GitHubDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const { source, issues } = githubSourceOf(d);
+  return createOf(d, source, issues, capOptional, "a GitHub trigger");
 }
 
 /** A create body from its source and the run it starts (bodyOf's rules for the target), or what is missing. */
@@ -373,7 +423,7 @@ export function draftOf(t: Schedule): Draft {
 }
 
 /** Whether two JSON values are the same, whatever their keys' order. */
-const same = (a: unknown, b: unknown): boolean => {
+export const same = (a: unknown, b: unknown): boolean => {
   if (a === b) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
   const [ka, kb] = [Object.keys(a), Object.keys(b)];
@@ -406,7 +456,8 @@ export function issuesOf(e: unknown): { fields: Record<string, string>; rest: st
   const rest: string[] = [];
   for (const f of e.fields) {
     const at = f.field.startsWith("target.input") ? "target.input" : f.field;
-    if ((FORM_FIELDS as readonly string[]).includes(at) && !fields[at]) fields[at] = f.message;
+    // A filter's issues are kept by their field too: its editor shows each one it has a place for (acceptFields).
+    if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept")) && !fields[at]) fields[at] = f.message;
     else rest.push(f.message);
   }
   return { fields, rest };
