@@ -328,8 +328,8 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
 
 // ---- grading ---------------------------------------------------------------------------------------------------------
 
-/** A call a run made: from its timeline (`tool`, its gate name, and a preview of its input) or, for a faked MCP tool,
- *  from the fake's own log (`arguments` whole). */
+/** A call a run made: from its timeline (`tool`, its gate name, a preview of its input, its `arguments` through the run's
+ *  redaction, and the head of its `result`) or, for a faked MCP tool, from the fake's own log (`arguments` whole). */
 export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json };
 /** What a run left, for its graders. */
 export type RunRecord = {

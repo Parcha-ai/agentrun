@@ -83,7 +83,7 @@ test("a case that does not check fails before anything runs, each problem named"
   cpSync(PKG, dir, { recursive: true });
   const write = (path, text) => writeFileSync(join(dir, path), text);
   write("evals/all-pass/graders/regex.md", "---\ntype: regex\npattern: '(unclosed'\n---\n");
-  write("evals/all-pass/graders/wrote.md", "---\ntype: tool_used\ntool: mcp:nowhere/thing\nargs: { id: 1 }\n---\n");
+  write("evals/all-pass/graders/wrote.md", "---\ntype: tool_used\ntool: mcp:nowhere/thing\nargs: [1]\n---\n");
   write("evals/all-pass/graders/file.md", "---\ntype: file_exists\npath: ../out.md\n---\n");
   write("evals/all-pass/prompt.md", "---\nruns: 0\nmax_cost: 1\n---\nAnswer.\n");
   write("evals/learned/case.yaml", "parameters:\n  team: blue\n  colour: red\nlearning: fixtures/missing/\n");
@@ -101,7 +101,7 @@ test("a case that does not check fails before anything runs, each problem named"
   for (const expected of [
     /all-pass\/prompt\.md: no field max_cost/, /all-pass\/prompt\.md: runs is a whole number/,
     /graders\/regex\.md: its pattern does not compile/, /graders\/file\.md: a file_exists grader names a path in the run's work folder/,
-    /graders\/wrote\.md: mcp:nowhere\/thing is neither a tool this server binds, an MCP tool the package lists \(mcp:<toolkit>\/<tool>\) nor a monid endpoint it grants by name/, /graders\/wrote\.md: args are checked on a faked MCP tool's calls alone/,
+    /graders\/wrote\.md: mcp:nowhere\/thing is neither a tool this server binds, an MCP tool the package lists \(mcp:<toolkit>\/<tool>\) nor a monid endpoint it grants by name/, /graders\/wrote\.md: args is a mapping of the arguments a call must carry/,
     /learned\/case\.yaml: parameters\.colour: parameters keeps no field colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a folder in the case/,
     /mcp-match\/fixtures\/crm\.json: tools\.get_contact is \{description, input/, /mcp-mismatch\/case\.yaml: grants\.0: grants\.0 is not a tool of the package evalpkg/,
   ]) assert.match(said, expected);
@@ -136,7 +136,7 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.match(targeted, /<target field="summary" untrusted>\nSUMMARY-MARKER all fine\n<\/target>/);
   for (const input of [plain, targeted]) {
     assert.doesNotMatch(input, /BAD-MARKER|summary-marker"|answer\.schema\.json|passes a grader of every type/);
-    assert.match(input, /<tool-calls untrusted>\n1\. write \(notes\/out\.md\) -> success/);
+    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success: Successfully wrote to notes\/out\.md\n/);
   }
   assert.ok(!plain.includes("SUMMARY-MARKER\".") && !targeted.includes("GOOD-MARKER\"."), "one rubric each");
 });
