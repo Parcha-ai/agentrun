@@ -1413,6 +1413,8 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     replay_id: str
     refit: ListLearningPromotionsResponsePromotionsItemRefit
     checked: int
+    since: int
+    held_on: list[str]
     commit: str
     superseded_by: str
 

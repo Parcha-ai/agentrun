@@ -1164,6 +1164,8 @@ export type ListLearningPromotionsResponse = {
       }>;
     };
     checked?: number;
+    since?: number;
+    held_on?: Array<string>;
     commit?: string;
     superseded_by?: string;
   }>;

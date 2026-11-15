@@ -3067,6 +3067,8 @@ export interface operations {
           }[];
         };
         checked?: number;
+        since?: number;
+        held_on?: string[];
         commit?: string;
         superseded_by?: string;
       }[];

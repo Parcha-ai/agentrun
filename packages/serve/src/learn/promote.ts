@@ -85,7 +85,9 @@ export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boo
  *  run, never scored) and at which tools (`skipped_tools`, SkippedTool), and its runs' outcomes (`outcomes`,
  *  ReplayOutcomes). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
- *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). */
+ *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). `since`: on a promote,
+ *  the agent's newest grade (its seq) when this promotion began: its checks count only the grades after it. `held_on`: the
+ *  served runs graded wrong a revision was held on, owed by its next replay (heldOn). */
 export interface PromotionRecord {
   readonly workflow: string;
   readonly digest: string;
@@ -109,6 +111,16 @@ export interface PromotionRecord {
   readonly launch?: ReplayLaunch;
   readonly refit?:{ readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
+  /** A promote record's start (a replay's promote): the agent's newest grade's seq when it was written. A revision that
+   *  served before (promoted, held, replayed and promoted again) is checked only on the grades put after it, never again
+   *  on the ones it was held on. A grade's seq is the store's own order, never a clock. Absent: every grade of the digest
+   *  counts (a digest that never served before has none). */
+  readonly since?: number;
+  /** The runs a revision served that were graded wrong when its graded check held it (newest first, at most REPLAY_INPUTS),
+   *  kept on that hold, on the replay of it its owner starts (those of them still graded and fitting it, each one of its
+   *  inputs), and on a replay's hold: a replay of the revision promotes it only once it answered (or handed back) on every
+   *  one (heldOn). */
+  readonly held_on?: readonly string[];
   /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
   readonly superseded_by?: string;
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
@@ -123,6 +135,11 @@ export interface ReplayLaunch {
   readonly body: unknown;
   readonly handed_from?: string;
 }
+
+/** What a replay of a revision owes before it may promote it: the served runs graded wrong it was held on
+ *  (PromotionRecord.held_on), none when `record` owes none. The one reading of it: the owner's replay puts each among its
+ *  inputs (runner/promotion.ts askReplay), and its settle holds a replay that did not answer or hand back on each. */
+export const heldOn = (record: PromotionRecord | undefined): readonly string[] => record?.held_on ?? [];
 
 /** A tool that stopped a replay's inputs (each a skipped_write row): its catalog name, how many inputs it stopped, and
  *  whether it is an MCP tool its server listed with no readOnlyHint (`no_read_only_hint`: replay may only lack the hint,
