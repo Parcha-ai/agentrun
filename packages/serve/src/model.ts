@@ -633,7 +633,8 @@ async function withPlanModels<M extends Awaited<ReturnType<typeof withLocalModel
   const [ai, { createProvider }, { openAIResponsesApi }] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/openai-responses.lazy")]);
   const baseUrl = `${PLAN_ORIGIN}/v1`;
   const none = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  const listed = plan.models.map((id) => ({ ...(models.getModel("openai", id) ?? { name: id, api: "openai-responses", reasoning: true, input: ["text", "image"], contextWindow: 272_000, maxTokens: 128_000 }), id, provider: PLAN_PROVIDER, baseUrl, cost: none }));
+  // A model the catalog doesn't list yet is sent no effort at thinking off (`off: null`): a plan model may refuse "none".
+  const listed = plan.models.map((id) => ({ ...(models.getModel("openai", id) ?? { name: id, api: "openai-responses", reasoning: true, thinkingLevelMap: { off: null }, input: ["text", "image"], contextWindow: 272_000, maxTokens: 128_000 }), id, provider: PLAN_PROVIDER, baseUrl, cost: none }));
   models.setProvider(createProvider({
     id: PLAN_PROVIDER,
     name: "ChatGPT plan",
