@@ -657,8 +657,8 @@ export async function computerForClaim(
       if (deps.launch && (deps.launches?.(entry.id) ?? true)) return undefined;
       if (record.provider !== entry.id || record.kind !== kind) return undefined;
       try {
-        // Its time over, or its end took it first: a new one, said so.
-        if (record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {
+        // Its time over, or its end took it first (ending or ended): a new one, said so.
+        if (record.ending || record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {
           lapsed = true;
           return undefined;
         }

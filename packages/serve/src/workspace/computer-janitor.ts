@@ -209,8 +209,9 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
   return sweepKept({ settings: store.settings, runs: store.runs, now: (deps.now ?? Date.now)(), providerOf });
 }
 
-/** The janitor: one sweep now, then one every `everyMs`, never two at once, and one more at the earliest time a kept
- *  computer is due (sweepKeptComputers), so a park's keep ends on time though the process that parked it is gone.
+/** The janitor: one sweep now, then one every `everyMs`, never two at once, and a kept pass at the earliest time a kept
+ *  computer is due (sweepKeptComputers; each delete bounded, KEPT_DELETE_MS), so a park's keep ends on time though the
+ *  process that parked it is gone. A wake that comes while a sweep runs runs the kept pass as soon as that sweep is done.
  *  `close()` stops it, cuts a sweep under way and waits for it at most `closeMs`. Under --faux it does nothing. */
 export function startJanitor(deps: JanitorDeps): { readonly first: Promise<void>; close(): Promise<void> } {
   if (deps.env[FAUX_ENV]) return { first: Promise.resolve(), close: async () => {} };
@@ -220,6 +221,8 @@ export function startJanitor(deps: JanitorDeps): { readonly first: Promise<void>
   let running: Promise<void> | undefined;
   /** The wake at the earliest kept computer's time, when it is sooner than the next sweep. */
   let wake: NodeJS.Timeout | undefined;
+  /** A wake that came while a sweep ran: the kept pass runs again once that sweep is done. */
+  let missed = false;
   const keptPass = async (): Promise<void> => {
     const kept = await sweepKeptComputers(deps);
     if (!kept || cut.signal.aborted) return;
@@ -228,31 +231,44 @@ export function startJanitor(deps: JanitorDeps): { readonly first: Promise<void>
     clearTimeout(wake);
     wake = undefined;
     if (kept.next === undefined) return;
-    wake = setTimeout(() => void (cut.signal.aborted || running || once()), Math.max(0, kept.next - (deps.now ?? Date.now)()) + 1_000);
+    wake = setTimeout(() => {
+      if (cut.signal.aborted) return;
+      if (running) missed = true;
+      else void alone(keptPass);
+    }, Math.max(0, kept.next - (deps.now ?? Date.now)()) + 1_000);
     wake.unref();
   };
-  const once = (): Promise<void> =>
+  /** `work` as the one sweep under way; a wake missed meanwhile runs the kept pass once it is done. */
+  const alone = (work: () => Promise<void>): Promise<void> =>
     (running ??= (async () => {
       try {
-        await keptPass();
-        for (const { provider, swept } of await sweepServerComputers(deps, cut.signal)) {
-          // A sweep the close cut says nothing more.
-          if (cut.signal.aborted) break;
-          if (!swept.ok) {
-            const words = `${swept.error.code}: ${swept.error.message}`;
-            if (said.get(provider) !== words) deps.log(`the computer janitor could not sweep ${provider}'s computers: ${swept.error.message}`);
-            said.set(provider, words);
-            continue;
-          }
-          said.delete(provider);
-          if (swept.value.deleted.length > 0) deps.log(`the computer janitor ended ${provider}'s computers past their deadline: ${swept.value.deleted.join(", ")}`);
-        }
+        await work();
       } catch (error) {
         if (!cut.signal.aborted) deps.log(`the computer janitor's sweep failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         running = undefined;
+        if (missed && !cut.signal.aborted) {
+          missed = false;
+          void alone(keptPass);
+        }
       }
     })());
+  const once = (): Promise<void> =>
+    alone(async () => {
+      await keptPass();
+      for (const { provider, swept } of await sweepServerComputers(deps, cut.signal)) {
+        // A sweep the close cut says nothing more.
+        if (cut.signal.aborted) break;
+        if (!swept.ok) {
+          const words = `${swept.error.code}: ${swept.error.message}`;
+          if (said.get(provider) !== words) deps.log(`the computer janitor could not sweep ${provider}'s computers: ${swept.error.message}`);
+          said.set(provider, words);
+          continue;
+        }
+        said.delete(provider);
+        if (swept.value.deleted.length > 0) deps.log(`the computer janitor ended ${provider}'s computers past their deadline: ${swept.value.deleted.join(", ")}`);
+      }
+    });
   const first = once();
   const timer = setInterval(() => void (cut.signal.aborted || running || once()), deps.everyMs ?? JANITOR_EVERY_MS);
   timer.unref();

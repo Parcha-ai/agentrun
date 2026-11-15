@@ -18,8 +18,8 @@ import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords } from "../dist/workspace/computer-deps.js";
-import { KEEP_MS, keptKeyOf, readKept, sweepKept } from "../dist/workspace/computer-kept.js";
-import { sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
+import { endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
+import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -272,6 +272,61 @@ test("the keep's end and a resume never both have it: a row the resume took is n
   // The row as it was, put back: its end finds it no longer the row it read.
   assert.equal(await one.store.settings.replaceIf(keptKeyOf("run-1"), { ...row, ended: true }, row), false);
   await resumed.release();
+});
+
+test("a process that died after its end began, before the delete answered: the row reads ending, no resume takes it, and the janitor's next pass deletes it and marks it ended", async () => {
+  const one = await server();
+  await (await one.claim(3)).park();
+  const row = await readKept(one.store.settings, "run-1");
+  one.clock.now = row.until;
+  // The parking process's end: its delete never answers (the process is gone).
+  void endKept(one.store.settings, "run-1", row, () => new Promise(() => {}));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await readKept(one.store.settings, "run-1")).ending, true);
+  assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] }, "deleted again by the janitor");
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  assert.equal((await readKept(one.store.settings, "run-1")).ended, true);
+});
+
+test("a kept computer's delete that hangs is bounded: the pass goes on to the next row, says it, and the next pass deletes it again", async () => {
+  const one = await server();
+  await (await one.claim(3)).park();
+  // A second run's kept desktop, its run no longer in the store.
+  one.account.computers.set("c9", { id: "c9", labels: {} });
+  await writeKept(one.store.settings, "run-2", { provider: "e2b", kind: "desktop", id: "c9", name: "c9", epoch: 1, until: T0 + KEEP_MS });
+  one.clock.now = T0 + KEEP_MS;
+  let hang = true;
+  const provider = { ...one.account.provider, release: (ref, how) => (hang && ref.id === "c1" ? new Promise(() => {}) : one.account.provider.release(ref, how)) };
+  const pass = () => sweepKept({ settings: one.store.settings, runs: one.store.runs, now: one.clock.now, providerOf: async () => provider, deleteMs: 50 });
+  const first = await pass();
+  assert.deepEqual(first.ended, ["c9"], "the next row ended in the same pass");
+  assert.equal(first.failed.length, 1);
+  assert.match(first.failed[0], /^c1 of run run-1: its delete did not answer within 0\.05 s; the next pass tries again$/);
+  assert.equal((await readKept(one.store.settings, "run-1")).ending, true, "left ending: no resume takes it");
+  hang = false;
+  assert.deepEqual(await pass(), { ended: ["c1"], failed: [] });
+  assert.equal(one.account.computers.has("c1"), false);
+});
+
+test("the janitor's wake at a kept computer's time, come while a provider sweep runs, ends it as soon as that sweep is done", async () => {
+  const root = scratch();
+  const store = memoryStore();
+  const sealKey = randomBytes(32);
+  await putSealedKey(store, sealKey, "E2B_API_KEY", "fake-test-key");
+  const account = vendor(root, DESKTOP_GROUPS);
+  account.computers.set("c1", { id: "c1", labels: {} });
+  await writeKept(store.settings, "run-1", { provider: "e2b", kind: "desktop", id: "c1", name: "c1", epoch: 3, until: Date.now() + 100 });
+  // The provider sweep's list takes 2.5 s; the wake comes at about 1.1 s, while it runs.
+  const slow = { ...account.provider, list: async (labels) => { await new Promise((resolve) => setTimeout(resolve, 2_500)); return account.provider.list(labels); } };
+  const logged = [];
+  const janitor = startJanitor({ store, computers: { kinds: KINDS, providers: { e2b: () => slow }, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, log: (line) => void logged.push(line), everyMs: 600_000 });
+  try {
+    for (let i = 0; i < 60 && account.computers.has("c1"); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(account.computers.has("c1"), false, `ended once the sweep was done: ${JSON.stringify(logged)}`);
+    assert.equal((await readKept(store.settings, "run-1")).ended, true);
+  } finally {
+    await janitor.close();
+  }
 });
 
 test("a sandbox, a paired computer and --faux's desktop are never kept: their park lets them go as the run's end does", async () => {
