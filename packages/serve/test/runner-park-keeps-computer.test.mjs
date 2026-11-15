@@ -143,6 +143,11 @@ async function ends(one, state = "ended") {
 const creates = (vendor) => vendor.calls.filter(([verb]) => verb === "create").map(([, id]) => id);
 const deletes = (vendor) => vendor.calls.filter(([verb, , how]) => verb === "release" && how === "delete").map(([, id]) => id);
 const notes = (requests) => requests.map((body) => (JSON.stringify(body).match(NOTES) ?? []).length);
+/** The vendor's deletes, once they are `want`: the run's row reads ended before its claim's release has answered. */
+async function deleted(vendor, want, what) {
+  await until(async () => deletes(vendor).length >= want.length, what, 10_000).catch(() => undefined);
+  assert.deepEqual(deletes(vendor), want, what);
+}
 
 test("a desktop run parked on a tool's approval and approved within 10 minutes goes on on the same desktop: no second create, not called a new one, no note to the model", { timeout: 120_000 }, async (t) => {
   const one = await parkedRun(t);
@@ -153,7 +158,7 @@ test("a desktop run parked on a tool's approval and approved within 10 minutes g
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
   const said = await ends(one);
   assert.deepEqual(creates(one.vendor), ["d1"], "the same desktop: no create at the resume");
-  assert.deepEqual(deletes(one.vendor), ["d1"], "let go at the run's end");
+  await deleted(one.vendor, ["d1"], "let go at the run's end");
   assert.equal(said.filter((summary) => summary === HOLD).length, 1, `the park said it is kept: ${JSON.stringify(said)}`);
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, "the resume said it is the same one");
   assert.deepEqual(said.filter((summary) => summary.startsWith("AgentRun: Your computer")), [], "no replaced row");
@@ -167,7 +172,7 @@ test("a desktop run approved after 10 minutes goes on on a new desktop: the kept
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
   const said = await ends(one);
   assert.deepEqual(creates(one.vendor), ["d1", "d2"], "a new desktop");
-  assert.deepEqual(deletes(one.vendor), ["d1", "d2"], "the kept one let go before it, the new one at the end");
+  await deleted(one.vendor, ["d1", "d2"], "the kept one let go before it, the new one at the end");
   assert.equal(said.filter((summary) => summary.includes(`${LAPSED} It's a new desktop`)).length, 1, `said once, with why: ${JSON.stringify(said)}`);
   assert.deepEqual(said.filter((summary) => summary.startsWith("AgentRun: Your computer")), [ROW], "the replaced row once");
   assert.deepEqual(notes(one.requests).filter(Boolean), [1], "the model told once");
@@ -179,8 +184,8 @@ test("a stop while parked lets the kept desktop go at once", { timeout: 120_000 
   await one.server.command(RUN, { kind: "stop" });
   await ends(one, "stopped");
   assert.deepEqual(creates(one.vendor), ["d1"]);
-  assert.deepEqual(deletes(one.vendor), ["d1"], "let go by the stop's claim");
-  assert.equal(one.vendor.computers.size, 0, "nothing left running");
+  await deleted(one.vendor, ["d1"], "let go by the stop's claim");
+  await until(async () => one.vendor.computers.size === 0, "nothing left running", 10_000);
   assert.equal(await one.server.settings.get(keptKeyOf(RUN)), undefined);
 });
 
@@ -189,6 +194,6 @@ test("a denial while parked goes on on the same desktop, the call refused: the r
   await one.server.command(RUN, { kind: "deny", body: { approval: one.ask.callId, note: "not now" } });
   const said = await ends(one);
   assert.deepEqual(creates(one.vendor), ["d1"], "no new desktop");
-  assert.deepEqual(deletes(one.vendor), ["d1"]);
+  await deleted(one.vendor, ["d1"], "let go at the run's end");
   assert.deepEqual(said.filter((summary) => summary.startsWith("AgentRun: Your computer")), []);
 });
