@@ -3,7 +3,8 @@
 // project's one webhook subscription at this server's address (reused after; one at someone else's address is refused,
 // and moved only when asked), the trigger instance for the account the server is connected as, then the trigger. A
 // delivery to /v2/hooks/composio/{hook}, checked once with the subscription's secret, fires each trigger whose instance
-// is the delivery's metadata.trigger_id and whose filter takes it. Pause, resume and delete follow on Composio. The
+// is the delivery's metadata.trigger_id and whose filter takes it. Pause, resume and delete follow on Composio, and so does
+// the server turning a trigger off itself; a user with several connected accounts is refused, never guessed at. The
 // subscription's secret is sealed here and never answered, logged or put in an event.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
@@ -140,6 +141,19 @@ test("an account that isn't connected answers the connect link, and leaves nothi
   assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
 });
 
+test("several connected accounts: refused, naming each with when it was made, and nothing is made on Composio", async (t) => {
+  // A trigger running as the wrong account, unseen, is worse than a refusal: the owner disconnects the extra one.
+  const s = await setup(t, { composio: { accounts: { github: [{ id: "ca_other_github", status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }] } } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.status, 409, JSON.stringify(res.body));
+  assert.equal(res.body.error.code, "composio_account_ambiguous");
+  assert.deepEqual(res.body.error.details.accounts, [{ id: "ca_other_github", created_at: "2026-11-10T08:00:00.000Z" }, { id: "ca_fake_github", created_at: "2026-11-13T20:26:18.916Z" }]);
+  for (const words of [/agentrun-qa/, /ca_other_github \(connected 2026-11-10T08:00:00\.000Z\)/, /ca_fake_github \(connected 2026-11-13T20:26:18\.916Z\)/, /disconnect/i]) assert.match(res.body.error.message, words);
+  assert.equal(s.composio.subscriptions.length, 0);
+  assert.equal(s.composio.instances.size, 0);
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
 test("a failure after the subscription undoes it: nothing is left on Composio or here", async (t) => {
   const s = await setup(t, { composio: { fail: { path: "/upsert", status: 500 } } });
   const res = await s.api("POST", "/triggers", issueTrigger());
@@ -235,6 +249,42 @@ test("a Composio failure on pause or delete is said, with what to do by hand; th
   assert.equal(deleted.body.composio.done, false);
   assert.match(deleted.body.composio.note, new RegExp(one.source.instance_id));
   assert.equal((await s.api("GET", `/triggers/${one.id}`)).status, 404, "gone here");
+});
+
+test("a trigger the server turns off itself (its agent archived, a failure streak) is off on Composio too, as a pause is", async (t) => {
+  const s = await setup(t);
+  await made(s.api, "other");
+  // Two triggers on one config share the instance: it stays on while the other is on.
+  const one = (await s.api("POST", "/triggers", issueTrigger())).body;
+  const two = (await s.api("POST", "/triggers", issueTrigger(undefined, { target: { kind: "start_run", agent_id: "other", input: { content: "Triage this issue." }, max_cost_usd: 0.5 } }))).body;
+  const shared = one.source.instance_id;
+  assert.equal(two.source.instance_id, shared);
+  assert.equal((await s.api("POST", "/agents/other/archive")).status, 200);
+  assert.equal((await s.api("GET", `/triggers/${two.id}`)).body.disabled.reason, "agent_archived");
+  assert.equal(s.composio.instances.get(shared).disabled_at, null, "still on: the other trigger holds it");
+  assert.equal((await s.api("POST", "/agents/triage/archive")).status, 200);
+  assert.ok(s.composio.instances.get(shared).disabled_at, "off once no trigger that holds it is on");
+  // Five failed firings in a row: the trigger pauses itself, and its instance is turned off on Composio.
+  assert.equal((await s.api("POST", "/agents", { definition: { id: "unrunnable", version: 1, name: "Unrunnable", harness: "claude-agent", instructions: "Triage.", max_cost_usd: 0.5 } })).status, 201);
+  const flaky = (await s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo: "flaky" }, { target: { kind: "start_run", agent_id: "unrunnable", input: { content: "Triage this issue." }, max_cost_usd: 0.5 } }))).body;
+  assert.ok(flaky.source?.instance_id, JSON.stringify(flaky));
+  const secret = s.composio.subscriptions[0].secret;
+  for (let n = 1; n <= 5; n++) {
+    assert.equal((await deliver(s.baseUrl, hookOf(s), delivery(flaky.source.instance_id), secret)).status, 202);
+    const [last] = await firings(s.api, flaky.id, n);
+    assert.equal(last.status, "failed", JSON.stringify(last));
+  }
+  assert.equal((await s.api("GET", `/triggers/${flaky.id}`)).body.disabled?.reason, "auto_paused");
+  assert.ok(s.composio.instances.get(flaky.source.instance_id).disabled_at, "the paused trigger's instance is off on Composio");
+});
+
+test("a Composio failure turning off a trigger the server turned off itself is said, with what to turn off by hand", async (t) => {
+  const s = await setup(t, { composio: { fail: { path: (path) => path.startsWith("/api/v3/trigger_instances/manage/"), method: "PATCH", status: 500 } } });
+  const one = (await s.api("POST", "/triggers", issueTrigger())).body;
+  assert.equal((await s.api("POST", "/agents/triage/archive")).status, 200);
+  assert.equal((await s.api("GET", `/triggers/${one.id}`)).body.enabled, false, "off here");
+  assert.equal(s.composio.instances.get(one.source.instance_id).disabled_at, null, "Composio didn't turn it off");
+  assert.ok(s.lines.some((line) => line.includes(one.id) && line.includes(one.source.instance_id) && line.includes("https://platform.composio.dev")), "the log says what to turn off there, and where");
 });
 
 test("a saved server with Composio triggers can't be deleted: refused, naming them", async (t) => {

@@ -4,7 +4,7 @@
 // `toolkits`: by slug, `{ no_auth, tools: [{ slug, name, description }] }`; as the real one, a toolkit's own answer says
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
 // it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
-// call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config }` (an ACTIVE one under another
+// call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at? }` (an ACTIVE one under another
 // config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
 // fails each.
@@ -61,6 +61,9 @@ export const STAR_ADDED = {
   payload: { type: "object", properties: {} },
 };
 
+/** When an account was made, as Composio lists it, for one that names no other. */
+const ACCOUNT_MADE = "2026-11-13T20:26:18.916Z";
+
 export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize } = {}) {
   const calls = [];
   const strays = [];
@@ -113,7 +116,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const under = url.searchParams.get("auth_config_ids");
       const listed = [...(accounts[kit] ?? []), active.includes(kit) ? { status: "ACTIVE", auth_config: under ?? "ac_unnamed" } : { status: "INITIATED", auth_config: under ?? "ac_unnamed" }];
       const user = url.searchParams.get("user_ids") ?? "agentrun";
-      return reply(200, { items: listed.filter((a) => !under || a.auth_config === under).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: user, status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config } })) });
+      return reply(200, { items: listed.filter((a) => !under || a.auth_config === under).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: user, status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE })) });
     }
     if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") return reply(201, { redirect_url: `https://connect.composio.test/link/${body.auth_config_id}` });
     // The project's webhook subscription: one at most.
