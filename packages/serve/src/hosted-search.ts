@@ -5,13 +5,15 @@
 // Anthropic's `web_search_20250305` with at most 5 searches, or OpenAI's Responses `web_search`. pi-ai keeps none of the
 // provider's search blocks, so the results and their citations are read from the provider's own
 // events (onProviderStreamEvent). Nothing of it enters the run's conversation but the tool's answer, so nothing needs
-// replaying. A `pause_turn` (Anthropic pausing a long search turn) answers what it has; nothing is retried.
+// replaying. A `pause_turn` (Anthropic pausing a long search turn) answers what it has; nothing is retried. A provider's
+// answer that the run's key is rate-limited or out of quota (LIMIT) is said to the run's breaker (web-search.ts), which
+// asks the provider no more in that run.
 //
 // Its price and search fee are the session proxy's to book: the pi runner's policy (runner/adapters/pi.ts) holds its input at its
 // context plus HOSTED_SEARCH_ALLOWANCE_TOKENS and its fee at the searches the body allows.
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
 import { clip, TITLE_CAP } from "./web-fetch-direct.js";
-import { ANSWER_MAX, type Hit, type Search, snippetOf } from "./web-search.js";
+import { ANSWER_MAX, type Hit, type Search, type Searched, snippetOf } from "./web-search.js";
 
 export const HOSTED_MAX_USES = 5;
 /** One search's results billed as input: about 25,000 tokens, a working estimate. */
@@ -28,6 +30,10 @@ export const OPENAI_SEARCH_LIMIT = Object.freeze({ max_tool_calls: HOSTED_MAX_US
 const ANSWER_TOKENS = 2_048;
 /** As Exa's and Parallel's searches stop. */
 const TIMEOUT_MS = 60_000;
+/** A provider's answer that the run's key is rate-limited or out of quota, by the status or the error code it names: a
+ *  429 or a 402; Anthropic's rate_limit_error and billing_error, OpenAI's rate_limit_exceeded and insufficient_quota, and
+ *  Anthropic's hosted search's own too_many_requests. Never its other failures (an overload, a 5xx), which pass. */
+const LIMIT = /(?<![\w.])(?:429|402)(?![\w.])|\b(?:rate_limit_error|rate_limit_exceeded|insufficient_quota|billing_error|too_many_requests)\b/;
 
 /** What a hosted search asks: the run's models a search request goes through (on the runner, the session's port: its
  *  proxy, policy, key, price and cap), handed to each search by its run, never kept per process. */
@@ -82,15 +88,21 @@ function reader(anthropic: boolean) {
 /** `query` searched by `ref`'s provider (`provider/model-id`, the model the server resolved web_search on) through the
  *  run's models (`models`: its own, handed by the run; none, no model to search on), at most `n` results: a Search. */
 export async function hostedSearch(query: string, n: number, ref: string | undefined, signal: AbortSignal | undefined, models: SearchModels | undefined): Promise<Search> {
+  return (await hostedSearched(query, n, ref, signal, models)).answer;
+}
+
+/** hostedSearch, and whether the provider answered that the run's key is rate-limited or out of quota (LIMIT). */
+export async function hostedSearched(query: string, n: number, ref: string | undefined, signal: AbortSignal | undefined, models: SearchModels | undefined): Promise<Searched> {
+  const failed = (error: string, said = ""): Searched => ({ answer: { error }, limited: LIMIT.test(said) });
   const slash = ref?.indexOf("/") ?? -1;
   const provider = ref && slash > 0 ? ref.slice(0, slash) : undefined;
   const id = ref && slash > 0 ? ref.slice(slash + 1) : undefined;
   // The name as written, else Anthropic's own id for it (dots as dashes, as claude-agent prepares a dotted name:
   // provider.ts anthropicModelId), the one the run's models hold.
   const model = models && provider && id ? (models.getModel(provider, id) ?? (provider === "anthropic" ? models.getModel(provider, id.replaceAll(".", "-")) : undefined)) : undefined;
-  if (!models || !model) return { error: `web_search has no model to search on in this run${ref ? ` (${ref})` : ""}` };
+  if (!models || !model) return failed(`web_search has no model to search on in this run${ref ? ` (${ref})` : ""}`);
   const anthropic = model.api === "anthropic-messages";
-  if (!anthropic && model.api !== "openai-responses") return { error: `web_search: ${ref} has no hosted web search here` };
+  if (!anthropic && model.api !== "openai-responses") return failed(`web_search: ${ref} has no hosted web search here`);
   const read = reader(anthropic);
   const context: Context = { messages: [{ role: "user", content: [{ type: "text", text: `Search the web for: ${query}\n\nAnswer briefly from what the search finds, and name each source by its URL.` }], timestamp: Date.now() }] };
   let answer: AssistantMessage;
@@ -108,11 +120,13 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
       onProviderStreamEvent: (event) => read.event(event),
     });
   } catch (error) {
-    return { error: `the provider's search failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+    const said = String((error as Error)?.message ?? error);
+    return failed(`the provider's search failed: ${said.slice(0, 300)}`, `${(error as { status?: unknown })?.status ?? ""} ${said}`);
   }
-  if (answer.stopReason === "error" || answer.stopReason === "aborted") return { error: answer.stopReason === "aborted" ? "the search was stopped" : `the provider's search failed: ${(answer.errorMessage ?? "no detail").slice(0, 300)}` };
-  const failed = read.failed();
-  if (failed) return { error: `the provider's search failed: ${failed}` };
+  if (answer.stopReason === "aborted") return failed("the search was stopped");
+  if (answer.stopReason === "error") return failed(`the provider's search failed: ${(answer.errorMessage ?? "no detail").slice(0, 300)}`, answer.errorMessage);
+  const refused = read.failed();
+  if (refused) return failed(`the provider's search failed: ${refused}`, refused);
   const said = answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("").trim();
-  return { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) };
+  return { answer: { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) }, limited: false };
 }
