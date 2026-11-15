@@ -17,8 +17,8 @@ const SIGNED_IN: ChatGPTView = { state: "signed_in", email: "person@example.com"
 const HARNESSES = [
   { id: "pi", available: true, default_model: "chatgpt/gpt-6.1-sol" },
   { id: "codex", available: true, default_model: "chatgpt/gpt-6.1-sol" },
-  { id: "claude-agent", available: false, reason: "Claude Agent needs an Anthropic or OpenRouter key: add one in Settings → Model keys." },
-  { id: "opencode", available: false, reason: "OpenCode needs a model key: add one in Settings → Model keys." },
+  { id: "claude-agent", available: false, reason: "Claude Agent needs an Anthropic or OpenRouter key: add one in Settings → Model keys.", needs: ["key"] },
+  { id: "opencode", available: false, reason: "OpenCode needs a model key: add one in Settings → Model keys.", needs: ["key"] },
 ];
 
 type Call = { method: string; path: string };
@@ -129,5 +129,25 @@ describe("WhatRunsHere", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(WhatRunsHere, { harnesses: [] })));
     expect(host.textContent).toBe("");
+  });
+
+  it("reads what each harness needs from `needs`, never from its words: the sign-in, a key, or neither", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const harnesses = [
+      // pi runs here with no default model; codex does not run: the sign-in would run both.
+      { id: "pi", available: true, default_model: null, reason: "No model yet: add a model key; your ChatGPT sign-in expired: sign in again (Settings → Model keys).", needs: ["key", "chatgpt"] },
+      { id: "codex", available: false, reason: "codex needs OPENAI_API_KEY; your ChatGPT sign-in expired: sign in again (Settings → Model keys).", needs: ["key", "chatgpt"] },
+      // A reason that says "key" with no `needs` is not a key's to fix; one that never says it, with `needs`, is.
+      { id: "claude-agent", available: false, reason: "Its pinned CLI does not match: reinstall the key package.", needs: undefined },
+      { id: "opencode", available: false, reason: "OpenCode has no model here.", needs: ["key"] },
+    ];
+    act(() => root!.render(createElement(WhatRunsHere, { harnesses })));
+    const items = [...host.querySelectorAll("li")].map((li) => li.textContent);
+    expect(items[0]).toMatch(/^Pi.*runs after Continue with ChatGPT.*your ChatGPT sign-in expired: sign in again/);
+    expect(items[0]).not.toMatch(/ready/);
+    expect(items[1]).toMatch(/^Codex.*runs after Continue with ChatGPT.*sign in again/);
+    expect(items[2]).toMatch(/^Claude.*not here/);
+    expect(items[3]).toMatch(/^OpenCode.*needs a key/);
   });
 });

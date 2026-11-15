@@ -190,9 +190,11 @@ JSON, or refused by the schema, after the runner's one retry). The report lists 
 - `regex`: `pattern` with `flags` (some of `i`, `m`, `s`, `u`, `v`) over the whole answer, or over `target`, a field of
   the last `json` block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no such
   field fails the grader, whatever `expect` says.
-- `tool_used`: the calls of `tool` (or any of `tools`) by gate name (`write`, `web_fetch`, `mcp:<server>/<tool>`). A
-  faked MCP tool's calls are its fake's log, the calls that reached it; any other tool's are the timeline's. With
-  `count`, exactly that many calls; else `expect: called`, one or more, or `not_called`, none. `args` keeps the calls
+- `tool_used`: the calls of `tool` (or any of `tools`) by gate name (`write`, `web_fetch`, `mcp:<server>/<tool>`,
+  `monid:<provider>/<endpoint>`). A monid endpoint is one the package's `tools` grants by name: a provider's wildcard
+  (`monid:<provider>/*`) is filled from monid's listing when the agent is saved, so the eval cannot check a name under
+  it before the run. A faked MCP tool's calls are its fake's log, the calls that reached it; any other tool's are the
+  timeline's. With `count`, exactly that many calls; else `expect: called`, one or more, or `not_called`, none. `args` keeps the calls
   that carry each of its arguments (an object's own fields compared the same way, any other value equal), and is
   allowed on a faked MCP tool only: the timeline keeps a call's input as a preview.
 - `file_exists`: `path`, relative to the run's work folder, among its files.

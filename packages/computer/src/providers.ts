@@ -28,7 +28,8 @@ export interface ConformanceModule {
 	createDriftedProvider?(options?: object): ComputerProvider | Promise<ComputerProvider>;
 	/** A fresh run folder for a mount kind the provider declares, with its outside; undefined for a kind it cannot make. */
 	mountFor?(kind: MountKind, options?: object): RunFolder | undefined | Promise<RunFolder | undefined>;
-	conformanceImage?(options?: object): string | Promise<string>;
+	/** The run's image when --image names none; `signal` is the run's own (Ctrl-C), for one that makes or registers it. */
+	conformanceImage?(options?: object, context?: { signal?: AbortSignal }): string | Promise<string>;
 	conformanceNotes?: string[];
 	/**
 	 * A provider on the shared adapter: its MachineHost from the same settings, with no live switch, since it makes

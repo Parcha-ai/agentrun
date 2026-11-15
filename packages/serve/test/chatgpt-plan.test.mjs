@@ -475,3 +475,58 @@ test("a sign-out while a sign-in is finishing (its model list still out) wins: t
   assert.equal((await new ChatGPTPlan({ store, sealKey: randomBytes(32) }).load()).view().state, "signed_out");
   assert.ok(openai.revoked.some((revoked) => revoked.token === openai.issued.at(-1).refresh), "the dropped sign-in is revoked at OpenAI");
 });
+
+test("a server with no key says codex and pi run after a ChatGPT sign-in, and Claude Agent and OpenCode need a key; signed in they are ready, expired they say sign in again", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { ...CODEX_STAND_IN }, [...MODEL_VARS, ...Object.keys(CODEX_STAND_IN)]);
+  const openai = fakeOpenAI(t);
+  const { api } = await serve(t, { faux: undefined });
+  const caps = async () => (await api("GET", "/capabilities")).body;
+  const harness = (body, id) => body.harnesses.find((offer) => offer.id === id);
+  const SIGN_IN = "or sign in with ChatGPT (Settings → Model keys) to run it on your ChatGPT plan";
+  const AGAIN = "your ChatGPT sign-in expired: sign in again (Settings → Model keys)";
+
+  // No key, not signed in: codex and pi name the sign-in, in words and in `needs`; the harnesses that need a key do not.
+  const none = await caps();
+  for (const id of ["codex", "pi"]) {
+    const offer = harness(none, id);
+    assert.equal(offer.default_model, null, `${id}: ${JSON.stringify(offer)}`);
+    assert.ok(offer.reason?.includes(SIGN_IN), `${id} names the sign-in: ${JSON.stringify(offer)}`);
+    assert.deepEqual(offer.needs, ["key", "chatgpt"], `${id}: ${JSON.stringify(offer)}`);
+  }
+  assert.equal(harness(none, "codex").available, false);
+  for (const id of ["claude-agent", "opencode"]) {
+    const offer = harness(none, id);
+    assert.doesNotMatch(offer.reason ?? "", /ChatGPT/, `${id} needs a key whatever the plan: ${JSON.stringify(offer)}`);
+    assert.ok(!offer.needs?.includes("chatgpt"), `${id}: ${JSON.stringify(offer)}`);
+  }
+  assert.ok(harness(none, "claude-agent").needs?.includes("key"), JSON.stringify(harness(none, "claude-agent")));
+
+  // Signed in: codex and pi ready, nothing more needed.
+  openai.expiresIn = 200;
+  const started = await api("POST", "/settings/chatgpt/sign-in");
+  assert.equal((await api("POST", "/settings/chatgpt/sign-in/finish", { redirect_url: callbackFor(started.body.authorize_url) })).status, 200);
+  const signed = await caps();
+  for (const id of ["codex", "pi"]) {
+    const offer = harness(signed, id);
+    assert.equal(offer.available, true, `${id}: ${JSON.stringify(offer)}`);
+    assert.equal(offer.default_model, "chatgpt/gpt-6.1-sol", id);
+    assert.equal(offer.reason, undefined, `${id}: ${JSON.stringify(offer)}`);
+    assert.equal(offer.needs, undefined, `${id}: ${JSON.stringify(offer)}`);
+  }
+  assert.doesNotMatch(harness(signed, "claude-agent").reason ?? "", /ChatGPT/);
+
+  // Expired (OpenAI refused its renewal at a run's start): codex and pi say to sign in again.
+  openai.refuse = true;
+  assert.equal((await api("POST", "/agents", agent("expiring", {}))).status, 201);
+  const run = await api("POST", "/agents/expiring/runs", { input: { content: "Hi." } });
+  if (run.status === 202) await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal((await api("GET", "/settings/chatgpt")).body.state, "expired");
+  const expired = await caps();
+  for (const id of ["codex", "pi"]) {
+    const offer = harness(expired, id);
+    assert.ok(offer.reason?.includes(AGAIN), `${id} says to sign in again: ${JSON.stringify(offer)}`);
+    assert.ok(!offer.reason.includes(SIGN_IN), id);
+    assert.deepEqual(offer.needs, ["key", "chatgpt"], `${id}: ${JSON.stringify(offer)}`);
+  }
+  assert.doesNotMatch(harness(expired, "claude-agent").reason ?? "", /ChatGPT/);
+});

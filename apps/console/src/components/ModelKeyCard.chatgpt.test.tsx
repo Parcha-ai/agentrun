@@ -21,10 +21,13 @@ const KEYS: ToolKeys = {
   ],
   reenter: null,
 };
+// As a server with no key and no sign-in serves them: pi runs here with no default model, codex does not, and both would
+// on the plan (`needs` lists chatgpt); Claude Agent needs a key whatever the plan.
+const SIGN_IN = "or sign in with ChatGPT (Settings → Model keys) to run it on your ChatGPT plan.";
 const HARNESSES = [
-  { id: "pi", available: false, reason: "No model yet: sign in with ChatGPT, or add a key." },
-  { id: "codex", available: false, reason: "No model yet: sign in with ChatGPT, or add a key." },
-  { id: "claude-agent", available: false, reason: "Claude Agent needs an Anthropic or OpenRouter key." },
+  { id: "pi", available: true, default_model: null, reason: `No model yet: add a model key in Settings → Model keys; ${SIGN_IN}`, needs: ["key", "chatgpt"] },
+  { id: "codex", available: false, default_model: null, reason: `codex needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL; ${SIGN_IN}`, needs: ["key", "chatgpt"] },
+  { id: "claude-agent", available: false, reason: "Claude Agent needs an Anthropic or OpenRouter key.", needs: ["key"] },
 ];
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function server() {
@@ -67,8 +70,8 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
     expect([...card.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent)).toEqual(["Anthropic", "OpenRouter"]);
     const list = card.host.querySelector('[aria-label="What runs here"]')!;
     expect([...list.querySelectorAll("li")].map((li) => li.textContent)).toEqual([
-      expect.stringMatching(/^Pi.*No model yet: sign in with ChatGPT, or add a key\.$/),
-      expect.stringMatching(/^Codex/),
+      expect.stringMatching(/^Piruns after Continue with ChatGPTNo model yet: .*or sign in with ChatGPT \(Settings → Model keys\) to run it on your ChatGPT plan\.$/),
+      expect.stringMatching(/^Codexruns after Continue with ChatGPTcodex needs OPENAI_API_KEY.*to run it on your ChatGPT plan\.$/),
       expect.stringMatching(/^Claude.*needs a key.*Claude Agent needs an Anthropic or OpenRouter key\.$/),
     ]);
   });
