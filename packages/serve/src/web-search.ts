@@ -85,9 +85,11 @@ export function waitOf(retryAfter: string | number | undefined, nowMs: number): 
  *  a quota answer turns search off for good, a rate limit holds search for its wait from now, or for the wait already
  *  open when that ends later (two calls in flight: a short wait never shrinks a long one), anything else leaves it as it
  *  is. A rate limit marked repeatIsQuota (keyless Exa's, naming no wait) after an earlier marked one whose wait has
- *  passed counts as a quota answer: off for the run. One that comes while a wait is open (in flight with the first) only
- *  holds it, and a search that succeeds in between resets the count: once Exa's daily count is spent every keyless call
- *  is limited, so a success means it is not. A failed search that is no limit resets nothing. */
+ *  passed counts as a quota answer: off for the run, and that call answers SEARCH_UNAVAILABLE in place of its own words
+ *  (Exa's "try again in a minute"). A quota answer keeps the call's own answer, which names no retry. One that comes
+ *  while a wait is open (in flight with the first) only holds it, and a search that succeeds in between resets the
+ *  count: once Exa's daily count is spent every keyless call is limited, so a success means it is not. A failed search
+ *  that is no limit resets nothing. */
 export function searchBreaker(now: () => number = Date.now): { held(): Search | undefined; read(searched: Searched): Search } {
   let off = false;
   let until = 0;
@@ -104,8 +106,11 @@ export function searchBreaker(now: () => number = Date.now): { held(): Search | 
       if (limit?.kind === "quota") off = true;
       else if (limit) {
         const at = now();
-        if (limit.repeatIsQuota && marked && at >= until) off = true;
-        else {
+        // The call that turns search off answers so itself, never its limit's "try again" words.
+        if (limit.repeatIsQuota && marked && at >= until) {
+          off = true;
+          return { error: SEARCH_UNAVAILABLE };
+        } else {
           if (limit.repeatIsQuota) marked = true;
           until = Math.max(until, at + waitOf(limit.retryAfter, at));
         }
