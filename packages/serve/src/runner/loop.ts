@@ -50,6 +50,35 @@ export const END_PATCH_MS = 30_000;
 /** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
  *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
 export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
+/** How many times an end reads its cost before it is written unknown, and the pause between reads: all within the end's
+ *  bound (END_PATCH_MS), so a store that refused one read never leaves the cost null. The stored cost is every reader's
+ *  answer for an ended run (the list, the view, usage, learning), so a null there stays only when no read could be made. */
+export const END_COST_TRIES = 3;
+export const END_COST_PAUSE_MS = 100;
+
+/** `read`'s answer, read again after a failure (END_COST_TRIES in all, END_COST_PAUSE_MS apart), each failure said by
+ *  `failed` (its error, how many reads failed, whether it was the last): "late" once `late` resolves first, "failed" when
+ *  every read failed. */
+export async function readAgain<T>(read: () => Promise<T>, late: Promise<"late">, failed: (error: unknown, tries: number, last: boolean) => void): Promise<T | "late" | "failed"> {
+  for (let tries = 1; ; tries += 1) {
+    try {
+      return await Promise.race([read(), late]);
+    } catch (error) {
+      failed(error, tries, tries >= END_COST_TRIES);
+      if (tries >= END_COST_TRIES) return "failed";
+      let timer: NodeJS.Timeout | undefined;
+      const paused = await Promise.race([new Promise<"again">((resolve) => (timer = setTimeout(() => resolve("again"), END_COST_PAUSE_MS))), late]);
+      clearTimeout(timer);
+      if (paused === "late") return "late";
+    }
+  }
+}
+/** How long a booking whose write has begun (its request answered, its runner.turn on its way to the store) is waited
+ *  for, by an answer's cost and by a park's or an end's release, before either goes on without it. A busy store queues
+ *  that write behind every other run's; an end written ahead of it has no booking for the last request and reads the
+ *  run's cost unknown for good, so it waits as long as the end's own patch would (END_PATCH_MS). A request still
+ *  streaming is waited for CLOSE_MS only, as before: past it, it reads at its hold. */
+export const BOOKING_WRITE_MS = END_PATCH_MS;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };

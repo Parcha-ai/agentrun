@@ -1,3 +1,5 @@
+import { maintainObservations, Observations } from './observation/observer.js';
+import { isObservationRoute, observationHttp } from './observation/http.js';
 import { SdkRuns, sdkOf } from "./sdk/runs.js";
 import { gradeRouteFor } from "./runner/harness-loops.js";
 import { routeOf as sdkModelRoute } from "./runner/model-route.js";
@@ -435,6 +437,7 @@ export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
   | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
+  {method:"GET",pattern:/^\/observations$/,name:"getObservations"},
   {method:"GET",pattern:/^\/connectors$/,name:"listRemoteConnectors"},
   {method:"POST",pattern:/^\/connectors\/enrollment$/,name:"enrollRemoteConnector"},
   {method:"POST",pattern:/^\/connectors$/,name:"registerRemoteConnector"},
@@ -985,11 +988,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`),
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
   }), (error) => onSqlite && error instanceof StoreOwned, replacedUntil, waitingForReplaced);
-  stops.push(() => store.close());
+  let stopObservationRetention: () => Promise<void> = async () => undefined;
+  stops.push(async () => { await stopObservationRetention(); await store.close(); });
   // The packages served: the bundled ones, read and checked before the start, and those imported here, which the store
   // keeps and are checked again as they load (template-import.ts). One that no longer checks is left out, said in the log.
   const registry = new TemplateRegistry(templates);
   await loadImported({ registry, store }, (id, why) => log?.(logLine("template_import_skipped", { template: id, why })));
+  stopObservationRetention = await maintainObservations(new Observations(store), {
+    onError: () => { process.stderr.write("agentrun-serve: observation retention failed; retrying on the next sweep\n"); },
+  });
   // The person's own computers paired with this server (computer-attach.ts): their live sockets are this process's hub,
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
@@ -1426,11 +1433,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
-  /** What a learning batch's loop reads of a run, from its view. */
+  /** What a learning batch's loop reads of a run, from its view. Its `cost_usd` is the exact cost: a batch's figures say
+   *  no "at most", so a view cost marked `upper_bound` reads null there, as the run's stored cost does (RunRow.costUsd). */
   const batchRunView = async (runId: string): Promise<RunSnap | undefined> => {
     const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
     if (!v) return undefined;
-    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
+    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" && v.cost.upper_bound !== true ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
   };
   // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
   // state is the store's settings, so a batch still running when the server stopped takes up again as it starts. Its reads
@@ -3108,6 +3116,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
         return send(res,answer.status,receipt,answer.headers);
       }
+      case "getObservations": {
+        const days = Number(url.searchParams.get("days") ?? 30);
+        if (!Number.isInteger(days) || days < 1 || days > 31) throw new ApiError("input_invalid", "Choose an observation window from 1 to 31 days.");
+        return send(res, 200, await new Observations(store).snapshot(days, url.searchParams.get("session_id") ?? undefined));
+      }
       case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
       case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
       case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
@@ -4103,6 +4116,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (isObservationRoute(raw)) return void observationHttp(req, res, url, new Observations(store), token).catch(fail);
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
@@ -4416,6 +4430,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     stopping.abort();
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
     plan.close();
+    const observationStopped = stopObservationRetention();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
     // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the store closes.
@@ -4431,6 +4446,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     await installStopped;
+    await observationStopped;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;

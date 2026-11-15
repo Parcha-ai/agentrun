@@ -1,3 +1,4 @@
+import { OBSERVATION_PATHS } from './observation/schema.js';
 import { SDK_BINDING, SDK_PATHS, SDK_RUN } from "./sdk/schema.js";
 import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // The OpenAPI document this server serves at GET /v2/openapi.json: the agentrun.v2/0 contract as vendored in
@@ -2729,8 +2730,10 @@ const EXTERNAL_REF = closed({
 const SO_FAR = {
   // freemodel/1: a known $0 that says why.
   free: { type: "boolean", enum: [true], description: "Set only when `usd` is 0 because every model request went to a free model, one whose known price is $0 for every token (an OpenRouter `:free` model, say), each booked at $0 however it ended: a request that failed once it left, was retried or was cut costs nothing on such a model. Absent otherwise: a model with no known price never reads $0, and its requests' cost stays unknown.", "x-agentrun-serve": "freemodel/1" },
-  so_far_usd: { type: "number", minimum: 0, description: "Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them.", "x-agentrun-serve": "costsofar/1" },
-  unpriced: { type: "integer", minimum: 1, description: "Set only while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut).", "x-agentrun-serve": "costsofar/1" },
+  so_far_usd: { type: "number", minimum: 0, description: "Set while `usd` is null, and beside `upper_bound`: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls), never a hold. Never the cost: the charges counted in `unpriced` are not in it. While `usd` is null nothing bounds them; beside `upper_bound`, `usd` does.", "x-agentrun-serve": "costsofar/1" },
+  unpriced: { type: "integer", minimum: 1, description: "Set while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price, or counted at its hold; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut). Beside `upper_bound`: how many model requests `usd` counts at their hold.", "x-agentrun-serve": "costsofar/1" },
+  // cutathold/1: a request cut with no answer and no usage is counted at what its cap held for it.
+  upper_bound: { type: "boolean", enum: [true], description: "Set only when `usd` is known and counts at least one model request cut with no answer and no usage reported (its process ended mid-request) at what the run's cap held for it: the most that request can have cost. The run cost at most `usd`; `so_far_usd` beside it is what it is known to have spent, `unpriced` how many requests are counted at their hold. Absent otherwise.", "x-agentrun-serve": "cutathold/1" },
 };
 /** mcpperrun/1: the credentials a run's caller hands its per_run MCP servers, for that run alone. */
 const MCP_RUN_AUTH: Json = {
@@ -3687,8 +3690,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
   // Every server-wide pushed source's own hook, the registry's as a test's: this server's own, and listed so.
   const hooks = serverHooks(adapters);
-  Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS);
-  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
+  Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS, OBSERVATION_PATHS);
+  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS,...OBSERVATION_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
   return doc;
 }

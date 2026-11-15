@@ -9,6 +9,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { llmAnswers, type NodeLine, readLiveView } from "./pause.js";
 import { KINDS } from "./runner/journal-kinds.js";
+import { costWordsOf, usageParts } from "./runner/metrics.js";
 import type { Store } from "./store/store.js";
 
 export type GraphNodeStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
@@ -26,8 +27,10 @@ export type GraphInput = {
   root: string;
   /** The run's input: what a map's items are read from before its state has them. */
   input: unknown;
-  /** The model nodes' cost from the run's rows (read once it ended; 0 before), null when unknown. */
-  modelCost: number | null;
+  /** The model nodes' cost from the run's rows: its usage row's `usage`, in its own words (a bound with its exact part,
+   *  an unknown cost with what is known), so the totals join it by the one rule (costWordsOf over usageParts); undefined
+   *  before the run ended (nothing read yet). */
+  modelCost: { usd: number | null; so_far_usd?: number; unpriced?: number; upper_bound?: true } | undefined;
   /** How many of its llm calls' answers its node log held when its rows were last read: their cost is in `modelCost`. */
   llmRead?: number;
   /** The one store and a context: an ended run's view, pin and decisions are read from its journal (store.readJournal). */
@@ -227,8 +230,11 @@ export async function runGraph(given: GraphInput) {
   // is a REQUEST_COST entry, in `modelCost` once the run's rows hold it: the first `llmRead` answers of the node log (an
   // answer is logged after its cost is committed). Only the later ones are counted from the node log.
   const calls = llmAnswers(lines).slice(given.llmRead ?? 0).map((line) => (isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
-  const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
-  const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
+  // Joined by the one rule (costWordsOf): the model nodes' usage row taken apart by its own figures (usageParts), so a hold
+  // on it is never read as spend. The totals say no "at most": a sum that counts a hold is unknown there, as any part is.
+  const each: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls];
+  const joined = costWordsOf([usageParts(given.modelCost), { known: each.reduce<number>((a, b) => a + (b ?? 0), 0), bounded: 0, atMost: 0, unpriced: each.filter((c) => c === null).length }]);
+  const cost = joined.usd === null || joined.upper_bound ? null : Math.round(joined.usd * 1e8) / 1e8;
   // Each model node's model: what its own execution ran on, as the runner kept it before running it (KINDS.nodeModel, by
   // execution path), with the tier it asked for; a node a map runs once per item reads its newest execution's. A resumed
   // claim keeps its own executions', so it never rewrites what an earlier node ran on. A decision node's model is its

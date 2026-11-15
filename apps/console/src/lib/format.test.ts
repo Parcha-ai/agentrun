@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { capDollars, clock, cost, costOfCap, markdown, runLabel, when } from "./format";
+import { capDollars, chargeWords, clock, cost, costOfCap, markdown, runLabel, when } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
 
@@ -86,6 +86,22 @@ describe("a free model's cost", () => {
     expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null, free: true } as Cost)).toBe("Unknown");
     expect(cost({ usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null, free: true } as Cost)).toBe("$0.25 est.");
     expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0, unpriced: 9 })).toBe("so far $0.00 est. · 9 not priced");
+  });
+});
+
+// A run whose process ended mid-request, before any answer or usage, has that request booked at what its cap held for it
+// (the server's `upper_bound`): the most the run can have cost, said "at most", never as the exact figure.
+describe("a cost that is an upper bound", () => {
+  const bound: Cost = { usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null, upper_bound: true };
+  it("says at most, on the run and on its usage row", () => {
+    expect(cost(bound)).toBe("at most $0.25 est.");
+    expect(cost(bound, { ended: true })).toBe("at most $0.25 est.");
+    expect(costOfCap(bound, 1)).toBe("at most $0.25 est. of $1.00");
+    expect(chargeWords({ usd: 0.25, upper_bound: true }, { ended: true })).toBe("at most $0.25");
+  });
+  it("a guard: a cost the server does not mark reads as before", () => {
+    expect(cost({ ...bound, upper_bound: undefined })).toBe("$0.25 est.");
+    expect(chargeWords({ usd: 0.25 })).toBe("$0.25");
   });
 });
 

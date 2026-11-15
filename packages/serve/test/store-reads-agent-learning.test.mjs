@@ -17,9 +17,9 @@ const agentLearningOverStore = (...args) => fn(reads, "agentLearningOverStore")(
 const ROOT = 1;
 const iso = (ms) => new Date(ms).toISOString();
 
-/** Run `id` of agent-1, started at `start` (ms), ended `seconds` later at `usd`. `learning`: its launch's learning start;
- *  `read`: the files its job read; `kept`: its kept learning row's proposal. */
-async function run(store, clock, { id, start, seconds, usd, learning, read = [], kept }) {
+/** Run `id` of agent-1, started at `start` (ms), ended `seconds` later at `usd` (with `bound`, stored as the most it can
+ *  have cost, a request cut at its hold counted in it). `learning`: its launch's learning start; `read`: the files its job read; `kept`: its kept learning row's proposal. */
+async function run(store, clock, { id, start, seconds, usd, bound = false, learning, read = [], kept }) {
   clock.now = start;
   await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: id, place: { mode: "runner" }, ...(learning ? { learning } : {}) } });
   const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
@@ -34,7 +34,7 @@ async function run(store, clock, { id, start, seconds, usd, learning, read = [],
     await commitWrites(journal, writes, context);
   }
   const also = kept ? [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }] : [];
-  await store.runs.update(claim, { state: "ended", costUsd: usd, endedAt: start + seconds * 1000 }, { also });
+  await store.runs.update(claim, { state: "ended", costUsd: usd, ...(bound ? { costUpperBound: true } : {}), endedAt: start + seconds * 1000 }, { also });
 }
 
 /** A drop with nothing to keep, after a look back: the job answered `seconds` in at `job`, looking back cost `back`. */
@@ -60,6 +60,22 @@ test("an agent's notes' runs and its impact from the store: given and read by no
     after: { runs: 2, median_duration_s: 40, median_cost_usd: 0.3, cost_runs: 2, median_learning_usd: 0.06 },
   });
   assert.deepEqual(view.counts, { merged: 0, dropped: { empty: 2 }, in_progress: 0 }, "its counts, as before");
+});
+
+test("a run whose stored cost is only the most it can have cost counts in the impact's runs and durations, never in its costs: no median_cost_usd or cost_runs reads a bound as spend", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
+  await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
+  // A run before any note that a crash cut mid-request: its stored $0.9 counts that request at its hold, a ceiling.
+  await run(store, clock, { id: "r0", start: T0 + 200_000, seconds: 30, usd: 0.9, bound: true });
+  const both = { given: [{ file: "a.md", name: "Alpha" }, { file: "b.md", name: "Beta" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
+  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: both, read: ["a.md"], kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
+  const one = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
+  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: one, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
+
+  const { impact } = await agentLearningOverStore(store, "agent-1");
+  assert.deepEqual(impact?.before, { runs: 3, median_duration_s: 20, median_cost_usd: 0.2, cost_runs: 2, median_learning_usd: null }, `the bounded run is a run of unknown cost: ${JSON.stringify(impact)}`);
 });
 
 test("a run started from a seed of notes counts on the after side by the seed's notes (main's seed_notes), though its budget gave it none", async (t) => {

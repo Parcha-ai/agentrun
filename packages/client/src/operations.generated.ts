@@ -460,6 +460,7 @@ export type Cost = {
   free?: true;
   so_far_usd?: number;
   unpriced?: number;
+  upper_bound?: true;
   plan?: {
     requests: number;
     tokens: number;
@@ -895,6 +896,7 @@ export type TimelineUsage = {
   free?: true;
   so_far_usd?: number;
   unpriced?: number;
+  upper_bound?: true;
   not_metered?: number;
 };
 
@@ -3122,6 +3124,85 @@ export type SaveMcpServerResponse = {
   secret?: SecretMeta;
 };
 
+/** Read activity and token usage reported by externally running agents (GET /observations). */
+export interface GetObservationsParams {
+  days?: number;
+  session_id?: string;
+}
+export type GetObservationsResponse = {
+  connectors: Array<{
+    id: string;
+    display_name: string;
+    connection_state: "online" | "offline" | "disconnected";
+    ingestion_mode: "polling" | "otlp";
+    last_heartbeat_at: string | null;
+    receipt_count: number;
+    receipt_capacity: number;
+    storage_full: boolean;
+  }>;
+  sessions: Array<{
+    id: string;
+    connector_id: string;
+    source_id: string;
+    external_session_id: string;
+    harness: "claude" | "codex";
+    activity: "unknown" | "working" | "idle" | "waiting_input" | "finished" | "failed" | "stopped";
+    reported_activity: "unknown" | "working" | "idle" | "waiting_input" | "finished" | "failed" | "stopped";
+    connection_state: "online" | "offline" | "disconnected";
+    selection_active: boolean;
+    occurred_at: string;
+    received_at: string;
+    created_at: string;
+    updated_at: string;
+    sequence: number;
+    display_name: string;
+    models: Array<string>;
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_tokens: number | null;
+      cache_write_tokens: number | null;
+      total_tokens: number;
+      cache_hit_rate: number | null;
+      overflow: boolean;
+      status: "reported" | "unavailable";
+    };
+    observation_only: true;
+  }>;
+  usage: {
+    input_tokens: number | null;
+    output_tokens: number | null;
+    cache_read_tokens: number | null;
+    cache_write_tokens: number | null;
+    total_tokens: number | null;
+    cache_hit_rate: number | null;
+    overflow: boolean;
+    status: "partial" | "unavailable";
+    models: Array<{
+      input_tokens: number | null;
+      output_tokens: number | null;
+      cache_read_tokens: number | null;
+      cache_write_tokens: number | null;
+      total_tokens: number | null;
+      cache_hit_rate: number | null;
+      overflow: boolean;
+      model: string;
+    }>;
+    daily: Array<{
+      date: string;
+      total_tokens: number | null;
+    }>;
+  };
+  limits: {
+    max_receipts_per_connector: number;
+    max_sessions_per_connector: number;
+    receipt_retention: string;
+    receipt_window_seconds: number;
+    session_retention_days: number;
+    usage_retention_days: number;
+  };
+};
+
 /** The agent's revisions, newest first (GET /agents/{agent_id}/revisions). */
 export interface ListRevisionsParams {
   limit?: number;
@@ -5053,6 +5134,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getMcpPrivateHosts: {"method":"GET","path":"/settings/mcp-servers/oauth/private-hosts","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   refreshMcpServer: {"method":"POST","path":"/settings/mcp-servers/{name}/refresh","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveMcpServer: {"method":"PUT","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","auth.type"],"tagged":false},
+  getObservations: {"method":"GET","path":"/observations","pathParams":[],"multiSegment":[],"query":["days","session_id"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRevisions: {"method":"GET","path":"/agents/{agent_id}/revisions","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   setCurrent: {"method":"POST","path":"/agents/{agent_id}/current","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   archiveRun: {"method":"POST","path":"/runs/{run_id}/archive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5293,6 +5375,10 @@ export function resources(call: Call) {
       refresh: (name: string, options?: RequestOptions): Promise<RefreshMcpServerResponse> => call("refreshMcpServer", [name], undefined, undefined, options),
       /** Preview a remote MCP server, then save it with the tools listed and its credential sealed (PUT /settings/mcp-servers/{name}). */
       save: (name: string, body: SaveMcpServerBody, options?: RequestOptions): Promise<SaveMcpServerResponse> => call("saveMcpServer", [name], body, undefined, options),
+    },
+    Observations: {
+      /** Read activity and token usage reported by externally running agents (GET /observations). */
+      getObservations: (params?: GetObservationsParams, options?: RequestOptions): Promise<GetObservationsResponse> => call("getObservations", [], undefined, params, options),
     },
     revisions: {
       /** The agent's revisions, newest first (GET /agents/{agent_id}/revisions). */

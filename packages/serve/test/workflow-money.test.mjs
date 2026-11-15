@@ -420,7 +420,11 @@ test("a person's stop whose request is still being booked when the node ends: th
   await acting;
   assert.equal(row.state, "stopped", `the person's stop ends the run: ${JSON.stringify(row)}`);
   assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), "the stopped request is booked at what streamed and 1,024 tokens, not at its $1 hold");
-  assert.equal(row.costUsd, eight((14 + 1024) * PER_TOKEN), "and the run's cost says so");
+  // The run's cost is its booking's, by the one rule a pi run's is (metrics.ts runCostOf): a request stopped while it
+  // streamed has no price of its own (the provider may bill what it streamed), so the cost is unknown, never the cap's
+  // estimate stored as a charge; the stored cost and the view say the same.
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual([row.costUsd, view?.cost?.usd], [null, null], `the stored cost and the view read it unknown alike: ${JSON.stringify(view?.cost)}`);
   assert.equal(closes[0], "after settle", `the run closed nothing before its bookings settled: ${JSON.stringify(closes)}`);
 });
 

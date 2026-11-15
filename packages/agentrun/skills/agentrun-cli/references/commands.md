@@ -587,6 +587,17 @@ List a saved MCP server's tools again, keep them, and say what changed.
 
 Route: `POST /settings/mcp-servers/{name}/refresh`.
 
+## Observations
+
+### `agentrun Observations get-observations`
+
+Read activity and token usage reported by externally running agents.
+
+Route: `GET /observations`.
+
+- `--days INTEGER` (integer): UTC calendar days including today; session details remain visible for their full retention period.
+- `--session-id STRING` (string)
+
 ## revisions
 
 ### `agentrun revisions list AGENT_ID`
