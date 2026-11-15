@@ -55,6 +55,7 @@ import { signInReads } from "../sign-ins-store.js";
 import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
+import { fakedPlane } from "../web-fake.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -240,6 +241,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
+  // A template eval's web fake for this run (AdapterSpecDeps.webFakes): its web tools answer from it, and its plane never
+  // offers the harness's own search (Claude's WebSearch, Codex's), which would answer in their place.
+  const web = deps.webFakes?.(runRow.agentId);
+  if (web) launch = { ...launch, plane: fakedPlane(launch.plane) };
   // The claim's private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is
   // in it, then the agent's: the next claim, here or on another runner, lays its own, its harness's session coming back from
   // the run's journal. Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its
@@ -571,7 +576,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
     if (webNames.length) {
       life = hostLifecycle();
-      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
+      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, ...(web ? { web } : {}) });
       webTools = await webHostTools(host, granted, ctx);
     }
     if (learns) {
