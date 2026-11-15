@@ -128,6 +128,20 @@ describe("Replay on a revision", () => {
     expect(text(host, "replay-decision")).toContain("Promoted");
     expect(onDecided).toHaveBeenCalledTimes(1);
   });
+  it("follows a replay whose id arrives after the card mounted idle (a reload: revisions before promotions)", async () => {
+    const onDecided = vi.fn();
+    const v2 = fake(async () => ({ replay: "unused", inputs: 0 }), [read({ replay: "rp_9", outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 } }), read({ replay: "rp_9", status: "done", decided: "promote", reason: "good" })]);
+    const host = mountOne(v2, { offered: true, resume: null, onDecided });
+    await flush();
+    expect(v2.learnedWorkflowReplay).not.toHaveBeenCalled();
+    act(() => root!.render(createElement(ReplayRevision, { v2, agentId: "a", workflow: "sorter", digest: DIGEST, offered: false, resume: "rp_9", onDecided, pollMs: 1000 })));
+    await flush();
+    expect(v2.learnedWorkflowReplay).toHaveBeenCalledWith("a", "sorter", DIGEST, "rp_9");
+    expect(text(host, "replay-progress")).toContain("2 of 5 ended");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(text(host, "replay-decision")).toContain("Promoted");
+    expect(onDecided).toHaveBeenCalledTimes(1);
+  });
   it("keeps the decision after the tab reads again and the revision no longer offers Replay", async () => {
     const v2 = fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ status: "done", decided: "promote", reason: "good" })]);
     const host = mountOne(v2);
