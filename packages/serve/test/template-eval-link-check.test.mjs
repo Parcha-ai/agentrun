@@ -105,6 +105,16 @@ test("a markdown link's target holding a | is cited whole, as a fetched page's l
   assert.deepEqual(checked(graderInput(grader, "task", run("Follow [the route](https://maps.example/?markers=a|b).", fetched))), ["https://maps.example/?markers=… — matches call 1"]);
 });
 
+test("a markdown link's target in angle brackets (`](<url>)`) is the URL they hold, in a fetched page's links and in the answer both", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://docs.example/index.md";
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: "# Docs\n\nSee [setup](<https://docs.example/setup>).\n" }], default: { error: "fetch failed" } } };
+  const page = await fakeFetch(fixture, url);
+  assert.deepEqual(page.links, ["https://docs.example/setup"]);
+  const fetched = { tool: "web_fetch", name: "web_fetch", arguments: { url }, status: "success", result: JSON.stringify(page) };
+  assert.deepEqual(checked(graderInput(grader, "task", run("Start with [setup](<https://docs.example/setup>).", fetched))), ["https://docs.example/setup — matches call 1"]);
+});
+
 test("a tool other than the web's whose result the read cut is named on a cited link that matches nothing, as a page whose links were cut is", async () => {
   const { cut, CALL_RESULT_CHARS } = await import("../dist/timeline/index.js");
   const [first, later] = ["https://www.google.com/calendar/event?eid=Zmlyc3Q", "https://www.google.com/calendar/event?eid=bGF0ZXI"];
