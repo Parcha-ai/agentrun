@@ -218,6 +218,9 @@ test("a trigger saved with its key in the clear before this rule is sealed at th
   assert.deepEqual(read.body.source.sealed_config, ["developer_api_key"]);
   assert.equal(read.body.source.instance_id, made.body.source.instance_id, "the trigger keeps its instance");
   assert.deepEqual([...s.composio.instances.values()][0].trigger_config, { app_id: "4242", developer_api_key: key }, "Composio's instance is left as it is");
+  // On disk too: the store's database file, its WAL and journal, and their free pages hold no copy of the row it rewrote.
+  const holding = filesUnder(again.data).filter((path) => readFileSync(path).includes(key));
+  assert.deepEqual(holding, [], "once the start sealed it, no file under the data directory holds the key: the old row's bytes are gone");
 });
 
 test("the events list names, for each event, the config fields a save seals", async (t) => {
@@ -231,7 +234,7 @@ test("the events list names, for each event, the config fields a save seals", as
 test("the name rule: a field named like a key, token, secret, password or credential is sealed when its value is a string; ids, counts and names are not", async () => {
   const composio = await import("../dist/trigger-composio.js");
   assert.equal(typeof composio.sealedConfigFields, "function", "trigger-composio.ts says which config fields are sealed");
-  const sealed = ["developer_api_key", "api_key", "apiKey", "APIKey", "apikey", "key", "private_key", "access_key", "client_secret", "secret", "webhook_secret", "access_token", "token", "refreshToken", "bot_token", "password", "passwd", "passphrase", "credential", "credentials", "auth_token", "signing_key", "token_count"];
+  const sealed = ["developer_api_key", "api_key", "apiKey", "APIKey", "apikey", "key", "private_key", "access_key", "client_secret", "secret", "webhook_secret", "access_token", "token", "refreshToken", "bot_token", "password", "passwd", "passphrase", "credential", "credentials", "auth_token", "signing_key", "token_count", "authorization", "Authorization", "bearer", "bearer_value", "cookie", "session_cookie", "setCookie"];
   const kept = ["app_id", "owner", "repo", "key_id", "keyword", "keywords", "channel_id", "max_tokens", "monkey", "turkey", "secretary", "tokenizer", "author"];
   const config = Object.fromEntries([...sealed, ...kept].map((name) => [name, `value-of-${name}`]));
   assert.deepEqual(composio.sealedConfigFields(config).sort(), [...sealed].sort());
@@ -434,4 +437,45 @@ test("a template's composio trigger whose key comes from a parameter: no file un
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const holding = filesUnder(server.data).filter((path) => readFileSync(path).includes(key));
   assert.deepEqual(holding, [], "no file under the data directory holds the key in the clear");
+});
+
+test("a create whose config has a credential-named string below its top level is refused 422, in plain words, before Composio is asked anything", async (t) => {
+  const s = await setup(t);
+  for (const config of [{ app_id: "4242", auth: { api_key: fakeKey() } }, { app_id: "4242", credentials: { user: "u", pass: fakeKey() } }, { app_id: "4242", headers: [{ authorization: fakeKey() }] }]) {
+    const key = JSON.stringify(config).match(/fake-hubspot-dev-[0-9a-f]+/)[0];
+    const res = await s.api("POST", "/triggers", { ...dealTrigger(key), source: { ...dealTrigger(key).source, config } });
+    assert.equal(res.status, 422, `a nested credential is refused: ${JSON.stringify(res.body)}`);
+    assert.match(res.body.error.fields[0].field, /^source\.config\./);
+    assert.match(res.body.error.fields[0].message, /top level/);
+    assert.ok(!JSON.stringify(res.body).includes(key), "the refusal holds no key");
+  }
+  assert.equal(s.composio.instances.size, 0, "nothing made on Composio");
+  assert.ok(!s.lines.some((l) => /fake-hubspot-dev-/.test(l)), "no log line holds a key");
+});
+
+test("a trigger an earlier server kept with a credential below the config's top level: masked at any depth on reads, sealed by JSON Pointer at the next start, and gone with the delete", async (t) => {
+  const s = await setup(t);
+  const key = fakeKey();
+  const inner = fakeKey();
+  const made = await s.api("POST", "/triggers", dealTrigger(key));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  const { sealed_config: _, ...source } = made.body.source;
+  await s.server.store.triggers.update(made.body.id, { source: { ...source, config: { app_id: "4242", developer_api_key: key, extra: { client_secret: inner, region: "eu" } } } });
+  const one = await s.api("GET", `/triggers/${made.body.id}`);
+  assert.ok(![key, inner].some((k) => JSON.stringify(one.body).includes(k)), "GET masks a credential at any depth");
+  assert.equal(one.body.source.config.extra.client_secret, MASK);
+  assert.equal(one.body.source.config.extra.region, "eu", "a field that names no secret is answered as kept");
+  assert.deepEqual([...one.body.source.sealed_config].sort(), ["/extra/client_secret", "developer_api_key"], "a nested one is named by its JSON Pointer");
+  await s.server.stop();
+  const lines = [];
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 2, "both are sealed at the start");
+  assert.deepEqual(filesUnder(again.data).filter((path) => [key, inner].some((k) => readFileSync(path).includes(k))), [], "no file under the data directory holds either");
+  assert.ok(!lines.some((l) => [key, inner].some((k) => l.includes(k))), "no log line holds either");
+  const read = await again.api("GET", `/triggers/${made.body.id}`);
+  const renamed = await again.api("PATCH", `/triggers/${made.body.id}`, { name: "renamed", source: read.body.source });
+  assert.equal(renamed.status, 200, `the source sent back as read is no change: ${JSON.stringify(renamed.body)}`);
+  const gone = await again.api("DELETE", `/triggers/${made.body.id}`);
+  assert.ok(gone.status === 204 || gone.status === 200, JSON.stringify(gone.body));
+  assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 0, "the delete removes both");
 });
