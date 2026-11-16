@@ -17,7 +17,7 @@ import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
 import { type FieldSpec, fieldIssueWords, fieldKind, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
-import { grantsOf, issuesAt, matchesOf, needsOf, paramHelp, type ParameterText, readTemplateDraft, setUpHref, templateHash, templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
+import { APPLY_REQUIREMENTS, grantsOf, isPlain, issuesAt, matchesOf, needsOf, paramHelp, type ParameterText, readTemplateDraft, setUpHref, templateHash, templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void; playground?: boolean; draft?: string };
@@ -97,9 +97,10 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
                 </dl>
                 <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-4">
                   {!t.bundled && <Button size="sm" onClick={() => void remove(t)} disabled={removing === t.id}>{removing === t.id ? "Removing…" : "Remove"}</Button>}
+                  {/* A plain template is applied from its screen (Configure leads there); any other is run with a coding agent. */}
                   {playground ? <Button size="sm" variant="primary" onClick={() => go(templatePlaygroundHref(t))}>Configure</Button> : <>
-                    <Button size="sm" onClick={() => go(templateHash(t.id))}>Configure</Button>
-                    <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
+                    <Button size="sm" variant={isPlain(t) ? "primary" : "outline"} onClick={() => go(templateHash(t.id))}>Configure</Button>
+                    <CodingAgentAction variant={isPlain(t) ? "outline" : "primary"} label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
                   </>}
                 </div>
               </article>
@@ -280,6 +281,24 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   const staleServers = servers && mapped.some(({ m, matches }) => prepared.body?.servers?.[m.toolkit] !== undefined && !matches.includes(prepared.body.servers[m.toolkit]));
   const draftError = prepared.error ?? (staleServers ? "This prepared server choice no longer matches the saved MCP servers. Open a fresh request to review the current accounts." : undefined);
   const blocked = !!draftError || unread || unpicked.length > 0;
+  // A plain template is applied here, outside the playground too; any other is run with a coding agent there.
+  const applies = playground || isPlain(t);
+  // What the apply would refuse that the screen can read first (a saved mailbox), on a plain template outside the
+  // playground (the playground shows the server's own answer): Apply waits for each. A failed read is said with Try again.
+  const needed = !playground && isPlain(t) ? APPLY_REQUIREMENTS.filter((r) => r.needs(t)) : [];
+  const [held, setHeld] = useState<Record<string, "met" | "unmet" | "unread">>({});
+  const [heldTries, setHeldTries] = useState(0);
+  const neededIds = needed.map((r) => r.id).join(" ");
+  useEffect(() => {
+    let live = true;
+    setHeld({});
+    for (const r of APPLY_REQUIREMENTS.filter((x) => neededIds.split(" ").includes(x.id))) {
+      r.met(v2).then((ok) => { if (live) setHeld((was) => ({ ...was, [r.id]: ok ? "met" : "unmet" })); }, () => { if (live) setHeld((was) => ({ ...was, [r.id]: "unread" })); });
+    }
+    return () => { live = false; };
+  }, [v2, neededIds, heldTries]);
+  const waiting = needed.filter((r) => held[r.id] !== "met");
+  const reading = waiting.find((r) => held[r.id] === undefined);
   const body = { parameters: fieldValues(form, values), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals, ...(choice ? { choice } : {}) } };
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
@@ -288,7 +307,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     if (fieldValid(p, value)) setIssues((was) => was.filter((i) => fieldOfIssue(i.field, "parameters") !== key));
   };
   const apply = async () => {
-    if (!playground || blocked) return;
+    if (!applies || blocked || waiting.length) return;
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
     try {
@@ -391,7 +410,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       <Heading className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></Heading>
       <TemplateProvenance t={t} />
       <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
-      <p className="mt-2 text-body text-muted-foreground">{playground ? "Apply creates an agent and its triggers. It does not start a run." : "Run with your coding agent. It sets up this template, asks for any missing inputs, and runs the task."}</p>
+      <p className="mt-2 text-body text-muted-foreground">{playground ? "Apply creates an agent and its triggers. It does not start a run." : applies ? "Apply creates an agent and its triggers. It does not start a run. Or set it up with your coding agent, which asks for any missing inputs and runs the task." : "Run with your coding agent. It sets up this template, asks for any missing inputs, and runs the task."}</p>
       {draftError && <p className="mt-3 text-body text-destructive-text" role="alert">{draftError} <a href={templatePlaygroundHref(t)} className="underline">Open a fresh request</a>.</p>}
 
       {params.length > 0 && (
@@ -514,9 +533,15 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       </Section>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        {playground
-          ? <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || blocked} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
-          : <CodingAgentAction variant="primary" label="Run" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
+        {applies ? <>
+          <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || blocked || waiting.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : reading ? `Reading ${reading.what}…` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
+          {!playground && <CodingAgentAction variant="outline" label="Set it up with an agent" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
+          {waiting.map((r) => held[r.id] === "unmet"
+            ? <p key={r.id} role="status" data-requirement={r.id} className="min-w-0 text-body text-warning-text">{r.unmet.before}<a href={r.unmet.href} className="font-mono text-primary-text underline-offset-2 hover:underline">{r.unmet.link}</a>{r.unmet.after}</p>
+            : held[r.id] === "unread"
+              ? <p key={r.id} role="alert" data-requirement-unread={r.id} className="flex min-w-0 flex-wrap items-center gap-2 text-body text-destructive-text">{`${r.what[0].toUpperCase()}${r.what.slice(1)} couldn't be read.`}<Button size="sm" onClick={() => setHeldTries((n) => n + 1)}>Try again</Button></p>
+              : null)}
+        </> : <CodingAgentAction variant="primary" label="Run" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
         {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-body text-destructive-text" role="alert">{said.text}</p>}
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}
