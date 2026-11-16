@@ -2402,6 +2402,10 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 (phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
+- **Apps.** `apks: [{ path, sha256 }]`, else `env.PHONE_HARNESS_APKS` (its descriptor's hostEnv, a comma list of
+  `<absolute path>@sha256:<hex>`), names APK files on this machine that each phone installs (`pm install -r`) before
+  phoned starts, once per phone. A file not there, or whose bytes are not its pin, refuses `create()` before a phone is
+  rented, and `connect()`.
 - **phoned, the phone's driver.** `connect()` asks the phone harness for the session's adb link, connects to it,
   unlocks the phone with the session's code (never in a result or an error) and probes it. Then it starts phoned
   (`daemon-android/`, one dex jar built by `npm run build:phoned` into `dist/phoned.jar`) and speaks the protocol to it:

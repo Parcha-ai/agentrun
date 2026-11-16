@@ -120,6 +120,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
+	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
@@ -129,7 +131,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
 		if (!["docker", "agent37", "modal", "e2b"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.
