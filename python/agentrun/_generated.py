@@ -4376,7 +4376,7 @@ class DeleteMcpServerResponse(TypedDict):
 
 
 class DeleteMcpServerResponseComposio(TypedDict):
-    removed: Literal[False]
+    removed: bool
     note: str
 
 

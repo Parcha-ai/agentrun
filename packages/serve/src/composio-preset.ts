@@ -6,6 +6,7 @@
 // that connect an account are left off the server's address. The key goes only to Composio and into the sealed header: it
 // is never logged, echoed or put in an error.
 import { randomBytes } from "node:crypto";
+import type { Cleanup, ComposioMade, Made, Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, type Json } from "./validate.js";
@@ -115,8 +116,10 @@ export function composioAddress(generated: string): string {
 }
 
 /** PUT /settings/mcp-servers/{name}/composio: Composio makes the managed MCP server, `save` keeps it as a saved MCP server
- *  (`{url, auth}`: the key a sealed header), and a toolkit that needs the person's account says where to connect it. */
-export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }, made: { source: "composio"; toolkit: string | null }) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+ *  (`{url, auth}`: the key a sealed header), and a toolkit that needs the person's account says where to connect it.
+ *  `save` gets what the server stands on there too (`stands`, composio-made.ts): the auth config found or made and the
+ *  account found or started, each marked whether this save made it, for its delete to remove what was made. */
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   const { key, toolkit, rest } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
@@ -128,6 +131,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
   const noAuth = needsNoAuth(kit);
   let authConfig: string | undefined;
+  let madeConfig = false;
   if (!noAuth) {
     const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(toolkit)}`);
     const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
@@ -136,6 +140,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
       const made = await ask("making the toolkit's auth config", "POST", "/api/v3/auth_configs", { toolkit: { slug: toolkit }, auth_config: { type: "use_composio_managed_auth" } });
       authConfig = isObject(made.auth_config) ? text(made.auth_config.id) : "";
       if (!authConfig) throw new ApiError("upstream_failed", "Composio made no auth config: nothing was saved.");
+      madeConfig = true;
     }
   }
   const made = await ask("making the MCP server", "POST", "/api/v3.1/mcp/servers/custom", {
@@ -152,21 +157,28 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     const address = Array.isArray(generated.user_ids_url) ? text(generated.user_ids_url[0]) : "";
     if (!address) throw new ApiError("upstream_failed", "Composio gave no address for the MCP server: nothing was saved.");
     let connect: string | undefined;
+    const accounts: Made[] = [];
     if (authConfig) {
       // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
-      const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
-      if (!(Array.isArray(accounts.items) ? accounts.items : []).some((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig)) {
+      const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
+      const active = (Array.isArray(listed.items) ? listed.items : []).find((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig);
+      if (active) {
+        if (text((active as Json).id)) accounts.push({ id: text((active as Json).id), made: false });
+      } else {
+        // The link starts the connected account it connects (connected_account_id): this save's, removed with the server.
         const link = await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: authConfig, user_id: user });
         connect = text(link.redirect_url) || undefined;
+        if (text(link.connected_account_id)) accounts.push({ id: text(link.connected_account_id), made: true });
       }
     }
+    const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig } : null, accounts };
     url = composioAddress(address);
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
     // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.
     // Composio leaves out an action it does not serve, and a server that serves none of the picked ones lists no tools at
     // all: its MCP answers the listing "Method not found" (JSON-RPC -32601). Only that answer says "none served", in words
     // naming the picked actions; any other failure (no DNS, a timeout, an HTTP 500) stays the 424 it is.
-    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null }).catch((error: unknown) => {
+    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null }, stands).catch((error: unknown) => {
       if (!(error instanceof ApiError) || error.code !== "upstream_failed" || error.extra.details?.rpc_code !== METHOD_NOT_FOUND) throw error;
       throw invalid([issue("tools", "not_served", `Composio's ${toolkit} server doesn't serve ${(tools as string[]).join(", ")}: pick another action.`)]);
     });
@@ -192,18 +204,46 @@ export const composioServerId = (address: string): string | undefined => {
   try { return /^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(address).pathname)?.[1]; } catch { return undefined; }
 };
 
-/** What the answer to a delete says when the Composio MCP server could not be removed: where to remove it by hand. */
-export const composioNote = (name: string): { removed: false; note: string } => ({ removed: false, note: `Remove ${name} in Composio yourself: ${DASHBOARD}` });
+/** A thing at Composio as the words name it; `removed`: as a removal names it (an account its connect link with it). */
+const named = (thing: Thing | { kind: "mcp"; id: string }, removed = false): string =>
+  thing.kind === "mcp" ? `the MCP server ${thing.id}` : thing.kind === "auth_config" ? `the auth config ${thing.id}` : `the connected account ${thing.id}${removed ? " (its connect link with it)" : ""}`;
+/** "a", "a and b", "a, b and c". */
+const listed = (items: string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+
+/** What a delete's answer says it did at Composio, in words: what it removed, what it kept and why (another saved server
+ *  uses it, or this server didn't make it), and what is left, with where to remove that by hand. `removed`: nothing is
+ *  left there. */
+function said(name: string, removed: string[], kept: (Thing & { by?: string })[], left: string[]): { removed: boolean; note: string } {
+  const parts: string[] = [];
+  if (removed.length) parts.push(`Removed in Composio: ${listed(removed)}.`);
+  if (kept.length) parts.push(`${parts.length ? "Kept there" : "Kept in Composio"}: ${kept.map((thing) => `${named(thing)}, which ${thing.by ? `${thing.by} uses too` : "AgentRun didn't make"}`).join("; ")}.`);
+  if (left.length) parts.push(`${parts.length ? "Left there" : "Left in Composio"}: ${listed(left)}. Remove what is left of ${name} in Composio yourself: ${DASHBOARD}`);
+  return { removed: left.length === 0, note: parts.join(" ") };
+}
+
+/** What the answer to a delete says when this server could not ask Composio at all (the saved key does not open here, or
+ *  the address names no Composio server): all of it is left there, to remove by hand. */
+export const composioNote = (name: string, cleanup?: Cleanup): { removed: false; note: string } =>
+  ({ removed: false, note: said(name, [], [], [`${listed(["the MCP server it made", ...(cleanup?.remove ?? []).map((thing) => named(thing))])} (the saved key doesn't open here)`]).note });
 
 /** Deleting a preset server: the Composio MCP server `id` it made is deleted as `key` (the saved credential, held for this
- *  call only). Composio's 404 is "already gone"; a refusal, or no answer, is `removed: false` with what to do by hand, for
- *  the delete of our own row to go on regardless. */
-export async function composioForget(control: ComposioControl, key: string, id: string, name: string, signal?: AbortSignal): Promise<{ removed: boolean; note?: string }> {
-  try {
-    await asking(control, key, signal)("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`, undefined, "gone");
-    return { removed: true };
-  } catch (error) {
-    if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") return { removed: true };
-    return composioNote(name);
-  }
+ *  call only), then what `cleanup` says this server made for it and nothing else uses (composio-made.ts: its connected
+ *  accounts, then their auth config). Composio's 404 is "already gone"; a refusal, or no answer, leaves that one there and
+ *  says so, for the delete of our own row to go on regardless. The answer says in words what went, what stays and why. */
+export async function composioForget(control: ComposioControl, key: string, id: string, name: string, signal?: AbortSignal, cleanup?: Cleanup): Promise<{ removed: boolean; note: string }> {
+  const ask = asking(control, key, signal, "it is still there");
+  const removed: string[] = [];
+  const left: string[] = [];
+  const remove = async (thing: Thing | { kind: "mcp"; id: string }, path: string) => {
+    try {
+      await ask(`deleting ${named(thing)}`, "DELETE", path, undefined, "gone");
+      removed.push(named(thing, true));
+    } catch (error) {
+      if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") removed.push(named(thing, true));
+      else left.push(named(thing));
+    }
+  };
+  await remove({ kind: "mcp", id }, `/api/v3.1/mcp/${encodeURIComponent(id)}`);
+  for (const thing of cleanup?.remove ?? []) await remove(thing, thing.kind === "account" ? `/api/v3/connected_accounts/${encodeURIComponent(thing.id)}` : `/api/v3/auth_configs/${encodeURIComponent(thing.id)}`);
+  return said(name, removed, cleanup?.kept ?? [], left);
 }

@@ -387,7 +387,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[] }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     /** 204 when it is gone; 200 with a note when a Composio server it made could not be removed there (the row is gone either way). */
-    deleteMcpServer: (name: string) => call<{ deleted: true; composio?: { removed: false; note: string } } | undefined>("DELETE", mcpServer(name)),
+    deleteMcpServer: (name: string) => call<{ deleted: true; composio?: { removed: boolean; note: string } } | undefined>("DELETE", mcpServer(name)),
     /** A saved Composio server's toolkit's events, for a trigger from an app. */
     composioEvents: (name: string) => call<ComposioEvents>("GET", `${mcpServer(name)}/composio/events`),
     /** A saved Composio server's triggers, and where its project's webhook subscription sends events. */

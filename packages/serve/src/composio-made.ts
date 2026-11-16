@@ -1,0 +1,83 @@
+// What the Composio preset made on Composio for a saved server beyond its MCP server (whose id the server's address
+// names): the auth config it found or made, and the connected accounts it found ACTIVE or its connect links started,
+// each marked whether this server made it (`made`). Recorded when the preset saves the server, one row of store.settings
+// per server (composioMadeKey), bound to the server row it was written for (`of`, the row's created_at, which a save over
+// the row keeps) as its source record is (mcp-sources.ts); read when the server is deleted. The delete removes what was
+// made that no other saved server uses (cleanupOf), and passes what another one uses to that one's record, so the last
+// of them to go removes it. What this server didn't make (an auth config or an account the owner had already, or one no
+// record says it made, as for a server saved before this was recorded) is never removed.
+import { isObject } from "./validate.js";
+
+/** A thing on Composio by its id, and whether this server made it. */
+export type Made = { id: string; made: boolean };
+/** What a preset server stands on at Composio: the user its address names, its auth config (none for a toolkit with no
+ *  sign-in) and the connected accounts under it. */
+export type ComposioMade = { user: string; auth_config: Made | null; accounts: Made[] };
+/** What a delete does at Composio beyond the MCP server: what it removes, in order (the accounts before the auth config
+ *  they are under), and what it keeps, each with whose it stays (`by`: the saved server that uses it too; none: this
+ *  server didn't make it). */
+export type Cleanup = { remove: Thing[]; kept: (Thing & { by?: string })[] };
+export type Thing = { kind: "account" | "auth_config"; id: string };
+
+/** The store.settings key a server's record lives under. */
+export const composioMadeKey = (name: string): string => `mcp.composio/${name}`;
+
+/** The settings value a record is stored as, bound to the server row it was written for. */
+export const storedMade = (made: ComposioMade, row: { createdAt: number }): ComposioMade & { of: number } => ({ ...made, of: row.createdAt });
+
+const ID = /^[A-Za-z0-9_.-]{1,128}$/;
+const thingOf = (value: unknown): Made | undefined => (isObject(value) && typeof value.id === "string" && ID.test(value.id) && typeof value.made === "boolean" ? { id: value.id, made: value.made } : undefined);
+
+/** A stored record read for the row created at `createdAt`; undefined when there is none, it was written for another row,
+ *  or it is not one (then nothing beyond the MCP server is removed). */
+export function recordedMade(value: unknown, createdAt: number | undefined): ComposioMade | undefined {
+  if (!isObject(value) || createdAt === undefined || value.of !== createdAt || typeof value.user !== "string" || !Array.isArray(value.accounts)) return undefined;
+  const config = value.auth_config === null ? null : thingOf(value.auth_config);
+  const accounts = value.accounts.map(thingOf);
+  if (config === undefined || accounts.some((account) => !account)) return undefined;
+  return { user: value.user, auth_config: config, accounts: accounts as Made[] };
+}
+
+/** Whether `other` stands on `mine`'s account: under the same auth config, as the same user (Composio's MCP server picks
+ *  the account by the two). */
+const sharesAccounts = (mine: ComposioMade, other: ComposioMade): boolean => mine.auth_config !== null && other.auth_config?.id === mine.auth_config.id && other.user === mine.user;
+
+/** A record a save writes, from what the preset found and made (`found`): a thing it found that a record of the server
+ *  saved before over this row (`was`) or of another saved server (`others`) says was made here stays made here; and the
+ *  accounts the server saved before had made, under the same auth config and user, stay its own. */
+export function madeToWrite(found: ComposioMade, was: ComposioMade | undefined, others: readonly ComposioMade[]): ComposioMade {
+  const all = [...(was ? [was] : []), ...others];
+  const madeHere = (id: string) => all.some((r) => r.auth_config?.id === id ? r.auth_config.made : false) || all.some((r) => r.accounts.some((a) => a.id === id && a.made));
+  const config = found.auth_config && { id: found.auth_config.id, made: found.auth_config.made || madeHere(found.auth_config.id) };
+  const accounts = found.accounts.map((a) => ({ id: a.id, made: a.made || madeHere(a.id) }));
+  const kept = was && sharesAccounts(found, was) ? was.accounts.filter((a) => a.made && !accounts.some((b) => b.id === a.id)) : [];
+  return { user: found.user, auth_config: config, accounts: [...accounts, ...kept] };
+}
+
+/** What a removed server's record leaves to do, with the records of the servers still saved (`others`, by name): each
+ *  thing it made that none of them uses is removed; one another uses is kept and passed to that one (`handover`: its record
+ *  as it is to be written, owning it); one it didn't make is kept. */
+export function cleanupOf(mine: ComposioMade, others: readonly [string, ComposioMade][]): { cleanup: Cleanup; handover: [string, ComposioMade][] } {
+  const cleanup: Cleanup = { remove: [], kept: [] };
+  const handed = new Map<string, ComposioMade>();
+  const take = (name: string, record: ComposioMade) => handed.get(name) ?? (handed.set(name, { ...record, accounts: [...record.accounts] }), handed.get(name)!);
+  for (const account of mine.accounts) {
+    const user = others.find(([, other]) => sharesAccounts(mine, other));
+    if (!account.made) cleanup.kept.push({ kind: "account", id: account.id });
+    else if (user) {
+      cleanup.kept.push({ kind: "account", id: account.id, by: user[0] });
+      const record = take(user[0], user[1]);
+      record.accounts = [...record.accounts.filter((a) => a.id !== account.id), { id: account.id, made: true }];
+    } else cleanup.remove.push({ kind: "account", id: account.id });
+  }
+  if (mine.auth_config) {
+    const config = mine.auth_config;
+    const user = others.find(([, other]) => other.auth_config?.id === config.id);
+    if (!config.made) cleanup.kept.push({ kind: "auth_config", id: config.id });
+    else if (user) {
+      cleanup.kept.push({ kind: "auth_config", id: config.id, by: user[0] });
+      take(user[0], user[1]).auth_config = { id: config.id, made: true };
+    } else cleanup.remove.push({ kind: "auth_config", id: config.id });
+  }
+  return { cleanup, handover: [...handed] };
+}

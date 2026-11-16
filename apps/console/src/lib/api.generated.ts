@@ -1936,7 +1936,7 @@ export interface operations {
     answer: {
       deleted: true;
       composio: {
-        removed: false;
+        removed: boolean;
         note: string;
       };
     };

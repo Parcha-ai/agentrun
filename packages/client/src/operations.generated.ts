@@ -2997,7 +2997,7 @@ export type TestWorkspaceArchilResponse = {
 export type DeleteMcpServerResponse = {
   deleted: true;
   composio: {
-    removed: false;
+    removed: boolean;
     note: string;
   };
 };

@@ -3744,7 +3744,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
-        const answer = await composioSave(body, options.composioControl ?? {}, (mcp, made) => mcpServers.save(id, mcp, stopping.signal, undefined, made), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, undefined, made, stands), id, stopping.signal, async () => (await mcpServers.get(id)).url);
         await refreshMcpMeta();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
@@ -3800,14 +3800,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer": {
         // Our row goes first, by the checked removal (a 412 sends Composio nothing), and answers what it removed: a Composio
-        // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key.
-        // Composio refusing or not answering, or a key that does not open, never keeps our row: the answer says what to
-        // remove there by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
+        // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key, then
+        // what its save made for it there that no other saved server uses (its connect link's account, its auth config).
+        // Composio refusing or not answering, or a key that does not open, never keeps our row. A preset's answer says in
+        // words what went there, what stays and why, and what to remove by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
         // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting).
         const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
         await refreshMcpMeta();
-        const forgotten = !made ? undefined : "unusable" in made ? composioNote(id) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal);
-        if (forgotten && !forgotten.removed) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
+        const forgotten = !made ? undefined : "unusable" in made ? composioNote(id, made.cleanup) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal, made.cleanup);
+        if (forgotten) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
       case "getToolSettings":

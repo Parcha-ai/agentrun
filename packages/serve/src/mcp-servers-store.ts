@@ -18,6 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, madeToWrite, recordedMade, storedMade } from "./composio-made.js";
 import { COMPOSIO_USER, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
@@ -54,13 +55,14 @@ function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpSer
  *  `unusable` when either can't be had (a key that does not open here, an address that names no server): the delete of
  *  our row still stands, and the answer says to remove it in Composio by hand. Taken from the row actually removed, never
  *  a row read before it, so a server saved again under the name meanwhile is not the one deleted on Composio. */
-export type ComposioHandle = { id: string; key: string } | { unusable: true };
-function composioHandleOf(removed: RemovedMcpServer | undefined): ComposioHandle {
+//  `cleanup`: what else is to go there, and what stays (composio-made.ts), when the server's save recorded what it stands on.
+export type ComposioHandle = ({ id: string; key: string } | { unusable: true }) & { cleanup?: Cleanup };
+function composioHandleOf(removed: RemovedMcpServer | undefined, cleanup: Cleanup | undefined): ComposioHandle {
   const id = removed ? composioServerId(removed.url) : undefined;
   const open = removed?.opened;
   const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
   const key = headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
-  return id && key ? { id, key } : { unusable: true };
+  return { ...(id && key ? { id, key } : { unusable: true as const }), ...(cleanup ? { cleanup } : {}) };
 }
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
@@ -250,8 +252,9 @@ export class McpServersOverStore {
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
    *  auth type and the URL's origin stay the same. `made`: what made the server, when that is the Composio preset (its
-   *  source and toolkit, recorded as they are). */
-  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord) {
+   *  source and toolkit, recorded as they are), and `stands`, what it stands on at Composio (composio-made.ts), recorded
+   *  for its delete. */
+  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
     // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
@@ -317,6 +320,13 @@ export class McpServersOverStore {
       // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
       : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
     if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn));
+    // What it stands on at Composio: what the preset found and made, over what the server saved before over this row had
+    // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
+    if (made && stands) {
+      const others = (await this.composioRecords()).filter(([other]) => other !== name).map(([, record]) => record);
+      const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
+      await this.store.settings.put(composioMadeKey(name), storedMade(madeToWrite(stands, before, others), saved));
+    } else if (moved) await this.store.settings.remove(composioMadeKey(name));
     await this.store.flush();
     return this.view(saved);
   }
@@ -373,6 +383,8 @@ export class McpServersOverStore {
     const row = await this.need(name);
     // Whether it is a Composio preset server: from its record (source composio), read before the row goes.
     const preset = row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
+    // What it stands on at Composio, as its save recorded it (none: saved before that was recorded, or not a preset).
+    const stands = preset ? recordedMade(await this.store.settings.get(composioMadeKey(name)), row.createdAt) : undefined;
     // The credential revoked is the one the deleting statement saw (RETURNING): a run's refresh landing before it is in it,
     // one landing after finds no row to keep. A sign-in kept as expired has no refresh token left to revoke.
     const removed = checkedAgainst === undefined ? await removeMcpServer(this.store, this.sealKey, name)
@@ -381,11 +393,32 @@ export class McpServersOverStore {
     // Its record goes with it, unless a server saved again under the name meanwhile wrote its own: one left behind is
     // never read for another row (mcp-sources.ts), so a server saved again says what it is afresh.
     if (!recordedForAnother(await this.store.settings.get(mcpSourceKey(name)), row.createdAt)) await this.store.settings.remove(mcpSourceKey(name));
+    // What it made at Composio that another saved server uses stays, that one's now (its record rewritten to own it); the
+    // rest the delete route removes there.
+    let cleanup: Cleanup | undefined;
+    if (stands) {
+      if (!recordedForAnother(await this.store.settings.get(composioMadeKey(name)), row.createdAt)) await this.store.settings.remove(composioMadeKey(name));
+      const others = (await this.composioRecords()).filter(([other]) => other !== name);
+      const done = cleanupOf(stands, others.map(([other, record]): [string, ComposioMade] => [other, record]));
+      for (const [other, record] of done.handover) {
+        const of = others.find(([n]) => n === other)?.[2];
+        if (of !== undefined) await this.store.settings.put(composioMadeKey(other), storedMade(record, { createdAt: of }));
+      }
+      cleanup = done.cleanup;
+    }
     await this.store.flush();
     const open = removed?.opened;
     const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
     if (credential && removed) void this.track(this.signIns.revoke(credential.set as TokenSet, removed.url, this.stopped.signal));
-    return preset ? { composio: composioHandleOf(removed) } : {};
+    return preset ? { composio: composioHandleOf(removed, cleanup) } : {};
+  }
+
+  /** The saved servers' records of what they stand on at Composio (composio-made.ts), each read for its own row: name,
+   *  record and the row's created_at. */
+  private async composioRecords(): Promise<[string, ComposioMade, number][]> {
+    const rows = await listMcpServers(this.store);
+    const read = await Promise.all(rows.map(async (row) => [row.name, recordedMade(await this.store.settings.get(composioMadeKey(row.name)), row.createdAt), row.createdAt] as const));
+    return read.filter((entry): entry is readonly [string, ComposioMade, number] => entry[1] !== undefined).map(([name, record, at]) => [name, record, at]);
   }
 
   /** POST .../{name}/oauth/start: `{url, scopes?, client_id?, client_secret?, toolkit?}`; answers the URL the owner opens.
