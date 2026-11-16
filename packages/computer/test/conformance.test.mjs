@@ -422,6 +422,25 @@ test("--concurrency 1: retries of one request share its computer's room, and a c
 	assert.match(text, /^computers alive at once: 1 at most \(--concurrency 1\)$/m);
 });
 
+test("--concurrency 1: health.no-key-in-errors still asks create with the planted key, which uses no room, and fails on a leak", async () => {
+	const secret = "agentrun-planted-0123456789abcdef01234567";
+	const fake = fakeComputers();
+	const leaky = fakeComputers();
+	let asked = 0;
+	leaky.provider.create = async () => (asked++, { ok: false, error: { code: "auth", message: `bad key ${secret}` } });
+	const report = await runConformance(fake.provider, {
+		image: IMAGE,
+		cases: conformanceCases.filter((c) => c.id === "health.no-key-in-errors"),
+		planted: async () => ({ provider: leaky.provider, secrets: [secret] }),
+		concurrency: 1,
+	});
+	const result = report.results.find((one) => one.id === "health.no-key-in-errors");
+	assert.equal(asked, 1, "the planted create reached the provider");
+	assert.equal(result.status, "fail", JSON.stringify(result));
+	assert.match(result.reason, /create: what the provider answered holds none of a planted secret/);
+	assert.equal(report.computers.peak, 1);
+});
+
 test("the CLI as a process: a usage error exits 2; a provider that cannot make a computer fails Core and exits 1", async () => {
 	const run = (args) =>
 		new Promise((resolve) => {

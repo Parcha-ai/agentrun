@@ -165,6 +165,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const alive = new Map<string, { role: ComputerRole; lost?: true }>();
 	/** Each computer the run made, by name: the request that made it. */
 	const madeBy = new Map<string, string>();
+	/** The providers built with planted secrets: their creates are not capped (attempt). */
+	const plantedBy = new WeakSet<ComputerProvider>();
 	/** The creates of each request still unanswered. */
 	const flying = new Map<string, number>();
 	const waiting: Array<() => void> = [];
@@ -436,9 +438,13 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		};
 		/** Each create of the case is its own request: the run, the case and the create's count. */
 		let creates = 0;
-		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
+		/**
+		 * create through by, kept: what it gives is deleted when the case ends, or as it comes after that. A create with
+		 * planted secrets is outside the cap: it can't use the account, so it holds no room (one it makes anyway fails its case).
+		 */
 		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId = `${run}/${c.id}/${++creates}`) => {
-			const creating = capped(requestId, c.id, caseSignal, () => by.create(whole, { signal: caseSignal, requestId })).then((created) => {
+			const make = () => by.create(whole, { signal: caseSignal, requestId });
+			const creating = (plantedBy.has(by) ? make() : capped(requestId, c.id, caseSignal, make)).then((created) => {
 				noteCreated(created, c.id);
 				// A retry of one request answers the computer the first attempt made: it is tracked once.
 				if (created.ok && !refs.some((one) => one.ref.id === created.value.id)) track(created.value, by);
@@ -532,7 +538,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				declared,
 				async planted() {
 					if (planted === undefined) return t.skip("no provider with planted secrets was given: the provider takes no secret, or its module lists none in ENV");
-					return await planted();
+					const got = await planted();
+					plantedBy.add(got.provider);
+					return got;
 				},
 				async runFolder(kind) {
 					const none = `the run was given no run folder for mount kind ${kind}`;
