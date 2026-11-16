@@ -81,3 +81,18 @@ test("plain http to a private address is refused before a byte is sent: a privat
   await assert.rejects(readFeed("http://intra.example/feed", {}, { network: net, reach: { allowed: ["intra.example"] } }), /private address; refused/);
   assert.deepEqual(sent.map((one) => one.url), ["http://feeds.example/rss", "http://feeds.example/hop", "http://feeds.example/rss"], "only the public feed was asked; nothing went to a private or metadata address");
 });
+
+test("a route that serves no feed at a URL (an eval's, for a feed its case doesn't fake) reads as unreachable in words naming the host, and nothing is sent or looked up", async () => {
+  const looked = [];
+  const { sent, net } = network({}, {});
+  const lookup = net.lookup;
+  net.lookup = async (host) => (looked.push(host), lookup(host));
+  await assert.rejects(
+    readFeed("https://status.example/history.atom", {}, { network: net, reach: {}, route: () => null }),
+    (error) => error.name === "FeedUnreachable" && error.message === "the eval serves no feed at status.example",
+  );
+  assert.deepEqual([sent, looked], [[], []], "nothing sent, no name looked up");
+  // A route that leaves a URL as it is reads it there.
+  const plain = network({ "status.example": ["93.184.216.34"] }, { "https://status.example/history.atom": ok("<feed/>") });
+  assert.equal((await readFeed("https://status.example/history.atom", {}, { network: plain.net, reach: {}, route: () => undefined })).status, 200);
+});
