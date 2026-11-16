@@ -20,6 +20,7 @@ import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
+import { AUDIT_DEFAULTS, AUDIT_MAX } from "./learning-setting.js";
 import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
@@ -1257,7 +1258,7 @@ const COST_RUN = closed({
   n: { type: "integer", minimum: 1, description: "The run's number among the agent's runs counted here, oldest first: 1 is its first." },
   run_id: { type: "string" },
   started_at: DATE_TIME,
-  path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran; `replay`, a replay run: a learned workflow's new revision run alone on one of the agent's graded inputs, at workflow cost, to decide whether it serves first (its cost is learning's, shown as its own run)." },
+  path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran; `replay`, a replay run: a learned workflow's new revision run alone on one of the agent's graded inputs, at workflow cost, to decide whether it serves first (its cost is learning's, shown as its own run); `audit`, never a row here: a shadow run auditing a served run is no run of the series, its cost that run's `learning_usd`." },
   workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
   learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
   cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before it looked back; for a run that did not look back, its whole cost."),
@@ -1339,7 +1340,7 @@ const PROMOTION = closedWith({
   digest: { type: "string", description: "The revision the record decides: the first 16 hex of its workflow.json's sha256." },
   at: DATE_TIME,
   decided: { enum: ["promote", "hold", "replaying", "queued", "skipped"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. `replaying`: its replay runs are at work; the champion serves meanwhile, else the agent. `queued`: it came while another revision replayed; one revision replays at a time and a running replay finishes, so it replays next, at the first run's claim once that replay is decided (the finished replay's verdict stands). `skipped`: a newer revision (`skipped_by`) came while it was queued; only the newest queued revision replays next, so it never replayed and never serves." },
-  source: { enum: ["check", "replay", "dry_run", "refit", "graded"], description: `\`check\`: decided by its one check, a replay of it on the inputs of the agent's last \`compile_after\` completed runs scored against the agent's own recorded answers (\`check\` holds the numbers); a revision's first claim starts it. \`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits, or those its owner asked for (POST .../revisions/{digest}/replays). \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`graded\`: the graded runs it served fell more than ${PROMOTE_BAR * 100} points under the agent's accuracy by hand.` },
+  source: { enum: ["check", "replay", "dry_run", "refit", "audit"], description: `\`check\`: decided by its one check, a replay of it on the inputs of the agent's last \`compile_after\` completed runs scored against the agent's own recorded answers (\`check\` holds the numbers); a revision's first claim starts it. \`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits, or those its owner asked for (POST .../revisions/{digest}/replays). \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`audit\`: a serving revision held by its audits (\`audit\` holds the rows): at least the definition's \`learning.hold_disagree\` of its newest \`learning.hold_window\` audit rows (GET .../learning/audits: a shadow run's answer, or an owner's grade) disagreed.` },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
   check: closedWith({
@@ -1368,11 +1369,43 @@ const PROMOTION = closedWith({
   held_on: { type: "array", items: { type: "string" }, description: `The runs it served that were graded wrong when its graded runs held it (newest first, at most ${REPLAY_INPUTS}), kept on that hold, on its next replay (those still graded that it fits, each among its inputs) and on that replay's hold. A replay promotes it only once it answered or handed back on each of them, and is within the bar on them alone (gains on other inputs never pay for repeating their wrong answers).` },
   commit: { type: "string", description: "The learning commit whose workflow.json is this revision's text: what it serves from as the champion while a newer revision replays." },
   skipped_by: { type: "string", description: "A skipped revision's newer one: the digest that came while it was queued, and replays in its place." },
+  audit: closedWith({
+    window: { type: "integer", minimum: 1, description: "The definition's `learning.hold_window` when it was held." },
+    disagree: { type: "integer", minimum: 1, description: "The definition's `learning.hold_disagree` when it was held." },
+    rows: { ...COUNT, description: "The audit rows it was decided on: the newest `window` with a verdict." },
+    disagreements: { type: "array", items: closedWith({
+      run: { type: "string", description: "The run whose answer is the agent's: the shadow run, or the served run for a grade." },
+      served: { type: "string", description: "The run the workflow served." },
+      input: { type: "string", description: "The served run's input, as text or JSON, cut at 1200 characters." },
+      agent: { ...NULL_STRING, description: "The agent's answer (the shadow run's), cut at 1200 characters; null for a grade's row." },
+      draft: { ...NULL_STRING, description: "The served answer, cut at 1200 characters; null when it could not be read." },
+    }, { graded: { const: true, description: "An owner's grade wrote this row: the served answer was graded wrong." } }), description: "Its disagreeing rows: the data its one recompile reads." },
+  }, { stopped: { const: true, description: "A second audit hold within the definition's `learning.stop_window` served runs of the first: it stopped, no compile is asked, nothing serves again until a new revision lands." } }),
+});
+const AUDIT_LINE = closed({
+  window: { type: "integer", minimum: 1, description: "The definition's `learning.hold_window`." },
+  disagree: { type: "integer", minimum: 1, description: "The definition's `learning.hold_disagree`." },
+  rows: { ...COUNT, description: "The serving revision's newest audit rows with a verdict, at most `window`." },
+  disagreed: { ...COUNT, description: "How many of them disagreed: it is held once this reaches `disagree`." },
 });
 const SERVING = closed({
   workflow: { type: "string" },
   digest: { ...NULL_STRING, description: "The revision that serves first (the champion: the one promoted last, while its newest record still says promote); null when none does and the agent takes the runs." },
   replaying: { ...NULL_STRING, description: "A newer revision whose replay is at work, when there is one: it serves only once its replay promotes it; the champion serves meanwhile." },
+  state: { enum: ["serving", "checking", "held", "stopped"], description: "`serving`: a revision serves first. `checking`: its newest revision's check is at work (the agent takes the runs meanwhile, or the champion). `held`: none serves, its newest record holds it (a check's or an audit's hold: the agent's next run recompiles it once). `stopped`: none serves and nothing compiles again (a recompile's check held it too, or a second audit hold within `learning.stop_window`, or a check whose every input stopped at a write) until a new revision lands." },
+  check: { anyOf: [closed({ n: COUNT, agreed: COUNT, alone: COUNT, attempt: { enum: [1, 2] } }), { type: "null" }], description: "The numbers of the workflow's newest decided check: its inputs, those it agreed on, those it answered alone, which check of its compile it was; null when none was decided." },
+  audit: { anyOf: [AUDIT_LINE, { type: "null" }], description: "Its audit line: the serving (else the newest) revision's newest audit rows against the hold bar; null when no revision has a record." },
+});
+const AUDIT_ROW = closed({
+  run: { type: "string", description: "The served run." },
+  shadow_run: { ...NULL_STRING, description: "Its shadow run (the same agent on the same input with learning off, GET /runs/{id}'s `audit_of` names the served run); null for a grade's row." },
+  workflow: { type: "string" },
+  digest: { type: "string", description: "The revision that served it." },
+  source: { enum: ["shadow", "grade"], description: "`shadow`: the shadow run's answer compared with the served one. `grade`: an owner's grade of a run the workflow answered alone (PUT /runs/{id}/grade)." },
+  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed): no evidence, not counted." },
+  served_cost: { type: ["number", "null"], minimum: 0, description: "What the served run cost; null when unknown." },
+  shadow_cost: { type: ["number", "null"], minimum: 0, description: "What the shadow run cost (the agent's learning cost); null for a grade's row, or when unknown." },
+  at: DATE_TIME,
 });
 const BATCH_LESSONS = closed({ notes: { type: "array", items: { type: "string" } }, skills: { type: "array", items: { type: "string" } }, workflows: { type: "array", items: { type: "string" } } });
 const BATCH_ROW = closedWith(
@@ -1382,7 +1415,7 @@ const BATCH_ROW = closedWith(
     answer: { ...NULL_STRING, description: "The run's answer as compared (the `answer_field` of a JSON answer when the batch names one), cut at 2000 characters (compared whole: the review quotes it to 2000 characters and says when it was cut); null when it gave none." },
     right: { type: "boolean", description: "Whether the answer equals the reference once trimmed, case-folded and whitespace-collapsed (two numbers by value). A display: the learning grade is the judge." },
     reviewed: { type: "boolean", description: "The reference was sent to the run as a review, once." },
-    path: { enum: RUN_PATHS.filter((path) => path !== "replay"), description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
+    path: { enum: RUN_PATHS.filter((path) => path !== "replay" && path !== "audit"), description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
     cost_usd: COST_USD("The job's own cost."), learning_usd: COST_USD("What learning cost for the run."), total_usd: COST_USD("Their sum; for a failed row, what its run cost."),
     learned: { ...BATCH_LESSONS, description: "The notes, skills and workflow drafts the run's learning kept, by name." },
     merged: { ...NULL_STRING, description: "The commit of the agent's learning folder its learning last merged (its job's round or its review's)." },
@@ -1463,9 +1496,18 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/promotions": {
     get: {
       operationId: "listLearningPromotions", tags: ["agents"], summary: "Each learned workflow revision's promotion: its replay's numbers and whether it serves",
-      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's replay on the agent's graded inputs (replaying, then promoted or held, with its numbers), one promoted on its dry run, a threshold refit's new revision, a serving revision held on its graded runs. A revision serves only once its replay promotes it; the champion (the revision promoted last) keeps serving while a newer one replays or after it is held, and `serving` says which digest serves and which replays. One revision replays at a time and a running replay finishes: a newer one that comes meanwhile is queued, and replays next; one queued before it is skipped, its record naming the newer one. Aggregates only: no input or answer. What the console's Learning tab marks on its cost chart.",
+      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's replay on the agent's graded inputs (replaying, then promoted or held, with its numbers), one promoted on its dry run, a threshold refit's new revision, a serving revision held on its graded runs. A revision serves only once its replay promotes it; the champion (the revision promoted last) keeps serving while a newer one replays or after it is held, and `serving` says which digest serves and which replays. One revision replays at a time and a running replay finishes: a newer one that comes meanwhile is queued, and replays next; one queued before it is skipped, its record naming the newer one. A serving revision is audited (GET .../learning/audits) and held by its audits (source `audit`); `serving` says each workflow's state, its newest check's numbers and its audit line. A hold's disagreements (a check's, an audit's) quote inputs and answers, cut as the agent's other learning reads cut them. What the console's Learning tab marks on its cost chart.",
       parameters: [AGENT_ID],
-      responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION }, serving: { type: "array", items: SERVING, description: "Each learned workflow with a record: the revision that serves and the one replaying." } }), "The agent's promotion records, and what serves."), ...errors(401, 403, 404, 429, 500) },
+      responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION }, serving: { type: "array", items: SERVING, description: "Each learned workflow with a record: the revision that serves, the one replaying, its state, its check's numbers and its audit line." } }), "The agent's promotion records, and what serves."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "promotion/1",
+    },
+  },
+  "/agents/{agent_id}/learning/audits": {
+    get: {
+      operationId: "listLearningAudits", tags: ["agents"], summary: "The audit ledger of the agent's serving learned workflows",
+      description: "One row per finished audit, oldest first, as the agent's learning folder keeps them (audits.jsonl): a run a promoted learned workflow served first (answered alone or handed back) is audited at 1 in `learning.audit_every` (drawn from its id): its shadow run, the same agent on the same input with learning off, answers it again, and the row says whether the two answers say the same and what each run cost (the shadow's is the agent's learning cost; the shadow is no row of the run list, and GET /runs/{id} reads it with `audit_of`). An owner's grade of a run the workflow answered alone is a row too. The hold rule reads them (`learning.hold_window`, `learning.hold_disagree`).",
+      parameters: [AGENT_ID],
+      responses: { "200": json(closed({ agent: { type: "string" }, audits: { type: "array", items: AUDIT_ROW } }), "The agent's audit rows."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },
   },
@@ -2976,6 +3018,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "imported/1",
     },
     trigger: RUN_TRIGGER,
+    audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow served first may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, is no row of the run list, and its cost is in the served run's `cost.usd` and the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
   },
   InputIssue: {
     code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
@@ -3137,7 +3180,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       compile_after: { type: "integer", minimum: 1, maximum: 200, default: 20, description: "The job compiles into a learned workflow once the agent has this many completed runs of its own." },
       agree_min: { type: "number", minimum: 0, maximum: 1, default: 0.8, description: "The draft's one check replays it on the inputs of those runs: promoted only when, of the inputs it answered alone, at least this share say what the agent's own recorded answer said." },
       alone_min: { type: "number", minimum: 0, maximum: 1, default: 0.7, description: "...and only when it answered at least this share of them alone (no escalate, no failed step). Under either bar it is recompiled once with the inputs it did not agree on, checked the same way, then promoted or stopped: nothing compiles again." },
-    } }], default: false, description: "Whether an agentic revision's runs learn, and what: `true`, notes, skills and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, each optional: one left out is its default; `true` is every default); `\"notes\"`, notes and skills alone (a run is never given a learned workflow nor asked to draft one); `false`, nothing. A run that learns starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true, false, `\"notes\"` or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+      audit_every: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.audit_every, description: "Once a learned workflow serves, 1 in this many of the runs it serves (answered alone or handed back) is audited: drawn from the run's id, the same agent runs the same input again with learning off (a shadow run, hidden from the run list, its cost the agent's learning cost), and the two answers are compared (one row of GET .../learning/audits)." },
+      audit_every_later: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.audit_every_later, description: "1 in this many once the workflow's revision served `audit_later_after` runs." },
+      audit_later_after: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.audit_later_after, description: "The served runs after which `audit_every_later` applies." },
+      hold_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_window, description: "The audit rows of the serving revision the hold rule reads: its newest this many (an owner's grade on a served run is one too)." },
+      hold_disagree: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_disagree, description: "When at least this many of those rows disagree, the workflow stops serving (a hold, source `audit`) and is recompiled once with them as data, then checked again: promoted serves again, otherwise it stops. At most `hold_window`." },
+      stop_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.stop_window, description: "A second hold within this many served runs of the first stops the workflow for good, asking no compile." },
+    } }], default: false, description: "Whether an agentic revision's runs learn, and what: `true`, notes, skills and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, `audit_every`, `audit_every_later`, `audit_later_after`, `hold_window`, `hold_disagree`, `stop_window`, each optional: one left out is its default; `true` is every default); `\"notes\"`, notes and skills alone (a run is never given a learned workflow nor asked to draft one); `false`, nothing. A run that learns starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true, false, `\"notes\"` or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
     checkout: { enum: ["pull_request", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
   },
   AgentCreate: {

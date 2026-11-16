@@ -71,9 +71,16 @@ const BROKEN_DRAFT = `\`\`\`\`workflow answer\n---\ndescription: Answers a quest
 const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
 const hasResult = (body) => (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part) => (part?.type === "text" ? part.text : "")).join(""));
+/** A compile turn's first ask (askedForCompile true), never an attempt the checks sent back ("again": the same compile
+ *  turn's retries, which BROKEN_DRAFT always draws). */
 const compileAskOf = (body) => {
   const last = (body?.messages ?? []).findLast((message) => message.role === "user");
-  return askedForCompile(textOf(last)) ? textOf(last) : "";
+  return askedForCompile(textOf(last)) === true ? textOf(last) : "";
+};
+/** Any compile message, a first ask or a retry: what the faux model answers with BROKEN_DRAFT. */
+const anyCompileAsk = (body) => {
+  const last = (body?.messages ?? []).findLast((message) => message.role === "user");
+  return askedForCompile(textOf(last)) !== false;
 };
 
 const until = async (done, what, ms = 60_000) => {
@@ -97,7 +104,7 @@ async function world(t, { learning, prior = 0, submit } = {}) {
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submit ? submit(JSON.stringify(body)) : { answer: 42, sure: true } } } : undefined),
-    text: ({ body }) => (offers(body, "submit") ? "submitted" : compileAskOf(body) ? BROKEN_DRAFT : AGENT_SAYS),
+    text: ({ body }) => (offers(body, "submit") ? "submitted" : anyCompileAsk(body) ? BROKEN_DRAFT : AGENT_SAYS),
   });
   let runner;
   t.after(async () => {

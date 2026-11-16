@@ -241,11 +241,13 @@ test("learning's audit numbers (audit_every, audit_every_later, audit_later_afte
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.deepEqual(Object.keys(created.body.definition.learning), ["compile_after", "audit_every", "audit_every_later", "audit_later_after", "hold_window", "hold_disagree", "stop_window"]);
   assert.deepEqual(created.body.definition.learning, learning);
-  for (const wrong of [{ audit_every: 0 }, { audit_every: 1.5 }, { audit_every_later: "20" }, { audit_later_after: -1 }, { hold_window: 0 }, { hold_disagree: 0 }, { hold_disagree: 4, hold_window: 3 }, { hold_disagree: 11 }, { stop_window: 0 }, { stop_window: null }]) {
+  // Each wrong value and the field its message names: hold_disagree over hold_window (set or its default 10) names
+  // hold_disagree.
+  for (const [wrong, field] of [[{ audit_every: 0 }, "audit_every"], [{ audit_every: 1.5 }, "audit_every"], [{ audit_every_later: "20" }, "audit_every_later"], [{ audit_later_after: -1 }, "audit_later_after"], [{ hold_window: 0 }, "hold_window"], [{ hold_disagree: 0 }, "hold_disagree"], [{ hold_disagree: 4, hold_window: 3 }, "hold_disagree"], [{ hold_disagree: 11 }, "hold_disagree"], [{ stop_window: 0 }, "stop_window"], [{ stop_window: null }, "stop_window"]]) {
     const refused = await api("POST", "/agents", agent(`wrong-${Math.random().toString(36).slice(2, 8)}`, { learning: wrong }));
     assert.equal(refused.status, 422, JSON.stringify(wrong));
     assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]], JSON.stringify(wrong));
-    assert.match(refused.body.error.fields[0].message, new RegExp(`definition\\.learning\\.${Object.keys(wrong).at(-1) === "hold_window" ? "hold_disagree" : Object.keys(wrong)[0]}`), JSON.stringify(refused.body.error));
+    assert.match(refused.body.error.fields[0].message, new RegExp(`definition\\.learning\\.${field}\\b`), JSON.stringify(refused.body.error));
   }
 });
 

@@ -12,9 +12,11 @@ import { ApiError } from "./errors.js";
  *  rule for a run with nothing new to look back on, runner/learning-end.ts onlyLearnedWorkflows); `handed_back`, a
  *  learned workflow ran and the agent went on (it handed back, failed, escalated, or the agent did more work after it);
  *  `agent`, no learned workflow ran; `replay`, a replay run deciding whether a learned workflow's new revision serves
- *  (runner/promotion.ts: the workflow alone on a graded run's input, at workflow cost). One classifier (store-reads/learning.ts runPathOverStore) writes it on the run's
+ *  (runner/promotion.ts: the workflow alone on a graded run's input, at workflow cost); `audit`, a shadow run auditing a
+ *  run a learned workflow served (runner/audit.ts: the agent on its input with learning off; its cost is that run's
+ *  learning). One classifier (store-reads/learning.ts runPathOverStore) writes it on the run's
  *  record at its end (metrics.path). */
-export const RUN_PATHS = ["agent", "handed_back", "workflow", "replay"] as const;
+export const RUN_PATHS = ["agent", "handed_back", "workflow", "replay", "audit"] as const;
 export type RunPath = (typeof RUN_PATHS)[number];
 
 /** What a run that looked back kept of its costs as it answered (runner/reflect-hook.ts: store-reads/learning.ts

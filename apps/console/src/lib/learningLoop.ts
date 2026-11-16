@@ -122,7 +122,7 @@ const pts = (delta: number) => `${delta >= 0 ? "+" : ""}${Math.round(delta * 100
 export function replayLine(record: Promotion): string {
   const r = record.replay;
   if (!r || !r.n) return record.reason;
-  const how = record.source === "refit" ? "Refit on" : record.source === "graded" ? "Checked on" : "Replay on";
+  const how = record.source === "refit" ? "Refit on" : "Replay on";
   return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.outcomes?.skipped_write ? `, ${r.outcomes.skipped_write} skipped` : ""}`;
 }
 

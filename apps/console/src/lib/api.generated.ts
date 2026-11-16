@@ -439,6 +439,12 @@ export interface components {
       compile_after?: number;
       agree_min?: number;
       alone_min?: number;
+      audit_every?: number;
+      audit_every_later?: number;
+      audit_later_after?: number;
+      hold_window?: number;
+      hold_disagree?: number;
+      stop_window?: number;
     };
     checkout?: "pull_request" | "none";
   };
@@ -925,6 +931,7 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    audit_of?: string | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -2484,7 +2491,7 @@ export interface operations {
         n: number;
         run_id: string;
         started_at: string;
-        path: "agent" | "handed_back" | "workflow" | "replay";
+        path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
         learned_revision: string | null;
         cost_usd: number | null;
@@ -2957,7 +2964,7 @@ export interface operations {
         correct: boolean;
         source: "feedback" | "eval";
         graded_at: string;
-        path: "agent" | "handed_back" | "workflow" | "replay";
+        path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
         workflow_digest: string | null;
         feedback: "look_back" | null;
@@ -3364,7 +3371,7 @@ export interface operations {
       correct: boolean;
       source: "feedback" | "eval";
       graded_at: string;
-      path: "agent" | "handed_back" | "workflow" | "replay";
+      path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
       workflow: string | null;
       workflow_digest: string | null;
       feedback: "look_back" | null;
@@ -3780,6 +3787,23 @@ export interface operations {
       truncated: boolean;
     };
   };
+  listLearningAudits: {
+    body: never;
+    answer: {
+      agent: string;
+      audits: {
+        run: string;
+        shadow_run: string | null;
+        workflow: string;
+        digest: string;
+        source: "shadow" | "grade";
+        agreed: boolean | null;
+        served_cost: number | null;
+        shadow_cost: number | null;
+        at: string;
+      }[];
+    };
+  };
   listLearningBatches: {
     body: never;
     answer: {
@@ -3916,7 +3940,7 @@ export interface operations {
         digest: string;
         at: string;
         decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-        source: "check" | "replay" | "dry_run" | "refit" | "graded";
+        source: "check" | "replay" | "dry_run" | "refit" | "audit";
         reason: string;
         check?: {
           compile_after: number;
@@ -3988,11 +4012,38 @@ export interface operations {
         held_on?: string[];
         commit?: string;
         skipped_by?: string;
+        audit?: {
+          window: number;
+          disagree: number;
+          rows: number;
+          disagreements: {
+            run: string;
+            served: string;
+            input: string;
+            agent: string | null;
+            draft: string | null;
+            graded?: true;
+          }[];
+          stopped?: true;
+        };
       }[];
       serving: {
         workflow: string;
         digest: string | null;
         replaying: string | null;
+        state: "serving" | "checking" | "held" | "stopped";
+        check: {
+          n: number;
+          agreed: number;
+          alone: number;
+          attempt: 1 | 2;
+        } | null;
+        audit: {
+          window: number;
+          disagree: number;
+          rows: number;
+          disagreed: number;
+        } | null;
       }[];
     };
   };

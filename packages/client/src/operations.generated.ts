@@ -259,6 +259,12 @@ export type DefinitionInput = {
     compile_after?: number;
     agree_min?: number;
     alone_min?: number;
+    audit_every?: number;
+    audit_every_later?: number;
+    audit_later_after?: number;
+    hold_window?: number;
+    hold_disagree?: number;
+    stop_window?: number;
   };
   checkout?: "pull_request" | "none";
 };
@@ -770,6 +776,7 @@ export type Run = {
     id: string;
     firing_key: string;
   } | null;
+  audit_of?: string | null;
 };
 
 export type RunResult = {
@@ -1479,6 +1486,22 @@ export interface ListAgentsParams {
 }
 export type ListAgentsResponse = AgentList;
 
+/** The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits). */
+export type ListLearningAuditsResponse = {
+  agent: string;
+  audits: Array<{
+    run: string;
+    shadow_run: string | null;
+    workflow: string;
+    digest: string;
+    source: "shadow" | "grade";
+    agreed: boolean | null;
+    served_cost: number | null;
+    shadow_cost: number | null;
+    at: string;
+  }>;
+};
+
 /** Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions). */
 export type ListLearningPromotionsResponse = {
   agent: string;
@@ -1487,7 +1510,7 @@ export type ListLearningPromotionsResponse = {
     digest: string;
     at: string;
     decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-    source: "check" | "replay" | "dry_run" | "refit" | "graded";
+    source: "check" | "replay" | "dry_run" | "refit" | "audit";
     reason: string;
     check?: {
       compile_after: number;
@@ -1559,11 +1582,38 @@ export type ListLearningPromotionsResponse = {
     held_on?: Array<string>;
     commit?: string;
     skipped_by?: string;
+    audit?: {
+      window: number;
+      disagree: number;
+      rows: number;
+      disagreements: Array<{
+        run: string;
+        served: string;
+        input: string;
+        agent: string | null;
+        draft: string | null;
+        graded?: true;
+      }>;
+      stopped?: true;
+    };
   }>;
   serving: Array<{
     workflow: string;
     digest: string | null;
     replaying: string | null;
+    state: "serving" | "checking" | "held" | "stopped";
+    check: {
+      n: number;
+      agreed: number;
+      alone: number;
+      attempt: 1 | 2;
+    } | null;
+    audit: {
+      window: number;
+      disagree: number;
+      rows: number;
+      disagreed: number;
+    } | null;
   }>;
 };
 
@@ -2136,7 +2186,7 @@ export type GetLearningCostResponse = {
     n: number;
     run_id: string;
     started_at: string;
-    path: "agent" | "handed_back" | "workflow" | "replay";
+    path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
     learned_revision: string | null;
     cost_usd: number | null;
@@ -3456,7 +3506,7 @@ export type GradeRunResponse = {
   correct: boolean;
   source: "feedback" | "eval";
   graded_at: string;
-  path: "agent" | "handed_back" | "workflow" | "replay";
+  path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
   workflow: string | null;
   workflow_digest: string | null;
   feedback: "look_back" | null;
@@ -3638,7 +3688,7 @@ export type GetRunLearningResponse = {
     correct: boolean;
     source: "feedback" | "eval";
     graded_at: string;
-    path: "agent" | "handed_back" | "workflow" | "replay";
+    path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
     workflow_digest: string | null;
     feedback: "look_back" | null;
@@ -5506,6 +5556,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getLearningLoop: {"method":"GET","path":"/agents/{agent_id}/learning/loop","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getNative: {"method":"GET","path":"/agents/{agent_id}/native","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listAgents: {"method":"GET","path":"/agents","pathParams":[],"multiSegment":[],"query":["limit","cursor","archived"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listLearningAudits: {"method":"GET","path":"/agents/{agent_id}/learning/audits","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listLearningPromotions: {"method":"GET","path":"/agents/{agent_id}/learning/promotions","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5674,6 +5725,8 @@ export function resources(call: Call) {
       getNative: (agentId: string, options?: RequestOptions): Promise<GetNativeResponse> => call("getNative", [agentId], undefined, undefined, options),
       /** List agents (GET /agents). */
       list: (params?: ListAgentsParams, options?: RequestOptions): Promise<ListAgentsResponse> => call("listAgents", [], undefined, params, options),
+      /** The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits). */
+      listLearningAudits: (agentId: string, options?: RequestOptions): Promise<ListLearningAuditsResponse> => call("listLearningAudits", [agentId], undefined, undefined, options),
       /** Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions). */
       listLearningPromotions: (agentId: string, options?: RequestOptions): Promise<ListLearningPromotionsResponse> => call("listLearningPromotions", [agentId], undefined, undefined, options),
       /** The agent's runs index (GET /agents/{agent_id}/runs). */

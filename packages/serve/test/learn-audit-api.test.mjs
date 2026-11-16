@@ -20,18 +20,19 @@ import { agent, follow, serve, withEnv } from "./support.mjs";
 /** The faux model at $100 per million output tokens, 400 a request: every model request costs $0.04. */
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
 /** A learned workflow on the agent's own input (`content`): one model node answers a number, then it hands the run back
- *  to the agent when the input says `hand`. */
+ *  to the agent when the input is HAND_BACK. */
+const HAND_BACK = "Hand this one back.";
 const FLOW = {
   v: 2, name: "answer",
   schemas: {
-    In: { type: "object", required: ["content"], properties: { content: { type: "string" }, hand: { type: "boolean" } } },
+    In: { type: "object", required: ["content"], properties: { content: { type: "string" } } },
     Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
   },
   input: { schemaId: "In" },
   output: { schemaId: "Answer", path: "answer" },
   root: { node: "chain", steps: [
     { node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" },
-    { node: "escalate", label: "asked", when: { predicate: "field_true", path: "hand" }, kind: "asked", stage: "answer", summary: "asked to hand it back" },
+    { node: "escalate", label: "asked", when: { predicate: "field_equals", path: "content", value: HAND_BACK }, kind: "asked", stage: "answer", summary: "asked to hand it back" },
   ] },
 };
 const TEXT = JSON.stringify(FLOW);
@@ -82,7 +83,7 @@ async function world(t, learning) {
 test("(h) served runs over v2 read like any run: the answer text, documented timeline kinds, cost.usd all in with the shadow's; the shadow is the audit of its run and no row of the list; the workflow's state, check numbers, audit line and rows are v2 reads", { timeout: 300_000 }, async (t) => {
   const { api, store, doc, meets, run, shadowOf } = await world(t, { audit_every: 1 });
   const alone = await run({ content: "What is 1 plus 41?" });
-  const escalated = await run({ content: "What is 2 plus 40?", hand: true });
+  const escalated = await run({ content: HAND_BACK });
   const shadows = { [alone]: await shadowOf(alone), [escalated]: await shadowOf(escalated) };
   // A later run's claim writes both finished audits' rows.
   const later = await run({ content: "What is 3 plus 39?" });

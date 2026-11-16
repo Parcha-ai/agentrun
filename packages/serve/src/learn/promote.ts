@@ -106,11 +106,13 @@ export interface PromotionRecord {
   readonly digest: string;
   readonly at: string;
   readonly decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-  readonly source: "check" | "replay" | "dry_run" | "refit" | "graded";
+  readonly source: "check" | "replay" | "dry_run" | "refit" | "audit";
   readonly reason: string;
   /** A compiled draft's one check (source `check`, runner/promotion.ts): its bar while it replays, its numbers once
    *  decided. */
   readonly check?: CheckRecord;
+  /** A serving revision's audit hold (source `audit`, runner/audit.ts): the rows that held it. */
+  readonly audit?: AuditHold;
   readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
   readonly runs?: readonly string[];
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
@@ -146,6 +148,30 @@ export interface PromotionRecord {
    *  recorded it, or a refit's own commit. What the digest serves from as the champion (championOf) once a newer revision
    *  is on the folder's main. */
   readonly commit?: string;
+}
+
+/** One audit row a hold was decided on that disagreed: the served run (`served`) and its input, the run whose answer is
+ *  the agent's (`run`: the shadow run, else the served run for a grade), the agent's answer (`agent`: the shadow's, null
+ *  for a grade, which says only that the served answer was wrong) and the served answer (`draft`); `graded`, a row an
+ *  owner's grade wrote. Each text cut to CHECK_TEXT_MAX: what the one recompile reads as data. */
+export interface AuditDisagreement {
+  readonly run: string;
+  readonly served: string;
+  readonly input: string;
+  readonly agent: string | null;
+  readonly draft: string | null;
+  readonly graded?: true;
+}
+
+/** An audit hold (runner/audit.ts): the definition's `hold_window` and `hold_disagree` it was decided at, how many rows
+ *  it read (`rows`, at most the window), the disagreeing ones, and `stopped` when it was a second hold within
+ *  `stop_window` served runs of the first: no compile is asked, nothing serves again until a new revision lands. */
+export interface AuditHold {
+  readonly window: number;
+  readonly disagree: number;
+  readonly rows: number;
+  readonly disagreements: readonly AuditDisagreement[];
+  readonly stopped?: true;
 }
 
 /** The bar a compiled draft's check was started with: the agent definition's loop numbers then (learning-setting.ts), and

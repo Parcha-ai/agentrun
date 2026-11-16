@@ -110,7 +110,7 @@ export function costLineOf(past: readonly PastRun[], name: string, digest: strin
   }
   const agent = newest.filter((run) => pathFields(run.metrics).path === "agent");
   const first = Math.min(...newest.filter(ran).map((run) => run.startedAt));
-  const hand = agent.some(known) ? agent : newest.filter((run) => run.startedAt < first && !SERVED.includes(pathFields(run.metrics).path) && pathFields(run.metrics).path !== "replay");
+  const hand = agent.some(known) ? agent : newest.filter((run) => run.startedAt < first && !SERVED.includes(pathFields(run.metrics).path) && pathFields(run.metrics).path !== "replay" && pathFields(run.metrics).path !== "audit");
   const byHand = hand.filter(known).map((run) => run.allInUsd as number);
   return { served: meanOf(served) ?? { runs: 0, mean_usd: null }, by_hand: meanOf(byHand), unknown_runs: servedUnknown + hand.length - byHand.length };
 }
@@ -288,7 +288,9 @@ export function servedOf(entries: readonly { readonly kind: string; readonly dat
  *  which its grade keeps); and from its root `entries`, each step guard's check of its learned workflows' calls
  *  (`guards`, learned-nodes.ts guardsOf) and each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second
  *  pass), when one ran. learning-cost reads path and workflow from here. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; guards?: GuardRow[]; loops?: LoopRow[]; replay?: ReplayMetrics } {
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; guards?: GuardRow[]; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> } {
+  // A shadow run (runner/audit.ts): path `audit` and the run it audits, whatever it did: no learning, no money rule.
+  if (launch.audit) return { path: "audit", audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } };
   if (!launch.learning) return {};
   const { path, workflow, digest, promotion } = classified ?? { path: "agent" as const, workflow: null };
   const guards = guardsOf(entries);

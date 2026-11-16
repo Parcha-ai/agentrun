@@ -30,6 +30,8 @@ import { learnedFront, learnedName, learnedStatus, retiredFrom, SKILLS_DIR, WORK
 export const HOST_DIR = ".agentrun";
 export const SNAPSHOT_FILE = `${HOST_DIR}/snapshot.json`;
 export const DIFFS_DIR = `${HOST_DIR}/diffs`;
+/** The audit ledger at the folder's top (learn/audit.ts): one JSON row per line. */
+export const AUDITS_FILE = "audits.jsonl";
 /** The most changes the snapshot's log keeps, newest first; `log_more` says older exist. */
 export const LOG_KEEP = 200;
 /** A file main holds over this is no note and no learned file: a note is at most 4 KB (check.ts CAPS.note). */
@@ -88,6 +90,8 @@ export type SnapChange = { commit: string; at: string; by: { run: string } | { u
 export type Snapshot = {
   v: 1; main: string; at: string;
   index: { oid: string; bytes: number };
+  /** The audit ledger (learn/audit.ts AUDITS_FILE), once a row was written: the host's, never laid into a run. */
+  audits?: { oid: string; bytes: number };
   notes: SnapNote[]; skills: SnapLearned[]; workflows: SnapLearned[];
   log: SnapChange[]; log_more: boolean;
 };
@@ -273,6 +277,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
   const orderOf = (path: string) => order.get(path) ?? Number.MAX_SAFE_INTEGER;
   const historyOf = (path: string) => history.get(path) ?? { at };
   const index = tree.find((entry) => entry.path === INDEX_FILE && regular(entry));
+  const audits = tree.find((entry) => entry.path === AUDITS_FILE && regular(entry));
   const notes: SnapNote[] = [];
   const folders = new Map<string, { kind: "skill" | "workflow"; name: string; files: SnapFile[]; links: string[] }>();
   for (const entry of tree) {
@@ -302,7 +307,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
     });
     if (item) (kind === "skill" ? skills : workflows).push(item);
   }
-  return { v: 1, main, at, index: index ? { oid: index.oid, bytes: index.bytes } : EMPTY_INDEX, notes: notes.sort(noteOrder), skills: skills.sort(byName), workflows: workflows.sort(byName), log, log_more: more };
+  return { v: 1, main, at, index: index ? { oid: index.oid, bytes: index.bytes } : EMPTY_INDEX, ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), notes: notes.sort(noteOrder), skills: skills.sort(byName), workflows: workflows.sort(byName), log, log_more: more };
 }
 
 /** A learned item from its folder's files: listed when its folder is well named, its key file (SKILL.md, a draft's
@@ -332,7 +337,7 @@ function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[]
 export type FolderChange = {
   /** A run's merge names the run and the grader's reason, and its `round` past the first (a follow-up's look-back): its
    *  diff is kept under runDiffKey. */
-  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number };
+  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number } | { host: string };
   writes: readonly { path: string; text: string }[];
   deletes?: readonly string[];
   absent?: readonly string[];
@@ -345,6 +350,11 @@ function messageOf(by: FolderChange["by"] | undefined): { message: string; subje
   const clean = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ");
   const paragraphs = (parts: string[]) => parts.map((part) => (part.endsWith("\n") ? part : `${part}\n`)).join("\n");
   if (!by) return { message: `${INIT_SUBJECT}\n`, subject: INIT_SUBJECT, body: "", runId: "", changedBy: "", approvedVia: "" };
+  // The host's own book-keeping (an audit row): no trailer, so no change in the log a person reads.
+  if ("host" in by) {
+    const subject = `host: ${clean(by.host).trim() || "kept"}`;
+    return { message: `${subject}\n`, subject, body: "", runId: "", changedBy: "", approvedVia: "" };
+  }
   if ("run" in by) {
     const subject = `learning: ${by.run}: merged`;
     const reason = clean(by.reason).trim() || "merged";
@@ -364,6 +374,7 @@ function oidsOf(snapshot: Snapshot | undefined): Map<string, string> {
   const out = new Map<string, string>();
   if (!snapshot) return out;
   out.set(INDEX_FILE, snapshot.index.oid);
+  if (snapshot.audits) out.set(AUDITS_FILE, snapshot.audits.oid);
   for (const note of snapshot.notes) out.set(note.file, note.oid);
   for (const item of [...snapshot.skills, ...snapshot.workflows]) for (const file of item.files) out.set(file.path, file.oid);
   return out;
@@ -391,6 +402,7 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
     if (note) notes.push(note);
   }
   const index = writes.has(INDEX_FILE) ? { oid: writes.get(INDEX_FILE)!.oid, bytes: writes.get(INDEX_FILE)!.bytes } : (before?.index ?? EMPTY_INDEX);
+  const audits = writes.has(AUDITS_FILE) ? { oid: writes.get(AUDITS_FILE)!.oid, bytes: writes.get(AUDITS_FILE)!.bytes } : deletes.has(AUDITS_FILE) ? undefined : before?.audits;
 
   const learned = (kind: "skill" | "workflow", list: readonly SnapLearned[]): SnapLearned[] => {
     const hit = new Set(changed.map(folderOf).filter((folder) => folder?.kind === kind).map((folder) => folder!.name));
@@ -421,7 +433,7 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
   const entry = change && isChange(commit) ? changeEntry(commit, PLACEHOLDER, changed) : undefined;
   const log = [...(entry ? [entry] : []), ...(before?.log ?? [])];
   const snapshot: Snapshot = {
-    v: 1, main: PLACEHOLDER, at: commit.at, index,
+    v: 1, main: PLACEHOLDER, at: commit.at, index, ...(audits ? { audits } : {}),
     notes: notes.sort(noteOrder), skills: learned("skill", before?.skills ?? []), workflows: learned("workflow", before?.workflows ?? []),
     log: log.slice(0, LOG_KEEP), log_more: Boolean(before?.log_more) || log.length > LOG_KEEP,
   };

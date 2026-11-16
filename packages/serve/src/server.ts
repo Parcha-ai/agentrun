@@ -90,6 +90,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
+import { gradeRow } from "./runner/audit.js";
+import { isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
+import { auditLoopOf } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
@@ -632,6 +635,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/audits$/, name: "listLearningAudits" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
@@ -1563,6 +1567,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return [...serverSecrets(), ...pointers];
   };
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
+  // The agent's audit ledger on its learning folder's main (learn/audit.ts), oldest first.
+  const auditsOfAgent = async (agentId: string) => {
+    const { workspace, end } = learningFolderOf(data, agentId);
+    try {
+      return await readAudits(workspace);
+    } finally {
+      await end().catch(() => undefined);
+    }
+  };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
   const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses });
@@ -1947,7 +1960,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const learning = await learningOfAgent(entry);
     const native = nativeOf(entry.revision?.body);
     const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
-    const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
+    const runs = (await listRunsOverStore(store, { agent: entry.agent.id }, ctx)).filter((run) => !isShadowRun(run.id));
     return {
       ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
@@ -2654,7 +2667,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
     const vd = viewDepsFor(origin);
-    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived);
+    // An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served run's.
+    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived && !isShadowRun(row.id));
     if (status !== null) {
       // The v2 status is the run view's (store-view over the journal), per row.
       const statuses = await Promise.all(rows.map((row) => viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
@@ -3512,6 +3526,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
         const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown; workflow_promotion?: unknown };
         if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
+        if (m.path === "audit" || isShadowRun(row.id)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "An audit's shadow run is never graded: grade the run it audits." }]);
         const path = RUN_PATHS.includes(m.path as never) ? (m.path as Grade["path"]) : "agent";
         const grade: Grade = {
           run: row.id, correct: body.correct, ...(body.expected !== undefined ? { expected: body.expected as Record<string, unknown> } : {}), source: (body.source as GradeSource | undefined) ?? "feedback", at: new Date().toISOString(), path,
@@ -3520,6 +3535,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         };
         // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
         const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
+        // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
+        // reads it with the shadows'. A row not written now is logged, never the grade refused.
+        const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
+        await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), log: said }, row, body.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
         // read (the grade is kept by then: never a shorter cut, never a refusal of a grade it kept).
         const shown = await learningShown(row.agentId).catch(() => undefined);
@@ -3980,11 +3999,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { agent: id, ...cost });
       }
       case "listLearningPromotions": {
-        await needAgent(id);
+        const entry = await needAgent(id);
         // Each learned workflow's promotion records, oldest first (learn/promote.ts): its replays' numbers and decisions,
         // its refits, its holds. Aggregates only; every text in them cut as the other learning reads cut theirs
-        // (promotionsShown: a reason and a refit guard's label as well as each workflow's name).
-        return send(res, 200, { agent: id, ...promotionsShown(await promotionsOf(store.settings, id), await learningShown(id)) });
+        // (promotionsShown: a reason and a refit guard's label as well as each workflow's name). Beside what serves, each
+        // one's state, its check's numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers.
+        const records = await promotionsOf(store.settings, id);
+        const shownRead = promotionsShown(records, await learningShown(id));
+        // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning));
+        return send(res, 200, { agent: id, promotions: shownRead.promotions, serving: shownRead.serving.map((one, i) => ({ ...one, ...lines[i]! })) });
+      }
+      case "listLearningAudits": {
+        await needAgent(id);
+        // The audit ledger (learn/audit.ts audits.jsonl), oldest first: each workflow's name and every other text cut as the
+        // promotions read cuts its own.
+        const shown = await learningShown(id);
+        const rows = await auditsOfAgent(id);
+        return send(res, 200, { agent: id, audits: rows.map((row) => ({ ...row, workflow: shown.name(row.workflow), run: shown.text(row.run), shadow_run: row.shadow_run === null ? null : shown.text(row.shadow_run), digest: shown.text(row.digest) })) });
       }
       case "createLearningBatch": {
         await needAgent(id);

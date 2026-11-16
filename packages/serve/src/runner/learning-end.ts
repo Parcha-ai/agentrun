@@ -31,6 +31,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
+import { isShadowRun } from "../learn/audit.js";
 import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
 import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
@@ -379,11 +380,12 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
 /** The most of an agent's kept learning, newest first, read for a held workflow's ask since its hold (compileAskOf). */
 const HELD_ASKED_READ = 200;
 
-/** Whether a store run ended completed (its state `ended`, a plain completion). */
-const completedRun = (run: { readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed");
+/** Whether a store run ended completed (its state `ended`, a plain completion), and is no audit's shadow run (an
+ *  agent's answer kept for an audit, never a run of the agent's own to learn from). */
+const completedRun = (run: { readonly id: string; readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed") && !isShadowRun(run.id);
 /** Whether a store run is a completed run of the agent's own (completedRun), not one its learned workflow answered alone
  *  nor a check's replay run: what compile_after counts. */
-const agentRun = (run: { readonly state: string; readonly outcome: string | null; readonly metrics?: unknown }) => {
+const agentRun = (run: { readonly id: string; readonly state: string; readonly outcome: string | null; readonly metrics?: unknown }) => {
   const path = (run.metrics as { path?: unknown } | null | undefined)?.path;
   return completedRun(run) && path !== "workflow" && path !== "replay";
 };
@@ -500,7 +502,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
         for (const one of workflows) if (one.status === "active") { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
         const fitting = active.filter((one) => fits(one as never, input.input, dsl.resolveSchemaForWorkflow as never));
         const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
-        if (record?.decided === "hold") [held, current] = [record, fitting[0]!.workflow];
+        if (record?.decided === "hold" && !record.check?.stopped && !record.audit?.stopped) [held, current] = [record, fitting[0]!.workflow];
       }
       // An agent with a learned workflow compiles nothing new: its notes' text is not read.
       if (!held && workflows.length) return { notes: [], workflows: workflows.length };
@@ -531,11 +533,13 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const since = Date.parse(read.held.at);
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
-    const { workflow, digest, source, reason, replay, check } = read.held;
-    // A check's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is (traceFrom).
+    const { workflow, digest, source, reason, replay, check, audit } = read.held;
+    // A check's or an audit's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is
+    // (traceFrom).
     const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
     const checked = check ? { ...check, ...(check.disagreements ? { disagreements: check.disagreements.map((one) => ({ ...one, input: cut(one.input), agent: one.agent === null ? null : cut(one.agent), ...(one.draft !== undefined ? { draft: cut(one.draft) } : {}), ...(one.escalated !== undefined ? { escalated: cut(one.escalated) } : {}) })) } : {}) } : undefined;
-    held = { workflow, digest, source, reason, ...(replay ? { replay: scoreOf(replay) } : {}), ...(checked ? { check: checked } : {}) };
+    const audited = audit ? { ...audit, disagreements: audit.disagreements.map((one) => ({ ...one, input: cut(one.input), agent: one.agent === null ? null : cut(one.agent), draft: one.draft === null ? null : cut(one.draft) })) } : undefined;
+    held = { workflow, digest, source, reason, ...(replay ? { replay: scoreOf(replay) } : {}), ...(checked ? { check: checked } : {}), ...(audited ? { audit: audited } : {}) };
   }
   if (!held && !dueWith(read.workflows)) return sayLeftOut(), undefined;
   // An earlier run's trace is cut of each value it held (traceFrom); one that still holds a secret (a value in a call's

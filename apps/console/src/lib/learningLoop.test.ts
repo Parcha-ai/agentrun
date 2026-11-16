@@ -21,7 +21,7 @@ describe("markers on the run axis", () => {
       record({ decided: "replaying", at: at(1.5) }),
       record({ decided: "promote", at: at(3) }),
       record({ decided: "promote", source: "refit", digest: "b".repeat(16), at: at(4.2) }),
-      record({ decided: "hold", source: "graded", at: at(5.5) }),
+      record({ decided: "hold", source: "audit", at: at(5.5) }),
       record({ decided: "hold", at: at(9) }),
     ];
     expect(markersOf(runs, records).map((m) => [m.kind, m.n])).toEqual([["revision", 2], ["promote", 3], ["refit", 5], ["hold", 6]]);
@@ -72,7 +72,7 @@ describe("a revision's standing and numbers", () => {
     const dry = record({ source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" });
     const none = record({ decided: "hold", replay: { ...REPLAY, of, n: 0, agree: 0, handed_back: 0, outcomes: outcomes(20) } });
     const refit = record({ source: "refit", replay: { ...REPLAY, n: 25, handed_back: 3 } });
-    expect([replayed, none, dry, refit, record({ decided: "replaying" }), record({ decided: "hold", source: "graded" })].map(proofOf)).toEqual(["replayed 18/20 · 9 alone", "0 replays answered", "not replayed", "refit on 25 rows · 22 alone", null, null]);
+    expect([replayed, none, dry, refit, record({ decided: "replaying" }), record({ decided: "hold", source: "audit" })].map(proofOf)).toEqual(["replayed 18/20 · 9 alone", "0 replays answered", "not replayed", "refit on 25 rows · 22 alone", null, null]);
     // A record that names no replayed runs says the count alone, never "/0".
     expect(proofOf(record({ replay: { ...REPLAY, of: [], n: 20 } }))).toBe("replayed 20 · 18 alone");
     // One that handed back every input it replayed (held: it would never answer alone) says so beside its count.
