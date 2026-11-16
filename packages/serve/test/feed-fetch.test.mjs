@@ -60,3 +60,18 @@ test("a body over 5 MB is refused, read no further", async () => {
   const { net } = network({ "big.example": ["93.184.216.34"] }, { "https://big.example/feed": ok(new Uint8Array(FEED_MAX_BYTES + 1)) });
   await assert.rejects(readFeed("https://big.example/feed", {}, { network: net, reach: {} }), /more than 5 MB/);
 });
+
+test("plain http to a private address is refused before a byte is sent: a private IP, the metadata address, a redirect from a public http feed to it, and a private host the owner allows (https only there)", async () => {
+  const names = { "feeds.example": ["93.184.216.34"], "intra.example": ["10.1.2.3"] };
+  const { sent, net } = network(names, {
+    "http://feeds.example/rss": moved("http://169.254.169.254/latest/meta-data/"),
+    "http://feeds.example/hop": moved("http://feeds.example/rss", 301),
+  });
+  for (const url of ["http://10.0.0.5/feed", "http://192.168.1.10/feed", "http://169.254.169.254/latest/meta-data/", "http://[::1]:8080/feed"]) {
+    await assert.rejects(readFeed(url, {}, { network: net, reach: {} }), /private|link-local|refused/, url);
+  }
+  await assert.rejects(readFeed("http://feeds.example/rss", {}, { network: net, reach: {} }), /169\.254\.169\.254.*refused|private|link-local/);
+  await assert.rejects(readFeed("http://feeds.example/hop", {}, { network: net, reach: {} }), /169\.254\.169\.254.*refused|private|link-local/, "two hops in, still checked");
+  await assert.rejects(readFeed("http://intra.example/feed", {}, { network: net, reach: { allowed: ["intra.example"] } }), /private address; refused/);
+  assert.deepEqual(sent.map((one) => one.url), ["http://feeds.example/rss", "http://feeds.example/hop", "http://feeds.example/rss"], "only the public feed was asked; nothing went to a private or metadata address");
+});
