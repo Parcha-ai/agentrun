@@ -90,6 +90,8 @@ For deployed eve applications, retain the original channel authentication and pa
 
 The optional workflow proof adds a read-only `format_release_brief` callback to the fictional application. Both native eve tools and learned workflows use the same exported functions in `agent/lib/release-tools.ts`. The formatter accepts only the complete, unchanged status object actually read in that task, including its fresh UUID. This distinguishes executing the original callbacks from repeating an old answer.
 
+When the workflow fixture is enabled, its original standing policy explicitly permits that read-only formatter while retaining the restriction to observed release facts and forbidding external actions. Eve and AgentRun receive the same policy. Adding a tool binding alone does not grant permission to use it against the original job's instructions.
+
 Service names are string inputs; the two fictional records are data, not an enum to bake into the reusable workflow. The original callback still rejects unknown services, and the formatter still rejects invented or modified observations. This lets the learned procedure apply to changed service data without weakening the tool's runtime checks.
 
 Use a **separate clean copy of this example** and a new `AGENTRUN_AGENT_ID` so its skills and workflow have a verifiable origin. If another eve development server is running, give the copy its own working directory, `.eve` state, output directory and port; two eve servers must not build from the same directory. Install that copy against the same built AgentRun checkout. Do not copy an existing generated `agent/extensions/agentrun.ts` mount or prior `.eve` state.
