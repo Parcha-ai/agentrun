@@ -341,9 +341,11 @@ export class McpServersOverStore {
         if (moved || (made && stands && (!stood || stood.user !== stands.user || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
       }
       const saved = keeping
-        // Re-applied only onto a row that still holds a credential of this auth type at this origin: never onto another one's.
-        // It writes no credential column, so it never drops or replaces one.
-        ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && new URL(fresh.url).origin === url.origin)
+        // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
+        // onto another one's, nor over a row another save moved meanwhile (a Composio save over it, whose cleanup removed the
+        // MCP server at the address read; Composio's share an origin). It writes no credential column, so it never drops or
+        // replaces one.
+        ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && fresh.url === was!.url)
         // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
         : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
       if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn));
@@ -432,6 +434,8 @@ export class McpServersOverStore {
       if (saved) return saved;
       const fresh = await this.store.mcp.server(name);
       if (!fresh) throw notFound(name);
+      // A save over a row changed meanwhile is the owner's to redo, read again: never retried as it stands.
+      if (!still(fresh) && doing === "save") changedMeanwhile(name, undefined);
       if (!still(fresh)) throw new ApiError("unavailable", `The MCP server ${name} was changed while this ${doing} was made; nothing was saved. Read it again and try again.`);
       if (tries >= REWRITE_TRIES) throw new ApiError("unavailable", `The MCP server ${name}'s credential kept changing while this ${doing} was made (a run refreshing its token); nothing was saved. Try again.`);
       row = fresh;
