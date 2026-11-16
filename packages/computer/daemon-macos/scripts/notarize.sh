@@ -28,8 +28,8 @@ rc=0
 xcrun notarytool submit "$work/submit.zip" --keychain-profile "$profile" ${keychain[@]+"${keychain[@]}"} \
 	--wait --timeout 1h --output-format json >"$work/submit.json" || rc=$?
 answer="$(cat "$work/submit.json")"
-id="$(sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p' <<<"$answer")"
-status="$(sed -n 's/.*"status" *: *"\([^"]*\)".*/\1/p' <<<"$answer")"
+id="$(sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p' <<<"$answer" | tail -1)"
+status="$(sed -n 's/.*"status" *: *"\([^"]*\)".*/\1/p' <<<"$answer" | tail -1)"
 if [[ "$status" != Accepted ]]; then
 	echo "notarize: Apple did not accept $app (status \"${status:-none}\", notarytool exit $rc): $answer" >&2
 	if [[ -n "$id" ]]; then
