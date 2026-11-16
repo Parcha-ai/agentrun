@@ -357,7 +357,7 @@ export function fakeHost({
 	function run(m, argv) {
 		const script = scriptOfWords(argv);
 		const verb = script === undefined ? rootVerb(argv) : undefined;
-		const kind = verb ?? script?.kind ?? (argv[2]?.includes("cat >") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
+		const kind = verb ?? script?.kind ?? (argv[2]?.includes("base64 -d") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
 		fake.events.push({ machine: m.id, what: `run ${kind}` });
 		const proc = processOf(m, kind);
 		if (hang !== undefined && hang === kind) return proc;
@@ -381,10 +381,21 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "upload") {
-			proc.onEnd = async () => {
-				m.files.set(argv[4], Buffer.concat(proc.chunks));
+			// `head -c <length> | base64 -d > <path>`: done once the base64 text's length has come, end of stdin or not.
+			const length = Number(argv[5]);
+			let stored = false;
+			const done = async () => {
+				const text = Buffer.concat(proc.chunks).toString("latin1");
+				if (text.length < length || stored) return;
+				stored = true;
+				m.files.set(argv[4], Buffer.from(text.slice(0, length), "base64"));
 				fake.uploads.push({ machine: m.id, path: argv[4], through: "exec" });
 				proc.exit(0);
+			};
+			proc.onWrite = done;
+			proc.onEnd = async () => {
+				await done();
+				proc.exit(1, "base64: invalid input\n");
 			};
 			return proc;
 		}

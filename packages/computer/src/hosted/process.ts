@@ -160,11 +160,11 @@ export interface RunResult {
 const OUTPUT_MAX = 64 * 1024;
 
 /**
- * argv run in the machine as root through exec, stdin (when given) written and ended, waited for until it ends, within
- * ms and the caller's signal; a process past them is killed, and the kill waited for at most ms (and CALL_SLACK_MS).
- * A non-zero exit is a result, not an error.
+ * argv run in the machine as root through exec, stdin (when given: one write per piece, each whole UTF-8 text) written
+ * and ended, waited for until it ends, within ms and the caller's signal; a process past them is killed, and the kill
+ * waited for at most ms (and CALL_SLACK_MS). A non-zero exit is a result, not an error.
  */
-export async function runToExit(host: MachineHost, id: string, argv: readonly string[], { stdin, ms, signal, what }: { stdin?: Uint8Array; ms: number; signal?: AbortSignal; what: string }): Promise<Result<RunResult>> {
+export async function runToExit(host: MachineHost, id: string, argv: readonly string[], { stdin, ms, signal, what }: { stdin?: Iterable<Uint8Array>; ms: number; signal?: AbortSignal; what: string }): Promise<Result<RunResult>> {
 	const fail = failFor(host.descriptor.id);
 	const started = await hostCall(host, what, (ctx) => host.exec(id, argv, ctx), ms, signal);
 	if (!started.ok) return started;
@@ -172,13 +172,12 @@ export async function runToExit(host: MachineHost, id: string, argv: readonly st
 	const out = drain(proc.stdout, OUTPUT_MAX);
 	const err = drain(proc.stderr, OUTPUT_MAX);
 	const ran = (async (): Promise<RunResult> => {
-		// In pieces, so a vendor whose stdin takes one request at a time (E2B's sendStdin) is never handed a whole binary;
-		// with none to give, stdin ends at once, so the process reads end of file (one that ended already has no stdin). Not
+		// With none to give, stdin ends at once, so the process reads end of file (one that ended already has no stdin). Not
 		// awaited: a vendor's close that stalls (E2B's closeStdin is a request of its own) never holds up a command that
 		// reads no input.
 		if (stdin === undefined) Promise.resolve().then(() => proc.end()).catch(() => {});
 		else {
-			for (let at = 0; at < stdin.length; at += STDIN_CHUNK) await proc.write(stdin.subarray(at, at + STDIN_CHUNK));
+			for (const piece of stdin) await proc.write(piece);
 			await proc.end();
 		}
 		const exitCode = await proc.wait();
@@ -195,11 +194,31 @@ export async function runToExit(host: MachineHost, id: string, argv: readonly st
 	return result;
 }
 
-const STDIN_CHUNK = 256 * 1024;
+/** A piece of the upload: 192 KiB, which base64 writes as 256 KiB of text, padded at the file's end alone. */
+const UPLOAD_PIECE = 192 * 1024;
 
-/** The default upload, for a vendor with no file API: the bytes streamed into `cat` as root through exec's stdin. */
+/** The bytes as base64 text, a piece at a time: no more of it in memory at once than one piece. */
+function* base64Pieces(bytes: Uint8Array): Generator<Uint8Array> {
+	for (let at = 0; at < bytes.length; at += UPLOAD_PIECE) {
+		const piece = Buffer.from(bytes.buffer, bytes.byteOffset + at, Math.min(UPLOAD_PIECE, bytes.length - at));
+		yield Buffer.from(piece.toString("base64"), "latin1");
+	}
+}
+
+/**
+ * The default upload, for a vendor with no file API: the bytes as base64 text through exec's stdin, in pieces, so a
+ * vendor whose stdin takes one request at a time (E2B's sendStdin) is never handed a whole binary, and exec carries text
+ * alone. root decodes it into the file (`base64 -d`, which coreutils and busybox both have). head reads the text's length
+ * and no more, so the upload never waits for an end of stdin a vendor may not give (hosted/framed-exec.ts).
+ */
 export async function uploadThroughExec(host: MachineHost, id: string, path: string, bytes: Uint8Array, ms: number, signal?: AbortSignal): Promise<Result<void>> {
-	const ran = await runToExit(host, id, ["sh", "-c", 'umask 077 && cat > "$1"', "sh", path], { stdin: bytes, ms, ...(signal ? { signal } : {}), what: `the upload to ${path}` });
+	const length = 4 * Math.ceil(bytes.length / 3);
+	const ran = await runToExit(host, id, ["sh", "-c", 'umask 077 && head -c "$2" | base64 -d > "$1"', "sh", path, String(length)], {
+		stdin: base64Pieces(bytes),
+		ms,
+		...(signal ? { signal } : {}),
+		what: `the upload to ${path}`,
+	});
 	if (!ran.ok) return ran;
 	return ran.value.exitCode === 0 ? ok(undefined) : failFor(host.descriptor.id)("vendor", `the upload to ${path} exited with ${ran.value.exitCode}: ${`${ran.value.stdout} ${ran.value.stderr}`.trim().slice(0, 300)}`);
 }
@@ -212,7 +231,7 @@ export async function uploadThroughExec(host: MachineHost, id: string, path: str
 export function rootOf(host: MachineHost, id: string, name: string): ArchilRoot {
 	return {
 		run: async (argv, { stdin, timeoutMs, signal }) => {
-			const ran = await runToExit(host, id, argv, { ...(stdin === undefined ? {} : { stdin: new Uint8Array(Buffer.from(stdin, "utf8")) }), ms: timeoutMs, ...(signal ? { signal } : {}), what: `root's ${argv[0] === undefined ? "command" : argv[0].split("/").pop()} in ${name}` });
+			const ran = await runToExit(host, id, argv, { ...(stdin === undefined ? {} : { stdin: [new Uint8Array(Buffer.from(stdin, "utf8"))] }), ms: timeoutMs, ...(signal ? { signal } : {}), what: `root's ${argv[0] === undefined ? "command" : argv[0].split("/").pop()} in ${name}` });
 			return ran.ok ? ok({ exitCode: ran.value.exitCode, output: `${ran.value.stdout}${ran.value.stderr}` }) : ran;
 		},
 	};

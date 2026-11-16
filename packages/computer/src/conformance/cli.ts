@@ -66,7 +66,7 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
   --json      print the report as JSON
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
-              by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stderr apart,
+              by hand. Text of every kind both ways, 8 MiB by sha256, output and stdin while the process runs, stderr apart,
               the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s) that is not cut off
 exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
       0 the provider passes the kind, 1 it does not; with --exec-stream, 0 every check passes, 1 one fails`;

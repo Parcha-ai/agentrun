@@ -2,7 +2,9 @@
 // this machine, on pipes, so the pre-check's sh, printf, cat, sleep and kill -0 run as they would in a vendor's box. The
 // machine id is ignored. Options break exec the ways a vendor's can, each as one flag, so a test shows the pre-check
 // catches it and says what is wrong:
-//  - decodeUtf8: stdout is decoded as UTF-8 text and encoded again (a vendor SDK's onStdout(string));
+//  - tty: stdout's \n comes back as \r\n, as a terminal's output does;
+//  - decodePieces: each piece of stdout is decoded as UTF-8 text on its own and encoded again, so a character split
+//    across two pieces comes back as U+FFFD (a vendor SDK's onStdout(string) without a streaming decoder);
 //  - bufferOutput: stdout and stderr come only once the process has exited;
 //  - holdStdin: writes are kept until end(), then given all at once;
 //  - mergeStderr: stderr comes back on stdout;
@@ -41,7 +43,7 @@ function feed() {
 }
 
 export function fakeExecHost(options = {}) {
-	const { decodeUtf8 = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0 } = options;
+	const { tty = false, decodePieces = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0 } = options;
 	const children = new Set();
 	const host = {
 		descriptor: { id: "fake-exec" },
@@ -54,10 +56,10 @@ export function fakeExecHost(options = {}) {
 			child.stdin.on("error", () => {});
 			const out = feed();
 			const err = feed();
-			const decoder = new TextDecoder();
 			const held = { out: [], err: [] };
 			const toOut = (chunk) => {
-				const bytes = decodeUtf8 ? new Uint8Array(Buffer.from(decoder.decode(chunk, { stream: true }), "utf8")) : new Uint8Array(chunk);
+				const text = decodePieces ? new TextDecoder().decode(chunk) : undefined;
+				const bytes = tty ? new Uint8Array(Buffer.from(chunk.toString("latin1").replaceAll("\n", "\r\n"), "latin1")) : text !== undefined ? new Uint8Array(Buffer.from(text, "utf8")) : new Uint8Array(chunk);
 				if (bufferOutput) held.out.push(bytes);
 				else out.push(bytes);
 				if (closeStdoutEarly) out.end();
