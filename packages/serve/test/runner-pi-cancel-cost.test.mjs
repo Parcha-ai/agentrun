@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -16,6 +17,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 after(closeOpenSessions);
 
 const TIMING = { leaseMs: 30_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -58,7 +60,9 @@ function holdingOrigin() {
   return { fetch, streaming };
 }
 
-test("a pi run cancelled while its answer streams reads its cost unknown, never $0: the cut request is booked at no known cost", { timeout: 60_000 }, async (t) => {
+/** A pi run on a model priced at `cost` (its route's rates, $ per million tokens), cancelled once its answer streams: its
+ *  row once it rests, its view and its usage row. */
+async function cancelledRun(t, cost) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-pi-cancel-cost-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -75,8 +79,8 @@ test("a pi run cancelled while its answer streams reads its cost unknown, never 
   const route = {
     model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
     fetch: origin.fetch,
-    price: (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10) / 1e6,
-    cost: { input: 2, output: 10, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 128_000,
+    price: (_model, usage) => ((usage.input ?? 0) * cost.input + (usage.output ?? 0) * cost.output) / 1e6,
+    cost, outputCeiling: 128_000,
   };
   const deps = {
     env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 5), routeOf: async () => route,
@@ -94,8 +98,23 @@ test("a pi run cancelled while its answer streams reads its cost unknown, never 
     if (["ended", "failed", "stopped"].includes(row.state) && row.runner === null) break;
     if (Date.now() - from > 30_000) assert.fail(`the run never ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
   }
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  const rows = await runTimeline(server, "run-1", BACKGROUND_CONTEXT, { settled: true, ended: true });
+  return { row, view, usage: rows.findLast((one) => one.kind === "usage") };
+}
+
+test("a pi run cancelled while its answer streams reads its cost unknown, never $0: the cut request is booked at no known cost", { timeout: 60_000 }, async (t) => {
+  const { row, view } = await cancelledRun(t, { input: 2, output: 10, cacheRead: 0, cacheWrite: 0 });
   assert.equal(row.state, "stopped", JSON.stringify({ state: row.state, summary: row.summary }));
   assert.equal(row.costUsd, null, `the run's stored cost is unknown, never $0: ${row.costUsd}`);
-  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
   assert.equal(view?.cost?.usd, null, `its view's cost is unknown too: ${JSON.stringify(view?.cost)}`);
+});
+
+test("a pi run on a free model cancelled while its answer streams costs a known $0, a free model: whatever it streamed costs nothing", { timeout: 60_000 }, async (t) => {
+  const { row, view, usage } = await cancelledRun(t, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  assert.equal(row.state, "stopped", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.costUsd, 0, `the run's stored cost is $0: ${row.costUsd}`);
+  assert.deepEqual({ usd: view?.cost?.usd, free: view?.cost?.free, unpriced: view?.cost?.unpriced }, { usd: 0, free: true, unpriced: undefined }, `its view's cost: ${JSON.stringify(view?.cost)}`);
+  assert.deepEqual({ usd: usage?.usage?.usd, free: usage?.usage?.free }, { usd: 0, free: true }, `its usage row: ${JSON.stringify(usage)}`);
+  assert.match(usage.summary, /^Cost: \$0 · free model over 1 model request\b/, usage.summary);
 });

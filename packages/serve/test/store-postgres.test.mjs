@@ -336,11 +336,11 @@ test("the store's default connect deadline is STORE_CONNECT_TIMEOUT_MS, 4 s: bel
 
 /** A runner store on `schema` with a claim of run-0, whose every pool client is then held: `size` reads of it each waiting
  *  on a table another session holds (a runner whose loops are all busy). Answers the store, the claims and `letGo()`. */
-async function saturated(t, schema, { size, connectTimeoutMs }) {
+async function saturated(t, schema, { size, connectTimeoutMs, poolWaitMs }) {
   const server = await openPostgresStore({ url: PG_URL, schema });
   t.after(() => server.close());
   await queued(server, "run-0");
-  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner", poolSize: size, connectTimeoutMs });
+  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner", poolSize: size, connectTimeoutMs, poolWaitMs });
   t.after(() => runner.close().catch(() => undefined));
   const claims = [await runner.claim("run-0", "runner-a", { leaseMs: 30_000 })];
   const holder = await client(schema);
@@ -353,8 +353,8 @@ async function saturated(t, schema, { size, connectTimeoutMs }) {
     read.catch(() => undefined);
     busy.push(read);
   }
-  // Every pool client held, proven as a caller meets it: a read of a table nobody locks gets no client within the connect
-  // deadline (StoreDeadline). Until the busy reads have taken every client, such a read may still land; it is tried again.
+  // Every pool client held, proven as a caller meets it: a read of a table nobody locks gets no client within the pool's
+  // wait (StoreDeadline). Until the busy reads have taken every client, such a read may still land; it is tried again.
   const holderPid = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
   let probe;
   for (let tries = 0; tries < 20; tries++) {
@@ -368,7 +368,7 @@ async function saturated(t, schema, { size, connectTimeoutMs }) {
 
 test("a runner whose every pool client is held by its loops still renews its claim in time, on the store's lease connection", ONLY, async (t) => {
   const schema = await schemaFor(t);
-  const { runner, claims, letGo } = await saturated(t, schema, { size: 2, connectTimeoutMs: 1_000 });
+  const { runner, claims, letGo } = await saturated(t, schema, { size: 2, connectTimeoutMs: 1_000, poolWaitMs: 1_000 });
   const outcome = await within(runner.renewMany([claims[0]], { leaseMs: 30_000 }), 3_000);
   await letGo();
   assert.notEqual(outcome, "hung", "the renew hung");
@@ -579,14 +579,68 @@ test("a backend that dies while its client is checked out (a transaction open) f
   assert.equal(after.value?.[0]?.runId, "run-0", `the next renew lands on a fresh connection: ${after.error ?? ""}`);
 });
 
-test("a write on a store whose every pool client is held is refused at the connect deadline (StoreDeadline), never left waiting for one", ONLY, async (t) => {
+test("a write on a store whose every pool client stays held past the pool's wait is refused then (StoreDeadline), in words that say the pool was busy, never that the database does not answer", ONLY, async (t) => {
   const schema = await schemaFor(t);
-  const { runner, letGo } = await saturated(t, schema, { size: 2, connectTimeoutMs: 500 });
+  const { runner, letGo } = await saturated(t, schema, { size: 2, connectTimeoutMs: 300, poolWaitMs: 800 });
+  const started = Date.now();
   const outcome = await within(runner.agents.put({ id: "agent-x", name: "X" }), 3_000);
+  const tookMs = Date.now() - started;
   await letGo();
   assert.notEqual(outcome, "hung", "the write hung");
-  assert.ok(outcome.error instanceof StoreDeadline, `refused at the connect deadline: ${outcome.error ?? "written"}`);
-  assert.equal(outcome.error.deadlineMs, 500, "the connect deadline's, not another");
+  assert.ok(outcome.error instanceof StoreDeadline, `refused at the pool's wait: ${outcome.error ?? "written"}`);
+  assert.equal(outcome.error.deadlineMs, 800, "the pool's wait, not the connect's");
+  assert.ok(tookMs >= 700, `waited out the pool's wait, not the connect's 300 ms (${tookMs} ms)`);
+  assert.match(outcome.error.message, /came free within 800 ms: all 2 of this store's connections stayed in use/);
+  assert.doesNotMatch(outcome.error.message, /does not answer/);
+});
+
+test("a write on a store whose every pool client is held for less than the pool's wait waits for one and lands, past the connect timeout", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const { runner, letGo } = await saturated(t, schema, { size: 2, connectTimeoutMs: 300, poolWaitMs: 3_000 });
+  const write = within(runner.agents.put({ id: "agent-x", name: "X" }), 6_000);
+  // Held past the connect timeout three times over, then let go: the write had no client all that time.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  await letGo();
+  const outcome = await write;
+  assert.notEqual(outcome, "hung", "the write hung");
+  assert.ok(!outcome.error, `written once a client came free: ${outcome.error}`);
+  assert.equal((await runner.agents.get("agent-x"))?.name, "X", "the write landed");
+});
+
+test("with the default bounds, a store's Postgres that stops answering fails a write at the 4 s connect timeout, in words that say it does not answer, and a closed port fails an open at once", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  t.after(() => server.close());
+  const forward = { on: true };
+  const host = await silentHost(t, forward);
+  const through = new URL(PG_URL);
+  through.host = `127.0.0.1:${host.port}`;
+  const runner = await openPostgresStore({ url: through.href, schema, role: "runner" });
+  t.after(() => runner.close().catch(() => undefined));
+  await runner.agents.list();
+  forward.on = false;
+  host.cut();
+  // The pool's client was cut: a first write may meet it (its error said at once); the one after it connects anew.
+  let outcome;
+  let tookMs;
+  for (let tries = 0; tries < 3; tries++) {
+    const started = Date.now();
+    outcome = await within(runner.agents.put({ id: "agent-x", name: "X" }), 15_000);
+    tookMs = Date.now() - started;
+    if (outcome === "hung" || outcome.error instanceof StoreDeadline) break;
+  }
+  assert.notEqual(outcome, "hung", "the write hung past 15 s");
+  assert.ok(outcome.error instanceof StoreDeadline, `refused as a deadline: ${outcome.error ?? "written"}`);
+  assert.equal(outcome.error.deadlineMs, STORE_CONNECT_TIMEOUT_MS, "the connect timeout's, not the pool's wait");
+  assert.ok(tookMs < STORE_CONNECT_TIMEOUT_MS + 2_000, `refused near the 4 s connect timeout, not the pool's wait (${tookMs} ms)`);
+  assert.match(outcome.error.message, new RegExp(`^no connection to the store's Postgres at postgres:127\\.0\\.0\\.1:${host.port}/.* within 4000 ms: it does not answer$`));
+  // A closed port: refused by the host at once, never waited on.
+  const started = Date.now();
+  const closed = await within(openPostgresStore({ url: "postgres://agentrun:x@127.0.0.1:1/agentrun", schema: "agentrun", role: "runner" }), 10_000);
+  assert.notEqual(closed, "hung", "the open hung");
+  assert.ok(closed.error instanceof Error, "refused");
+  assert.ok(Date.now() - started < STORE_CONNECT_TIMEOUT_MS, `refused within the connect timeout (${Date.now() - started} ms)`);
+  assert.doesNotMatch(closed.error.message, /came free/);
 });
 
 test("a transaction whose deadline runs from its call counts the wait for a pool client against it: past it, StoreDeadline, never begun", ONLY, async (t) => {
@@ -741,11 +795,10 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   await store.close();
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
   // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
-  // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host and 0008's tables, made only where
-  // missing, run twice unharmed; 0009's and 0011's columns are dropped, as a build before them left them).
+  // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host, 0008's tables, 0010's imported_templates, 0011's
+  // revisions.mcp_pin and 0015's runs.labels, made only where missing, run twice unharmed; 0009's column is dropped, as a build before it left it).
   await sql(schema, "DROP INDEX commands_one_answer");
   await sql(schema, "ALTER TABLE commands DROP COLUMN answer");
-  await sql(schema, "ALTER TABLE runs DROP COLUMN labels");
   await sql(schema, "DELETE FROM schema_migrations WHERE version >= 3");
   const answer = async (kind, call) => (await sql(schema, "INSERT INTO commands (run_id, kind, body, created_at) VALUES ('run-1', $1, $2, 0) RETURNING id", kind, JSON.stringify({ approval: call })))[0].id;
   const first = await answer("approve", "call-1");

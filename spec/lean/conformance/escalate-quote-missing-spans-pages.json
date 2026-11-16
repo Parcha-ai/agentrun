@@ -1,0 +1,89 @@
+{
+  "description": "quote_missing reads each page string alone: a quote that runs from the end of one fetched string into the start of the next is in no page, so the escalate fires, though each half is found.",
+  "workflow": {
+    "v": 2,
+    "name": "quote-missing-spans-pages",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "answer"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "call",
+          "label": "fetch",
+          "via": "tool",
+          "tool": "browse",
+          "args": {
+            "url": "{url}"
+          },
+          "out": "Any",
+          "as": "page",
+          "deadline_s": 10
+        },
+        {
+          "node": "escalate",
+          "label": "quotes",
+          "when": {
+            "predicate": "quote_missing",
+            "path": "answer.quotes",
+            "pages": ["page"]
+          },
+          "kind": "quote_missing",
+          "stage": "answer",
+          "summary": "a quote is in no fetched page"
+        }
+      ]
+    }
+  },
+  "input": {
+    "url": "https://shop.example",
+    "answer": {
+      "quotes": ["Hand-made wallets and belts", "Our workshop opened in Porto"]
+    }
+  },
+  "script": {
+    "effect": {
+      "/root/steps/0": {
+        "result": {
+          "home": "Hand-made wallets and belts. Our workshop",
+          "about": "opened in Porto in 2004."
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "escalated",
+    "state": {
+      "url": "https://shop.example",
+      "answer": {
+        "quotes": ["Hand-made wallets and belts", "Our workshop opened in Porto"]
+      },
+      "page": {
+        "home": "Hand-made wallets and belts. Our workshop",
+        "about": "opened in Porto in 2004."
+      }
+    },
+    "escalation": {
+      "kind": "quote_missing",
+      "stage": "answer",
+      "label": "quotes"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:fetch",
+        "node.end:fetch:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:quotes:true"
+      ]
+    }
+  }
+}

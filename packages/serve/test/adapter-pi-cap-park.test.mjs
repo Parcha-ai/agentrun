@@ -4,8 +4,8 @@
 // it and the raise it is offered); a refusal no raise could fix fails it in the cap's words, never parked.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
-import { capRun, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
+import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { capRun, quiet, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
 import { timelineOf } from "../dist/timeline/index.js";
 
 after(closeOpenSessions);
@@ -37,4 +37,19 @@ test("with a cap in the spec, a refusal no raise could fix (the run's spend unkn
   const { row, store } = await capRun(t, { script: [{ say: "never sent" }], cap: specCap(1), runCap: ({ capUsd: () => 1, modelOf: () => SONNET, spentUsd: () => null }) });
   assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget."], JSON.stringify(row));
   assert.deepEqual(await rootEntries(store, "agentrun.budget"), [], "no budget entry");
+});
+
+test("a refusal's park keeps the run's computer for a raise: its spec's release is told the park's cause, which the computer's live view says", async (t) => {
+  const script = [{ say: "never sent" }];
+  const releases = [];
+  const specOf = (sent) => {
+    const base = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
+    return async (claim, run) => {
+      const spec = await base(claim, run);
+      return { ...spec, keptWords: "The desktop is kept for 10 minutes while you decide.", release: async (how) => { releases.push(how); await spec.release?.(how); } };
+    };
+  };
+  const { row } = await capRun(t, { script, specOf, cap: specCap(CAP), runCap: ({ capUsd: () => CAP, modelOf: () => SONNET }) });
+  assert.equal(row.state, "parked", JSON.stringify(row));
+  assert.deepEqual(releases, [{ parked: "refusal" }], "parked at the refusal, waiting for a raise");
 });

@@ -74,6 +74,39 @@ test("the usage row is the timeline's last row: a row served after it, or its ow
   assert.equal(log.rows().at(-1).seq, last);
 });
 
+test("the served order is the order the rows come in: a row that now comes after rows first served after it (the learning row after a feedback round or a follow-up) moves after them, so the live log and a fresh read agree", () => {
+  const usage = (summary) => row("1:usage", summary, "usage");
+  const learned = (summary) => row("learning", summary, "learning");
+  const job = [row("1:15", "You: What is six times seven?", "user_message"), row("1:21", "Job answer.", "final_answer")];
+  const round = [row("1:27:feedback", "You: Review: answer with the number alone.", "user_message"), row("1:29", "Looking back on this run.", "text_block")];
+  const followUp = [row("1:50", "You: and eight times nine?", "user_message"), row("1:52", "72", "final_answer")];
+  const ids = (log) => log.rows().map((r) => r.id);
+  const fresh = (rows) => { const log = new RowLog(new ChangeClock()); log.sync(rows); return ids(log); };
+
+  const log = new RowLog(new ChangeClock());
+  const ended = [...job, usage("Cost: $0.01"), learned("Learned: answer as a number")];
+  log.sync(ended);
+  assert.deepEqual(ids(log), ["1:15", "1:21", "learning", "1:usage"]);
+  const cursor = log.page(0, 100).next_after;
+
+  // A grade's feedback round: its rows come after the job's, and its look-back changes the learning row, which the
+  // view adds after every row of the run.
+  const graded = [...job, ...round, usage("Cost: $0.02"), learned("Learned: what the reviewer said")];
+  log.sync(graded);
+  assert.deepEqual(ids(log), ["1:15", "1:21", "1:27:feedback", "1:29", "learning", "1:usage"], "the round's rows, then what it learned");
+  assert.deepEqual(ids(log), fresh(graded), "the live log reads as a fresh read of the same rows");
+  const page = log.page(cursor, 100);
+  assert.deepEqual(page.rows.map((r) => r.id), ["1:27:feedback", "1:29", "learning", "1:usage"], "its move is a change: a cursor sees its new seq");
+  assert.ok(page.rows.find((r) => r.id === "learning").seq > page.rows.find((r) => r.id === "1:29").seq);
+
+  // A person's follow-up on the ended run: its rows come before the learning row too, even when the row did not change.
+  const followed = [...job, ...round, ...followUp, usage("Cost: $0.03"), learned("Learned: what the reviewer said")];
+  log.sync(followed);
+  assert.deepEqual(ids(log), ["1:15", "1:21", "1:27:feedback", "1:29", "1:50", "1:52", "learning", "1:usage"]);
+  assert.deepEqual(ids(log), fresh(followed));
+  assert.equal(log.sync(followed), false, "in order: nothing moves again");
+});
+
 test("a full read's re-render of a big run with nothing changed since does no writes: 5,000 rows synced again take no change number and leave every row as it was", () => {
   const clock = new ChangeClock();
   const log = new RowLog(clock);

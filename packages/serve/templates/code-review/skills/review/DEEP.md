@@ -15,8 +15,8 @@ Your prompt gives the facts: `owner`, `repo`, `pr`, `base_sha`, `head_sha`, `mer
   there.
 - `checkout: none`: read through `pull_request_read` `get_diff` and `get_file_contents(path, sha)`, each call with the
   prompt's `owner` and `repo` exactly: the server refuses any other repository.
-- `diff:` with no PR: the diff in the prompt is the whole change. Run no command and `read` only this folder's files. A
-  rules file pasted in the prompt counts as read from the base: cite it as `<name>:<line>`.
+- `diff:`: the diff after it, or in the file it names (`read` it whole), is the change. Run no command; `read` only
+  that file and this folder's. A pasted rules file is read from the base: cite `<name>:<line>`.
 
 ## Rules
 

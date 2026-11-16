@@ -184,8 +184,19 @@ test("R4 a capped codex run's harness counts its learned node on the one total: 
   assert.ok(Math.abs(nodeUsd - 0.0002) < 1e-9, `the gateway's 2 output tokens at $100 a million: ${nodeUsd}`);
   const own = requests.filter((entry) => entry.host === undefined);
   assert.equal(own.length, 2, JSON.stringify(own));
+  // Each of the harness's own requests is held at the most whole output tokens whose cost leaves the run's wrap-up reserve
+  // free (the kernel rule's keepUsd, serve's reserveFor): one typical step and one least answer. Priced on output alone,
+  // its worst is its hold, and a token is $0.0001. The least answer is 1,024 tokens ($0.1024). The typical step is the
+  // step-0 cost (a 4,096-token answer, $0.4096) before any own answer is priced, then the harness's own priced answers'
+  // typical: its one $0.001 (the node's is a side call's and never counts, R12).
+  const TOKEN = 0.0001;
+  const heldTo = (held, most) => held <= most + 1e-9 && held > most - TOKEN - 1e-9;
+  const leastUsd = 0.1024;
+  const first = cap - (0.4096 + leastUsd);
+  assert.ok(heldTo(own[0].heldUsd, first), `the harness's first request held at ${own[0].heldUsd}; what the reserve leaves of $${cap} is ${first}`);
   const left = cap - 0.001 - nodeUsd;
-  assert.ok(own[1].heldUsd <= left + 1e-9 && own[1].heldUsd > left - 0.0001 - 1e-9, `the harness's next request held at ${own[1].heldUsd}; what is left after the node's $${nodeUsd} is ${left}`);
+  const next = left - (0.001 + leastUsd);
+  assert.ok(heldTo(own[1].heldUsd, next), `the harness's next request held at ${own[1].heldUsd}; what is left after the node's $${nodeUsd} is ${left}, ${next} past the reserve`);
 });
 
 test("R8 (guard) learned_workflow's description and input schema are as LS-07 trimmed them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {

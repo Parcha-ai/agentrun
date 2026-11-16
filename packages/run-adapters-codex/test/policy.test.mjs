@@ -67,9 +67,20 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   // web search, the CLI's built-ins and its multi-agent namespace are not the session's: only `lookup` is offered.
   assert.deepEqual(f.body.tools.map((t) => `${t.type}:${t.name}`), ['function:lookup']);
   // With the output the body asks for (the policy's clamp, 32,000) and the least it may be limited to and still answer.
-  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8'), outputTokensAsked: 32_000, outputTokensLeast: 1_024 }], "the runner is asked about the applied body's model, with its input bound (the sent body's bytes), its output and its least");
+  // Beside the client's signal (a client that goes leaves the cap's line).
+  assert.ok(asked.every((one) => one.signal instanceof AbortSignal), 'each ask carries its client signal');
+  assert.deepEqual(asked.map(({ signal: _signal, ...one }) => one), [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8'), outputTokensAsked: 32_000, outputTokensLeast: 1_024 }], "the runner is asked about the applied body's model, with its input bound (the sent body's bytes), its output and its least");
   const sent = JSON.stringify(f);
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
+});
+
+test("the runner is told the effort the body asks its model at, beside the least it read at that effort, so the cap's words can name it; a body that names none tells none", async () => {
+  const { p, asked } = await proxy();
+  const body = { ...RECORDED_REQUEST, reasoning: { ...RECORDED_REQUEST.reasoning, effort: 'medium' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] };
+  assert.equal((await send(p.url, { body })).status, 200);
+  assert.equal((await send(p.url, { body: { ...body, reasoning: RECORDED_REQUEST.reasoning } })).status, 200);
+  assert.deepEqual(asked.map((one) => [one.effort, one.outputTokensLeast]), [['medium', 9_216], [undefined, 1_024]]);
+  assert.ok(!('effort' in asked[1]), 'no effort key when the body names none');
 });
 
 test("the Responses API adds no billed input the body does not carry: the input bound is the sent body's bytes, tools or not", async () => {
@@ -166,6 +177,24 @@ test('a completed event longer than the window the proxy keeps (its encrypted re
   await settled();
   assert.deepEqual(reports.map(({ usd, ...u }) => u), [{ input: 49_000, output: 700, cacheRead: 1000, cacheWrite: 0, estimated: true }]);
   assert.notEqual(reports[0].usd, null);
+});
+
+test("a completed event longer than the window, written with Python's json.dumps spacing (a LiteLLM gateway's `\"usage\": {`), is still booked, not unknown", async () => {
+  /** `value` as `json.dumps` writes it: `", "` between items, `": "` after a key. */
+  const spaced = (value) => Array.isArray(value) ? `[${value.map(spaced).join(', ')}]`
+    : value && typeof value === 'object' ? `{${Object.entries(value).map(([k, v]) => `${JSON.stringify(k)}: ${spaced(v)}`).join(', ')}}`
+    : JSON.stringify(value);
+  const usage = { input_tokens: 368_010, input_tokens_details: { cached_tokens: 0 }, output_tokens: 9_000, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 377_010 };
+  const message = { type: 'message', content: [{ type: 'output_text', text: 'a long answer, \\"usage\\": {\\"input_tokens\\": 0} quoted in it. '.repeat(3000) }] };
+  // LiteLLM's field order: the output, the tools, then the usage, then user and store.
+  const end = { type: 'response.completed', response: { object: 'response', status: 'completed', output: [message], tools: [], usage, user: null, store: false } };
+  const stream = [{ type: 'response.created', response: { usage: null } }, end].map((e) => `data: ${spaced(e)}\n\n`).join('') + 'data: [DONE]\n\n';
+  assert.ok(stream.length > 2 * 64 * 1024, 'longer than the window');
+  const { p, reports } = await proxy({ answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }) });
+  assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
+  await settled();
+  assert.deepEqual(reports.map(({ usd, ...u }) => u), [{ input: 368_010, output: 9_000, cacheRead: 0, cacheWrite: 0, estimated: true }]);
+  assert.notEqual(reports[0].usd, null, 'priced: the client read this usage too');
 });
 
 test("past the window, the model's own text saying a zero usage is never booked: the real one, or an unknown cost", async () => {

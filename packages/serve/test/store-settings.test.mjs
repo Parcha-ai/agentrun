@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
+import { dropSchema, freshSchema, PG_URL, postgresOnly, raw } from "./store-target.mjs";
 
 test("settings: a value reads back as it was put, replaced in place, removed; a key with no row reads undefined", async (t) => {
   const { store, clock } = await storeOn(t);
@@ -62,4 +63,104 @@ test("sealed keys: the bytes in are the bytes out, replaced in place, removed; t
   await store.sealedKeys.remove("ANTHROPIC_API_KEY");
   assert.equal(await store.sealedKeys.get("ANTHROPIC_API_KEY"), undefined, "removed");
   assert.deepEqual((await store.sealedKeys.all()).map((row) => row.name), ["OPENAI_API_KEY"]);
+});
+
+test("sealed keys: replaceIf writes only while the row still holds the bytes read, so of two writers that read one row only one replaces it", async (t) => {
+  const { store } = await storeOn(t);
+  const first = Uint8Array.from([1, 2, 3]);
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", first, SEALED), false, "no row: nothing replaced");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined, "and none made");
+  await store.sealedKeys.put("chatgpt:plan", first);
+  const read = await store.sealedKeys.get("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", Uint8Array.from([1, 2]), SEALED), false, "other bytes: nothing replaced");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, SEALED), true, "the bytes as read: replaced");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, Uint8Array.from([4])), false, "the same read again: the row changed since");
+  assert.deepEqual([...(await store.sealedKeys.get("chatgpt:plan"))], [...SEALED]);
+  await store.sealedKeys.remove("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", SEALED, first), false, "a removed row is not made again");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined);
+});
+
+test("sealed keys: removeIf removes only while the row still holds the bytes read, so a write since it was read stays", async (t) => {
+  const { store } = await storeOn(t);
+  const first = Uint8Array.from([1, 2, 3]);
+  assert.equal(await store.sealedKeys.removeIf("chatgpt:plan", first), false, "no row: nothing removed");
+  await store.sealedKeys.put("chatgpt:plan", first);
+  const read = await store.sealedKeys.get("chatgpt:plan");
+  assert.equal(await store.sealedKeys.replaceIf("chatgpt:plan", read, SEALED), true, "another writer replaced it since");
+  assert.equal(await store.sealedKeys.removeIf("chatgpt:plan", read), false, "the bytes read are not the row's now: it stays");
+  assert.deepEqual([...(await store.sealedKeys.get("chatgpt:plan"))], [...SEALED]);
+  assert.equal(await store.sealedKeys.removeIf("chatgpt:plan", await store.sealedKeys.get("chatgpt:plan")), true, "the bytes as read: removed");
+  assert.equal(await store.sealedKeys.get("chatgpt:plan"), undefined);
+});
+
+test("sealed keys: the store's clock is what a lease in a sealed key is judged by: the store's own on SQLite, the database's on Postgres whatever the process's own clock says", async (t) => {
+  const { store, clock } = await storeOn(t);
+  // storeOn runs the deadlines on its test clock on either database (Postgres's testClock).
+  assert.equal(await store.sealedKeys.clock(), clock.now);
+  clock.now += 61_000;
+  assert.equal(await store.sealedKeys.clock(), clock.now, "it moves with the store's clock");
+});
+
+test("sealed keys on Postgres: two processes whose own clocks are a minute apart read one clock, the database's", postgresOnly("the database's clock"), async (t) => {
+  const { openPostgresStore } = await import("../dist/store/postgres/store.js");
+  const schema = await freshSchema();
+  let runner;
+  const server = await openPostgresStore({ url: PG_URL, schema, role: "server" });
+  t.after(async () => {
+    await runner?.close();
+    await server.close();
+    await dropSchema(schema);
+  });
+  runner = await openPostgresStore({ url: PG_URL, schema, role: "runner", now: () => Date.now() + 61_000 });
+  const [fromServer, fromRunner] = [await server.sealedKeys.clock(), await runner.sealedKeys.clock()];
+  assert.ok(Math.abs(fromRunner - fromServer) < 5_000, `one clock for both: ${fromServer} and ${fromRunner}`);
+  assert.ok(Math.abs(fromRunner - Date.now()) < 30_000, "the database's, not the runner's own (61 s ahead)");
+});
+
+test('settings: a filtered read returns only one namespace and JSON owner without loading unrelated values', async t => {
+  const { store } = await storeOn(t);
+  await store.settings.put('native.remote.command.first', { connector_id: 'chosen', payload: 'first' });
+  await store.settings.put('native.remote.command.other', { connector_id: 'other', payload: 'unrelated' });
+  await store.settings.put('native.remote.target.first', { connector_id: 'chosen', payload: 'different namespace' });
+  const rows = await store.settings.all({ prefix: 'native.remote.command.', connectorId: 'chosen' });
+  assert.deepEqual(rows.map(row => [row.key, row.value.payload]), [['native.remote.command.first', 'first']]);
+});
+
+test('settings: connector ownership stays a strict string comparison for numeric and boolean JSON values',async t=>{
+ const {store}=await storeOn(t),prefix='native.remote.command.';
+ for(const [name,owner] of [['string-number','123'],['number',123],['string-boolean','true'],['boolean',true]])await store.settings.put(prefix+name,{connector_id:owner});
+ for(const owner of ['123','true']){
+  const rows=await store.settings.all({prefix,connectorId:owner});
+  assert.deepEqual(rows.map(row=>row.value.connector_id),[owner]);
+ }
+});
+
+test('settings: indexed connector reads preserve escaped NUL in an unrelated native payload',async t=>{
+ const {store}=await storeOn(t),prefix='native.remote.command.';
+ const value={connector_id:'chosen',payload:{prompt:'Before\u0000after',nested:['safe','\u0000']}};
+ await store.settings.put(prefix+'nul',value);
+ assert.deepEqual(await store.settings.get(prefix+'nul'),value);
+ const rows=await store.settings.all({prefix,connectorId:'chosen'});
+ assert.deepEqual(rows.map(row=>row.value),[value]);
+});
+
+
+test('settings: native connector metadata follows successful value changes and never changes on failed CAS',async t=>{
+ const {store,file}=await storeOn(t),key='native.remote.command.atomic',rawStore=await raw(file);
+ t.after(()=>rawStore.close());
+ const first={connector_id:'first',payload:'before\u0000after'},second={connector_id:'second',payload:'changed'};
+ await store.settings.put(key,first);
+ const metadata=async()=>(await rawStore.get('SELECT connector_id FROM settings WHERE key = ?',key)).connector_id;
+ assert.equal(await metadata(),'first');
+ assert.deepEqual(await store.settings.putIfAbsent(key,second),first);assert.equal(await metadata(),'first');
+ assert.equal(await store.settings.replaceIf(key,{connector_id:'wrong'},second),false);assert.equal(await metadata(),'first');
+ assert.equal(await store.settings.replaceIf(key,first,second),true);assert.equal(await metadata(),'second');
+ assert.equal((await store.settings.all({prefix:'native.remote.command.',connectorId:'first'})).length,0);
+ assert.equal((await store.settings.all({prefix:'native.remote.command.',connectorId:'second'})).length,1);
+ for(const owner of [null,123,true,[],{},'', 'x\u0000y','chosen\n','x'.repeat(9000)]){
+  const value={connector_id:owner,payload:'preserved'};await store.settings.put(key,value);
+  assert.equal(await metadata(),null);assert.deepEqual(await store.settings.get(key),value,'invalid owner metadata never makes valid JSON unwriteable');
+ }
+ await store.settings.remove(key);assert.equal(await rawStore.get('SELECT connector_id FROM settings WHERE key = ?',key),undefined);
 });

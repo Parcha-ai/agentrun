@@ -1,4 +1,5 @@
-import { type Place, type Places, placeOf } from "./place";
+import type { NativeBinding } from "./native";
+import { type Place, type Places, computerOfPlace, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
 import type { AgentTool, Approvals, Computer, ServedAgent, ToolSettings } from "./v2";
@@ -10,7 +11,7 @@ export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
  *  learned workflows; "notes", notes and skills alone. */
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
  *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
-export type Definition = { version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean | "notes"; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
+export type Definition = { native?: NativeBinding; version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean | "notes"; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = { field: string; reason: string; message: string };
@@ -18,7 +19,7 @@ export type SaveWarning = { field: string; reason: string; message: string };
  *  the agent's page that opens after it (client.ts). */
 /** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
  *  carries (a list's agents and a write's answer have none). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins">>;
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins">>;
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
@@ -33,15 +34,30 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
   // which would still say the old computer after a change (the server writes place from computer).
   const current: Definition = { ...agent.definition };
   if (edited.computer !== undefined) { delete edited.place; delete current.place; }
-  // A workflow revision takes no instructions, model or thinking beside its workflow (validate.ts refuses each).
-  if (agent.kind === "workflow") { delete edited.thinking; delete edited.instructions; delete edited.model; }
+  // The requested revision's workflow takes no instructions, model or thinking beside it (validate.ts refuses each).
+  // The saved kind may differ when a complete definition converts in either direction.
+  if (edited.workflow !== null && typeof edited.workflow === "object" && !Array.isArray(edited.workflow)) { delete edited.thinking; delete edited.instructions; delete edited.model; }
   // An empty model is no model: the server's default. No tool settings of its own are none: the server's.
   if (edited.model === "") delete edited.model;
   if (edited.tool_settings && !Object.keys(edited.tool_settings).length) delete edited.tool_settings;
   for (const key of Object.keys(edited)) if (edited[key] === undefined) delete edited[key];
   // serve makes no revision for a definition equal to the current one (a note alone changes nothing): then the version
   // is the current one's. A changed definition is the next revision, number revisions + 1.
-  const unchanged = same({ ...edited, version: 0 }, { ...current, version: 0 });
+  // A read spells the default as "ask"; an omitted approval policy on a complete JSON edit means that same default.
+  // A zero cap clears it and reads back absent; keep the outgoing reset but compare those as the same saved value.
+  const comparable = (definition: Definition): Definition => {
+    const compared: Definition = {
+      ...definition, version: 0, approvals: definition.approvals ?? "ask",
+      max_cost_usd: definition.max_cost_usd === 0 ? undefined : definition.max_cost_usd,
+      checkout: definition.checkout === "none" ? undefined : definition.checkout,
+    };
+    // A place-only edit means a basic computer; compare it against the full saved computer, including all its options.
+    const place = placeOf(definition.place);
+    const computer = definition.computer === undefined && place ? computerOfPlace(place) : definition.computer;
+    if (computer !== undefined) { compared.computer = computer; delete compared.place; }
+    return compared;
+  };
+  const unchanged = same(comparable(edited), comparable(current));
   edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
   return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
 }
@@ -119,6 +135,8 @@ export type ToolOffer = { name: string; available: boolean; summary?: string; /*
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
+    // A host tool over the run's own tools (capabilities' `meta`: tools_search, tools_call, codemode) is no grant: Settings → Tools sets it.
+    if ((t as { meta?: unknown }).meta === true) return [];
     const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
     return [{
       name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(typeof blurb === "string" && blurb.trim() ? { blurb: blurb.trim() } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), harnesses: Array.isArray(harnesses) ? harnesses : [],

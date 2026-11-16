@@ -13,12 +13,6 @@ export const CAP_TOLERANCE = 1e-9;
  *  is the other question: how near two caps are the same cap. */
 export const FIT_TOLERANCE = 1e-12;
 
-/** How a run's cap prices a request's input (`cap_mode`): "expected" (the default) from the previous request's cache, so
- *  only a cache miss can pass the cap, by at most the request's bound; "strict" every input token uncached, the worst
- *  case, so no request can pass it. */
-export const CAP_MODES = ["expected", "strict"] as const;
-export type CapMode = (typeof CAP_MODES)[number];
-
 /** The field of a request's end mark (REQUEST_ENDED) that says what the cap held for it, when its stream ended aborted
  *  or its summary failed: the request counts at that figure. Optional: an end with none (an older store, a run with no
  *  cap) leaves the request cut, at an unknown cost. */
@@ -278,7 +272,8 @@ export function meterFiguresFrom(rows: readonly { conversation: number; entry: E
   }
   const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
   const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
-  const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
+  // A hold is no charge here (/usage says no "at most"): read as a cost no one knows, beside the exact charges.
+  const usage = timelineOf(rest, { settled: true, holdsUnpriced: true }).find((row) => row.kind === "usage");
   const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
   known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
   const notMetered = usage?.usage?.not_metered;
@@ -300,11 +295,10 @@ export const CAP_REFUSAL_CODE = `${SPEND_CAP_REACHED} (out of budget): `;
 /** A refusal for room's figures, beside its words: what the cap counted as taken (spent, and held for requests still
  *  answering), the least the refused request needs, and the least cap that sends it (`leastCapUsd`: the very figure its
  *  words name, "Raise the cap to at least $X", from the one call that wrote them: the request's figure there is what
- *  admission prices it at, its expected cost, or its worst case under strict, so a cap at it admits the request). Kept on
- *  the refusal's own start mark (`spentUsd`, `needsUsd`, `leastCapUsd`), so a run paused at its cap says them (runs.ts
- *  pending), and its cap's raise is checked against them. `boundUsd`: the most a cache miss could make the refused
- *  request cost beyond what it needs (BOUND_USD; absent for 0). */
-export type RefusalFigures = { spentUsd: number; needsUsd: number; leastCapUsd: number; boundUsd?: number };
+ *  admission prices it at, its worst case, so a cap at it admits the request). Kept on the refusal's own start mark
+ *  (`spentUsd`, `needsUsd`, `leastCapUsd`), so a run paused at its cap says them (runs.ts pending), and its cap's raise is
+ *  checked against them. */
+export type RefusalFigures = { spentUsd: number; needsUsd: number; leastCapUsd: number };
 /** The words of a refusal for room (CAP_REFUSAL_CODE: what is left of the cap cannot buy the request's least), which a
  *  higher cap would send; undefined for any other text, a refusal no cap could fix included (an unknown spend, no price,
  *  no output ceiling, an input not measured: the bare `spend_cap_reached: ` code). The one reader of that difference. */

@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { after, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DockerProvider } from "../../dist/docker.js";
 import { sweep } from "../../dist/index.js";
 

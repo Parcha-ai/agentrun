@@ -101,11 +101,11 @@ describe("Mission Control's Failed tile and Needs you's Failed list", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const state = { failed: [failedRun("f1", HOUR)] as unknown[], total: 1, statsReads: 0 };
     serve(state);
-    // Run again's two calls: the failed run's first message (its timeline), then the new start.
+    // Run again's two calls: the failed run's read (its input), then the new start.
     const served = globalThis.fetch;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const u = new URL(url, "http://serve.test");
-      if (u.pathname === "/v2/runs/f1/timeline") return json(200, { rows: [{ id: "u1", seq: 1, kind: "user_message", summary: "You: 2+2", text: "2+2", timestamp: ago(HOUR), created_at: ago(HOUR), agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null }], next_cursor: null, drop: [], reset: true, unchanged: false });
+      if (u.pathname === "/v2/runs/f1") return json(200, { ...failedRun("f1", HOUR), input: { content: "2+2" }, file_ids: [] });
       if (u.pathname === "/v2/agents/calc/runs" && init?.method === "POST") return json(201, { ...failedRun("r2", 0), status: "queued", state: "queued", ended_at: null, error: null });
       return served(url, init);
     });

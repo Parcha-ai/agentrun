@@ -31,6 +31,7 @@ const MODAL_ID = `fake-test-modal-id-${"0001"}`;
 const MODAL_SECRET = `fake-test-modal-secret-${"0001"}`;
 const E2B_KEY = `fake-test-key-e2b-${"0001"}`;
 const ARCHIL_KEY = "fake-test-key-archil-account-0001";
+const PREPARED_IMAGE = "agentrun/computer:prepared";
 const SETTINGS = { diskId: "dsk-00000000000fa4e0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 /** Each remote sandbox's saved keys, and the options providerFor is given from them (computer-keys.ts). */
 const PROVIDER_KEYS = {
@@ -76,6 +77,8 @@ async function archilSandbox(t, provider = "modal", { existing = [] } = {}) {
     connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),
     attach: async () => ({ ok: true, value: { id: "d1", name: "d1", spec: { image: "i", user: "1000:1000", network: "none" } } }),
     release: async (ref, how) => (record.released.push([ref.id, how]), { ok: true, value: undefined }),
+    // Modal's and E2B's descriptors declare prepareImage: their computers start from the box image (E2B's public template).
+    ...(provider === "modal" || provider === "e2b" ? { prepareImage: async () => ({ ok: true, value: PREPARED_IMAGE }) } : {}),
   };
   const providers = computerProviderMakers({ load: async (id, options) => (record.loaded.push([id, options]), stand) });
   const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider } }, store, {
@@ -110,6 +113,7 @@ async function fullArchilPath(t, provider) {
   assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
   assert.ok(!Object.hasOwn(spec.labels, "agentrun.mount"), "agentrun.mount is the provider's own label");
   assert.equal(spec.env, undefined, "the box is given no environment of ours");
+  assert.equal(spec.image, PREPARED_IMAGE, `${provider} starts from the image its prepareImage() answers`);
   const outsideMount = JSON.stringify({ ...spec, mount: undefined });
   assert.ok(!outsideMount.includes("fake-minted-token-1"), "the token is in the mount alone: not in labels, env or anything else");
   const text = JSON.stringify(spec);

@@ -85,7 +85,7 @@ export type Hands = {
   exec(command: string, options: { timeoutS: number; onOutput?: (chunk: { stream: "stdout" | "stderr"; data: string }) => void }, signal?: AbortSignal): Promise<ExecResult>;
   /** The attached computer's processes; absent with no computer, where the background tools are refused. */
   readonly processes?: Processes;
-  /** A desktop's or a phone's surface (computer_observe, computer_act, computer_screenshot, computer_script); absent
+  /** A desktop's or a phone's surface (computer_observe, computer_act, computer_screenshot); absent
    *  where the computer is neither, and those tools are refused in words. */
   readonly computer?: ComputerPort;
   /** A desktop's or a phone's hand-over to the person (the run's hold); absent where there is none. */
@@ -124,6 +124,5 @@ export async function answerOf(call: ToolCall, run: () => Promise<ToolAnswer>): 
 /** A host tool's run. */
 export type Executor = (args: unknown, call: ToolCall) => Promise<ToolAnswer>;
 
-/** What the host gives the registry, by tool name: read, write and edit, bash's own run, which the registry bounds, and
- *  computer_script's run in the host's isolate (listed only where the host gives it). */
-export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash" | "computer_script", Executor>>>;
+/** What the host gives the registry, by tool name: read, write and edit, and bash's own run, which the registry bounds. */
+export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash", Executor>>>;

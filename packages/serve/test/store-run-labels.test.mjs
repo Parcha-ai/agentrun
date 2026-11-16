@@ -1,14 +1,14 @@
 // A run's labels in the one store: written once with the queued run (runs.create, runs.createInline), read on every run
 // row ({} when none), and matched by runs.list's `labels` (every one held, key and value, each bound as a parameter). On
-// SQLite the column is schema version 12: a store an earlier release set up (version 11, no labels column) is refused by a
-// server and by a runner of this build, so neither ever reads or writes runs without the column.
+// SQLite a store an earlier build of this version made, with no labels column, gets it at the server's open (the version
+// kept), its runs reading as given none; a runner refuses that store until its server has added the column.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { SchemaVersionUnknown } from "../dist/store/index.js";
+import { SCHEMA_VERSION } from "../dist/store/schema.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 import { sqliteOnly } from "./store-target.mjs";
@@ -83,7 +83,7 @@ test("an inline agent's run keeps its labels too", async (t) => {
   assert.deepEqual((await store.runs.list({ labels: { turn: "t1" } })).map((row) => row.id), ["run-x"]);
 });
 
-test("a store an earlier release set up (schema version 11, no labels column) is refused by a runner and by a server of this build, unchanged", sqliteOnly("an earlier release's store file"), async (t) => {
+test("a store an earlier build of this version made (no runs.labels) opens at its version: a runner refuses it until the server adds the column, its runs read as given none", sqliteOnly("an earlier build's store file"), async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "store-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");
@@ -91,22 +91,42 @@ test("a store an earlier release set up (schema version 11, no labels column) is
   await agentWithRevision(first);
   await first.runs.create(run("run-old"));
   await first.close();
-  // The store as the release before labels set it up: version 11, its runs table with no labels column.
+  // The store as the build before labels made it: the same version, its runs table with no labels column.
   const db = new DatabaseSync(file);
   try {
     db.exec("ALTER TABLE runs DROP COLUMN labels");
-    db.exec("UPDATE store_meta SET schema_version = 11");
   } finally {
     db.close();
   }
-  // A runner upgraded before its server is refused: it would read and write runs through a column the store lacks.
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === 11 && error.known > 11);
-  await assert.rejects(openSqliteStore({ file, role: "server", now: () => T0 }), (error) => error instanceof SchemaVersionUnknown && error.found === 11);
-  const after = new DatabaseSync(file);
+  const columnOf = () => {
+    const check = new DatabaseSync(file, { readOnly: true });
+    try {
+      const column = check.prepare("SELECT name, type, \"notnull\" FROM pragma_table_info('runs') WHERE name = 'labels'").get();
+      return { column: column && { ...column }, version: check.prepare("SELECT schema_version FROM store_meta").get().schema_version };
+    } finally {
+      check.close();
+    }
+  };
+  // A runner upgraded before its server is refused in words, the store unchanged: it reads every run through the column.
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to add each run's labels before opening a runner/);
+  assert.deepEqual(columnOf(), { column: undefined, version: SCHEMA_VERSION }, "a runner adds nothing");
+  const second = await openSqliteStore({ file, role: "server", now: () => T0 });
   try {
-    assert.equal(after.prepare("SELECT name FROM pragma_table_info('runs') WHERE name = 'labels'").get(), undefined, "nothing added to the refused store");
-    assert.equal(after.prepare("SELECT schema_version FROM store_meta").get().schema_version, 11, "its version as it was");
+    assert.deepEqual(columnOf(), { column: { name: "labels", type: "TEXT", notnull: 0 }, version: SCHEMA_VERSION }, "the server adds runs.labels, nullable, the version kept");
+    assert.deepEqual((await second.runs.get("run-old")).labels, {}, "a run started before reads as given none");
+    const made = await second.runs.create(run("run-new", { tenant: "t-1" }));
+    assert.deepEqual(made.labels, { tenant: "t-1" });
+    assert.deepEqual((await second.runs.list({ labels: { tenant: "t-1" } })).map((row) => row.id), ["run-new"]);
   } finally {
-    after.close();
+    await second.close();
+  }
+  // A second open finds the column and adds nothing; the runner then opens.
+  const again = await openSqliteStore({ file, role: "server", now: () => T0 });
+  await again.close();
+  const runner = await openSqliteStore({ file, role: "runner" });
+  try {
+    assert.deepEqual((await runner.runs.get("run-new")).labels, { tenant: "t-1" });
+  } finally {
+    await runner.close();
   }
 });

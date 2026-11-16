@@ -59,6 +59,9 @@ export interface Dialect {
    *  trigger's firings, an agent's current revision) is not interleaved with another. `"update"`: the run row of a write
    *  that moves its epoch (a release, a run's end), held against every write under the claim (`shareLock`) as well. */
   lockRow(tx: LockExecutor, table: string, column: string, value: string, mode?: "update"): Promise<void>;
+  /** lockRow (its first form) of every row whose `column` is one of `values`, in one statement and in `column`'s order, so
+   *  two transactions holding overlapping sets never wait on each other in a cycle. */
+  lockRows(tx: LockExecutor, table: string, column: string, values: readonly string[]): Promise<void>;
   /** Holds the named lock until the transaction ends: two transactions that each check, then write what the other checks. */
   lockKey(tx: LockExecutor, key: string): Promise<void>;
 }
@@ -93,6 +96,7 @@ export const SQLITE: Dialect = {
   claimOneLock: "",
   shareLock: "",
   lockRow: async () => undefined,
+  lockRows: async () => undefined,
   lockKey: async () => undefined,
 };
 

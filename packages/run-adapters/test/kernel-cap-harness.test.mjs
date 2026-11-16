@@ -173,7 +173,7 @@ test("pi and every CLI harness under the same $0.10, the first request due at st
   const pi = createCap({ capUsd: () => 0.1, now: () => T0 }).note(ask(SHAPES["claude-agent"]));
   assert.ok(pi);
   for (const [harness, shape] of Object.entries(SHAPES)) {
-    const cli = noteFor(ask(shape), { capUsd: 0.1, spentUsd: 0, heldUsd: 0, costs: [], told: false, mode: "expected", now: T0 });
+    const cli = noteFor(ask(shape), { capUsd: 0.1, spentUsd: 0, heldUsd: 0, costs: [], told: false });
     assert.equal(cli?.words, pi.words, harness);
   }
 });
@@ -189,45 +189,21 @@ test("a CLI harness: priced output with no ceiling refused, free output passes, 
 });
 
 test("a CLI request in flight is held at the limit it was admitted with: a second one beside it sees that hold", async () => {
-  const before = beforeRequestOf({ capUsd: () => 0.1, modelOf: (id) => models[id], now: () => T0, mode: "strict" });
+  const before = beforeRequestOf({ capUsd: () => 0.1, modelOf: (id) => models[id] });
   const first = await before({ model: SONNET.id, spentUsd: 0, inFlight: [], inputTokensMax: 10_000, outputTokensAsked: 2_000, turn: 1, maxTurns: null, key: "k", label: "k" });
   const second = await before({ model: SONNET.id, spentUsd: 0, inFlight: [{ turn: 1, model: SONNET.id, inputTokensMax: 10_000, outputTokensMax: first.outputTokensMax, holdUsd: first.holdUsd }], inputTokensMax: 10_000, outputTokensAsked: 2_000, turn: 2, maxTurns: null, key: "k", label: "k" });
   assert.match(second.refuse ?? "", /holds \$0\.07 for steps still running/);
 });
 
-/** The session's previous request on Sonnet, a second ago: 90,000 of its 100,000 input tokens cached. */
-const WARM = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
 const BIG_ASK = { ...ASK, inputTokensMax: 100_000, outputTokensAsked: 1_024, outputTokensLeast: 1_024 };
 
-test("a request the host sends beside the harness's own (a learned workflow's node) is priced as a cache miss: the session's previous request never stands for it", async () => {
-  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => WARM });
-  const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
-  const own = await warm(BIG_ASK);
-  const host = await warm({ ...BIG_ASK, host: "workflow-node" });
-  const uncached = await cold(BIG_ASK);
-  assert.ok(own.holdUsd < uncached.holdUsd, `the harness's own request is priced from its cache: ${own.holdUsd} < ${uncached.holdUsd}`);
-  assert.equal(host.holdUsd, uncached.holdUsd, "the host's request is held as uncached");
-});
-
-test("the previous request stands only for a next request bounded the same way: a provider's count beside a bytes bound is no growth to compare, so the next is priced as a cache miss", async () => {
-  const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
-  const uncached = await cold(BIG_ASK);
-  const prices = async (counted, asked) => {
-    const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => ({ ...WARM, ...(counted ? { counted: true } : {}) }) });
-    return (await warm({ ...BIG_ASK, ...(asked ? { inputTokensCounted: true } : {}) })).holdUsd;
-  };
-  assert.ok((await prices(true, true)) < uncached.holdUsd, "both counted: priced from the cache");
-  assert.ok((await prices(false, false)) < uncached.holdUsd, "both bytes: priced from the cache");
-  assert.equal(await prices(true, false), uncached.holdUsd, "a counted previous, a bytes next: a cache miss");
-  assert.equal(await prices(false, true), uncached.holdUsd, "a bytes previous, a counted next: a cache miss");
-});
-
-test("a request that is no answer of the turn (a title, a summary, a child's) is priced as a cache miss, and the turn's own from the previous request", async () => {
-  const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
-  const uncached = await cold(BIG_ASK);
-  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => WARM });
-  assert.ok((await warm(BIG_ASK)).holdUsd < uncached.holdUsd, "the turn's own: priced from the cache");
-  assert.equal((await warm({ ...BIG_ASK, unanswered: true })).holdUsd, uncached.holdUsd, "no answer of the turn: a cache miss");
+test("every request is held as a cache miss: the harness's own, one the host sends beside it, and one that is no answer of the turn alike", async () => {
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET });
+  const uncached = (100_000 * 3.75 + 1_024 * 15) / 1e6;
+  for (const extra of [{}, { host: "workflow-node" }, { unanswered: true }]) {
+    const answer = await before({ ...BIG_ASK, ...extra });
+    assert.ok(Math.abs(answer.holdUsd - uncached) < 1e-12, `${JSON.stringify(extra)}: ${answer.holdUsd} vs ${uncached}`);
+  }
 });
 
 // A request carrying the wrap-up's note is judged as its client sent it first (inputTokensMaxWithoutNote): refused so, it

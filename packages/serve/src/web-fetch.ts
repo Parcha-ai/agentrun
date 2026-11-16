@@ -24,7 +24,7 @@ import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
-import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./web-fetch-direct.js";
+import { clip, fetchOptions, HTML_READ_CHARS, linksOf, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./web-fetch-direct.js";
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
@@ -51,29 +51,6 @@ type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
  *  failure, why it read none; `post`, one request to another of its endpoints (web_search's, web-search.ts). Neither
  *  retries, and each stops at 60 s. `live` is false once a 401 or 403 to either said the key is not served. */
 export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Read | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
-
-/** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order, as
- *  they are read (linksWithin keeps those within the caps and counts the rest). A URL ends at whitespace or at the ")"
- *  that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
-function* linksOf(markdown: string): Generator<string> {
-  const seen = new Set<string>();
-  // The next "](" is looked for from where this one's URL ended, so no character is scanned twice: one pass, however
-  // many unclosed "](" a hostile page holds.
-  for (let at = markdown.indexOf("]("), end = 0; at !== -1; at = markdown.indexOf("](", Math.max(at + 2, end))) {
-    end = at + 2;
-    for (let depth = 0; end < markdown.length && !/\s/.test(markdown[end]!); end++) {
-      if (markdown[end] === "(") depth++;
-      else if (markdown[end] === ")" && depth-- === 0) break;
-    }
-    const href = markdown.slice(at + 2, end);
-    const link = /^https?:\/\//i.test(href) ? URL.parse(href) : null;
-    if (!link) continue;
-    link.hash = "";
-    if (seen.has(link.href)) continue;
-    seen.add(link.href);
-    yield link.href;
-  }
-}
 
 /** Parallel's extract on `apiKey`: one URL a request, each a billed extract, its full content to the most of a page
  *  web_fetch reads as the page's text (markdown), its links read from it, status 200 (Parallel answers a page it could
@@ -280,16 +257,19 @@ export function webFetchText(page: WebPage | Page, name: string = WEB_FETCH_TOOL
 /** The agent's tool: the WebPage as JSON text (webFetchText), named `name`. A
  *  run whose web_fetch resolves to Parallel reads its key as the tool is made, when the run opens. */
 /** Typed here, so its declaration names the schema type by a package serve declares (pi-ai), whatever else the build loads. */
-export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): ToolRegistration<TSchema, JsonValue> {
-  if (planeOf(env).web_fetch === "parallel") parallelOf(env);
+/** `fake`: what reads each page in the provider's place (a template eval's web fake, web-fake.ts), the tool otherwise
+ *  the same. */
+export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL, fake?: (url: unknown, part: Part & { signal?: AbortSignal }) => Promise<WebPage | Page>): ToolRegistration<TSchema, JsonValue> {
+  if (planeOf(env).web_fetch === "parallel" && !fake) parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (its link targets and the URLs written out in its text, a JSON body's strings and an XML feed's links among them, where an HTML page fetched directly gives its link targets alone; with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {
       const { url, offset, max_chars } = args as { url?: unknown; offset?: number; max_chars?: number };
-      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: pagesOf(env), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
+      const signal = context?.abortSignal ? { signal: context.abortSignal } : {};
+      const page = fake ? await fake(url, { offset, maxChars: max_chars, ...signal }) : await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: pagesOf(env), ...signal });
       return forModel(webFetchText(page, name), { details: page });
     },
   });

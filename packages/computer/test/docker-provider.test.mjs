@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DockerProvider } from "../dist/docker.js";
-import { checkLifetime, computerNameFor } from "../dist/index.js";
+import { checkLifetime, computerNameFor, PROVIDERS } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { container, fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
@@ -16,8 +16,8 @@ let requests = 0;
 const req = () => ({ requestId: `docker-provider-${++requests}` });
 const NO_LIST = 'an allowlist needs at least one name or CIDR; for no network ask for "none"';
 /** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 when its uid or gid is 0. */
-/** docker run's argv: create reads the host with docker info first. */
-const runOf = (all) => all.find((args) => args[0] === "run");
+/** The computer's docker run argv (not an egress proxy's): create reads the host with docker info first. */
+const runOf = (all) => all.find((args) => args[0] === "run" && valuesOf(args, "--entrypoint")[0] !== "node");
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
 test("capabilities: a linux container with computerd as PID 1, whose lifetime the janitor enforces up to 30 days, network none, open or an allowlist, exec, files and processes, and a bind mount", () => {
@@ -165,7 +165,8 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 	const result = await provider.create({ ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64, workdir: "/app" }, req());
 	assert.equal(result.ok, true);
 	const run = runOf(calls());
-	assert.deepEqual(valuesOf(run, "--network"), ["bridge"]);
+	assert.deepEqual(valuesOf(run, "--network"), ["none"], "open goes through the egress proxy; the computer is on no network of Docker's");
+	assert.deepEqual(run.slice(-2), ["--egress", "/opt/agentrun/egress/egress.sock"]);
 	assert.deepEqual(valuesOf(run, "--cpu-period"), ["100000"]);
 	assert.deepEqual(valuesOf(run, "--cpu-quota"), ["150000"]);
 	assert.equal(run.includes("--cpus"), false, "a quota, never --cpus, which Docker refuses above its own CPU count");
@@ -559,6 +560,25 @@ test("desktop: a desktop computer declares kind desktop and the display's groups
 	assert.equal(fakeDocker().provider.capabilities().kind, "linux");
 	assert.throws(() => fakeDocker({ desktop: { display: "0" } }), /display "0" .*such as :0/);
 	assert.throws(() => fakeDocker({ desktop: { server: [] } }), /server .*program/);
+});
+
+test("desktop: the descriptor's desktop configuration builds a desktop, as serve makes the provider from its options; its sandbox stays linux", async () => {
+	const entry = PROVIDERS.find((one) => one.id === "docker");
+	const configurationOf = (kind) => entry.capabilities.find((one) => one.kind === kind);
+	// serve makes a run's provider with its configuration's options beside the keys (computer-for-claim.ts vendorProvider).
+	for (const [kind, groups] of [["desktop", DESKTOP_GROUPS], ["linux", ["exec", "files", "processes"]]]) {
+		const configuration = configurationOf(kind);
+		assert.deepEqual(configuration.groups, groups, kind);
+		const { provider } = fakeDocker({ ...configuration.options });
+		const caps = provider.capabilities();
+		assert.deepEqual([caps.kind, caps.groups], [kind, groups], `${kind}: the built provider declares what its configuration does`);
+		const result = await provider.create(SPEC, req());
+		assert.equal(result.ok, true, JSON.stringify(result));
+		const connected = await provider.connect(result.value);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		assert.deepEqual([connected.value.hello.kind, connected.value.hello.groups], [kind, groups], `${kind}: its computer's hello`);
+		await connected.value.close();
+	}
 });
 
 test("desktop: create() gives the daemon DISPLAY, starts the X server through the daemon, and checks hello once the display is up", async () => {

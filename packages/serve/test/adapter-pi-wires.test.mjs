@@ -28,15 +28,15 @@ const KEY = `not-a-secret-${"z"}`;
 const SOURCES = {
   gateway: { model: undefined, env: (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "team-model", AGENT_MODEL_PRICE: "1,1" }), wire: "openai-responses", path: "/v1/responses", calls: true },
   anthropic: { model: "anthropic/claude-sonnet-5-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), wire: "anthropic-messages", path: "/v1/messages", calls: true },
-  openai: { model: "openai/gpt-6.1-sol", env: () => ({ OPENAI_API_KEY: KEY }), wire: "openai-responses", path: "/v1/responses", calls: true, counted: true },
+  openai: { model: "openai/gpt-6.1-sol", env: () => ({ OPENAI_API_KEY: KEY }), wire: "openai-responses", path: "/v1/responses", calls: true },
   openrouter: { model: "openrouter/openai/gpt-6.1-sol", env: () => ({ OPENROUTER_API_KEY: KEY }), wire: "anthropic-messages", path: "/v1/chat/completions", calls: false, translated: true },
 };
 
 /** A fetch that sends each request to the gateway at `url`, on its own path: a provider's origin (OpenAI's, OpenRouter's)
  *  stood in for by the loopback gateway. */
 const toGateway = (url) => (target, init) => fetch(`${url}${new URL(String(target)).pathname}`, init);
-/** OpenAI's own count of a Responses request's input (OPENAI_INPUT_COUNTER), asked before each answer request on a route
- *  straight to https://api.openai.com, and what it answers here: the faux usage's input, as OpenAI counts it exactly. */
+/** OpenAI's count of a Responses request's input, which no route asks (the proxy counts each request locally), and what
+ *  it would answer here: the faux usage's input, as OpenAI counts it exactly. */
 const COUNT_PATH = "/v1/responses/input_tokens";
 const COUNTED = 10;
 /** `toGateway`, recording each path asked in `paths`, with a count (which the gateway does not serve) answered here. */
@@ -114,15 +114,9 @@ test("every source main's pi takes opens on the runner on its wire, offers the s
       const { row, store, asked } = await capRun(t, { specOf: () => specOn(route, countingGateway(gateway.url, paths)), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
       assert.equal(row.state, "ended", JSON.stringify(row));
       assert.ok(gateway.requests.length >= 1 && gateway.requests.every((request) => request.path.endsWith(source.path)), JSON.stringify(gateway.requests.map((request) => request.path)));
-      // Straight to OpenAI, pi's Responses wire (codexPolicy) asks OpenAI's count before each answer request and is
-      // admitted on it; on any other origin (the gateway's, Anthropic's, a translated route) nothing is counted.
-      if (source.counted) {
-        assert.deepEqual(paths, gateway.requests.flatMap((request) => [COUNT_PATH, request.path]), "OpenAI's count before each answer request");
-        assert.ok(asked.length === gateway.requests.length && asked.every(({ request }) => request.inputTokensCounted === true && request.inputTokensMax === COUNTED), JSON.stringify(asked.map(({ request }) => [request.inputTokensMax, request.inputTokensCounted])));
-      } else {
-        assert.ok(!paths.includes(COUNT_PATH), JSON.stringify(paths));
-        assert.ok(asked.every(({ request }) => request.inputTokensCounted === undefined), "never counted off OpenAI's own origin");
-      }
+      // No origin is asked for a count before an answer request, straight to OpenAI included: each request goes alone.
+      assert.ok(!paths.includes(COUNT_PATH), JSON.stringify(paths));
+      assert.ok(asked.length === gateway.requests.length && asked.every(({ request }) => request.inputTokensMax !== COUNTED), JSON.stringify(asked.map(({ request }) => request.inputTokensMax)));
       assert.deepEqual(toolsOf(gateway.requests[0]), OFFERED, "the session's tool is offered");
       assert.ok((await bookedUsd(store)) > 0, "booked on the run's ledger");
     });

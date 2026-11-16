@@ -5,7 +5,10 @@
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
 import { blurbOf, isHostTool } from "./tool-list.js";
-import { mcpNameOf, mcpToolName, parseToolName } from "./tool-names.js";
+import { EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
+// The email tools' timeline lines (registerLabel), registered as this module loads.
+import "./email/labels.js";
+import { mcpNameOf } from "./tool-names.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -17,10 +20,10 @@ import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/in
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
+import { META_TOOLS } from "./meta-tool-names.js";
 import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
-import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.js";
 import type { Refusal } from "@parcha/agentrun-kernel";
@@ -29,6 +32,7 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { fakeFetch, fakeSearch, type WebFake } from "./web-fake.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -120,7 +124,12 @@ export type ToolHost = {
   liveAt?: RunnerLive;
   /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
    *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
-  store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings" | "sealedKeys">;
+  /** The trigger that started the run, and its source's kind (run-launch.ts trigger, inputOrigin): an email's run reads
+   *  its thread alone (email/tools.ts). Absent: a person's run, or one no trigger started. */
+  startedBy?: { readonly trigger: { readonly id: string; readonly firing_key: string; readonly attrs?: Readonly<Record<string, string>> }; readonly source: string };
+  /** The agent's own tool settings (its revision's tool_settings), as its gate reads them: an email read tool's `scope`. */
+  toolSettings?: unknown;
   /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
    *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
   claim?: Claim;
@@ -147,7 +156,19 @@ export type ToolHost = {
   /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
    *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
   search?: SearchOn;
+  /** A template eval's web fake for this run (web-fake.ts): its web_search and web_fetch answer from it, never the
+   *  network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
+  web?: WebFake;
+  /** The run's clock where a template eval case sets one (its `now`): a draft's or a send's Date reads it. Absent: the real
+   *  clock. */
+  now?: Date;
+  /** A template eval case's fake mail account (eval-mailbox.ts), the only account the run's email tools open: one saved
+   *  elsewhere is refused. Only the eval's own runner sets it (runner/beside.ts evalFakes). */
+  emailFake?: EmailFake;
 };
+/** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
+ *  description says, which a loopback account saved as `other` would otherwise read as folders. */
+export type EmailFake = { readonly imap: { readonly host: string; readonly port: number }; readonly smtp: { readonly host: string; readonly port: number }; readonly kind: "gmail" | "folders" };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
 export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };
@@ -162,6 +183,10 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 /** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
  *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
 export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
+
+/** What a tool's own ask (ToolEntry.asks) reads: the run's host, and how many calls of a tool the run has run to a good
+ *  end, from the run's record (its journal), so a pause and a new host count them all. */
+export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number> };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -182,11 +207,28 @@ export type ToolEntry = {
   /** No agent whose place is a sandbox may name it: it writes the run's work/ from this machine by paths a box's command
    *  could turn through a link (runnable.ts). */
   runnerOnly?: true;
+  /** On the runner, before the intent of a call its setting allows: why this call asks a person anyway, in words (shown
+   *  on its approval), or nothing. No setting lifts it; where no one can approve, the call is refused in those words. */
+  asks?(args: Record<string, unknown>, ctx: AskContext): Promise<string | undefined>;
+  /** What a call waiting on approval does, in a person's words (run-view.ts, the pending approval's `summary`): email_send's
+   *  to whom and what. Undefined where its arguments do not say. */
+  approvalSummary?(args: unknown): string | undefined;
 };
 
 const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
   summary, needs: [], nodes: false, callOnly: true, effect,
   bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
+});
+
+/** An email tool, its summary its description (email/names.ts), its binding (email/tools.ts bindEmail) and email_send's
+ *  own ask (sendAsks) loaded at first use, the mail libraries with them. */
+const emailTool = (name: string): ToolEntry => ({
+  summary: EMAIL_DESCRIPTIONS[name]!,
+  needs: [],
+  nodes: false,
+  bind: async (host) => (await import("./email/tools.js")).bindEmail(name, host),
+  ...(name === EMAIL_SEND ? { approvalSummary: sendSummary, asks: async (args: Record<string, unknown>, ctx: AskContext) => (await import("./email/tools.js")).sendAsks(args, ctx) } : {}),
+  ...(name === EMAIL_FILE ? { approvalSummary: fileSummary } : {}),
 });
 
 /** web_fetch, bound under `name`. */
@@ -195,7 +237,8 @@ const webFetchEntry = (name: string): ToolEntry => ({
   needs: [],
   nodes: true,
   bind: async (host) => {
-    const tool = booking(webFetchTool(host.env, name)) as unknown as ToolRegistration;
+    const web = host.web;
+    const tool = booking(webFetchTool(host.env, name, web && ((url, part) => fakeFetch(web, url, part)))) as unknown as ToolRegistration;
     const extension = defineExtension({ name: name.replaceAll("_", "-"), tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };
@@ -658,14 +701,18 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     needs: [],
     nodes: true,
     // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.
-    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search)) as unknown as ToolRegistration),
+    // A template eval's web fake (host.web) answers in the provider's place.
+    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
+  // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;
+  // the mail libraries load at the first bind.
+  [EMAIL_SEARCH]: emailTool(EMAIL_SEARCH),
+  [EMAIL_READ]: emailTool(EMAIL_READ),
+  [EMAIL_DRAFT]: emailTool(EMAIL_DRAFT),
+  [EMAIL_SEND]: emailTool(EMAIL_SEND),
+  [EMAIL_FILE]: emailTool(EMAIL_FILE),
   browser: browserTool,
-  // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
-  "monid.discover": monidTool("discover"),
-  "monid.inspect": monidTool("inspect"),
-  "monid.run": monidTool("run"),
   // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
   // (adapter-run-spec.ts), never by this table; not a host tool (tool-list.ts `replay`), so another harness refuses it.
   subagent: {
@@ -696,7 +743,8 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
 
 /** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
  *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS, and each MCP tool granted by its own name,
- *  tool-names.ts mcpNameOf: a wildcard is read against its server's listing first, mcpGrantsListed), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  tool-names.ts mcpNameOf), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name
+ *  does not run either). A
  *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
@@ -709,43 +757,26 @@ export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, 
  *  learned call's ask at once, so offering it would only teach a workflow that never runs. Not said: no one. */
 export type LearnedMcp = { readonly mcp?: boolean; readonly approvers?: boolean };
 
-/** `granted` with each MCP server's wildcard (`mcp:<server>/*`) read as the tools its server lists now (`listed`, by the
- *  server's name: none for a server not saved), each `mcp:<server>/<tool>`, in place; every other name as it is, each
- *  once. What a revision grants under a wildcard is every tool of its server, so a learned draft may name each one
- *  (learnedWorkflowTools), its gate holding it as any tool (learnedDraftTools: the wildcard's setting, or the tool's own).
- *  At proposal time there is no run and no pin: whether the run's pin has the tool is the runtime's to check at the call,
- *  in the gate's words (learned-workflow.ts). */
-export function mcpGrantsListed(granted: readonly string[], listed: (server: string) => readonly string[]): string[] {
-  const out = new Set<string>();
-  for (const name of granted) {
-    const parsed = parseToolName(name);
-    if (parsed?.kind !== "mcp-server") out.add(name);
-    else for (const tool of listed(parsed.server)) out.add(mcpToolName(parsed.server, tool));
-  }
-  return [...out];
-}
-
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom, options: LearnedMcp = {}): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom>; asked: string[] } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom, options: LearnedMcp = {}): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom> } => {
   const gated: Record<string, string> = {};
-  // The MCP tools offered because they ask: the ones a learned call's approval card names (#2424).
-  const asked: string[] = [];
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
   const deniedBy: Record<string, DenyFrom> = {};
   const tools = learnedWorkflowTools(granted, plane, options).filter((name) => {
     const setting = permission(name);
-    // An MCP tool set to ask is offered where someone can answer: its learned_workflow call asks once, naming its MCP
-    // tools, before any node runs (#2424). A table tool set to ask is not: its call node can't wait for an approval.
+    // An MCP tool set to ask is offered where someone can answer: its learned_workflow call's one card names each of its
+    // MCP actions set to ask (learned-workflow.ts learnedAskShown). A table tool set to ask is not: its call node can't
+    // wait for an approval.
     if (setting === "allow") return true;
-    if (setting === "ask" && options.approvers === true && mcpNameOf(name) !== undefined) return (asked.push(name), true);
+    if (setting === "ask" && options.approvers === true && mcpNameOf(name) !== undefined) return true;
     gated[name] = setting;
     // A deny comes from a layer or the default, never from approvals, which only ever allows.
     if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
     return false;
   });
-  return { tools, gated, deniedBy, asked };
+  return { tools, gated, deniedBy };
 };
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
@@ -800,7 +831,7 @@ export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] =
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}, runnerShell: ReadonlySet<string> = new Set()) => {
   const views = explainsView(env, settings);
   const picked = withDefaults(settings);
-  return Object.entries(TOOLS).map(([name, entry]) => {
+  const table = Object.entries(TOOLS).map(([name, entry]) => {
     const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
     const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
@@ -815,7 +846,17 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
     return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
+  // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
+  // so the owner sees them and their setting (allow or deny; a deny is not offered at all).
+  const meta = [...META_TOOLS].map((name) => ({ name, summary: META_SUMMARY[name]!, blurb: blurbOf(name)!, nodes: false, calls: false, meta: true as const, available: true, harnesses: [...HARNESSES], ...serverGate(name, settings) }));
+  return [...table, ...meta];
 };
+
+const META_SUMMARY: Readonly<Record<string, string>> = Object.freeze({
+  tools_search: "Finds one of the run's tools by what it does, when the run lists only some of them.",
+  tools_call: "Calls one of the run's tools by its name, one the run does not list.",
+  codemode: "Runs a script that calls the run's tools.",
+});
 
 /** Tests only (--faux, with the fake browser's $FAUX_BROWSER_LOG): each model call that starts waiting for the person to
  *  hand the browser back is logged (`{"op":"model_waits"}`) as it starts to wait, so a test hands back once the agent's call
