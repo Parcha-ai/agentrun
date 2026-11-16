@@ -721,12 +721,14 @@ export async function computerForClaim(
     // time is not over: taken off its row first (computer-kept.ts takeKept), so its end and this claim never both have it,
     // then attached and connected again. Its mount, where it has one, stays the one it was made with: its credential is
     // this claim's from here (inheritMount). Never the agent's own computer, a paired one or --faux's.
+    // A record of another provider or kind is left for a later ask of this claim: a launch that fails over goes on to
+    // the next provider, which may be the one the record's computer is on (an earlier claim's failover parked it there).
     async reattach(entry, { kind, keys, configuration, persistent, signal }) {
       const record = kept;
-      kept = undefined;
       if (!record || !store.settings || persistent || paired.some((row) => row.id === entry.id)) return undefined;
       if (deps.launch && (deps.launches?.(entry.id) ?? true)) return undefined;
       if (record.provider !== entry.id || record.kind !== kind) return undefined;
+      kept = undefined;
       try {
         // Its time over, or its end took it first (ending or ended): a new one, said so.
         if (record.ending || record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {

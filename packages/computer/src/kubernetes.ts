@@ -224,9 +224,12 @@ export function processOf(stream: KubeStream, killer?: ProcessKill): MachineProc
 	});
 	exited.catch(() => {});
 	let finished = false;
+	/** The connection's loss, once the stream ended before the exit status: what a later write throws. */
+	let lost: Error | undefined;
 	const finish = (code: number | Error) => {
 		if (finished) return;
 		finished = true;
+		if (code instanceof Error) lost = code;
 		line?.end();
 		out.end();
 		err.end();
@@ -247,7 +250,9 @@ export function processOf(stream: KubeStream, killer?: ProcessKill): MachineProc
 			}
 		}
 	});
-	stream.onEnd((error) => finish(new Error(`the exec stream ended before the command's exit status came${error ? `: ${error.message}` : ""}`)));
+	// A connection lost before the exit status is the API's trouble, not the command's: transient (a non-zero exit is a
+	// status, and never marked).
+	stream.onEnd((error) => finish(new HostError("vendor", `the exec stream ended before the command's exit status came${error ? `: ${error.message}` : ""}`, { transient: true })));
 	let writing: Promise<void> = Promise.resolve();
 	const pid: PidWithin = line ? line.pid : async () => undefined;
 	return {
@@ -255,8 +260,13 @@ export function processOf(stream: KubeStream, killer?: ProcessKill): MachineProc
 		stderr: err.iterable,
 		write(bytes) {
 			writing = writing.then(async () => {
-				if (finished) throw new Error("the command has ended");
-				for (let at = 0; at < bytes.length; at += CHUNK) await stream.send(0, bytes.subarray(at, at + CHUNK));
+				if (finished) throw lost ?? new Error("the command has ended");
+				try {
+					for (let at = 0; at < bytes.length; at += CHUNK) await stream.send(0, bytes.subarray(at, at + CHUNK));
+				} catch (error) {
+					// A send the socket refused is the connection lost: transient, as the stream's end before the status is.
+					throw lost ?? new HostError("vendor", `writing the command's stdin failed: ${(error as Error).message}`, { transient: true });
+				}
 			});
 			return writing;
 		},
@@ -622,7 +632,7 @@ export class KubernetesHost implements MachineHost {
 			await Promise.all([drained, drainOut]);
 			if (code !== 0) throw new HostError("vendor", `the upload to ${path} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim().slice(0, 300)}`);
 		} catch (error) {
-			if (error instanceof HostError) throw error;
+			if (error instanceof HostError) throw new HostError(error.code, error.message.startsWith("the upload") ? error.message : `the upload to ${path} failed: ${error.message}`, { transient: error.transient === true });
 			throw new HostError("vendor", `the upload to ${path} failed: ${(error as Error).message}`);
 		} finally {
 			await running.kill();

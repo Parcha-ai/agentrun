@@ -144,7 +144,8 @@ async function subjectToken(source: CredentialSource, fetcher: typeof fetch, rea
 		try {
 			const response = await fetcher(source.url, { headers: source.headers ?? {}, redirect: "error", signal: AbortSignal.timeout(REQUEST_MS) });
 			raw = await response.text();
-			if (!response.ok) return response.status >= 500 ? unavailable(`the subject token URL answered ${response.status}`) : failure(`the subject token URL answered ${response.status}`);
+			// A 429 or a 5xx is the identity service's own trouble, as post() reads Google's: transient.
+			if (!response.ok) return response.status === 429 || response.status >= 500 ? unavailable(`the subject token URL answered ${response.status}`) : failure(`the subject token URL answered ${response.status}`);
 		} catch (cause) {
 			return unavailable(`the subject token URL could not be read: ${(cause as Error).message}`);
 		}

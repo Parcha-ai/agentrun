@@ -478,3 +478,32 @@ test("Google ADC: a service account signs an RS256 JWT with both scopes; an exec
 	assert.equal(cut.error.transient, true);
 	assert.match(cut.error.message, /socket hang up/);
 });
+
+test("Google ADC: a subject-token URL that answers 429 or 503 is transient, and a 403 is not", async () => {
+	const creds = { "/url.json": JSON.stringify({ type: "external_account", audience: "a", subject_token_type: "urn:ietf:params:oauth:token-type:jwt", token_url: "https://sts.googleapis.com/v1/token", credential_source: { url: "https://identity.example.test/token" } }) };
+	const answered = (status) => googleAdc({ credentialsFile: "/url.json", fetch: async () => new Response("no", { status }), readFile: async (path) => creds[path] })(false);
+	for (const status of [429, 503]) assert.equal((await answered(status)).error.transient, true, String(status));
+	assert.equal((await answered(403)).error.transient, undefined, "a refusal is not the service's trouble");
+});
+
+test("a dropped exec connection is transient: wait() and the next write reject with the mark, and upload keeps it; a non-zero exit is no failure", async () => {
+	const cut = fakeStream();
+	const process = processOf(cut.stream);
+	cut.end(new Error("reset"));
+	const waited = await thrown(process.wait());
+	assert.deepEqual([waited.code, waited.transient], ["vendor", true]);
+	const wrote = await thrown(process.write(new Uint8Array([1])));
+	assert.equal(wrote.transient, true, "a write after the loss carries the same mark");
+	// The daemon's upload whose connection drops mid-way: a transient HostError, so serve may fail over.
+	const host = hostOf(fakeApi([{ method: "STREAM", answer: () => {
+		const one = fakeStream();
+		setTimeout(() => {
+			one.push(2, "41 7\n");
+			one.end(new Error("connection reset by peer"));
+		}, 5);
+		return ok(one.stream);
+	} }]));
+	const failed = await thrown(host.upload("p", "/tmp/computerd", new Uint8Array(10), ctx));
+	assert.equal(failed.transient, true);
+	assert.match(failed.message, /the upload to \/tmp\/computerd failed: .*connection reset by peer/);
+});
