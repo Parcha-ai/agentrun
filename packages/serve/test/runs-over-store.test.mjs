@@ -129,6 +129,20 @@ test("a message to a completed agentic run, its moment as the view reads it, is 
   assert.deepEqual((await commandsOf(store, "run-1")).map((one) => [one.kind, one.body.text, one.takenAt]), [["steer", "again", null]]);
 });
 
+test("a message to a working claude-agent run, its moment as the view reads it, is a steer; to a working codex run, a follow-up", async () => {
+  const store = await freshStore();
+  for (const harness of ["claude-agent", "codex"]) {
+    await store.agents.create({ id: `a-${harness}`, name: harness }, { id: `r-${harness}`, kind: "agentic", body: { instructions: "Answer.", harness } });
+    await store.runs.create({ id: `run-${harness}`, agentId: `a-${harness}`, revisionId: `r-${harness}` });
+  }
+  const steered = await momentOverStore(store, "run-claude-agent");
+  assert.deepEqual([steered.working, steered.steers], [true, true], "claude-agent steers mid-turn");
+  assert.equal((await message(store, steered, "check the totals")).mode, "steer");
+  const followed = await momentOverStore(store, "run-codex");
+  assert.deepEqual([followed.working, followed.steers], [true, false], "codex takes no message mid-turn");
+  assert.equal((await message(store, followed, "check the totals")).mode, "follow_up");
+});
+
 /** `id` (queued first) claimed and ended with `patch`. */
 async function endedRun(store, id, patch) {
   await queuedRun(store, id);
