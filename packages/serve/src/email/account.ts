@@ -12,6 +12,7 @@ import { ApiError, type InputIssue, invalid } from "../errors.js";
 import { getSealedKey, putSealedKey, removeSealedKey } from "../server-keys.js";
 import type { SealedKeys } from "../store/index.js";
 import { isObject, unknownFields } from "../validate.js";
+import { EMAIL_ADDRESS, PASSWORD_MAX } from "./names.js";
 
 /** The one account name accepted now. */
 export const DEFAULT_ACCOUNT = "default";
@@ -52,7 +53,6 @@ export function securityOf(endpoint: Endpoint): "tls" | "starttls" | "plaintext"
 const MAX_TEXT = 320;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
-export const ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 
 /** An endpoint as a body gives it, checked under `field`. */
 function endpointOf(value: unknown, field: string, issues: InputIssue[]): Endpoint | undefined {
@@ -78,9 +78,9 @@ export function accountOf(body: Record<string, unknown>, saved?: OpenedAccount):
     if (test && !test.test(value.trim())) return void issues.push({ field, reason: "invalid", message: words ?? `${field} does not read` }), undefined;
     return value.trim();
   };
-  const address = text("address", ADDRESS, "address is an email address, such as you@example.com");
+  const address = text("address", EMAIL_ADDRESS, "address is an email address, such as you@example.com");
   const user = body.user === undefined ? address : text("user");
-  const password = body.password === undefined && saved ? saved.password : typeof body.password === "string" && body.password !== "" && body.password.length <= 1024 && !CONTROL.test(body.password) ? body.password : void issues.push({ field: "password", reason: body.password === undefined ? "missing" : "invalid", message: "password is the account's app password: text, 1 to 1024 characters" });
+  const password = body.password === undefined && saved ? saved.password : typeof body.password === "string" && body.password !== "" && body.password.length <= PASSWORD_MAX && !CONTROL.test(body.password) ? body.password : void issues.push({ field: "password", reason: body.password === undefined ? "missing" : "invalid", message: `password is the account's app password: text, 1 to ${PASSWORD_MAX} characters` });
   const fixed = typeof preset === "string" ? PRESETS[preset] : undefined;
   const imap = body.imap === undefined && fixed ? fixed.imap : endpointOf(body.imap, "imap", issues);
   const smtp = body.smtp === undefined && fixed ? fixed.smtp : endpointOf(body.smtp, "smtp", issues);

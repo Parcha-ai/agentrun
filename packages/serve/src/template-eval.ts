@@ -1234,7 +1234,7 @@ async function mailRun(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
 /** An email run's fake account, on its layout. */
 type MailOf = { faux: EmailFaux; layout: Layout };
 
-/** The run of an email case's trigger on `mail`: its start taken at the apply on the account as seeded (the history),
+/** The run of an email case's trigger on `mail`: its first poll waited on at the apply, on the account as seeded (the history),
  *  then the case's new message delivered, and the trigger's own next time come on the eval's clock, so its poll (or its
  *  schedule) fires through the engine's path; the run is its firing's. */
 async function triggerRun(ctx: Ctx, one: EvalCase, agentId: string, triggerId: string, mail: MailOf): Promise<{ runId: string; before: Snapshot }> {

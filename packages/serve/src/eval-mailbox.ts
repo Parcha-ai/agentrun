@@ -8,7 +8,7 @@
 // the package's schedule's. `trigger` names which of the package's triggers when it has more than one of that kind.
 // On the gmail layout a folder is a label: its messages are seeded out of the inbox, carrying it. The fake has no clock of
 // its own: a message's date stays as written, and what the fake stamps (an appended draft's arrival) reads the case's now.
-import { ADDRESS } from "./email/account.js";
+import { EMAIL_ADDRESS } from "./email/names.js";
 import { type EmailFaux, type FauxMessage, startEmailFaux } from "./email/email-faux.js";
 import { messageOf } from "./email/mail.js";
 import { instantOf } from "./trigger-adapter.js";
@@ -32,7 +32,7 @@ const TEXT_SHOWN = 4_000;
 
 const isText = (value: unknown, max = 100_000) => typeof value === "string" && value.length <= max;
 const isList = (value: unknown, each: (one: unknown) => boolean) => Array.isArray(value) && value.every(each);
-const isAddress = (value: unknown) => typeof value === "string" && ADDRESS.test(value);
+const isAddress = (value: unknown) => typeof value === "string" && EMAIL_ADDRESS.test(value);
 
 /** A message of the fixture checked, at `at`. */
 function messageOk(value: unknown, at: string, bad: (message: string) => void): value is MailFixtureMessage {
@@ -105,7 +105,7 @@ export function seed(faux: EmailFaux, layout: Layout, mailbox: string, m: MailFi
 }
 
 /** A fake account on `layout`, its clock `now` when the case sets one, seeded with the fixture's mailboxes (not its new
- *  message, which comes after the package's trigger takes its start). */
+ *  message, which comes after the package's trigger's first poll). */
 export async function seededFaux(fixture: MailboxFixture, layout: Layout, now?: Date): Promise<EmailFaux> {
   const faux = await startEmailFaux({ layout: layout === "gmail" ? "gmail" : "standard", ...(now ? { now: () => now } : {}) });
   try {

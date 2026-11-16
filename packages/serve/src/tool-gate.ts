@@ -363,7 +363,8 @@ export type PendingApproval = {
   /** The call's arguments as text, at most ARGS_PREVIEW_BYTES. */
   args_preview: string;
   /** What the call does in words, where its tool says (email_send: "Send email to <to>, cc <cc>: <subject>" and the
-   *  text's first 300 characters), redacted as its arguments are. */
+   *  text's first 300 characters), then why it asks when its setting allows it (ToolEntry.asks), redacted as its
+   *  arguments are. */
   summary?: string;
   requested_at: string;
   price?: ApprovalPrice;
@@ -376,8 +377,12 @@ export type PendingApproval = {
 // The refusal words (SettingFrom, DenyFrom, NOT_RUN, RAN_UNKNOWN, denyPlace, deniedText, refusedText) live in
 // refusal-words.ts, shared with the runner's loops.
 export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
-/** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
-export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `${DENIED_OPENING}${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+/** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token.
+ *  `because`: the tool's own reason (ToolEntry.asks) for a call its setting allows, which no setting lifts. */
+export const noApproverText = (tool: string, ran: "no" | "unknown" = "no", because?: string): string =>
+  because === undefined
+    ? `${DENIED_OPENING}${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`
+    : `${DENIED_OPENING}${tool} needs the owner's approval for this call (${because}), and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;

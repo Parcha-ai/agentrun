@@ -86,33 +86,15 @@ export type TriggerAdapter = {
   /** For a clock source that polls (the email trigger): what it finds when its time comes, read from outside the server.
    *  The engine fires each event it returns through the path a pushed event takes (`takes`, `concurrent`,
    *  max_active_runs, the day-kept keys, a run per event), records no `missed` row for a time it was not there for, and
-   *  keeps the poll's cursor once its firings are recorded. */
+   *  keeps the poll's cursor once its firings are recorded. A poll with no cursor is where its trigger starts watching:
+   *  the engine polls at once when the trigger is made, turned on again (its cursor and last check forgotten first) or its
+   *  source edited (its cursor kept: a poll whose cursor was read elsewhere starts over itself). */
   poll?(source: Source, ctx: PollContext): Promise<PollResult>;
-  /** For a source that polls: where its trigger starts watching, taken when the trigger is made, when an edit changes one
-   *  of its source's `on` fields and when it is turned on again; never at its first poll. An edit of any other field keeps
-   *  the cursor. A start not taken (the source unreachable, or slower than the engine waits) leaves no cursor: the first
-   *  poll that reads the source takes it, and says so. */
-  start?: Start;
   /** A run's title after its trigger's name, from what its source says of the firing (its attrs): an email's sender and
    *  subject. Default: the event and action the attrs name. */
   title?(attrs: Record<string, string>): string | undefined;
 };
 
-/** Why a start is taken: the trigger was made, an edit changed where it reads, or it was turned on again. */
-export type StartWhy = "created" | "edited" | "enabled";
-/** What a start is given: its trigger, why, and the source's credentials, read now (as a poll's). */
-export type StartContext = { trigger: string; why: StartWhy; credentials(): Promise<unknown> };
-/** What a start found: `check`, said on the trigger as its last check (a refusal here never counts toward turning it
- *  off); `note`, the history line it writes; `cursor`, the settings it starts from, none when it could not read the
- *  source. */
-export type StartResult = { check: { ok: boolean; message: string }; note: string; cursor?: Record<string, string> };
-export type Start = {
-  /** The source's fields an edit of which takes a new start. */
-  on: readonly string[];
-  take(source: Source, ctx: StartContext): Promise<StartResult>;
-  /** The words of a start the engine stopped waiting for. */
-  unchecked(source: Source, why: StartWhy): string;
-};
 /** What a poll is given: its trigger's own settings (its cursor, public, as the adapter's `settings` names them) and the
  *  source's credentials, read now (TriggerDeps.credentials: the email account, opened). */
 export type PollContext = { trigger: string; setting(field: string): string | undefined; credentials(): Promise<unknown> };

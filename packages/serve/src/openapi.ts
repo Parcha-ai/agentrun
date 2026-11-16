@@ -8,8 +8,8 @@ import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
 import { CALL_RESULT_CHARS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
-import { EMAIL_SCOPES, SCOPED_TOOLS } from "./email/names.js";
-import type { TriggerAdapter } from "./trigger-adapter.js";
+import { EMAIL_SCOPES, PASSWORD_MAX, SCOPED_TOOLS, SEND_CAP } from "./email/names.js";
+import { PAYLOAD_KEPT_BYTES, type TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
@@ -41,7 +41,7 @@ import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { HOOK_BODY_MS } from "./push-handler.js";
-import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF } from "./validate.js";
 import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS } from "./templates.js";
 import { MCP_SOURCES } from "./mcp-sources.js";
@@ -222,7 +222,7 @@ const EMAIL_ACCOUNT_BODY = {
     preset: { enum: ["gmail", "fastmail", "icloud", "other", "outlook"], default: "other", description: "gmail, fastmail and icloud fill imap and smtp; other takes both. outlook is refused in words: Outlook needs Microsoft sign-in, which this server doesn't do yet." },
     address: { type: "string", minLength: 1, maxLength: 320, description: "The address it sends as." },
     user: { type: "string", minLength: 1, maxLength: 320, description: "Who signs in. Default: the address." },
-    password: { type: "string", minLength: 1, maxLength: 320, "x-agentrun-secret": true, description: "The account's app password (Gmail, iCloud and Fastmail each make one for an app): sealed, never answered or shown again. A test of the saved account may leave it out." },
+    password: { type: "string", minLength: 1, maxLength: PASSWORD_MAX, "x-agentrun-secret": true, description: "The account's app password (Gmail, iCloud and Fastmail each make one for an app): sealed, never answered or shown again. A test of the saved account may leave it out." },
     imap: MAIL_ENDPOINT,
     smtp: MAIL_ENDPOINT,
   },
@@ -2738,7 +2738,7 @@ const PENDING: Json = {
         tool: { type: "string" },
         call_id: { type: "string", description: "The call's id, as its tool_result row's tool_use_id." },
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes.` },
-        summary: { type: "string", description: "What the call does, in words, where its tool says: email_send's \"Send email to <to>, cc <cc>: <subject>\", a blank line, then the text's first 300 characters; email_file's \"File <message_id> under <to>\". Redacted as args_preview is.", "x-agentrun-serve": "email/1" },
+        summary: { type: "string", description: `What the call does, in words, where its tool says: email_send's "Send email to <to>, cc <cc>: <subject>", a blank line, then the text's first 300 characters; email_file's "File <message_id> under <to>". When the call asks though its setting allows it (its tool's own ask: email_send past ${SEND_CAP} sends in a run, or to anyone outside the thread of the email that started the run), it ends "Asks because <why>.", and args_preview carries the why as asked_because. Redacted as args_preview is.`, "x-agentrun-serve": "email/1" },
         requested_at: { type: "string", format: "date-time" },
         price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }, { const: "priced by usage" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call; \"priced by usage\" for a monid endpoint priced by usage: monid estimates its cost only when the call runs, after the allow (the call is held at that estimate, and a charge above it stops the run), so nothing is sent to monid while it waits. Absent when the tool names none." },
         destructive: { const: true, description: `Present on an MCP tool's call that is destructive by the annotations the run pinned (destructiveHint true, readOnlyHint not true), and on a call whose allow lets such a tool run (a learned workflow's, its card naming the tool in \`mcp_calls\`): its allow needs \`confirm_destructive: true\`. Absent on every other call.`, "x-agentrun-serve": "allowreads/1" },

@@ -19,7 +19,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NestedCalls, type NoteRequest, type OwnCalls, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, type ToolCalls, toolCalls, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
 import { CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
@@ -50,10 +50,10 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
   return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
 };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
-import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
+import { ASKED_BECAUSE, deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, REFLECT_PREFIX, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -111,15 +111,18 @@ export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string } | 
 
 /** An asked call's card: the gate's own fields (`shown`) first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES)
  *  still names them whatever the input's size, then the call's input, which the model wrote, without any field of
- *  theirs; a learned_workflow call's card fields (LEARNED_CARD_FIELDS) are only ever the gate's. */
+ *  theirs; a learned_workflow call's card fields (LEARNED_CARD_FIELDS) are only ever the gate's, and so is the reason a
+ *  call its setting allows asks anyway (ASKED_BECAUSE). */
 function cardOf<A extends Record<string, unknown> | undefined>(tool: string, shown: Readonly<Record<string, unknown>> | undefined, args: A): A | Record<string, unknown> {
-  if (!shown && tool !== LEARNED_WORKFLOW_TOOL) return args;
-  return { ...shown, ...Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !(shown && Object.hasOwn(shown, key)) && !(tool === LEARNED_WORKFLOW_TOOL && LEARNED_CARD_FIELDS.has(key)))) };
+  if (!shown && tool !== LEARNED_WORKFLOW_TOOL && !(args && Object.hasOwn(args, ASKED_BECAUSE))) return args;
+  return { ...shown, ...Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !(shown && Object.hasOwn(shown, key)) && key !== ASKED_BECAUSE && !(tool === LEARNED_WORKFLOW_TOOL && LEARNED_CARD_FIELDS.has(key)))) };
 }
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
  *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
  *  call run again after an earlier attempt that may have been sent, so a refusal's words never say nothing was sent. */
-export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean }) => GateAnswer | Promise<GateAnswer>) & {
+/** `ran`: the calls of a tool the run's journal shows (toolCalls: run to a good end, and every one with a result), read
+ *  now (a tool's own ask counts by it, with the calls its gate let through that have no result yet). */
+export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean; readonly ran?: (tool: string) => Promise<ToolCalls> }) => GateAnswer | Promise<GateAnswer>) & {
   readonly askedAs?: (tool: string, args?: unknown) => string;
   /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
    *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
@@ -3043,7 +3046,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (wrapUpDeny !== undefined) return { deny: wrapUpDeny };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
-      const given = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
+      const given = (await spec.gate?.(kernelCall, { ...(replayed ? { replayed } : {}), ran: ranOf })) ?? "allow";
       // An ask with its card's own fields (a learned workflow's MCP actions set to ask, each with its arguments' shape).
       const shown = typeof given === "object" && "ask" in given ? given.ask : undefined;
       let decision = shown ? ("ask" as const) : (given as Exclude<GateAnswer, { readonly ask: unknown }>);
@@ -3212,6 +3215,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  end reads withdrawn: its rows said "Not run: the run ended while it waited" of a call that ran. A deny set since still
    *  refuses it first. Read from the journal once a claim: an ask written later in the claim parks it, and an answer
    *  written later is read by answerOf itself. */
+  /** The calls of `tool` the run's journal shows now (toolCalls): run to a good end, and every one with a result. Read
+   *  over every agent conversation of the run (agentEntriesOf): the root's and each subagent's, so a child's calls count
+   *  on the claim after a pause as on the one they ran in. */
+  async function ranOf(tool: string): Promise<ToolCalls> {
+    return toolCalls(await agentEntriesOf(gate!.journal, context), tool);
+  }
+
   async function askStands(callId: string): Promise<boolean> {
     standing ??= (async () => {
       const conversation = await harness!.root(context);
