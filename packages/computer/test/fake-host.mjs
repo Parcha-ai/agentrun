@@ -19,6 +19,8 @@ export const LINUX_GROUPS = ["exec", "files", "processes"];
 export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const NO_CAPS = "0000000000000000";
 const STDIN_VERBS = new Set(["mount", "revoke"]);
+/** Where the adapter keeps a machine's labels for a host that keeps none (src/hosted/scripts.ts, LABEL_FILE). */
+export const LABEL_FILE = "/var/lib/agentrun/labels.json";
 
 /** The fake's descriptor, as a vendor's (src/descriptors/*): its network, mounts and configurations. */
 export const FAKE_DESCRIPTOR = {
@@ -91,7 +93,9 @@ const START = Date.now();
 
 /**
  * A fake host. Its calls answer plain values or throw, as src/host.ts says. Options:
- *  - facts: over the defaults (child daemon, vendor lifetime);
+ *  - facts: over the defaults (child daemon, vendor lifetime). With labels "machine" it keeps no labels: a machine has
+ *    the name create gave it (add's name), get and list answer no labels, list answers every machine, and the label
+ *    script reads and writes the machine's label file (add's file);
  *  - descriptor: the host's, FAKE_DESCRIPTOR by default (network none, an archil mount, a linux and a desktop
  *    configuration, no GPU);
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called, or throws the error
@@ -160,7 +164,7 @@ export function fakeHost({
 	};
 	const gone = (m) => m === undefined || (m.deleted && !(m.lingering?.reads > 0));
 
-	const add = ({ labels = {}, network = "none", image = "img", lifetimeMs = 600_000, state = "running", startingReads = 0, box: extra = {} } = {}) => {
+	const add = ({ labels = {}, name, file, network = "none", image = "img", lifetimeMs = 600_000, state = "running", startingReads = 0, box: extra = {} } = {}) => {
 		const n = ++counter;
 		const id = `m${String(n).padStart(8, "0")}`;
 		const createdAt = born === undefined ? new Date(START + n) : born(machines.size + 1);
@@ -168,6 +172,8 @@ export function fakeHost({
 			id,
 			createdAt,
 			labels: { ...labels },
+			...(name === undefined ? {} : { name }),
+			...(file === undefined ? {} : { file: JSON.stringify(file) }),
 			network,
 			image,
 			state,
@@ -195,9 +201,11 @@ export function fakeHost({
 	};
 
 	/** The machine as get and list read it. */
+	const keeps = () => host.facts.labels === "machine";
 	const view = (m) => ({
 		id: m.id,
-		labels: { ...m.labels },
+		labels: keeps() ? {} : { ...m.labels },
+		...(m.name === undefined ? {} : { name: m.name }),
 		state: m.deleted || m.why !== undefined ? "gone" : m.state,
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
 		endsAt: new Date(m.endsAt),
@@ -232,6 +240,8 @@ export function fakeHost({
 			const text = `${m.box.policy ?? m.init.network}\n`;
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 		}
+		// The label file is root's alone: the daemon's user reads none of it.
+		if (method === "files.read" && params.path === LABEL_FILE) return m.file === undefined ? error("not_found", `${params.path}: no such file`) : error("denied", `${params.path}: permission denied`);
 		if (method === "files.read" && params.path === "/proc/self/net/dev") {
 			const text = netDevText(m.box.interfaces);
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
@@ -378,6 +388,15 @@ export function fakeHost({
 			};
 			if (STDIN_VERBS.has(verb)) proc.onEnd = async () => go();
 			else queueMicrotask(go);
+			return proc;
+		}
+		if (kind === "labels") {
+			// The label file, root's alone: written from stdin with "write", then printed; exit 3 when there is none.
+			const [path, write] = script.args;
+			const print = () => (m.file === undefined ? proc.exit(3) : (proc.out.push(m.file), proc.exit(0)));
+			fake.labelRuns = [...(fake.labelRuns ?? []), { machine: m.id, path, write: write === "write" }];
+			if (write === "write") proc.onEnd = async () => ((m.file = Buffer.concat(proc.chunks).toString("utf8")), print());
+			else queueMicrotask(print);
 			return proc;
 		}
 		if (kind === "upload") {
@@ -527,7 +546,8 @@ export function fakeHost({
 			await onStep("create", undefined);
 			if (create === "fail") throw new Refused("400: no such image");
 			const make = () => {
-				const m = add({ labels: req.labels, network: req.egress ? "open" : "none", image: req.image, lifetimeMs: req.lifetimeMs, state: starting > 0 ? "starting" : "running", startingReads: starting });
+				const kept = keeps() ? { name: req.name } : { labels: req.labels };
+				const m = add({ ...kept, network: req.egress ? "open" : "none", image: req.image, lifetimeMs: req.lifetimeMs, state: starting > 0 ? "starting" : "running", startingReads: starting });
 				m.hidden = unlisted;
 				m.flaps = [...flaps];
 				m.request = req;
@@ -576,7 +596,8 @@ export function fakeHost({
 		},
 		async list(labels, ctx) {
 			await step("list", ctx);
-			const matched = [...machines.values()].filter((m) => Object.entries(labels).every(([k, v]) => m.labels[k] === v));
+			// A host that keeps no labels lists every machine.
+			const matched = [...machines.values()].filter((m) => keeps() || Object.entries(labels).every(([k, v]) => m.labels[k] === v));
 			if (stale) return matched.filter((m) => m.listedAs !== undefined).map((m) => structuredClone(m.listedAs));
 			const flapped = new Set(matched.filter((m) => m.flaps?.length > 0 && m.flaps.shift() === false));
 			const listed = matched.filter((m) => (!m.deleted || m.lingering?.lists > 0) && !(m.hidden > 0) && !flapped.has(m));
@@ -619,7 +640,7 @@ export function fakeHost({
 						await step("extend", ctx, m);
 						if (gone(m)) throw new NotFound(`machine ${id} not found`);
 						if (timer === "limit") throw new HostError("limit", "no whole number of seconds reaches it; nothing moved");
-						const most = Date.parse(m.labels["agentrun.computer.max-deadline"]);
+						const most = Date.parse((keeps() ? JSON.parse(m.file ?? "{}") : m.labels)["agentrun.computer.max-deadline"]);
 						if (host.facts.lifetime === "janitor") {
 							m.labels[DEADLINE_LABEL] = new Date(Math.min(Math.ceil(end.getTime() / 1000) * 1000, most)).toISOString();
 							return;

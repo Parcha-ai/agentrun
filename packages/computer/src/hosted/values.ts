@@ -33,7 +33,7 @@ const PART = `${PACKED_NAME}-`;
  * host of a string list stores each as name=value. unpackLabels reads the map back exactly. A map that does not fit
  * room (count, bytes and valueBytes, of the packed labels) is refused in words.
  */
-export function packLabels(labels: Record<string, string>, name: string, room: HostFacts["labels"] = {}): { labels: Record<string, string> } | { problem: string } {
+export function packLabels(labels: Record<string, string>, name: string, room: Exclude<HostFacts["labels"], "machine"> = {}): { labels: Record<string, string> } | { problem: string } {
 	const payload = deflateRawSync(JSON.stringify(labels)).toString("base64url");
 	const { count, bytes, packed } = room;
 	// base64url can begin or end with - or _, which a Kubernetes value can't: each part is wrapped in a letter.
