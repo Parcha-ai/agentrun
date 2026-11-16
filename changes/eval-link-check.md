@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-A template eval's llm grader of a run that searched or fetched reads a link check beside the calls (`<link-check untrusted>`): one line per distinct http(s) link the answer cites, in its text or any string of its JSON, saying `matches call N` or `no matching call`. The match is done in code against every url the run's web calls answered: a web_search's results, a web_fetch's asked url, final url and page links. A fragment, a trailing slash, the query's order and the case of scheme and host are ignored. The query's keys must be the same, and a value the timeline elided to "…" matches any value for its key, so a cited link with a query string can match at last. A link that matches nothing names any fetched page whose links were cut (`(call N's links were cut)`). Cited links are shown with their query values, fragment and userinfo elided, as call urls are. A run with no web call is graded on the same prompt as before. A rubric can now say "every cited link must match a call; read the link check" instead of spelling out URL equality.

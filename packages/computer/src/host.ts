@@ -27,8 +27,10 @@ export interface MachineHost {
 	 * run (the adapter polls get while it is starting) or to be listed (the adapter waits for that too), except where the
 	 * vendor applies a machine's settings only once it is ready: there it may wait for ready within ctx.timeoutMs, set
 	 * them, and answer then (PROVIDERS.md, create). The machine
-	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. An answer that
-	 * never comes is not a machine the adapter forgets: it lists by req.labels and deletes what it finds.
+	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. A native name
+	 * the vendor already has throws exists (a REST host's named call: hosted/rest.ts), and the adapter adopts the machine
+	 * the name lists, as a retry does. An answer that never comes is not a machine the adapter forgets: it lists by
+	 * req.labels and deletes what it finds.
 	 */
 	create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }>;
 	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a HostError not_found). */
@@ -211,9 +213,11 @@ export interface HostFacts {
 	/**
 	 * The most a machine's labels may be, the adapter's own with the caller's: count, how many; bytes, every name and
 	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
-	 * Absent: no bound.
+	 * Absent: no bound. packed: the host stores the labels as packLabels packs them (./hosted/values.ts: one name to
+	 * list by, the map in parts of at most valueBytes each) and get answers unpackLabels' map; count and bytes are then
+	 * the packed labels'.
 	 */
-	labels?: { count?: number; bytes?: number };
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } };
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a

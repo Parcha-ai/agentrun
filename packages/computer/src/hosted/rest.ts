@@ -4,13 +4,17 @@
 import { type ComputerError, type ComputerErrorCode, errorOf, fail, ok, type Result, vendorFail } from "../result.js";
 import { pause } from "./process.js";
 
-/** A status as a code: 401 and 403 denied, 404 and 410 not found, 408 timeout, 402/429/507 limit, 400/409/422 invalid, else vendor. */
-export function httpCode(status: number): ComputerErrorCode {
+/**
+ * A status as a code: 401 and 403 denied, 404 and 410 not found, 408 timeout, 402/429/507 limit, 400/409/422 invalid,
+ * else vendor; 409 is exists on a call that carries the machine's name (RestInit.named).
+ */
+export function httpCode(status: number, named = false): ComputerErrorCode {
 	if (status === 401 || status === 403) return "denied";
 	if (status === 404 || status === 410) return "not_found";
 	if (status === 408) return "timeout";
 	if (status === 402 || status === 429 || status === 507) return "limit";
-	if (status === 400 || status === 409 || status === 422) return "invalid";
+	if (status === 409) return named ? "exists" : "invalid";
+	if (status === 400 || status === 422) return "invalid";
 	return "vendor";
 }
 
@@ -30,6 +34,11 @@ export interface RestInit {
 	retry?: boolean | ((status: number, bytes: Uint8Array) => boolean);
 	/** Whether an answer of this status is a value, with its status, not a failure (not retried). Default: a 2xx. */
 	accept?: (status: number) => boolean;
+	/**
+	 * The call carries the machine's name (a create by MachineRequest.name): its 409 is the vendor's word that a machine
+	 * has that name, exists, which the adapter reads as the machine its listing by the name finds.
+	 */
+	named?: boolean;
 }
 
 export interface RestOptions {
@@ -120,7 +129,7 @@ export function rest(options: RestOptions): Rest {
 				retryable = own ? (init.retry as (status: number, bytes: Uint8Array) => boolean)(response.status, bytes) : init.retry === true && (response.status === 429 || response.status >= 500);
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				const said = options.explain?.({ status: response.status, bytes, text, what }) ?? {};
-				failure = errorOf(said.code ?? httpCode(response.status), said.message ?? `${what}: ${response.status} ${text}`, options.vendor);
+				failure = errorOf(said.code ?? httpCode(response.status, init.named), said.message ?? `${what}: ${response.status} ${text}`, options.vendor);
 			} catch (cause) {
 				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 				// No answer: the request may have reached the vendor, so only a call that may run twice is sent again.
