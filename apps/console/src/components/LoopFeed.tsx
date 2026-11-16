@@ -7,7 +7,7 @@ import type { LearningCost, LearningLoop, LoopCompile, Promotion, Serving } from
 
 // The learning feed: what the loop did, newest first. A compile turn (a run's end, any round of it, wrote a workflow from
 // its notes: which notes went in, each attempt, and where that revision stands now, as the replay card says it) and each promotion record (a revision replaying,
-// promoted, held, refit, or superseded by a newer revision while it replayed, with its numbers). A draft the checks refused says what they said, in their words, never a
+// promoted, held, refit, queued behind another revision's replay, or skipped for a newer one while queued, with its numbers). A draft the checks refused says what they said, in their words, never a
 // silent nothing; a run whose handed values can't be read says the words are withheld.
 
 /** How many entries show before "Show all". */
@@ -15,7 +15,7 @@ const FIRST = 8;
 
 type Entry = { at: string; key: string } & ({ kind: "compile"; compile: LoopCompile } | { kind: "promotion"; record: Promotion });
 
-const MARKER_TONE: Record<MarkerKind, ChipTone> = { promote: "success", hold: "warning", refit: "plain", revision: "active", superseded: "muted" };
+const MARKER_TONE: Record<MarkerKind, ChipTone> = { promote: "success", hold: "warning", refit: "plain", revision: "active", queued: "plain", skipped: "muted" };
 
 /** `serving`: the server's serving digest per workflow (the promotions read's), the one revision that says Serving;
  *  `cost`: the cost read, whose `needs_revision` makes that revision say Stopped (the money rule stopped it). */
@@ -54,7 +54,7 @@ function Compiled({ compile: c, promotions, serving, stopped }: { compile: LoopC
   const refused = c.attempts.filter((a) => !a.ok);
   const errors: { e: string; attempt: number | null }[] = [...c.attempts.flatMap((a, i) => (a.ok ? [] : a.errors.map((e) => ({ e, attempt: i + 1 })))), ...c.draft_errors.map((e) => ({ e, attempt: null }))];
   // Its revision's standing as the replay card says it (standingOf): Serving only for the champion the server names, Served
-  // for one promoted before it, Refit when a refit of it serves in its place, Held, Replaying, Superseded; Stopped when
+  // for one promoted before it, Refit when a refit of it serves in its place, Held, Replaying, Queued, Skipped; Stopped when
   // the money rule stopped the champion running first.
   const standing = failed ? null : standingOf(recordOf(promotions, c.workflow!, c.digest), { serving, refit: refitOf(promotions, c.workflow!, c.digest), stopped });
   return (
