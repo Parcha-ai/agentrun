@@ -218,7 +218,7 @@ export interface components {
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
       ask_needs?: "password";
-      key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+      key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
     }[];
     workflows?: {
       nodes: string[];
@@ -3939,7 +3939,7 @@ export interface operations {
     body: never;
     answer: {
       keys: {
-        id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+        id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
         kind: "tool" | "model";
         label: string;
         unlocks: string[];
