@@ -70,6 +70,15 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
+/** The generic gateway must speak HTTP Responses (or Messages). Particle exposes Chat Completions
+ * and a WebSocket-only Responses subset, so a direct API base is not a compatible gateway. */
+export function modelGatewayBase(value: string): string {
+  const base = gatewayBase("AGENT_MODEL_BASE_URL", value);
+  if (["api.particle.ai", "us.api.particle.ai"].includes(new URL(base).hostname)) {
+    throw new HarnessUnavailable("Particle uses Chat Completions here: remove AGENT_MODEL_BASE_URL, save PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.");
+  }
+  return base;
+}
 
 /**
  * Whether `wire` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
@@ -117,7 +126,7 @@ function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () =
 
 /** Serve's gateway (AGENT_MODEL_BASE_URL) on either wire: its base, its key (AGENT_MODEL_API_KEY, or none) as a bearer
  *  token, the model id as model.ts chose it, priced as runModels prices it. */
-const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
+const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: modelGatewayBase(env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
 
 export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef, who: string): Provider {
   const named = `${model.provider}/${model.modelId}`;

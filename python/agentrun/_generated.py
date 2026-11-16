@@ -5875,7 +5875,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
     ask_needs: Literal["password"]
-    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
 
 CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
@@ -6386,7 +6386,7 @@ class ListToolKeysResponse(TypedDict):
 
 
 class ListToolKeysResponseKeysItem(TypedDict):
-    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
     kind: Literal["tool", "model"]
     label: str
     unlocks: list[str]

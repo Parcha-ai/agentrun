@@ -7,9 +7,8 @@ import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { harnessModelKeys } from "../dist/adapters.js";
-import { chooseModel, harnessRuns, hostModel, MODEL_KEYS } from "../dist/model.js";
+import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, providerModels } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, launchFor, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 import { fileURLToPath } from "node:url";
@@ -95,7 +94,7 @@ test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway
 // A key-less first run (npx, no key yet) is told what a person does: add a key in the console or where AgentRun starts.
 // Operator detail (--faux, AGENT_MODEL, a tier's variable) is the README's. A model no catalog knows is still named.
 test("with no model here, the refusal says what a person does: a model key in Settings or where AgentRun starts, no operator flags", async () => {
-  const none = "No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts.";
+  const none = "No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts.";
   assert.equal((await chooseModel({}, undefined)).why, none);
   assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast tier:"));
   assert.equal((await chooseModel({}, "openai/gpt-6.1-sol")).why, "No OpenAI key here for openai/gpt-6.1-sol: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts.");
@@ -132,16 +131,20 @@ test("behind a gateway, a run that holds the gateway's key alone takes the model
   }
 });
 
-test("each default is a model pi-ai's catalog lists and prices, of the key's own provider, and not that provider's dearest", () => {
-  const models = builtinModels();
+test("each default is listed and priced on its key's provider: the only model, or not the dearest", async () => {
+  const models = await providerModels({});
   for (const row of MODEL_KEYS) {
     const slash = row.model.indexOf("/");
     const [provider, id] = [row.model.slice(0, slash), row.model.slice(slash + 1)];
     assert.equal(provider, row.id);
     const model = models.getModel(provider, id);
     assert.ok(model && model.cost.input > 0 && model.cost.output > 0, `${row.model} is listed with a price`);
-    const dearest = Math.max(...models.getModels(provider).map((m) => m.cost.input + m.cost.output));
-    assert.ok(model.cost.input + model.cost.output < dearest, `${row.model} is not ${provider}'s dearest`);
+    if (provider === "particle") {
+      assert.deepEqual(models.getModels(provider).map((m) => m.id), ["particle-1"], "Particle has one registered model");
+    } else {
+      const dearest = Math.max(...models.getModels(provider).map((m) => m.cost.input + m.cost.output));
+      assert.ok(model.cost.input + model.cost.output < dearest, `${row.model} is not ${provider}'s dearest`);
+    }
   }
 });
 

@@ -994,7 +994,7 @@ export type Capabilities = {
     default_permission: "allow" | "ask" | "deny";
     permissions: Array<"allow" | "ask" | "deny">;
     ask_needs?: "password";
-    key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+    key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
   }>;
   workflows?: {
     nodes: Array<string>;
@@ -3961,7 +3961,7 @@ export type ListTemplatesResponse = {
 /** The tool keys a person may save, and which are set: names only, never a value (GET /settings/tool-keys). */
 export type ListToolKeysResponse = {
   keys: Array<{
-    id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+    id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
     kind: "tool" | "model";
     label: string;
     unlocks: Array<string>;

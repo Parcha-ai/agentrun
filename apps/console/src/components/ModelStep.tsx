@@ -13,7 +13,7 @@ export function ModelStep({ keyCard = false }: { keyCard?: boolean }) {
         {keyCard ? "Add a model key in the card above, and the templates here run in one click." : <>
         This server has no model to run an agent on yet. Start agentrun-serve with the model to run in its
         environment, <span className={env}>AGENT_MODEL</span>=provider/model-id, and that provider's key
-        (<span className={env}>ANTHROPIC_API_KEY</span>, <span className={env}>OPENAI_API_KEY</span> or <span className={env}>OPENROUTER_API_KEY</span>).
+        (<span className={env}>ANTHROPIC_API_KEY</span>, <span className={env}>OPENAI_API_KEY</span>, <span className={env}>OPENROUTER_API_KEY</span> or <span className={env}>PARTICLE_API_KEY</span>).
         Or name a gateway: <span className={env}>AGENT_MODEL_BASE_URL</span> and <span className={env}>AGENT_MODEL_API_KEY</span>, with
         the gateway's model in <span className={env}>AGENT_MODEL</span>. Then reload this page, and the templates here run in one click.
         </>}

@@ -587,7 +587,7 @@ describe("App, the no-model bar", () => {
     const asked = serve(() => ({ source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" }));
     const host = await mount("#/runs");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Add a key in Settings → Model keys (one OpenRouter key gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts, and restart.");
+    expect(bar(host)?.textContent).toBe("No model yet. Add a key in Settings → Model keys (one OpenRouter key gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts, and restart.");
     expect(bar(host)?.querySelector("a")?.textContent).toBe("Add a key in Settings → Model keys");
     expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
     ready = true;
@@ -630,7 +630,7 @@ describe("App, the no-model bar", () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false);
     const host = await mount("#/runs");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
+    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 

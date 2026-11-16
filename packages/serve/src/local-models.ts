@@ -1,9 +1,8 @@
 import type { Api, Model, MutableModels, Provider } from "@earendil-works/pi-ai";
 import { freeModel, type ModelPrice, ROUTERS } from "@parcha/agentrun-kernel/kernel/cap";
+import { PARTICLE_1_PRICE, particleProvider } from "./particle-provider.js";
 
-/** Particle-1's price, USD per million tokens: Particle's own list price, from https://docs.particle.ai/models (read
- *  2026-11-07: $0.25 input, $0.03 cached input, $1.00 output; no cache-write price, so $0). */
-export const PARTICLE_1_PRICE = { input: 0.25, output: 1, cacheRead: 0.03, cacheWrite: 0 } as const;
+export { PARTICLE_1_PRICE } from "./particle-provider.js";
 
 /** How a model takes its tools: "native", the request's own tools parameter (every model pi-ai lists), or "text", the
  *  tools described in its system prompt and its calls read back from its reply (runner/text-tools.ts, on the runner's
@@ -73,10 +72,10 @@ export function isFree(model: { id: string; api?: string; cost?: ModelPrice | nu
   return freeModel({ id: model.id, api: model.api ?? "", price: model.cost ?? null, outputCeiling: null });
 }
 
-/** `models` (pi-ai's built-in catalog, or one built on it) with PRICE_OVERRIDES set on their providers' own entries and
- *  ADDED_MODELS listed beside them, in place: a request, a price and a capability read find the catalog's entry at the
- *  overridden price, with its toolsAs, and an added model as if the catalog listed it. */
+/** `models` with serve's direct Particle provider registered, PRICE_OVERRIDES on the built-in providers' entries,
+ *  and ADDED_MODELS beside them. Requests, prices and capability reads use this same catalog. */
 export function withLocalModels<M extends MutableModels>(models: M): M {
+  models.setProvider(particleProvider());
   for (const providerId of new Set([...PRICE_OVERRIDES, ...ADDED_MODELS].map((entry) => entry.provider))) {
     const own = models.getProvider(providerId);
     if (!own) continue;

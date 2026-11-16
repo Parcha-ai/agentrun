@@ -112,7 +112,7 @@ test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's cata
 
 test("or-8: no model here names OpenRouter's key first, and claude-agent's names it too; a direct provider's key still wins the default", async () => {
   const { ADD_A_KEY, hostModel } = await import("../dist/model.js");
-  assert.equal(ADD_A_KEY, "add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts.");
+  assert.equal(ADD_A_KEY, "add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts.");
   assert.equal((await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
   // OpenRouter alone: a default for every harness.
   assert.deepEqual(["pi", "claude-agent", "codex"].map((h) => hostModel(ONLY, "default", h)), ["openrouter/openai/gpt-6.1-sol", "anthropic/claude-sonnet-5.5", "openai/gpt-6.1-sol"]);

@@ -232,6 +232,12 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
+/** Particle requests are never automatically replayed after an uncertain failure. Retry is a harness-wide setting,
+ *  so a claim with any Particle route disables it for all its conversations, including subagents on other tiers. */
+export function modelRetryOf(routes: Iterable<Pick<ModelRoute, "like">>): Pick<AdapterRunSpec, "retry"> {
+  return [...routes].some((route) => route.like?.translatedChatCompletions) ? { retry: { enabled: false } } : {};
+}
+
 /** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
  *  tier: those nodes keep their own route and fallback). */
 const SUBAGENT_ROUTE = "subagent-";
@@ -752,6 +758,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     adapter,
     session,
     input,
+    ...modelRetryOf([route, ...tierRoutes.values()]),
     // A trigger's first input is its origin's, the launch's own owner flag kept (run-launch.ts keepInputOrigin).
     ...(launch.inputOrigin ? { inputOrigin: launch.inputOrigin } : {}),
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was

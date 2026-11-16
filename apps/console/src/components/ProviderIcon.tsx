@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 /** Each provider's public site, by its id as the server names it (key-words.ts, model.ts): where its icon is asked
  *  for. A model provider's is its product's site, whose icon is the one people know (chatgpt.com, claude.ai). */
 const SITES: Record<string, string> = {
-  anthropic: "claude.ai", openai: "chatgpt.com", openrouter: "openrouter.ai",
+  anthropic: "claude.ai", openai: "chatgpt.com", openrouter: "openrouter.ai", particle: "particle.ai",
   parallel: "parallel.ai", monid: "monid.ai", browserbase: "browserbase.com", kernel: "kernel.sh", typesafe: "typesafe.ai",
 };
 /** Marks bundled with the console, for when the icon can't be fetched: one 24 by 24 path each, drawn in the text's
