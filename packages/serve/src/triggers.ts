@@ -711,6 +711,8 @@ export class Triggers {
 
   /** `trigger`'s poll now, off the timer (made, turned on again, or its source edited), after the one running for it when
    *  one is. */
+  /** A poll of `trigger` now, answered once the poll that answers it is done: its own, or, when an edit of its source
+   *  drops its result (polled), the one after it, which it asks for at once; when one is running, the one after that. */
   private kick(trigger: Trigger, waitedFor = true): Promise<void> {
     const adapter = this.adapter(trigger.source);
     if (!adapter.poll || this.closed) return Promise.resolve();
@@ -720,7 +722,19 @@ export class Triggers {
     }
     const now = this.clock.now();
     this.polling.set(trigger.id, waitedFor);
-    return this.polled(trigger, adapter, now, now).catch((error: unknown) => this.deps.say({ condition: "trigger_poll_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) })).finally(() => this.pollDone(trigger.id));
+    return this.polled(trigger, adapter, now, now).then(
+      (kept) => {
+        // Dropped for an edit of its source: the poll after it (the edit's) runs at once, and is the one this answers by.
+        const after = kept || this.closed ? undefined : new Promise<void>((done) => this.pollWaiters.set(trigger.id, [...(this.pollWaiters.get(trigger.id) ?? []), done]));
+        if (after) this.pollAgain.set(trigger.id, true);
+        this.pollDone(trigger.id);
+        return after;
+      },
+      (error: unknown) => {
+        this.deps.say({ condition: "trigger_poll_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) });
+        this.pollDone(trigger.id);
+      },
+    );
   }
 
   /** `trigger`'s first poll (made, or turned on again) kicked and waited on, FIRST_POLL_WAIT_MS at most. */
@@ -753,7 +767,8 @@ export class Triggers {
    *  history line; one it leaves, skipped and said; one its accept does not take, an ignored row kept for its day; any
    *  other due, and driven), its cursor kept once they are, then its last check, and at the REFUSALS_TO_STOPth refused
    *  sign-in in a row the trigger turned off. A poll that throws is a failed check. */
-  private async polled(trigger: Trigger, adapter: TriggerAdapter, nominalAt: number, now: number): Promise<void> {
+  /** False when an edit of its source while it polled dropped what it found (the edit's poll comes after it); else true. */
+  private async polled(trigger: Trigger, adapter: TriggerAdapter, nominalAt: number, now: number): Promise<boolean> {
     const settings = this.deps.settings(adapter.id);
     // Turned on again while it polled (off and on): its cursor was forgotten, and nothing this poll found is its own.
     const generation = this.restarts.get(trigger.id);
@@ -764,11 +779,12 @@ export class Triggers {
     } catch (error) {
       result = { check: { ok: false, message: String((error as Error)?.message ?? error) } };
     }
-    if (this.closed) return;
+    if (this.closed) return true;
     try {
-      // Edited, turned off or deleted while it polled: nothing it found is kept.
+      // Edited, turned off or deleted while it polled: nothing it found is kept. An edit of its source polls again.
       const current = await this.find(trigger.id);
-      if (!current || !current.enabled || JSON.stringify(current.source) !== JSON.stringify(trigger.source) || restarted()) return;
+      if (!current || !current.enabled || restarted()) return true;
+      if (JSON.stringify(current.source) !== JSON.stringify(trigger.source)) return false;
       const by = adapter.id;
       const at = Math.floor(nominalAt / 1000) * 1000;
       if (result.note) await this.record(current, { key: firingKey(by, trigger.id, `note\n${second(nominalAt)}`), by, nominalAt: at, status: "skipped", reason: result.note });
@@ -795,7 +811,7 @@ export class Triggers {
         cursor = event.cursor;
       }
       if (!full && events.length) cursor = result.cursor ?? cursor;
-      if (restarted()) return;
+      if (restarted()) return true;
       for (const [field, value] of Object.entries(cursor ?? {})) await settings?.set(trigger.id, field, value);
       const refusals = result.refused ? (checkOf(settings?.get(trigger.id, LAST_CHECK))?.refused ?? 0) + 1 : 0;
       if (result.refused && refusals >= REFUSALS_TO_STOP) {
@@ -809,6 +825,7 @@ export class Triggers {
     } catch (error) {
       this.deps.say({ condition: "trigger_poll_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) });
     }
+    return true;
   }
 
   /** A firing taken from due to its end: skipped when its trigger's last run is active, else its run started (or its

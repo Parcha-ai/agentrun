@@ -3,7 +3,7 @@
 // together, each call id once.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { KINDS, ranCalls } from "../dist/runner/journal-kinds.js";
+import { KINDS, ranCalls, toolCalls } from "../dist/runner/journal-kinds.js";
 
 const start = (callId, tool = "email_send") => ({ kind: KINDS.callStart, data: { callId, tool, input: {}, replaySafe: false } });
 const end = (callId, status = "done") => ({ kind: KINDS.callEnd, data: { callId, status, output: "" } });
@@ -26,4 +26,17 @@ test("a mixed journal: each call that ran to a good end counts once, whichever r
   assert.equal(ranCalls(entries, "email_send"), 3);
   assert.equal(ranCalls(entries, "email_read"), 2);
   assert.equal(ranCalls([], "email_send"), 0);
+});
+
+test("toolCalls: the ids run to a good end, and every id with a result of any kind, the ones a gate's reservation leaves", () => {
+  const entries = [
+    start("c1"), end("c1"), // done
+    start("c2"), end("c2", "refused"), // ended, not ran
+    start("c4"), // no result yet
+    piResult("p1"), // pi's, ok
+    piResult("p2", "email_send", true), // pi's, an error: ended, not ran
+    piResult("p3", "email_read"), // another tool
+  ];
+  const calls = toolCalls(entries, "email_send");
+  assert.deepEqual([[...calls.ran].sort(), [...calls.ended].sort(), calls.unnamed], [["c1", "p1"], ["c1", "c2", "p1", "p2"], 0]);
 });

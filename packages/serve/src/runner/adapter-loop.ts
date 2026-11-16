@@ -19,7 +19,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, type ModelBooking, modelPortFor, type NestedCalls, type NoteRequest, type OwnCalls, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, ranCalls, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, type ToolCalls, toolCalls, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
 import { CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
@@ -120,8 +120,9 @@ function cardOf<A extends Record<string, unknown> | undefined>(tool: string, sho
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
  *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
  *  call run again after an earlier attempt that may have been sent, so a refusal's words never say nothing was sent. */
-/** `ran`: how many calls of a tool the run has run to a good end, read from its journal (a tool's own ask counts by it). */
-export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean; readonly ran?: (tool: string) => Promise<number> }) => GateAnswer | Promise<GateAnswer>) & {
+/** `ran`: the calls of a tool the run's journal shows (toolCalls: run to a good end, and every one with a result), read
+ *  now (a tool's own ask counts by it, with the calls its gate let through that have no result yet). */
+export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean; readonly ran?: (tool: string) => Promise<ToolCalls> }) => GateAnswer | Promise<GateAnswer>) & {
   readonly askedAs?: (tool: string, args?: unknown) => string;
   /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
    *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
@@ -3214,10 +3215,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  end reads withdrawn: its rows said "Not run: the run ended while it waited" of a call that ran. A deny set since still
    *  refuses it first. Read from the journal once a claim: an ask written later in the claim parks it, and an answer
    *  written later is read by answerOf itself. */
-  /** How many calls of `tool` the run has run to a good end, read from its root's journal now (ranCalls). */
-  async function ranOf(tool: string): Promise<number> {
+  /** The calls of `tool` the run's root journal shows now (toolCalls): run to a good end, and every one with a result. */
+  async function ranOf(tool: string): Promise<ToolCalls> {
     const conversation = await harness!.root(context);
-    return ranCalls(await entriesOf(gate!.journal, conversation.id, context), tool);
+    return toolCalls(await entriesOf(gate!.journal, conversation.id, context), tool);
   }
 
   async function askStands(callId: string): Promise<boolean> {
