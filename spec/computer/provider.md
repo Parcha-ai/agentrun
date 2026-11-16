@@ -177,7 +177,8 @@ adapter calls `end()` at once for a command it gives no input, such as the daemo
   timeout on the stream, are off.
 - **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and
   `end()` gives stdin end of file where the vendor has one, and otherwise does nothing: nothing the adapter runs waits
-  for end of file (the upload reads its length, a root command's input is one line, the bridge ends by `kill()`).
+  for end of file (the upload and the label file's write read their length, a root command's input is one line, the
+  bridge ends by `kill()`).
   `kill()` ends the process in the machine, not only the streams: a wrapper that records its pid for a second exec to
   kill is enough.
 

@@ -68,8 +68,8 @@ export interface MachineHost {
 	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
 	 *   machine, not only its streams.
 	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
-	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload reads a length, a root command's
-	 * input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
+	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload and its label file's write read a
+	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
 	 * this from them with framedExec (./hosted/framed-exec.ts). The exec pre-check (conformance --exec-stream,
 	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
 	 */

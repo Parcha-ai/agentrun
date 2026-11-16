@@ -391,12 +391,26 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "labels") {
-			// The label file, root's alone: written from stdin with "write", then printed; exit 3 when there is none.
-			const [path, write] = script.args;
+			// The label file, root's alone: with "write <bytes>", that many bytes of stdin replace it, end of stdin or not,
+			// then it is printed; exit 3 when there is none, 5 when stdin ends short.
+			const [path, write, bytes] = script.args;
 			const print = () => (m.file === undefined ? proc.exit(3) : (proc.out.push(m.file), proc.exit(0)));
 			fake.labelRuns = [...(fake.labelRuns ?? []), { machine: m.id, path, write: write === "write" }];
-			if (write === "write") proc.onEnd = async () => ((m.file = Buffer.concat(proc.chunks).toString("utf8")), print());
-			else queueMicrotask(print);
+			if (write === "write") {
+				let stored = false;
+				const done = async () => {
+					const got = Buffer.concat(proc.chunks);
+					if (got.length < Number(bytes) || stored) return;
+					stored = true;
+					m.file = got.subarray(0, Number(bytes)).toString("utf8");
+					print();
+				};
+				proc.onWrite = done;
+				proc.onEnd = async () => {
+					await done();
+					proc.exit(5);
+				};
+			} else queueMicrotask(print);
 			return proc;
 		}
 		if (kind === "upload") {
