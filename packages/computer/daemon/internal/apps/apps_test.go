@@ -30,7 +30,8 @@ const helperWindow = "apps-test-window"
 // [url]. The first instance holds <dir>/lock and shows a window. A later one finds the lock and, by <second>: "hand"
 // writes its url to <dir>/handed and ends, as a launcher that hands the url to the instance that runs; "dialog" shows a
 // dialog of its own, "Close <class>", and runs on, as Firefox's "already running" box when its second launch can't
-// reach the first.
+// reach the first; "spawn" starts a process in a session of its own that shows that dialog and ignores TERM
+// ("stubborn"), and runs on until TERM.
 const helperSingle = "apps-test-single"
 
 // TestMain runs the guard when process.start starts this binary as one, as computerd does, and the test apps.
@@ -68,6 +69,19 @@ func single(dir, class, second string, url []string) int {
 		return exit(os.WriteFile(filepath.Join(dir, "handed"), []byte(strings.Join(url, " ")), 0o600))
 	case "dialog":
 		return exit(showWindow(strings.ToLower(class), class, true))
+	case "stubborn":
+		signal.Ignore(syscall.SIGTERM)
+		return exit(showWindow(strings.ToLower(class), class, true))
+	case "spawn":
+		child := exec.Command(os.Args[0], helperSingle, dir, class, "stubborn")
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := child.Start(); err != nil {
+			return exit(err)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+		defer stop()
+		<-ctx.Done()
+		return 0
 	}
 	return 2
 }
@@ -75,8 +89,13 @@ func single(dir, class, second string, url []string) int {
 // showWindow is the test app: a window that is the app's, by its WM_CLASS and _NET_WM_PID, on $DISPLAY, until TERM. A
 // dialog is one by its EWMH type (_NET_WM_WINDOW_TYPE_DIALOG), named "Close <class>".
 func showWindow(instance, class string, dialog bool) error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
-	defer stop()
+	// Until TERM, unless the app ignores it ("stubborn").
+	ctx := context.Background()
+	if !signal.Ignored(syscall.SIGTERM) {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, syscall.SIGTERM)
+		defer stop()
+	}
 	c, err := x11.Dial(os.Getenv("DISPLAY"))
 	if err != nil {
 		return err
@@ -136,7 +155,7 @@ type world struct {
 	conn    *x11.Conn
 	table   *process.Table
 	call    func(method string, params any) (any, error)
-	// locks is each helperSingle app's folder, by its second launch's way: "hand" or "dialog".
+	// locks is each helperSingle app's folder, by its second launch's way: "hand", "dialog" or "spawn".
 	locks map[string]string
 }
 
@@ -166,10 +185,10 @@ func setup(t *testing.T, window time.Duration) *world {
 	}
 	write(t, filepath.Join(dir, "test.window.desktop"), fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Test Window\nExec=%q %s test TestWindow\nStartupWMClass=TestWindow\n", self, helperWindow))
 	write(t, filepath.Join(dir, "quiet.desktop"), "[Desktop Entry]\nType=Application\nName=Quiet\nExec=sleep 60\n")
-	// Two apps that run once (helperSingle), each with a folder of its own for its lock: one that hands a later launch's
-	// url to the instance that runs, one that shows a dialog instead.
+	// Apps that run once (helperSingle), each with a folder of its own for its lock: one that hands a later launch's url
+	// to the instance that runs, one that shows a dialog instead, one whose dialog is a stubborn process it started.
 	locks := map[string]string{}
-	for _, second := range []string{"hand", "dialog"} {
+	for _, second := range []string{"hand", "dialog", "spawn"} {
 		lock := filepath.Join(t.TempDir(), second)
 		if err := os.Mkdir(lock, 0o700); err != nil {
 			t.Fatal(err)
@@ -199,7 +218,7 @@ func setup(t *testing.T, window time.Duration) *world {
 	}
 	// Whatever a test left running ends with it.
 	t.Cleanup(func() {
-		for _, id := range []string{"test.window", "quiet", "single.hand", "single.dialog"} {
+		for _, id := range []string{"test.window", "quiet", "single.hand", "single.dialog", "single.spawn"} {
 			_, _ = w.call("apps.terminate", map[string]any{"id": id})
 		}
 	})
@@ -347,6 +366,22 @@ func TestAppsLaunchAURLIntoARunningAppThatShowsADialogInstead(t *testing.T) {
 	}
 	if f := w.foreground(); f != "single.dialog" {
 		t.Fatalf("the app in front after the refused hand-over is %q, not single.dialog", f)
+	}
+}
+
+// The dialog may be a process the launch started, in a session of its own and deaf to TERM: the launch ends on TERM,
+// and its dialog goes only by a signal of its own, KILL after the grace. The call answers once it went.
+func TestAppsLaunchAURLEndsADialogItsLaunchStarted(t *testing.T) {
+	w := setup(t, 5*time.Second)
+	if _, err := w.call("apps.launch", map[string]any{"id": "single.spawn"}); err != nil {
+		t.Fatalf("apps.launch single.spawn: %v", err)
+	}
+	_, err := w.call("apps.launch", map[string]any{"id": "single.spawn", "url": "https://example.com/two"})
+	if n := w.shown("SingleSpawn"); n != 1 {
+		t.Fatalf("after the refused hand-over (%v), %d windows of the app show, not 1: its dialog outlived the launch", err, n)
+	}
+	if kindOf(err) != rpc.KindUnsupported || !strings.Contains(err.Error(), `"Close SingleSpawn"`) || !strings.Contains(err.Error(), "That launch was ended,") {
+		t.Fatalf("apps.launch with a url into the running app: %v (%q), want unsupported, its dialog ended", err, kindOf(err))
 	}
 }
 

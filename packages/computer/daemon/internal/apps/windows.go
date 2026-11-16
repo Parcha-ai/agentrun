@@ -219,23 +219,23 @@ func ownerByPid(byPid map[int]string, pid int) string {
 }
 
 // dialogOf is a dialog the launch whose process is pid showed: a window of the app's that is new (not in had), made by
-// that process or one it started, whose EWMH type is a dialog (_NET_WM_WINDOW_TYPE_DIALOG). Its title (WM_NAME) and id;
-// 0 for none.
-func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, pid int) (string, uint32, error) {
+// that process or one it started, whose EWMH type is a dialog (_NET_WM_WINDOW_TYPE_DIALOG). Its title (WM_NAME) and the
+// window; nil for none.
+func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, pid int) (string, *window, error) {
 	c, err := g.display.Conn()
 	if err != nil {
-		return "", 0, err
+		return "", nil, err
 	}
 	typ, err := c.InternAtom("_NET_WM_WINDOW_TYPE", true)
 	if err != nil {
-		return "", 0, g.display.Gone(c, err)
+		return "", nil, g.display.Gone(c, err)
 	}
 	dialog, err := c.InternAtom("_NET_WM_WINDOW_TYPE_DIALOG", true)
 	if err != nil {
-		return "", 0, g.display.Gone(c, err)
+		return "", nil, g.display.Gone(c, err)
 	}
 	if typ == 0 || dialog == 0 {
-		return "", 0, nil
+		return "", nil, nil
 	}
 	for _, w := range s.of(app) {
 		if had[w.id] || !descends(w.pid, pid) {
@@ -243,13 +243,13 @@ func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, pid int) 
 		}
 		if p, err := c.GetProperty(w.id, typ); err == nil && slices.Contains(p.Cardinals(), dialog) {
 			name, _ := c.GetProperty(w.id, x11.AtomWMName)
-			return string(name.Value), w.id, nil
+			return string(name.Value), &w, nil
 		}
 	}
 	if c.Err() != nil {
-		return "", 0, g.display.Gone(c, c.Err())
+		return "", nil, g.display.Gone(c, c.Err())
 	}
-	return "", 0, nil
+	return "", nil, nil
 }
 
 // descends is whether process pid is root or one root started, from /proc.

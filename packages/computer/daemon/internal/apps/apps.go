@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -199,9 +200,12 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			if dialog != 0 {
-				g.end(ctx, started.ID, dialog)
-				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url did not hand it the url: it showed a dialog of its own, %q, instead (an app that takes a url from a second launch over a session bus, as Firefox does, can't here: apps run with none). That launch was ended and the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, title, e.ID)
+			if dialog != nil {
+				ended := "That launch was ended"
+				if left := g.end(ctx, started.ID, *dialog); left != "" {
+					ended = "That launch was sent TERM and then KILL, yet " + left
+				}
+				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url did not hand it the url: it showed a dialog of its own, %q, instead (an app that takes a url from a second launch over a session bus, as Firefox does, can't here: apps run with none). %s, and the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, title, ended, e.ID)
 			}
 			if g.failed(started.ID) {
 				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url failed (%s), so the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, g.ended(started.ID), e.ID)
@@ -354,27 +358,44 @@ func (g *group) failed(id string) bool {
 	return err == nil && !waited.Running && (waited.Signal != nil || (waited.ExitCode != nil && *waited.ExitCode != 0))
 }
 
-// end ends one launch whose window is not the app's to keep: TERM, and KILL if it still runs after endWait; then it waits
-// up to endWait for the window to go, so a screenshot right after the answer has none.
-func (g *group) end(ctx context.Context, id string, w uint32) {
-	grace := endWait.Milliseconds()
+// end ends one launch whose window w is not the app's to keep, and the process that showed w (the launch's, or one it
+// started, which may outlive it): TERM, then KILL, each given endWait for the launch to end and w to go, so a screenshot
+// right after the answer has none. What is left, in words: "" when both did.
+func (g *group) end(ctx context.Context, id string, w window) string {
+	shows := true
 	for _, sig := range []string{"TERM", "KILL"} {
 		_, _ = g.table.Signal(process.SignalParams{ID: id, Signal: sig})
-		if waited, err := g.table.Wait(ctx, process.WaitParams{ID: id, TimeoutMs: &grace}); err != nil || !waited.Running {
-			break
+		if w.pid > 1 {
+			n := syscall.SIGTERM
+			if sig == "KILL" {
+				n = syscall.SIGKILL
+			}
+			_ = syscall.Kill(w.pid, n)
+		}
+		for deadline := time.Now().Add(endWait); ; {
+			if s, err := g.look(); err == nil {
+				shows = slices.ContainsFunc(s.windows, func(one window) bool { return one.id == w.id })
+			}
+			if !shows && !g.running(id) {
+				return ""
+			}
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(poll):
+			}
 		}
 	}
-	for deadline := time.Now().Add(endWait); time.Now().Before(deadline); {
-		s, err := g.look()
-		if err != nil || !slices.ContainsFunc(s.windows, func(one window) bool { return one.id == w }) {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(poll):
-		}
+	var left []string
+	if g.running(id) {
+		left = append(left, fmt.Sprintf("its process %s still runs", id))
 	}
+	if shows {
+		left = append(left, "its dialog still shows")
+	}
+	return strings.Join(left, " and ")
 }
 
 // ended says how a launch stands, for a launch's error: running, or how it ended.
