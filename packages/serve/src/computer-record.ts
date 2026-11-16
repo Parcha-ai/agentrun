@@ -17,9 +17,11 @@
 // file and goes on in the next, <computer>-2.mp4, since one ffmpeg reads one format; a resumed run's claim starts the
 // next file too. A frame of another size is fitted into the file's own (scaled and padded).
 //
-// Its caps (RECORDING_LIMITS maxBytes and maxMs, across its files) stop it, and so do ffmpeg ending by itself (a crash, a
-// full disk) and the screen's watch ending past RECORDING_LIMITS.rewatches tries: each says so on the run's timeline, in
-// words. The run itself never fails because of the recorder.
+// Its caps stop it: RECORDING_LIMITS.maxBytes across the run's files (a recording after a park counts the files before
+// it, read from the folder, so a run past it records no more) and maxMs of one recording (from its first frame to its
+// stop or its park). So do ffmpeg ending by itself (a crash, a full disk) and the screen's watch ending past
+// RECORDING_LIMITS.rewatches tries: each says so on the run's timeline, in words. The run itself never fails because of
+// the recorder.
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -30,8 +32,8 @@ import { commandOnPath } from "./host-command.js";
 /** The program that encodes the video. */
 export const FFMPEG = "ffmpeg";
 
-/** The recorder's bounds: frames a second at most; the long side in pixels at most; the caps, in bytes and in ms, across
- *  a recording's files; how often the caps are checked; how long ffmpeg is given to finish its file once its input ends;
+/** The recorder's bounds: frames a second at most; the long side in pixels at most; the caps, in bytes across the run's
+ *  files and in ms of one recording; how often the caps are checked; how long ffmpeg is given to finish its file once its input ends;
  *  how many times in a row a watch that ended is opened again, and after how long. */
 export const RECORDING_LIMITS = { fps: 10, edge: 1280, maxBytes: 500 * 1024 * 1024, maxMs: 2 * 60 * 60 * 1000, checkMs: 1_000, settleMs: 5_000, rewatches: 3, rewatchMs: 1_000 } as const;
 
@@ -154,10 +156,14 @@ export function startRecording(input: RecordInput): Recording {
     into.child.stdin.write(bytes, (error) => resolve(!error));
   });
 
-  const endPart = async (ended: Part): Promise<void> => {
+  /** Ends a file: `tail` (the newest frame once more) written, ffmpeg's input closed and its file finished, all within
+   *  one settleMs deadline, past which ffmpeg is killed: an ffmpeg that stopped reading never holds up the release. */
+  const endPart = async (ended: Part, tail?: Uint8Array): Promise<void> => {
+    const deadline = new Promise<boolean>((resolve) => setTimeout(() => resolve(true), limits.settleMs).unref());
+    if (tail) await Promise.race([write(ended, tail), deadline]);
     ended.ending = true;
     ended.child.stdin.end();
-    const late = await Promise.race([ended.exited.then(() => false), new Promise<boolean>((resolve) => setTimeout(() => resolve(true), limits.settleMs).unref())]);
+    const late = await Promise.race([ended.exited.then(() => false), deadline]);
     if (late) {
       log(`ffmpeg did not finish ${ended.name} within ${limits.settleMs} ms; it was killed`);
       ended.child.kill("SIGKILL");
@@ -172,13 +178,22 @@ export function startRecording(input: RecordInput): Recording {
     let name: string;
     try {
       await mkdir(input.folder, { recursive: true, mode: 0o700 });
-      const taken = new Set(await readdir(input.folder));
+      const listed = await readdir(input.folder);
+      const taken = new Set(listed);
+      // The byte cap is the run's: its first file here counts the files of the run's earlier recordings (a park's).
+      if (!before && files.length === 0) {
+        for (const earlier of listed.filter((one) => one.endsWith(".mp4"))) doneBytes += await stat(join(input.folder, earlier)).then((file) => file.size, () => 0);
+      }
       let n = 1;
       while (taken.has(fileName(input.tag, n))) n += 1;
       name = `recordings/${fileName(input.tag, n)}`;
       path = join(input.folder, fileName(input.tag, n));
     } catch (error) {
       void finish(`its folder could not be made (${(error as NodeJS.ErrnoException).code ?? "an error"})`);
+      return undefined;
+    }
+    if (doneBytes >= limits.maxBytes) {
+      void finish(`it reached its cap of ${sizeWords(limits.maxBytes)}`);
       return undefined;
     }
     const [width, height] = fitted(frame.frameWidth, frame.frameHeight, limits.edge);
@@ -305,11 +320,10 @@ export function startRecording(input: RecordInput): Recording {
     const ending = part;
     part = undefined;
     if (ending) {
-      // Stopped, not failed: the newest frame once more, so the video lasts until now (a screen that did not change since
-      // has no frame of its own).
+      // The newest frame once more, so the video lasts until now (a screen that did not change since has no frame of its
+      // own): at a stop and at a cap alike; an ffmpeg that ended takes nothing.
       const newest = slot ?? last;
-      if (!why && !busy && newest && newest.format === ending.format) await write(ending, newest.bytes);
-      await endPart(ending);
+      await endPart(ending, !busy && newest && newest.format === ending.format ? newest.bytes : undefined);
     }
     await closing;
     if (files.length) log(`recorded ${what}'s screen into ${files.join(", ")}: ${written} frames written, ${dropped} dropped while ffmpeg was busy, ${thinned} thinned to ${limits.fps} a second`);

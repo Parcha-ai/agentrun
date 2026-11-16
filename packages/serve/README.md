@@ -753,8 +753,8 @@ screen during each of the agent's runs. Off by default; a desktop or a phone onl
   (`<data>/disk/agents/<agent>/runs/<run>/recordings`, beside the run's `work/` folder, never in it, so the agent can't
   read or change it). It is kept with the run's files. A phone whose frames change from PNG to JPEG, and a resumed run,
   go on in `<computer>-2.mp4` and so on.
-- **Its caps.** 500 MB or 2 hours across a run's files, whichever comes first. At a cap the recording stops, and the
-  run's timeline says so. So does an encoder that stops by itself (a crash, a full disk) or a screen that stops
+- **Its caps.** 500 MB across a run's files, a resumed run's included, and 2 hours of recording from its start or the
+  run's resume, whichever comes first. At a cap the recording stops, and the run's timeline says so. So does an encoder that stops by itself (a crash, a full disk) or a screen that stops
   answering. The run itself never fails because of its recording.
 - **It needs ffmpeg** on the server's `PATH` (the published image has it). A server without it refuses `record: true`
   when the agent is saved, with 422 `not_allowed` naming the fix.

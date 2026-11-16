@@ -6,7 +6,7 @@
 // pipes real frames through this machine's ffmpeg and reads the file back with ffprobe.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -157,6 +157,47 @@ test("the time cap stops it, said on the timeline in words", async () => {
   assert.equal(tv.show(frame("jpeg", [1])), 1, "a frame after the end is still acked");
   await recorder.stop("ended");
   assert.equal(lines.length, 2, "the stop after says nothing");
+});
+
+test("a screen unchanged until the cap still makes a video as long as the recording: the newest frame is written once more at the cap", async () => {
+  const dir = scratch();
+  const { tv, recorder, folder } = recording({ ffmpeg: program(dir, COPY(join(dir, "args.json"))), limits: { maxMs: 300, checkMs: 20 } });
+  await until(() => tv.watches.length === 1, "the recorder's watch");
+  tv.show(frame("jpeg", [7, 7, 7]));
+  await until(() => recorder.facts().ended, "the cap");
+  await recorder.stop("ended");
+  assert.equal(recorder.facts().written, 1);
+  assert.deepEqual(readFileSync(join(folder, "c1.mp4")), Buffer.from([7, 7, 7, 7, 7, 7]), "the one frame, and once more at the cap");
+});
+
+test("an ffmpeg that took frames and then stopped reading never holds up the stop: the last frame's write and the file's end share one deadline", async () => {
+  const dir = scratch();
+  // Reads the first 4 MB, then nothing: the first frame's write completes, the stop's repeat of it never does.
+  const READS_ONE = "let got = 0; process.stdin.on(\"data\", (chunk) => { got += chunk.length; if (got >= 4 * 1024 * 1024) process.stdin.pause(); }); setInterval(() => {}, 1000);";
+  const { tv, recorder, logged } = recording({ ffmpeg: program(dir, READS_ONE), limits: { settleMs: 300 } });
+  await until(() => tv.watches.length === 1, "the recorder's watch");
+  tv.show(frame("jpeg", new Uint8Array(4 * 1024 * 1024)));
+  await until(() => recorder.facts().written === 1, "the first frame taken");
+  const started = Date.now();
+  await recorder.stop("released");
+  const took = Date.now() - started;
+  assert.ok(took < 1_500, `the stop took ${took} ms: one 300 ms deadline, then a kill`);
+  assert.match(logged.join("\n"), /ffmpeg did not finish recordings\/c1\.mp4 within 300 ms; it was killed/);
+});
+
+test("the size cap counts the run's earlier files: a run resumed past it records nothing more, said in words", async () => {
+  const dir = scratch();
+  const argsAt = join(dir, "args.json");
+  const folder = join(scratch(), "recordings");
+  mkdirSync(folder);
+  writeFileSync(join(folder, "c1.mp4"), new Uint8Array(5_000));
+  const { tv, recorder, lines } = recording({ ffmpeg: program(dir, COPY(argsAt)), folder, limits: { maxBytes: 4_096 } });
+  await until(() => tv.watches.length === 1, "the recorder's watch");
+  tv.show(frame("jpeg", [1]));
+  await until(() => recorder.facts().ended, "the cap");
+  assert.deepEqual(lines, ["The recording of the desktop stopped: it reached its cap of 4096 bytes."]);
+  assert.equal(existsSync(argsAt), false, "no ffmpeg started");
+  assert.deepEqual(readdirSync(folder), ["c1.mp4"]);
 });
 
 test("the size cap stops it, across its files, said on the timeline in words", async () => {
