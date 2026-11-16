@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.41 (2026-11-16)
+
+- Model requests AgentRun sends to OpenRouter carry OpenRouter's app attribution headers: `HTTP-Referer: https://github.com/Parcha-ai/agentrun`, `X-OpenRouter-Title: AgentRun` and `X-OpenRouter-Categories: cloud-agent,personal-agent`. Usage then counts toward AgentRun's page on OpenRouter (openrouter.ai/apps?url=https://github.com/Parcha-ai/agentrun), including a self-hosted server's usage on its owner's own key. Set `AGENTRUN_OPENROUTER_ATTRIBUTION=off` where AgentRun starts to send none.
+  - The headers go only where a request goes to openrouter.ai itself, which covers every harness: the model proxy (claude-agent, codex, opencode, and pi on OpenRouter's Anthropic and OpenAI models), pi's translation route (every other OpenRouter model, the free ones included), and the server's Decisions providers on OpenRouter (OpenRouter's models, and Parallel's through OpenRouter). Anthropic, OpenAI, a ChatGPT plan and a gateway at another URL never get them.
+  - The kernel's host entry (`OPENROUTER_APP`, `openRouterApp`, `openRouterAttribution`) is the one place that names the app; the server hands it to the Decisions provider.
+  - The Decisions provider's `app` option takes `categories` and sends `title` as `X-OpenRouter-Title` (OpenRouter's current name for `X-Title`).
+
 ## 0.1.0-beta.32 (2026-11-10)
 
 - A node naming `provider: "parallel"` runs with only an OpenRouter key. With `PARALLEL_API_KEY` it uses Parallel's own API, as before; without it, it runs on Parallel's model through OpenRouter (`parallel/decisions-fast`), on the OpenRouter key the server already reads. The same evidence on both routes: its web citations (OpenRouter's `url_citation` annotations), and its cost is what OpenRouter reports. `workflows.decisions.providers` gives parallel's `route` (`"parallel"` or `"openrouter"`); the mark is `decisions/3`. With neither key, the refusal names both. OpenRouter's Decisions provider now reads any model's `url_citation` annotations as evidence (its capability is `citations`), and books a reported cost only above 0: a $0 report, from a model OpenRouter's catalog prices at 0, is an unknown cost, never $0. Upgrading: a client that validated `workflows.decisions` against `decisions/2` refuses the new `route` field.
