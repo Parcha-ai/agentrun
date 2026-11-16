@@ -75,12 +75,12 @@ describe("a run's learning, read tolerantly", () => {
 describe("the before and after", () => {
   const impact = { before: { runs: 2, median_duration_s: 18.4, median_cost_usd: 0.1146, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.0311, cost_runs: 4, median_learning_usd: null } };
   it("says it in a line: the time to the answer and a run's cost, each side's median, on the after side's runs", () => {
-    expect(impactWords(impact)).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
-    expect(impactWords({ ...impact, after: { ...impact.after, median_cost_usd: null } })).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s");
-    expect(impactWords({ ...impact, after: { ...impact.after, median_learning_usd: 0.008 } })).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0080 est. a run");
+    expect(impactWords(impact)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
+    expect(impactWords({ ...impact, after: { ...impact.after, median_cost_usd: null } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
+    expect(impactWords({ ...impact, after: { ...impact.after, median_learning_usd: 0.008 } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0080 est. a run");
   });
   it("says a slower or costlier after as it is", () => {
-    expect(impactWords({ before: { runs: 2, median_duration_s: 14, median_cost_usd: 0.0214, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 21, median_cost_usd: 0.0377, cost_runs: 4, median_learning_usd: null } })).toBe("Since it learned (on 4 runs): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
+    expect(impactWords({ before: { runs: 2, median_duration_s: 14, median_cost_usd: 0.0214, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 21, median_cost_usd: 0.0377, cost_runs: 4, median_learning_usd: null } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
   });
   it("is shown only when the server sends both sides with two runs each", () => {
     expect(shownImpact(impact)).toBe(true);

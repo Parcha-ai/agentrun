@@ -894,10 +894,11 @@
    "mean_usd": 0.889921
   },
   "after": {
-   "runs": 60,
-   "mean_usd": 0.127669
+   "runs": 59,
+   "mean_usd": 0.115905
   },
-  "times_cheaper": 7.0,
+  "after_state": "priced",
+  "times_cheaper": 7.7,
   "hand_backs": { "ran": 59, "back": 3 },
   "withheld": null,
   "replay": { "n": 40, "workflow_pct": 95, "agent_pct": 94, "cleared": true }

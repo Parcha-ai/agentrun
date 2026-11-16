@@ -234,6 +234,9 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
  *  routes and the runner; undefined when the run does not learn. */
 export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => launch.learning;
 
+/** The same start read from a launch body's `learning` member alone (Store.runs.learningStarts), as readLaunchBody reads it. */
+export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] => (stored === undefined ? undefined : readLearning(stored) ?? { given: [], seed: null, section: "" });
+
 /** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
  *  (`unreadable`, STOPPED.unreadable), or what was read could not be made into its start (`not_copied`,
  *  STOPPED.notCopied). */
