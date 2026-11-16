@@ -6,7 +6,7 @@ This page reads 25 sandbox and machine vendors against the provider contract in 
 machine-host adapter, what the provider would take, and what is still open. It is for a vendor's engineer, or a
 contributor, deciding whether to write one.
 
-As of main `d25ed43dd0`, 2026-11-16, from the vendors' public documentation and SDK source; nothing here was run on a
+As of main `1fcb4d34cd`, 2026-11-16, from the vendors' public documentation and SDK source; nothing here was run on a
 vendor's account.
 
 **The bar for a clean fit.** Every host member ([the eleven members](PROVIDERS.md#the-eleven-members)) fits with what's
