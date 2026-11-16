@@ -331,7 +331,8 @@ test("a trigger's registration upstream goes before its row: a Composio failure 
 test("an agent's stored Archil disk with Archil off keeps the delete from finishing: 503, the agent kept and refusing runs; with Archil on again the next DELETE deletes the disk there, then 204", { timeout: 120_000 }, async (t) => {
   const disk = "dsk-a9de1e7e00000001";
   const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: disk, name: "its-disk" }] });
-  withEnv(t, { ARCHIL_API_KEY: "fake-archil-account-key-0001" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  const FAKE_ARCHIL_KEY = "fake-test-key-archil-a9-0001";
+  withEnv(t, { ARCHIL_API_KEY: FAKE_ARCHIL_KEY },["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
   const learning = fakeLearning();
   const { api, store } = await serve(t, { deleteLearning: learning.deleteLearning, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch } });
   const { agentId, runId } = await finishedAgent(api);
