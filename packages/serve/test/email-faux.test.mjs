@@ -5,8 +5,10 @@
 // refuseLogin refuses both sign-ins as a wrong password is; setUidValidity rebuilds INBOX, its uids starting again from
 // 1. Both layouts CREATE a folder and UID MOVE a message into it (one not there is refused with TRYCREATE); the Gmail
 // layout advertises X-GM-EXT-1 and MOVE, fetches and stores X-GM-LABELS (a label not there refused, \Inbox taken off
-// moving the message to [Gmail]/All Mail), and messages() carries each message's labels. Loopback and plaintext only, as
-// only the fakes are.
+// moving the message to [Gmail]/All Mail), and messages() carries each message's labels. On the Gmail layout a label's
+// mailbox lists every message under the label, one message in each mailbox it shows in: a label added or taken off,
+// through it or INBOX, shows at once, and a UID MOVE out of it swaps the label. Loopback and plaintext only, as only the
+// fakes are.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ImapFlow } from "imapflow";
@@ -179,4 +181,70 @@ test("the Gmail layout advertises X-GM-EXT-1 and stores and fetches X-GM-LABELS;
   assert.deepEqual(faux.messages().map((m) => [m.subject, m.labels]), [["Invoice", ["\\Inbox", "Receipts"]]], "labelled, still in INBOX");
   assert.deepEqual(faux.messages("[Gmail]/All Mail").map((m) => [m.subject, m.labels]), [["Newsletter", []]], "out of the inbox, in All Mail");
   assert.ok(faux.commands().some((c) => /^UID STORE \d+ \+X-GM-LABELS/i.test(c)), faux.commands().join("\n"));
+});
+
+test("on the Gmail layout a label's mailbox lists every message carrying the label, one message in every mailbox it shows in", { timeout: 30_000 }, async (t) => {
+  const faux = await account(t, { layout: "gmail" });
+  faux.seed({ subject: "LinkedIn: 3 new jobs", messageId: "<l1@example.com>", labels: ["Ignored"] });
+  faux.seed({ subject: "Invoice", messageId: "<i1@example.com>" });
+  faux.seed({ subject: "LinkedIn: who viewed you", messageId: "<l2@example.com>", labels: ["Ignored"] });
+  const later = faux.seed({ subject: "Weekly digest", messageId: "<w1@example.com>" });
+  const seen = await withImap(faux, async (client) => {
+    const examined = await client.mailboxOpen("Ignored", { readOnly: true });
+    const listed = [];
+    for await (const m of client.fetch("1:*", { uid: true, source: true })) listed.push([m.uid, /^Subject: (.*)\r$/m.exec(m.source.toString())?.[1]]);
+    const searched = await client.search({ subject: "LinkedIn" }, { uid: true });
+    // A label STOREd later shows too; a flag STOREd through the label's mailbox shows in INBOX.
+    await client.mailboxOpen("INBOX");
+    await client.messageFlagsAdd(String(later.uid), ["Ignored"], { uid: true, useLabels: true });
+    const selected = await client.mailboxOpen("Ignored");
+    await client.messageFlagsAdd("1", ["\\Flagged"], { uid: true });
+    const status = await client.status("Ignored", { messages: true, uidNext: true });
+    return { examined: examined.exists, listed, searched, selected: selected.exists, status: [status.messages, status.uidNext] };
+  });
+  assert.equal(seen.examined, 2, "both seeded messages under Ignored");
+  assert.deepEqual(seen.listed, [[1, "LinkedIn: 3 new jobs"], [2, "LinkedIn: who viewed you"]]);
+  assert.deepEqual(seen.searched, [1, 2]);
+  assert.deepEqual([seen.selected, seen.status], [3, [3, 4]], "the label STOREd through INBOX adds the message, its uid next");
+  assert.deepEqual(faux.messages("Ignored").map((m) => m.messageId), ["<l1@example.com>", "<l2@example.com>", "<w1@example.com>"]);
+  assert.deepEqual(faux.messages().map((m) => [m.messageId, m.flags]), [["<l1@example.com>", ["\\Flagged"]], ["<i1@example.com>", []], ["<l2@example.com>", []], ["<w1@example.com>", []]], "still in INBOX, flagged through Ignored");
+  assert.deepEqual(faux.messages("[Gmail]/All Mail"), [], "INBOX mail stays where it was");
+});
+
+test("on the Gmail layout taking a label off takes the message out of that label's mailbox alone", { timeout: 30_000 }, async (t) => {
+  const faux = await account(t, { layout: "gmail" });
+  faux.seed({ subject: "LinkedIn: 3 new jobs", messageId: "<l1@example.com>", labels: ["Ignored"] });
+  faux.seed({ subject: "LinkedIn: who viewed you", messageId: "<l2@example.com>", labels: ["Ignored", "Social"] });
+  faux.seed({ subject: "Old receipt", mailbox: "[Gmail]/All Mail", messageId: "<r1@example.com>", labels: ["Ignored"] });
+  const seen = await withImap(faux, async (client) => {
+    await client.mailboxOpen("Ignored");
+    const before = (await client.search({ all: true }, { uid: true })).length;
+    // Off through the label's own mailbox: it leaves there at once.
+    const removed = await client.messageFlagsRemove("2", ["Ignored"], { uid: true, useLabels: true });
+    const after = (await client.search({ all: true }, { uid: true })).length;
+    // Off through INBOX: it leaves the label's mailbox too.
+    await client.mailboxOpen("INBOX");
+    await client.messageFlagsRemove("1", ["Ignored"], { uid: true, useLabels: true });
+    const social = await client.status("Social", { messages: true });
+    return { before, removed, after, social: social.messages, left: (await client.status("Ignored", { messages: true })).messages };
+  });
+  assert.deepEqual([seen.before, seen.removed, seen.after, seen.left], [3, true, 2, 1]);
+  assert.equal(seen.social, 1, "its other label keeps it");
+  assert.deepEqual(faux.messages("Ignored").map((m) => m.messageId), ["<r1@example.com>"]);
+  assert.deepEqual(faux.messages().map((m) => [m.messageId, m.labels]), [["<l1@example.com>", ["\\Inbox"]], ["<l2@example.com>", ["\\Inbox", "Social"]]], "both still in INBOX");
+  assert.deepEqual(faux.messages("Social").map((m) => m.messageId), ["<l2@example.com>"]);
+});
+
+test("on the Gmail layout a UID MOVE out of a label's mailbox swaps the label and keeps the message where it is kept", { timeout: 30_000 }, async (t) => {
+  const faux = await account(t, { layout: "gmail" });
+  faux.seed({ subject: "LinkedIn: 3 new jobs", messageId: "<l1@example.com>", labels: ["Ignored"] });
+  faux.create("Social");
+  const moved = await withImap(faux, async (client) => {
+    await client.mailboxOpen("Ignored");
+    const result = await client.messageMove("1", "Social", { uid: true });
+    return { map: [...result.uidMap], left: (await client.status("Ignored", { messages: true })).messages };
+  });
+  assert.deepEqual(moved, { map: [[1, 1]], left: 0 });
+  assert.deepEqual(faux.messages().map((m) => [m.messageId, m.labels]), [["<l1@example.com>", ["\\Inbox", "Social"]]], "still in INBOX, under Social alone");
+  assert.deepEqual(faux.messages("Social").map((m) => m.messageId), ["<l1@example.com>"]);
 });

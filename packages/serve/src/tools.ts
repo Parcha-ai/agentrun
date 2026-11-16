@@ -157,9 +157,18 @@ export type ToolHost = {
    *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
   search?: SearchOn;
   /** A template eval's web fake for this run (web-fake.ts): its web_search and web_fetch answer from it, never the
-   *  network. Only the eval's own runner sets it (runner/beside.ts webFakes). Absent: the plane's providers. */
+   *  network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
   web?: WebFake;
+  /** The run's clock where a template eval case sets one (its `now`): a draft's or a send's Date reads it. Absent: the real
+   *  clock. */
+  now?: Date;
+  /** A template eval case's fake mail account (eval-mailbox.ts), the only account the run's email tools open: one saved
+   *  elsewhere is refused. Only the eval's own runner sets it (runner/beside.ts evalFakes). */
+  emailFake?: EmailFake;
 };
+/** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
+ *  description says, which a loopback account saved as `other` would otherwise read as folders. */
+export type EmailFake = { readonly imap: { readonly host: string; readonly port: number }; readonly smtp: { readonly host: string; readonly port: number }; readonly kind: "gmail" | "folders" };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
 export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };

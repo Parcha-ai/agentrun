@@ -30,8 +30,8 @@ import { ASKED_BECAUSE } from "../refusal-words.js";
 import { type ArgumentsOf, deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
-import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
-import type { WebFake, WebFakes } from "../web-fake.js";
+import { ASK_TOOL, askPerson, type EmailFake, type ToolHost, toolOf } from "../tools.js";
+import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
@@ -87,7 +87,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
-import { monidForClaim, type MonidFakes, withMonid } from "./monid-run.js";
+import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -198,24 +198,22 @@ export interface AdapterSpecDeps {
    *  server (runner/beside.ts, Serve.localInstall) is told so, by that server in its own process. Absent, never: a hosted
    *  or standalone runner's loopback is its host's other services. */
   readonly mcpLoopback?: boolean;
-  /** A template eval's web fakes, by the agent a run is of (web-fake.ts): such a run's web_search and web_fetch answer
-   *  from its case, and its harness's own search is never offered (fakedPlane). Only the eval's own runner, in the eval's
-   *  process, is given it (runner/beside.ts); no environment variable, flag, setting or API field maps onto it. */
-  readonly webFakes?: WebFakes;
+  /** A template eval's fakes, by the agent a run is of (template-eval.ts, from its case: EvalFakes). Only the eval's own
+   *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
+   *  maps onto it. Absent, or undefined for a run: none. */
+  readonly evalFakes?: (agentId: string) => EvalFakes | undefined;
   /** For tests only: the adapter loop's model retry (adapter-loop.ts retry and stream), so a test whose provider fails a run
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
-  /** A template eval's clocks, by the agent a run is of (template-eval.ts, a case's `now`): such a run is told that date
-   *  and time wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date). Only the eval's own
-   *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
-   *  maps onto it. Absent, or undefined for a run: the real clock. */
-  readonly clockOf?: (agentId: string) => Date | undefined;
-  /** A template eval's monid fakes, by the agent a run is of (template-eval.ts, a case's `monid`): such a run's monid
-   *  endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). Only the eval's own runner, in
-   *  the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field maps onto it. */
-  readonly monidFakes?: MonidFakes;
 }
+
+/** One run's template eval fakes (template-eval.ts, from its case). `web`: its web_search and web_fetch answer from the
+ *  case, and its harness's own search is never offered (web-fake.ts, fakedPlane). `now`: its clock, the date and time it
+ *  is told wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date); absent, the real clock.
+ *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). `email`: the
+ *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). */
+export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake };
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
@@ -671,8 +669,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
-  const web = deps.webFakes?.(runRow.agentId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(web ? { web } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const fakes = deps.evalFakes?.(runRow.agentId);
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -686,7 +684,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   gate.learn(workflows);
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the run's one redactor as the other non-hand tools'.
-  const monid = monidForClaim(revisionRow.monidPin ?? undefined, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, deps.monidFakes?.(runRow.agentId));
+  const monid = monidForClaim(revisionRow.monidPin ?? undefined, toolEnv, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, cut)) });
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, catalog, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
@@ -701,8 +699,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills, ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
-  // The run's clock: a template eval case's (clockOf), else the real one.
-  const now = deps.clockOf?.(runRow.agentId);
+  // The run's clock: a template eval case's (EvalFakes.now), else the real one.
+  const now = fakes?.now;
   const zone = await runZone(deps.store, launch.inputOrigin);
   const system = [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
@@ -1043,13 +1041,16 @@ export function buildToolHost(opts: {
   /** The run's launch (its trigger and origin) and its agent's own tool settings, as the email tools read them. */
   readonly launch?: Pick<RunLaunch, "trigger" | "inputOrigin">;
   readonly toolSettings?: unknown;
-  /** The run's web fake, where a template eval's own runner gives one (AdapterSpecDeps.webFakes). */
-  readonly web?: WebFake;
+  /** The run's template eval fakes, where the eval's own runner gives them (AdapterSpecDeps.evalFakes). */
+  readonly fakes?: EvalFakes;
 }): ToolHost {
   const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
+  const { web, now, email } = opts.fakes ?? {};
   return {
-    ...(opts.web ? { web: opts.web } : {}),
+    ...(web ? { web } : {}),
+    ...(now ? { now } : {}),
+    ...(email ? { emailFake: email } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },

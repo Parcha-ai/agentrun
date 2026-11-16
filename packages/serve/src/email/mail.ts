@@ -373,7 +373,7 @@ export async function smtpSend(account: OpenedAccount, to: readonly string[], ra
 const isAddress = (one: unknown): one is { address: string } => typeof one === "object" && one !== null && typeof (one as { address?: unknown }).address === "string";
 
 /** A message built whole: its bytes and its Message-ID. */
-export async function composed(fields: { from: string; to: readonly string[]; cc: readonly string[]; subject: string; text: string; inReplyTo?: string; references?: readonly string[]; headers?: Record<string, string> }): Promise<{ raw: Buffer; messageId: string }> {
+export async function composed(fields: { from: string; to: readonly string[]; cc: readonly string[]; subject: string; text: string; inReplyTo?: string; references?: readonly string[]; headers?: Record<string, string>; date?: Date }): Promise<{ raw: Buffer; messageId: string }> {
   const node = new MailComposer({
     from: fields.from,
     ...(fields.to.length ? { to: [...fields.to] } : {}),
@@ -383,7 +383,7 @@ export async function composed(fields: { from: string; to: readonly string[]; cc
     ...(fields.inReplyTo ? { inReplyTo: fields.inReplyTo } : {}),
     ...(fields.references?.length ? { references: [...fields.references] } : {}),
     ...(fields.headers ? { headers: fields.headers } : {}),
-    date: new Date(),
+    date: fields.date ?? new Date(),
     xMailer: false,
     disableFileAccess: true,
     disableUrlAccess: true,

@@ -260,9 +260,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
-  // A template eval's web fake for this run (AdapterSpecDeps.webFakes): its web tools answer from it, and its plane never
-  // offers the harness's own search (Claude's WebSearch, Codex's), which would answer in their place.
-  const web = deps.webFakes?.(runRow.agentId);
+  // A template eval's fakes for this run (AdapterSpecDeps.evalFakes). Its web fake: its web tools answer from it, and its
+  // plane never offers the harness's own search (Claude's WebSearch, Codex's), which would answer in their place.
+  const fakes = deps.evalFakes?.(runRow.agentId);
+  const web = fakes?.web;
   if (web) launch = { ...launch, plane: fakedPlane(launch.plane) };
   // The claim's private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is
   // in it, then the agent's: the next claim, here or on another runner, lays its own, its harness's session coming back from
@@ -455,9 +456,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
   // or a command it runs reaches grants nothing; none on macOS. Where setpriv is not usable the run is refused, in pi's words.
   const confine = confineOf(noNewPrivsPrefix());
-  // The run's clock: a template eval case's (AdapterSpecDeps.clockOf), else the real one. Its environment line and the
-  // harness's own turn date (claude-agent's dateLine) read it.
-  const now = deps.clockOf?.(runRow.agentId);
+  // The run's clock: a template eval case's (EvalFakes.now), else the real one. Its environment line and the harness's own
+  // turn date (claude-agent's dateLine) read it.
+  const now = fakes?.now;
   const zone = await runZone(deps.store, launch.inputOrigin);
   const built = await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
@@ -557,7 +558,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const held = run.redact ? heldRedactor(run.redact) : cut;
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the redactors as the web tools' do.
-  const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, deps.monidFakes?.(runRow.agentId));
+  const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, held)) });
   const webNames = granted.filter(isWebHostTool);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
@@ -601,7 +602,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
     if (webNames.length) {
       life = hostLifecycle();
-      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(web ? { web } : {}) });
+      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) });
       gate.askedOn(host);
       webTools = await webHostTools(host, granted, ctx);
     }
