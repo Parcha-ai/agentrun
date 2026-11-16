@@ -1,6 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-client
-kind: fix
----
-A finished look-back or revise round keeps its outcome sentence after a reload. A run's grade now keeps the feedback round it opened: `GET /runs/{id}/learning`'s `graded` is the grade as `PUT /runs/{id}/grade` answered it, without `expected` (`run_id`, `correct`, `source`, `graded_at`, `path`, `workflow`, `workflow_digest`, `feedback`), plus `feedback_status`, how that round stands as the run's journal and the round's steer row say it (never the server's `graded_at` against the runner's `ended_at`): `running`, `ended`, or `not_run` when the reopened run ended before it took the grade's words (its claim refused, say); null for a grade that opened none. The console's Grade control says what came of a grade from the read alone, stays "Reviewing" until the round ended and its learning settled, says "The review could not run." with Grade again for a round that never ran, and reads the learning again on a backoff when a read fails while the round is unsettled. The round is written on the grade only once the run opened again on it: a reopen that fails leaves a grade with `feedback: null`.
-Upgrading: a client reading `graded` gets the PUT's fields; `correct`, `source` and `graded_at` are unchanged.
