@@ -132,7 +132,7 @@ swift build --build-tests && swift test     # on a Mac; the core (ComputerdKit) 
   `build/UIFixture.app`; test-only.
 
 **Sign and notarize.** `COMPUTERD_SIGN_IDENTITY="Developer ID Application: <name> (<team>)"` signs for distribution,
-and `COMPUTERD_SIGN_KEYCHAIN=<path>` makes codesign take that identity from one keychain, such as a temporary one
+and `COMPUTERD_SIGN_KEYCHAIN=<path>` makes codesign take that identity from one keychain file, such as a temporary one
 that never joins the search list. `scripts/notarize.sh build/Computerd.app` then sends the build to Apple's notary
 service with the API key stored in the notarytool profile `COMPUTERD_NOTARY_PROFILE` (made with
 `xcrun notarytool store-credentials`; `COMPUTERD_NOTARY_KEYCHAIN` names the keychain that holds it), staples the

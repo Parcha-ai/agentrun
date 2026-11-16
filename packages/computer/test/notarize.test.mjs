@@ -66,6 +66,7 @@ function calls(log) {
 
 function run(s, script, args, env) {
 	return spawnSync("bash", [join(SCRIPTS, script), ...args], {
+		cwd: s.dir,
 		encoding: "utf8",
 		env: { PATH: `${s.fakes}:${process.env.PATH}`, HOME: s.dir, TMPDIR: s.dir, FAKE_LOG: s.log, ...SECRETS, ...env },
 	});
@@ -137,7 +138,8 @@ test("no key reaches a tool's argv: notarytool gets the profile name and no key,
 });
 
 test("bundle.sh signs from COMPUTERD_SIGN_KEYCHAIN alone when it is set, and from the search list when not", (t) => {
-	for (const keychain of ["/tmp/sign.keychain-db", undefined]) {
+	// A relative path is from where bundle.sh was run (the scratch dir here), not from the package it cds into.
+	for (const keychain of ["/tmp/sign.keychain-db", "release/sign.keychain-db", undefined]) {
 		const s = scratch(t);
 		const env = { FAKE_BIN: join(s.dir, "bin"), COMPUTERD_SIGN_IDENTITY: "Developer ID Application: Fake (FAKETEAM01)" };
 		if (keychain) env.COMPUTERD_SIGN_KEYCHAIN = keychain;
@@ -147,7 +149,7 @@ test("bundle.sh signs from COMPUTERD_SIGN_KEYCHAIN alone when it is set, and fro
 		assert.equal(signs.length, 2, "the helper, then the app");
 		for (const sign of signs) {
 			assert.ok(sign.includes("--options") && sign.includes("--timestamp"));
-			if (keychain) assert.equal(sign[sign.indexOf("--keychain") + 1], keychain);
+			if (keychain) assert.equal(sign[sign.indexOf("--keychain") + 1], keychain.startsWith("/") ? keychain : join(s.dir, keychain));
 			else assert.ok(!sign.includes("--keychain"));
 		}
 	}

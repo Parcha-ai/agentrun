@@ -9,7 +9,8 @@
 # from the keychain signs for distribution, with the hardened runtime and a timestamp, and grants survive updates. Any
 # other keychain identity, such as a self-signed local one, signs without either;
 # its grants survive rebuilds too, since the designated requirement names the certificate and not the build.
-# COMPUTERD_SIGN_KEYCHAIN, when set, is the one keychain codesign looks for the identity in, so a keychain of its own
+# COMPUTERD_SIGN_KEYCHAIN, when set, is the path of the one keychain codesign looks for the identity in (a relative path
+# is from where bundle.sh runs), so a keychain of its own
 # signs without joining the user's search list. scripts/notarize.sh then notarizes a Developer ID build.
 #
 # The bundle:
@@ -21,6 +22,10 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 identity="${COMPUTERD_SIGN_IDENTITY:--}"
+keychain="${COMPUTERD_SIGN_KEYCHAIN:-}"
+if [[ -n "$keychain" && "$keychain" != /* ]]; then
+	keychain="$PWD/$keychain" # a path from where bundle.sh was run, before the cd below
+fi
 config="${COMPUTERD_CONFIG:-release}"
 out="${1:-$here/build}"
 mkdir -p "$out"
@@ -44,8 +49,8 @@ options=()
 if [[ "$identity" == "Developer ID Application:"* ]]; then
 	options=(--options runtime --timestamp)
 fi
-if [[ -n "${COMPUTERD_SIGN_KEYCHAIN:-}" ]]; then
-	options+=(--keychain "$COMPUTERD_SIGN_KEYCHAIN")
+if [[ -n "$keychain" ]]; then
+	options+=(--keychain "$keychain")
 fi
 # The helper first, then the app, which seals what it holds.
 # (bash 3.2, macOS's own, calls an empty array unbound under set -u: hence the ${...+...}.)
