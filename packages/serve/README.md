@@ -2253,6 +2253,49 @@ carries one line: the checkout's facts, or why there is none (no pull request na
 last words), so its instructions can read the change through the GitHub MCP instead. The checkout is removed when the
 claim ends, and the next claim of the run makes it again.
 
+### Email (the server's own account)
+
+Two ways to give an agent email: Email (IMAP/SMTP, runs on your server, no public URL) vs Composio Gmail (OAuth through
+Composio, needs a public URL). Email is one account per server: the server signs in to its mail servers itself with the
+account's app password, reads the mailbox on a timer and sends over SMTP, so nothing outside has to reach the server.
+Composio Gmail connects the account through Composio's OAuth and calls Gmail through Composio's tools; its triggers
+arrive as Composio's webhook, which needs the server's public URL ([Webhook triggers](#webhook-triggers)).
+
+**The account.** `PUT /v2/settings/email` saves it, from the owner's signed-in session only (the token is 403). A preset
+fills the servers: `gmail`, `fastmail` or `icloud`; `other` takes `imap` and `smtp` (`{host, port}`) from the body.
+`outlook` is refused in words ("Outlook needs Microsoft sign-in, which this server doesn't do yet."). The password is the
+account's app password (Gmail, iCloud and Fastmail each make one in the account's security settings; the account's own
+sign-in password is refused by most providers), at most 1,024 characters. It is sealed under the server's seal key
+(`AGENTRUN_SEAL_KEY`) and is in no answer, event or log line. Every connection is TLS: 993 and 465 from the start, any
+other port with STARTTLS required. Only `127.0.0.1` is reached in the clear. `POST /v2/settings/email/test` signs in to
+both servers and sends nothing; `DELETE` forgets the account.
+
+**The trigger.** `{kind: "email", mailbox?: "INBOX", every_s?: 60, accept?}` reads the mailbox every `every_s` seconds
+and starts a run for each new message its `accept` takes (a rule's `where` reads `/from`, `/to`, `/subject`, `/text`).
+It watches from when it is made or turned on: the messages already there, and any that came while it was off, start no
+runs, and its note says so ("Watching INBOX from now: the 3 messages already there won't start runs."). Mail this server
+sent starts none. A mail server out of reach is said in `last_check` and tried at the next time; one that refuses the
+sign-in 3 times in a row turns the trigger off (`sign_in_refused`) until the account is fixed and it is turned on again.
+
+**The tools.** `email_search`, `email_read`, `email_draft`, `email_send` and `email_file`, host tools on every harness.
+Reading leaves mail unread, `email_draft` sends nothing, and `email_file` files under a label or folder and never deletes.
+`email_send` asks a person by default; the others are allowed.
+
+**Thread scope.** On a run an email trigger started, `email_search`, `email_read` and `email_file` reach only the thread
+of the message that started it: that message, and every message whose References or In-Reply-To links it, in any
+mailbox, that its sender took part in. Anything else is answered "outside this run's thread" and never fetched. So the
+words of an email can't send the agent through the rest of the inbox. An agent's own tool setting `scope: "mailbox"` on
+one of those three tools reaches the whole account; a run no email started reaches the whole account either way.
+Composio Gmail tools on the same agent are not thread-scoped.
+
+**What email_send asks, even on allow.** With `email_send` set to allow, a run's first 5 sends go unasked and each one
+after asks, saying "this run has sent 5 emails" (the count is the run's own record, so a pause doesn't reset it). This
+stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
+`scope: "mailbox"`), a send to anyone outside the thread's people
+(the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
+is outside this email's thread"). The approval's `summary` ends "Asks because ...". With accounts off, where no one can
+approve, such a send is refused in those words.
+
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
