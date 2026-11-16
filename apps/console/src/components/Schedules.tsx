@@ -1184,6 +1184,8 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
   const [saving, setSaving] = useState(false);
   // The JSON list's pointers show open when the trigger has one.
   const [listOpen, setListOpen] = useState(() => !!trigger && (trigger.source.items !== undefined || trigger.source.id !== undefined));
+  // An issue on a pointer opens the disclosure it sits under, so the error shows beside its field.
+  useEffect(() => { if (issues["source.items"] || issues["source.id"]) setListOpen(true); }, [issues]);
   // A create sent again unchanged reuses its Idempotency-Key; an edited one gets a new key.
   const keys = useRef(keeper()).current;
   // A save that answers after the person left the form opens nothing.

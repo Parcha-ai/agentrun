@@ -541,7 +541,7 @@ export function feedUrlsOf(text: string): { urls: string[]; issues: Record<strin
 }
 
 /** A feed trigger's source, or what is wrong, by the field the server would name. `minEvery`: the shortest interval the
- *  server takes, when it says. A pointer left empty is left out, unless the source as read had it empty too. */
+ *  server takes, when it says. A pointer is sent as typed, spaces and all; one left empty is left out, unless the source as read had it empty too. */
 export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSource; issues: Record<string, string> } {
   const { urls, issues } = feedUrlsOf(d.urls);
   const n = numberOf(d.every);
@@ -549,7 +549,8 @@ export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSou
   if (n === undefined) issues["source.every_s"] = NEEDED;
   else if (minEvery && every < minEvery) issues["source.every_s"] = atLeast(minEvery);
   const pointer = (name: "items" | "id") => {
-    const typed = d[name].trim();
+    // Sent as typed: a space in a JSON Pointer is part of its key ("/data " names "data ").
+    const typed = d[name];
     return typed || d.read?.[name] === "" ? { [name]: typed } : {};
   };
   const { accept, issues: filter } = eventAcceptOf(FEED_EVENT, d.where, d.others, d.read?.accept?.[0] && !d.read.accept[0].actions?.length ? d.read.accept[0] : undefined);
