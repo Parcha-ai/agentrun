@@ -468,7 +468,8 @@ class DaytonaHost implements MachineHost {
 			bound.clear();
 		}
 		// Input: whole lines, one call after another; the rest of a line waits for its end (or end()).
-		const utf8 = new TextDecoder();
+		// ignoreBOM: a U+FEFF that starts stdin is text, never a mark to drop.
+		const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 		let queued = "";
 		let sending: Promise<void> = Promise.resolve();
 		const send = (data: string) => {

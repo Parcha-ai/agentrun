@@ -111,7 +111,7 @@ npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/comput
 It calls `exec` and nothing else, and checks the five rules: text of every kind of code point with `\r`, `\r\n` and a
 1 MiB line each way, 8 MiB of random UTF-8 by sha256, stdin and output while the process runs, stderr, the exit code,
 `kill`, and a silent process of 75 seconds (`--quick`: 5). Each failure says what your exec did wrong, such as "U+000A
-(byte 9) came back on stdout as 0d 0a 0b 0c: your exec turns \n into \r\n, as a terminal does". When it prints
+(byte 12) came back on stdout as 0d 0a 0b 0c: your exec turns \n into \r\n, as a terminal does". When it prints
 `exec PASS`, write the rest.
 
 ### What you write

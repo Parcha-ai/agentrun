@@ -18,7 +18,7 @@ import { textExec, textVendor, withSh } from "./fake-text-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 
-const QUICK = { longMs: 2_000, stepMs: 5_000, largeBytes: 1024 * 1024, largeMs: 30_000 };
+const QUICK = { longMs: 2_000, stepMs: 5_000, largeBytes: 1024 * 1024, largeMs: 30_000, unreadMs: 1_000 };
 const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 5_000, execMs: 2_000, helloMs: 1_000, probeMs: 1_000, listMs: 2_000, goneMs: 500, pollMs: 5, listedMs: 500, listedStableMs: 0, mountMs: 2_000 };
 /** The Core cases the adapter's fake host answers (its daemon is a stand-in): the ones a byte exec passes there too. */
 const HOSTED_CORE = ["health.hello", "health.kind-consistent", "health.kind-served", "exec.abort", "provider.check-refuses", "provider.list", "provider.stop", "provider.owner", "provider.detach", "provider.network-change", "drift.hello-matches", "drift.network"];
@@ -79,6 +79,7 @@ function memoryPieces({ kill = false, end = false } = {}) {
 					queue.push(event);
 					wake();
 				},
+				queued: () => queue.length,
 			});
 			streams.get(id).events = (async function* () {
 				for (;;) {
@@ -184,6 +185,66 @@ test("framedExec with no vendor kill starts argv under a pid wrapper, keeps the 
 	stream(1).push({ exit: 137 });
 	assert.equal(await proc.wait(), 137);
 	assert.equal(text(await err), "its own words");
+});
+
+test("framedExec with no vendor kill still kills by pid when the event stream broke with no exit read, and never once the exit was read", async () => {
+	const lost = memoryPieces();
+	const proc = await framedExec(lost.pieces, ["sleep", "600"], ctx);
+	lost.stream(1).push({ stream: "stderr", text: "4217\n" });
+	lost.stream(1).push("close");
+	assert.equal(await proc.wait(), -1, "no exit was read");
+	const killing = proc.kill();
+	await tick();
+	assert.deepEqual(lost.calls[1], ["start", 2, ["kill", "-KILL", "4217"]], "the process may still run: it is killed");
+	lost.stream(2).push({ exit: 0 });
+	await killing;
+
+	const done = memoryPieces();
+	const ran = await framedExec(done.pieces, ["true"], ctx);
+	done.stream(1).push({ stream: "stderr", text: "4218\n" });
+	done.stream(1).push({ exit: 0 });
+	assert.equal(await ran.wait(), 0);
+	await ran.kill();
+	assert.equal(done.calls.length, 1, "an exit read: the pid may be another process's, so no kill starts");
+});
+
+test("framedExec reads events no faster than stdout is read, and kill() lets a held reader go", async () => {
+	const { pieces, stream } = memoryPieces({ kill: true });
+	const proc = await framedExec(pieces, ["yes"], ctx);
+	const piece = "y\n".repeat(32 * 1024);
+	for (let i = 0; i < 64; i++) stream(1).push({ stream: "stdout", text: piece });
+	for (let i = 0; i < 10; i++) await tick();
+	const held = stream(1).queued();
+	assert.ok(held > 50, `the events wait for the reader: ${held} of 64 still with the vendor`);
+	const reader = proc.stdout[Symbol.asyncIterator]();
+	for (let read = 0; read < 8 * piece.length; ) read += (await reader.next()).value.length;
+	assert.ok(stream(1).queued() < held, "reading lets the events go on");
+	await proc.kill();
+	for (let i = 0; i < 10; i++) await tick();
+	assert.equal(stream(1).queued(), 0, "once killed, the rest is read and dropped, never held");
+	stream(1).push("close");
+	assert.equal(await proc.wait(), -1);
+});
+
+test("framedExec drops output once its reader let go, so the exit still comes", async () => {
+	const { pieces, stream } = memoryPieces({ kill: true });
+	const proc = await framedExec(pieces, ["yes"], ctx);
+	const piece = "y\n".repeat(32 * 1024);
+	for (let i = 0; i < 8; i++) stream(1).push({ stream: "stdout", text: piece });
+	await tick();
+	proc.stdout.destroy();
+	stream(1).push({ exit: 0 });
+	assert.equal(await proc.wait(), 0);
+});
+
+test("framedExec keeps a U+FEFF that starts stdin: it is text, never a mark to drop", async () => {
+	const { pieces, calls, writes } = memoryPieces({ kill: true });
+	const proc = await framedExec(pieces, ["cat"], ctx);
+	const wrote = proc.write(Buffer.from("﻿hello"));
+	await tick();
+	writes[0].done();
+	await wrote;
+	assert.deepEqual(calls[1], ["write", 1, "﻿hello"]);
 });
 
 test("ndjson reads each line's JSON as it comes, a line or a character split across chunks included", async () => {

@@ -31,7 +31,7 @@ export async function textVendor(backend) {
 			record.wake();
 		};
 		const pump = async (stream, name) => {
-			const decoder = new TextDecoder();
+			const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 			for await (const chunk of stream) {
 				const text = decoder.decode(chunk, { stream: true });
 				if (text !== "") add({ stream: name, text });

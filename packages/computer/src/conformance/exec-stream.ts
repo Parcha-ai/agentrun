@@ -97,11 +97,12 @@ const shown = (argv: readonly string[]) => argv.map((word) => (/^[\w./=:-]+$/.te
 const range = (from: number, to: number) => String.fromCodePoint(...Array.from({ length: to - from + 1 }, (_, i) => from + i));
 
 /**
- * One of each class of code point: all of ASCII but NUL (no text the adapter carries holds one: JSON escapes it), all of
+ * A BOM first, which a TextDecoder drops from the start of a stream unless told to keep it (ignoreBOM). Then one of
+ * each class of code point: all of ASCII but NUL (no text the adapter carries holds one: JSON escapes it), all of
  * Latin-1, the BMP's scripts and its odd ones (the line and paragraph separators, a BOM, U+FFFD), astral ones, and
  * combining marks and a joined emoji, which a normalizer would change. Then \r alone and \r\n, which a terminal changes.
  */
-const CODE_POINTS = `${range(0x01, 0x7f)}${range(0x80, 0xff)}ĀſΩЖאعह中文日本語한국어€  ﻿�𝄞😀\u{10ffff}éä\u{1f469}‍\u{1f4bb}carriage\rreturn\r\nline`;
+const CODE_POINTS = `\u{feff}${range(0x01, 0x7f)}${range(0x80, 0xff)}ĀſΩЖאعह中文日本語한국어€  ﻿�𝄞😀\u{10ffff}éä\u{1f469}‍\u{1f4bb}carriage\rreturn\r\nline`;
 /** 16 KiB of text of every width (1, 2, 3 and 4 bytes a character), no newline: 64 of them are the 1 MiB line. */
 const LONG_PIECE = `${"aé€𝄞".repeat(1638)}abcd`;
 const LONG_PIECES = 64;
@@ -164,6 +165,9 @@ export function textProblem(sent: Uint8Array, got: Uint8Array, way: string): str
 	if (b === 0x0d) return `${said}: your exec drops \\r, as newline translation does. Pass every character on as it comes`;
 	if (b >= 0x80 && was[0] === (0xc0 | (b >> 6)) && was[1] === (0x80 | (b & 0x3f))) {
 		return `${said}: your exec reads UTF-8 as Latin-1 and writes it back as UTF-8 again. Read the process's output as UTF-8`;
+	}
+	if (name === "U+FEFF" && Buffer.from(got.subarray(start, start + 8)).equals(Buffer.from(sent.subarray(start + 3, start + 11)))) {
+		return `${said}: your exec drops a U+FEFF that starts its text, as a TextDecoder does unless given ignoreBOM: true. Keep it: it is text like any other`;
 	}
 	if (was[0] === 0xef && was[1] === 0xbf && was[2] === 0xbd) {
 		return `${said}: U+FFFD (ef bf bd), as a decoder makes of half a character: your exec decodes each piece of output as text on its own. Decode the stream as one (TextDecoder's stream: true)`;
