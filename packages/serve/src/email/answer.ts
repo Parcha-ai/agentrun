@@ -188,3 +188,37 @@ export function emailText(answer: Record<string, unknown>): string {
 
 /** An email tool's error, in words: at most EMAIL_ERROR_MAX_CHARS characters. */
 export const emailError = (text: string) => cutJson(text, EMAIL_ERROR_MAX_CHARS);
+
+/** Whether `payload`'s JSON is within `bound` bytes of UTF-8, escapes counted. */
+const fits = (payload: Record<string, unknown>, bound: number) => Buffer.byteLength(JSON.stringify(payload), "utf8") <= bound;
+
+/** The first `n` characters (code points) of `text`, ending in `…` when cut. */
+const clipped = (text: unknown, n: number) => (typeof text === "string" && [...text].length > n ? `${[...text].slice(0, n).join("")}…` : text);
+
+/** A message's payload whole, its JSON within `bound` bytes of UTF-8 (a trigger's firing: PAYLOAD_KEPT_BYTES), so whoever
+ *  keeps it never cuts it mid-string. When it is over, the text is cut, the longest prefix that fits found by halving (a
+ *  character's start, escapes counted), said in it and marked `text_truncated: true`; when its other fields alone are
+ *  over, the subject, the names and the lists are cut too, shorter until it fits. */
+export function fittedPayload(whole: Record<string, unknown>, bound: number): Record<string, unknown> {
+  if (fits(whole, bound)) return whole;
+  const text = typeof whole.text === "string" ? whole.text : "";
+  // No more characters than the bound has bytes can fit: the halving reads at most that many.
+  const chars = [...text.slice(0, 2 * bound)].slice(0, bound);
+  const said = `\n[cut: the message's text was ${Buffer.byteLength(text, "utf8")} bytes]`;
+  let rest: Record<string, unknown> = whole;
+  const withText = (n: number) => ({ ...rest, text: `${chars.slice(0, n).join("")}${said}`, text_truncated: true });
+  for (let room = 1000; !fits(withText(0), bound); room = Math.floor(room / 2)) {
+    const list = (value: unknown) => (Array.isArray(value) ? value.slice(0, Math.max(1, Math.floor(room / 20))).map((one) => (typeof one === "string" ? clipped(one, Math.min(320, room)) : one)) : value);
+    const attachments = Array.isArray(whole.attachments) ? whole.attachments.slice(0, Math.max(0, Math.floor(room / 20))).map((a: Record<string, unknown>) => ({ ...a, name: clipped(a?.name, Math.min(200, room)) })) : whole.attachments;
+    rest = { ...whole, from: clipped(whole.from, Math.min(998, room)), message_id: clipped(whole.message_id, Math.min(998, room)), in_reply_to: clipped(whole.in_reply_to, Math.min(998, room)), subject: clipped(whole.subject, room), from_name: clipped(whole.from_name, Math.min(320, room)), to: list(whole.to), cc: list(whole.cc), attachments };
+    if (room === 0) break;
+  }
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(withText(mid), bound)) lo = mid;
+    else hi = mid - 1;
+  }
+  return withText(lo);
+}

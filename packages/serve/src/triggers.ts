@@ -46,7 +46,6 @@ export const SOURCE_KINDS: readonly string[] = TRIGGER_ADAPTERS.map((a) => a.id)
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
 /** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start (trigger-adapter.ts). */
-export { PAYLOAD_KEPT_BYTES };
 /** How late a missed time may be and still fire once, by default: an hour. */
 export const CATCHUP_WINDOW_S = 3600;
 /** The failed tries in a row that turn a trigger off. */

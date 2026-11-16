@@ -13,6 +13,8 @@
 // message this server sent (X-AgentRun-Sent, email/tools.ts email_send) is left, and said. An unreachable server is said
 // on the trigger and tried at the next time; a refused sign-in counts (the engine turns the trigger off at the third).
 import { DEFAULT_ACCOUNT, NO_ACCOUNT, type OpenedAccount } from "./email/account.js";
+import { fittedPayload } from "./email/answer.js";
+import { messages } from "./email/names.js";
 import type { ImapSession, MailMessage } from "./email/mail.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, PAYLOAD_KEPT_BYTES, type PolledEvent, type PollResult, type Source, type StartResult, type StartWhy, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
@@ -62,44 +64,10 @@ function cursorOf(text: string | undefined): Cursor | undefined {
 }
 const kept = (cursor: Cursor) => ({ [CURSOR]: JSON.stringify(cursor) });
 
-/** Whether `payload`'s JSON is within the engine's bound, measured as the engine does: bytes of UTF-8, escapes counted. */
-const fits = (payload: Record<string, unknown>) => Buffer.byteLength(JSON.stringify(payload), "utf8") <= PAYLOAD_KEPT_BYTES;
-
-/** The first `n` characters (code points) of `text`, ending in `…` when cut. */
-const clipped = (text: unknown, n: number) => (typeof text === "string" && [...text].length > n ? `${[...text].slice(0, n).join("")}…` : text);
-
-/** A message's payload whole, its JSON within PAYLOAD_KEPT_BYTES, so the engine never cuts it mid-string. When it is over,
- *  the text is cut, the longest prefix that fits found by halving (a character's start, escapes counted), said in it and
- *  marked `text_truncated: true`; when its other fields alone are over, the subject, the names and the lists are cut too,
- *  shorter until it fits. */
-function fittedPayload(whole: Record<string, unknown>): Record<string, unknown> {
-  if (fits(whole)) return whole;
-  const text = typeof whole.text === "string" ? whole.text : "";
-  // No more characters than the bound has bytes can fit: the halving reads at most that many.
-  const chars = [...text.slice(0, 2 * PAYLOAD_KEPT_BYTES)].slice(0, PAYLOAD_KEPT_BYTES);
-  const said = `\n[cut: the message's text was ${Buffer.byteLength(text, "utf8")} bytes]`;
-  let rest: Record<string, unknown> = whole;
-  const withText = (n: number) => ({ ...rest, text: `${chars.slice(0, n).join("")}${said}`, text_truncated: true });
-  for (let room = 1000; !fits(withText(0)); room = Math.floor(room / 2)) {
-    const list = (value: unknown) => (Array.isArray(value) ? value.slice(0, Math.max(1, Math.floor(room / 20))).map((one) => (typeof one === "string" ? clipped(one, Math.min(320, room)) : one)) : value);
-    const attachments = Array.isArray(whole.attachments) ? whole.attachments.slice(0, Math.max(0, Math.floor(room / 20))).map((a: Record<string, unknown>) => ({ ...a, name: clipped(a?.name, Math.min(200, room)) })) : whole.attachments;
-    rest = { ...whole, from: clipped(whole.from, Math.min(998, room)), message_id: clipped(whole.message_id, Math.min(998, room)), in_reply_to: clipped(whole.in_reply_to, Math.min(998, room)), subject: clipped(whole.subject, room), from_name: clipped(whole.from_name, Math.min(320, room)), to: list(whole.to), cc: list(whole.cc), attachments };
-    if (room === 0) break;
-  }
-  let lo = 0;
-  let hi = chars.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (fits(withText(mid))) lo = mid;
-    else hi = mid - 1;
-  }
-  return withText(lo);
-}
-
 /** A message as the event its trigger fires: its payload (JSON, untrusted, whole within the engine's bound), its attrs
  *  (who, what, and where it was found: the run's thread is read from there), keyed by its Message-ID. */
 function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => Record<string, unknown>): PolledEvent {
-  const payload = fittedPayload(payloadOf(m));
+  const payload = fittedPayload(payloadOf(m), PAYLOAD_KEPT_BYTES);
   return {
     key: m.message_id ?? `${cursor.uidvalidity}:${m.uid}`,
     text: JSON.stringify(payload),
@@ -110,9 +78,6 @@ function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => 
     ...(m.sent_here !== undefined ? { left: "Left: this server sent that message (it carries X-AgentRun-Sent), so it starts no run." } : {}),
   };
 }
-
-/** `n` messages, in words. */
-const messages = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
 
 /** The cursor at the end of `source`'s mailbox on `account` as it is now, and how many messages it holds: where watching
  *  starts. */

@@ -5,7 +5,9 @@
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
 import { blurbOf, isHostTool } from "./tool-list.js";
-import { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND } from "./email/names.js";
+import { EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
+// The email tools' timeline lines (registerLabel), registered as this module loads.
+import "./email/labels.js";
 import { mcpNameOf } from "./tool-names.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
@@ -199,6 +201,9 @@ export type ToolEntry = {
   /** On the runner, before the intent of a call its setting allows: why this call asks a person anyway, in words (shown
    *  on its approval), or nothing. No setting lifts it; where no one can approve, the call is refused in those words. */
   asks?(args: Record<string, unknown>, ctx: AskContext): Promise<string | undefined>;
+  /** What a call waiting on approval does, in a person's words (run-view.ts, the pending approval's `summary`): email_send's
+   *  to whom and what. Undefined where its arguments do not say. */
+  approvalSummary?(args: unknown): string | undefined;
 };
 
 const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
@@ -206,13 +211,15 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
   bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
 });
 
-/** An email tool (email/tools.ts emailEntry), its binding loaded at its first bind; email_send's own ask (sendAsks) too. */
-const emailTool = (name: string, summary: string): ToolEntry => ({
-  summary,
+/** An email tool, its summary its description (email/names.ts), its binding (email/tools.ts bindEmail) and email_send's
+ *  own ask (sendAsks) loaded at first use, the mail libraries with them. */
+const emailTool = (name: string): ToolEntry => ({
+  summary: EMAIL_DESCRIPTIONS[name]!,
   needs: [],
   nodes: false,
-  bind: async (host) => (await import("./email/tools.js")).emailEntry(name, summary).bind(host),
-  ...(name === EMAIL_SEND ? { asks: async (args: Record<string, unknown>, ctx: AskContext) => (await import("./email/tools.js")).sendAsks(args, ctx) } : {}),
+  bind: async (host) => (await import("./email/tools.js")).bindEmail(name, host),
+  ...(name === EMAIL_SEND ? { approvalSummary: sendSummary, asks: async (args: Record<string, unknown>, ctx: AskContext) => (await import("./email/tools.js")).sendAsks(args, ctx) } : {}),
+  ...(name === EMAIL_FILE ? { approvalSummary: fileSummary } : {}),
 });
 
 /** web_fetch, bound under `name`. */
@@ -691,11 +698,11 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   },
   // The email tools (email/tools.ts) on the server's one email account (the email account setting, /v2/settings/email), every harness's as web_fetch is;
   // the mail libraries load at the first bind.
-  [EMAIL_SEARCH]: emailTool(EMAIL_SEARCH, "Search the server's email account: { from?, to?, subject?, text?, since?, unread?, mailbox?: \"INBOX\", limit?: 20 (max 50) } -> { messages: [{ message_id, from, to, subject, date, snippet, unread, attachments }] }, newest first. On a run an email started, its thread alone unless the agent's setting says scope: \"mailbox\"."),
-  [EMAIL_READ]: emailTool(EMAIL_READ, "Read an email of the server's account by message_id, or its whole thread (thread: true, by References and In-Reply-To, oldest first): { message_id, thread? } -> { messages: [{ from, from_name, to, cc, subject, date, message_id, in_reply_to, text, attachments, references }] }. Reads leave mail unread."),
-  [EMAIL_DRAFT]: emailTool(EMAIL_DRAFT, "Save an email to the account's Drafts, sending nothing: { to, cc?, subject, text, in_reply_to? } -> { saved: true, mailbox, message_id }; in_reply_to threads it as a reply."),
-  [EMAIL_SEND]: emailTool(EMAIL_SEND, "Send an email from the server's account over SMTP: { to, cc?, subject, text, in_reply_to? } -> { sent: true, message_id }; in_reply_to threads it as a reply, and a copy is filed in Sent. Asks the person first by default."),
-  [EMAIL_FILE]: emailTool(EMAIL_FILE, "File an email of the server's account by message_id under to: { message_id, to, archive? } -> { filed: true, message_id, to, archived, subject, note? }. On Gmail it adds the label and the message stays in the inbox (archive: true takes it out too); elsewhere it moves the message out of the inbox to the folder, its note saying \"moved out of the inbox to <to>\" (an explicit archive: false is refused). Folders and labels are made if missing; the trash and junk folders are refused: it never deletes mail. On a run an email started, its thread alone unless the agent's setting says scope: \"mailbox\"."),
+  [EMAIL_SEARCH]: emailTool(EMAIL_SEARCH),
+  [EMAIL_READ]: emailTool(EMAIL_READ),
+  [EMAIL_DRAFT]: emailTool(EMAIL_DRAFT),
+  [EMAIL_SEND]: emailTool(EMAIL_SEND),
+  [EMAIL_FILE]: emailTool(EMAIL_FILE),
   browser: browserTool,
   // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
   // (adapter-run-spec.ts), never by this table; not a host tool (tool-list.ts `replay`), so another harness refuses it.

@@ -176,3 +176,19 @@ test("the account row holds its password sealed, never in the clear; the public 
   assert.equal(await keptAccount(old, key), undefined);
   assert.equal((await accountView(old, key)).configured, false);
 });
+
+test("the password's cap is one: the OpenAPI document's maxLength is the code's, a password that long is taken and one more refused", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { PASSWORD_MAX } = await import("../dist/email/names.js");
+  assert.equal(PASSWORD_MAX, 1024);
+  const { api } = await serve(t, { runner: false });
+  const doc = (await api("GET", "/openapi.json")).body;
+  const schema = doc.paths["/settings/email"].put.requestBody.content["application/json"].schema;
+  const body = schema.$ref ? doc.components.schemas[schema.$ref.split("/").at(-1)] : schema;
+  assert.equal(body.properties.password.maxLength, PASSWORD_MAX);
+  const faux = await mailbox(t);
+  assert.equal((await api("PUT", "/settings/email", accountBody(faux, { password: "p".repeat(PASSWORD_MAX) }))).status, 200);
+  const over = await api("PUT", "/settings/email", accountBody(faux, { password: "p".repeat(PASSWORD_MAX + 1) }));
+  assert.equal(over.status, 422, JSON.stringify(over.body));
+  assert.deepEqual(over.body.error.fields.map((f) => f.field), ["password"]);
+});

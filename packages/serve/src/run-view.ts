@@ -12,10 +12,7 @@ import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal }
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { APPROVAL_ROW, type ApprovalPrice, type PendingApproval, previewOf } from "./tool-gate.js";
-import { ASK_TOOL } from "./tools.js";
-import { EMAIL_FILE, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
-// The email tools' timeline lines (registerLabel), registered as this module loads.
-import "./email/labels.js";
+import { ASK_TOOL, toolOf } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
@@ -478,13 +475,10 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-/** The tools whose approval card says what the call does in words: email_send's to whom and what, email_file's which
- *  message and where. */
-const SUMMARIES: Record<string, (args: unknown) => string | undefined> = { [EMAIL_SEND]: sendSummary, [EMAIL_FILE]: fileSummary };
-/** A call's approval summary, where its tool has one (SUMMARIES), then why it asks when its tool asked about it itself
- *  (the card's ASKED_BECAUSE, the gate's), redacted as its arguments are. */
+/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary), then why it asks when its tool
+ *  asked about it itself (the card's ASKED_BECAUSE, the gate's), redacted as its arguments are. */
 function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
-  const summarize = Object.hasOwn(SUMMARIES, approval.tool) ? SUMMARIES[approval.tool]! : undefined;
+  const summarize = toolOf(approval.tool)?.approvalSummary;
   let args: unknown;
   try {
     args = JSON.parse(approval.args_json);

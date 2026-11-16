@@ -7,7 +7,7 @@
 // of four kinds (MailError), said in words that never hold the password: the server could not be reached, it refused
 // the sign-in, a mailbox or message is not there, or it answered something else.
 import { ImapFlow, type FetchMessageObject, type ListResponse, type SearchObject } from "imapflow";
-import { type AddressObject, simpleParser } from "mailparser";
+import { type AddressObject, type ParsedMail, simpleParser } from "mailparser";
 import nodemailer from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer";
 import { type Endpoint, type OpenedAccount, securityOf } from "./account.js";
@@ -102,26 +102,34 @@ function addresses(value: AddressObject | AddressObject[] | undefined): { addres
   return out;
 }
 
+/** What a message and a head both read of its headers: who it is between, its date (the Date header's, else
+ *  INTERNALDATE) and its ids. */
+function headersOf(parsed: ParsedMail, internalDate: FetchMessageObject["internalDate"]): Pick<MailMessage, "from" | "from_name" | "to" | "cc" | "date" | "message_id" | "in_reply_to" | "references"> {
+  const [from] = addresses(parsed.from);
+  const internal = internalDate ? new Date(internalDate) : undefined;
+  const date = parsed.date ?? (internal && Number.isFinite(internal.getTime()) ? internal : undefined);
+  return {
+    from: from?.address ?? "",
+    from_name: from?.name || null,
+    to: addresses(parsed.to).map((a) => a.address),
+    cc: addresses(parsed.cc).map((a) => a.address),
+    date: date ? date.toISOString() : null,
+    message_id: firstId(parsed.messageId),
+    in_reply_to: firstId(parsed.inReplyTo),
+    references: idsOf(parsed.references),
+  };
+}
+
 /** A fetched message, parsed: `source` its bytes (the first `READ_BYTES` or `SEARCH_BYTES` of it). */
 export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | "source" | "internalDate">, mailbox: string): Promise<MailMessage> {
   const parsed = await simpleParser(row.source ?? Buffer.alloc(0), { skipImageLinks: true, skipTextLinks: true });
-  const [from] = addresses(parsed.from);
-  const internal = row.internalDate ? new Date(row.internalDate) : undefined;
-  const date = parsed.date ?? (internal && Number.isFinite(internal.getTime()) ? internal : undefined);
   const sentHere = parsed.headers.get(SENT_HEADER.toLowerCase());
   return {
     uid: row.uid,
     mailbox,
     flags: [...(row.flags ?? [])],
-    from: from?.address ?? "",
-    from_name: from?.name || null,
-    to: addresses(parsed.to).map((a) => a.address),
-    cc: addresses(parsed.cc).map((a) => a.address),
+    ...headersOf(parsed, row.internalDate),
     subject: parsed.subject ?? "",
-    date: date ? date.toISOString() : null,
-    message_id: firstId(parsed.messageId),
-    in_reply_to: firstId(parsed.inReplyTo),
-    references: idsOf(parsed.references),
     text: (parsed.text ?? "").replace(/\s+$/, ""),
     attachments: parsed.attachments.map((a) => ({ name: a.filename ?? "attachment", size: a.size, type: a.contentType })),
     ...(typeof sentHere === "string" && sentHere.trim() ? { sent_here: sentHere.trim() } : {}),
@@ -131,25 +139,11 @@ export async function messageOf(row: Pick<FetchMessageObject, "uid" | "flags" | 
 /** A message as a thread read first sees it: where it is, who it is between, its ids, its date and its size, no body. */
 export type MailHead = Pick<MailMessage, "uid" | "mailbox" | "from" | "to" | "cc" | "date" | "message_id" | "in_reply_to" | "references"> & { size: number };
 
-/** A fetched row of `heads`: its few headers parsed as a whole message's are (messageOf), its date the Date header's, else
- *  INTERNALDATE. */
+/** A fetched row of `heads`: its few headers parsed as a whole message's are (headersOf). */
 async function headOf(row: Pick<FetchMessageObject, "uid" | "internalDate" | "size" | "headers">, mailbox: string): Promise<MailHead> {
   const parsed = await simpleParser(Buffer.concat([row.headers ?? Buffer.alloc(0), Buffer.from("\r\n")]), { skipImageLinks: true, skipTextLinks: true });
-  const [from] = addresses(parsed.from);
-  const internal = row.internalDate ? new Date(row.internalDate) : undefined;
-  const date = parsed.date ?? (internal && Number.isFinite(internal.getTime()) ? internal : undefined);
-  return {
-    uid: row.uid,
-    mailbox,
-    size: typeof row.size === "number" ? row.size : 0,
-    from: from?.address ?? "",
-    to: addresses(parsed.to).map((a) => a.address),
-    cc: addresses(parsed.cc).map((a) => a.address),
-    date: date ? date.toISOString() : null,
-    message_id: firstId(parsed.messageId),
-    in_reply_to: firstId(parsed.inReplyTo),
-    references: idsOf(parsed.references),
-  };
+  const { from_name: _name, ...head } = headersOf(parsed, row.internalDate);
+  return { uid: row.uid, mailbox, size: typeof row.size === "number" ? row.size : 0, ...head };
 }
 
 /** Whether `address` (bare, any case) is one of `m`'s From, To or Cc. */

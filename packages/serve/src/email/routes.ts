@@ -11,6 +11,7 @@ import { invalid } from "../errors.js";
 import { registerSecretWrite } from "../secret-writes.js";
 import { isObject } from "../validate.js";
 import { type AccountStore, accountOf, accountView, NO_ACCOUNT, openAccount, removeAccount, saveAccount } from "./account.js";
+import { messages } from "./names.js";
 
 /** The routes, by their operation names. */
 export const EMAIL_ROUTES: ReadonlySet<string> = new Set(["getEmailAccount", "saveEmailAccount", "deleteEmailAccount", "testEmailAccount"]);
@@ -20,7 +21,6 @@ export type EmailRouteDeps = { store: AccountStore; sealKey: Buffer };
 type Check = { ok: boolean; message: string };
 
 /** `n` messages, in words. */
-const messages = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
 
 /** One route's answer (the dispatch sends it 200; DELETE's is undefined, 204). A body that does not read is 422. */
 export async function emailRoute(deps: EmailRouteDeps, name: string, body?: unknown): Promise<unknown> {
