@@ -35,7 +35,12 @@ export interface MachineHost {
 	 * name where it has one (Machine.name), and the adapter writes req.labels into the machine itself.
 	 */
 	create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }>;
-	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a HostError not_found). */
+	/**
+	 * One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a
+	 * HostError not_found), and for a record the vendor keeps of a machine that is deleted and will not come back
+	 * (Hyperbrowser's closed, Blaxel's TERMINATED), which list leaves out too. gone is one still being destroyed: it holds
+	 * the wait after a delete, so a host that reads a kept record gone waits out goneMs on every delete.
+	 */
 	get(id: string, ctx: HostCall): Promise<Machine | undefined>;
 	/**
 	 * The machines of the account the vendor's listing shows for these labels, every page, within ctx.timeoutMs in all.
@@ -222,9 +227,10 @@ export type HostDescriptor = Pick<ProviderDescriptor, "id" | "label" | "network"
  */
 export interface HostFacts {
 	/**
-	 * child: the vendor's agent is the machine's first process and starts init, after the adapter closes the session
-	 * buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a path socket. pid1:
-	 * init is the machine's main process (Modal's, whose sandbox ends when it does), started by request.command.
+	 * child: the vendor starts the adapter's processes through exec, and the adapter starts init that way at boot, after
+	 * it closes the session buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a
+	 * path socket. pid1: init is the machine's main process (Modal's, whose sandbox ends when it does), started by
+	 * request.command.
 	 */
 	daemon: "child" | "pid1";
 	isolation: ComputerCapabilities["isolation"];
