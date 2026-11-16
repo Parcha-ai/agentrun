@@ -632,6 +632,8 @@ export class Webhooks {
       }
       attempt.latency_ms = Math.round(performance.now() - started);
     }
+    // In its words, written or not: a try the server's stop cut short still says why it ended.
+    attempt.error = failure ?? null;
     if (this.closed) return attempt;
     // What the try found is settled against the webhook as it stands once every change asked for before it (a PUT, a
     // DELETE, another try's 410) has landed: a 410 never turns off a webhook a PUT is setting again meanwhile.
@@ -648,7 +650,6 @@ export class Webhooks {
    *  sent, which no try's write undoes (sent is final), and a failed one writes no state at all, only its try. */
   private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, tryId: string, claimed: ChannelPostRow | undefined, config: Config | undefined, failure: string | undefined, attempt: Attempt): Promise<Attempt> {
     if (this.closed) return attempt;
-    attempt.error = failure ?? null;
     // The schedule counts the message's own tries, from the count its claim took it at; a redelivery counts none.
     const attempts = claimed ? claimed.attempts + 1 : undefined;
     // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn
