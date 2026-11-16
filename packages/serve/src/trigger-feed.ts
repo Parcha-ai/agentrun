@@ -49,9 +49,9 @@ const POINTER_CHARS = 300;
 const MAX_FIELDS = 50;
 
 type FeedSource = { kind: "feed"; urls: string[]; every_s: number; items?: string; id?: string; updated?: string; fields?: string[]; accept?: Rule[] };
-/** One feed's state: `seen`, its seen set as [key hash, updated ms (0: none)], oldest first (absent: its start not taken
+/** One feed's state: `seen`, its seen set as [key hash, updated ms (null: none; a real date may be 0 or before)], oldest first, `dates` 2 once the set tells a missing date from a real one (a set without it holds 0 for a missing date) (absent: its start not taken
  *  yet); its last read's validators; its own title; `missing`, the 404s in a row; `stopped`, why it is no longer read. */
-type FeedState = { seen?: [string, number][]; etag?: string; modified?: string; title?: string; missing?: number; stopped?: string };
+type FeedState = { seen?: [string, number | null][]; dates?: 2; etag?: string; modified?: string; title?: string; missing?: number; stopped?: string };
 type Cursor = { feeds: Record<string, FeedState> };
 
 /** The source's own fields, checked: each issue through `bad`. Undefined when one does not read. */
@@ -159,6 +159,10 @@ async function pooled<T, R>(items: readonly T[], n: number, work: (item: T) => P
   return out;
 }
 
+/** `state`'s seen set as a map, a missing date null. A set saved before dates were told apart (no \`dates\`) holds 0 for one:
+ *  read as missing for a JSON list, whose items had no dates then; an RSS, Atom or JSON Feed item's 0 stays a number. */
+const seenOf = (state: FeedState, list: boolean): Map<string, number | null> => new Map((state.seen ?? []).map(([key, at]) => [key, at === 0 && list && state.dates !== 2 ? null : at] as const));
+
 /** An item that may fire: its feed, the item, whether it updates one seen before, and its date for the order. */
 type Candidate = { url: string; item: FeedItem; update: boolean; at: number | null; n: number };
 
@@ -196,9 +200,13 @@ function payloadOf(c: Candidate, list: boolean, title: string | null, fields?: r
   }
   return { id: clipped(item.id, 200), link: clipped(item.link, 200), title: clipped(item.title, 200), published: iso(item.published), updated: iso(item.updated), author: null, summary: null, categories: [], feed: { title: null, url: c.url }, update };
 }
-/** `raw` with only the values at `pointers` kept, each at its own place (a list's kept entries compacted). */
+/** `raw` with only the values at `pointers` kept, each at its own place (a list's kept entries compacted). Every
+ *  container is built bare and every key set as an own property, so no name (\`__proto__\` too) reaches a prototype; only
+ *  own keys of the item are read. */
 function keeping(raw: unknown, pointers: readonly string[]): unknown {
-  const out: Record<string, unknown> = {};
+  const bare = (like: unknown): Record<string, unknown> | unknown[] => (Array.isArray(like) ? [] : Object.create(null));
+  const own = (from: unknown, key: string): unknown => (from !== null && typeof from === "object" && Object.hasOwn(from, key) ? (from as Record<string, unknown>)[key] : undefined);
+  const out = bare(raw);
   for (const pointer of pointers) {
     const value = pointed(raw, pointer);
     if (value === undefined) continue;
@@ -206,12 +214,11 @@ function keeping(raw: unknown, pointers: readonly string[]): unknown {
     let from: unknown = raw;
     let into: Record<string, unknown> | unknown[] = out;
     keys.forEach((key, i) => {
-      const source = (from as Record<string, unknown>)[key];
-      const slot = into as Record<string, unknown>;
-      if (i === keys.length - 1) slot[key] = value;
+      const source = own(from, key);
+      if (i === keys.length - 1) Object.defineProperty(into, key, { value, enumerable: true, writable: true, configurable: true });
       else {
-        slot[key] ??= Array.isArray(source) ? [] : {};
-        into = slot[key] as Record<string, unknown> | unknown[];
+        if (!Object.hasOwn(into, key)) Object.defineProperty(into, key, { value: bare(source), enumerable: true, writable: true, configurable: true });
+        into = (into as Record<string, unknown>)[key] as Record<string, unknown> | unknown[];
       }
       from = source;
     });
@@ -262,17 +269,18 @@ async function poll(source: FeedSource, reach: FeedReach, cursor: Cursor): Promi
     lists.set(read.url, feed.list);
     if (!state.seen) {
       // Its start: every item there now is seen, and starts nothing.
-      state.seen = items.map((item) => [hashed(item.key), item.updated ?? 0]);
+      state.seen = items.map((item) => [hashed(item.key), item.updated]);
+      state.dates = 2;
       started.push({ url: read.url, count: items.length });
       continue;
     }
     present.set(read.url, items);
-    const seen = new Map(state.seen);
+    const seen = seenOf(state, feed.list);
     const fresh: Candidate[] = [];
     for (const item of items) {
       const was = seen.get(hashed(item.key));
       if (was === undefined) fresh.push({ url: read.url, item, update: false, at: item.updated ?? item.published, n: 0 });
-      else if (item.updated !== null && item.updated > was && (was > 0 || !feed.list)) fresh.push({ url: read.url, item, update: true, at: item.updated, n: 0 });
+      else if (item.updated !== null && (was === null ? !feed.list : item.updated > was)) fresh.push({ url: read.url, item, update: true, at: item.updated, n: 0 });
     }
     candidates.push(fresh);
   }
@@ -309,18 +317,20 @@ async function poll(source: FeedSource, reach: FeedReach, cursor: Cursor): Promi
         feeds[url] = state;
         continue;
       }
-      const seen = new Map(state.seen);
+      const list = lists.get(url) ?? false;
+      const seen = seenOf(state, list);
       for (const item of items) {
         const key = hashed(item.key);
         const was = seen.get(key);
         const mark = marks.get(`${url}\n${item.key}`);
         seen.delete(key);
-        if (mark && mark.n < upTo) seen.set(key, item.updated ?? 0);
-        else if (was !== undefined) seen.set(key, was);
+        if (mark && mark.n < upTo) seen.set(key, item.updated);
+        // A JSON list's item first seen with no date takes the one it gains, fired on never.
+        else if (was !== undefined) seen.set(key, was === null && list ? item.updated : was);
       }
       const whole = !left.has(url) && !taken.slice(upTo).some((c) => c.url === url);
       const { etag, modified, ...rest } = state;
-      feeds[url] = { ...rest, ...(whole && etag ? { etag } : {}), ...(whole && modified ? { modified } : {}), seen: [...seen.entries()].slice(-Math.max(SEEN_KEPT, 2 * items.length)) };
+      feeds[url] = { ...rest, dates: 2, ...(whole && etag ? { etag } : {}), ...(whole && modified ? { modified } : {}), seen: [...seen.entries()].slice(-Math.max(SEEN_KEPT, 2 * items.length)) };
     }
     return { [CURSOR]: JSON.stringify({ feeds }) };
   };
