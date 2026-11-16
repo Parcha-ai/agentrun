@@ -117,9 +117,15 @@ npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/comput
 
 It calls `exec` and nothing else, and checks the five rules: text of every kind of code point with `\r`, `\r\n` and a
 1 MiB line each way, 8 MiB of random UTF-8 by sha256, stdin and output while the process runs, stderr, the exit code,
-`kill`, and a silent process of 75 seconds (`--quick`: 5). Each failure says what your exec did wrong, such as "U+000A
-(byte 12) came back on stdout as 0d 0a 0b 0c: your exec turns \n into \r\n, as a terminal does". When it prints
-`exec PASS`, write the rest.
+`kill`, and a silent process of 75 seconds (`--quick`: 5). It also writes 4 MiB to `cat` while its stdout is left
+unread for 10 seconds, then reads it: a write may wait for the reader, but it must go on once stdout is read, and every
+byte must come back in order. Each failure says what your exec did wrong, such as "U+000A (at byte 12) came back on
+stdout as 0d 0a 0b 0c: your exec turns \n into \r\n, as a terminal does". When it prints `exec PASS`, write the rest.
+
+After the checks it prints what the machine offers, each fact with what it means for your host: whether root can make
+a network namespace (`unshare -n`, else `unshare -Urn`, the gVisor fence), whether root can open `/dev/fuse` (an Archil
+mount), `uname -m` for `facts.arch`, the kernel, and the TCP listeners for `facts.vendorAgentPorts`. The facts pass or
+fail nothing.
 
 ### What you write
 
@@ -159,7 +165,7 @@ means your timer ends a machine at its deadline; with `"janitor"`, AgentRun ends
 the TCP ports your vendor's agent listens on inside the machine. `[]` is right when none listens on TCP (it is reached
 over a unix socket or a virtio device, or nothing of the vendor runs in the machine): the Core case
 `isolation.vendor-agent` still runs, and checks that the computer's programs reach only their own loopback and no unix
-socket but the computer's own. To find the listeners, run `ss -ltnp` as root on the pre-check's machine.
+socket but the computer's own. The pre-check prints the listeners.
 If your image leaves system paths that root runs or reads with permissions wider than root's, list them in `rootOnly`:
 create makes them root's alone (root the owner, no write by group or other users) before anything else, and the Core case `isolation.root-runs` checks
 that the computer's user can write nothing root runs. With `labels: "machine"`, the Core case `isolation.label-file`
@@ -198,7 +204,13 @@ machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.
 finds machines by them. With `labels: "machine"` there is nowhere to store them: give the machine `req.name` as its
 own name where your API takes one, and answer it as `Machine.name` from `get` and `list`. AgentRun writes the labels
 into the machine once it runs. Without a name, a machine whose create was cut off before that write can't be traced to
-its request, so it ends only at your timer. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
+its request, so it ends only at your timer. Where your API keeps fewer or shorter labels than AgentRun writes, declare
+`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`: your create
+stores what `packLabels` (`src/hosted/values.ts`) gives, one name to list by and the map in parts, and `get` and
+`list` both answer `unpackLabels`' map. `list` filters by `PACKED_NAME` alone, set to
+`labels["agentrun.computer.name"]` where that is asked, or lists everything: AgentRun keeps only machines whose
+unpacked labels carry what it asked. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
+`HostError("exists", …)`: AgentRun lists that name and adopts the machine, as a retry of the request does. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
 `true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's
 programs reach it alone. `req.cpus` and `req.memoryMb` come whenever the spec gives them: a
@@ -232,7 +244,8 @@ vendor whose size is its image's refuses them in its own `check`.
 A machine that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure. Don't read
 back what create sent: AgentRun checks the machine from inside. `get` never wakes a machine: a read that resumes a
 paused or ended one undoes a deadline or a delete. If your vendor's reads wake machines, read through one that
-doesn't, or make machines in the vendor's mode that doesn't keep them. A deleted machine stays gone after any call.
+doesn't, or make machines in the vendor's mode that doesn't keep them. A deleted machine stays gone after any call: the
+Core case `provider.create-release` checks that after the delete, a connect, an `attach` by id and `list` all find nothing.
 
 Some vendors have states beyond these four:
 
@@ -444,6 +457,8 @@ node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tm
 
 The first sweep records what your account already holds. The second deletes anything the run left behind and prints
 what is still there. `--kind sandbox` or `--kind desktop` runs one kind's cases, and `-- --help` lists every flag.
+Add `--long` to the run you send: it runs the long cases, which wait minutes on your vendor's timers. `lifetime.idle`
+leaves a computer quiet for 6 minutes and must find it still running, its daemon answering.
 
 The report's last lines say the most computers the run had alive at once. If your plan keeps fewer (a free tier's few
 machines), add `--concurrency <n>`: a create waits for a computer to go, and the run's own computer is deleted while a

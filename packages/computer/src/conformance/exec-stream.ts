@@ -158,7 +158,7 @@ export function textProblem(sent: Uint8Array, got: Uint8Array, way: string): str
 	if (i === sent.length) return `${got.length - sent.length} bytes came back ${way} that were never sent, after all ${sent.length} that were (${hex(got.subarray(i, i + 8))}): your exec adds output of its own (a shell's login banner, a prompt). Pass only the process's own output`;
 	const { name, start } = characterAt(sent, i);
 	const was = got.subarray(start, start + 4);
-	const said = `${name} (byte ${start}) came back ${way} as ${hex(was)}`;
+	const said = `${name} (at byte ${start}) came back ${way} as ${hex(was)}`;
 	const b = sent[start] as number;
 	if (b === 0x0a && was[0] === 0x0d && was[1] === 0x0a) return `${said}: your exec turns \\n into \\r\\n, as a terminal does. Run the process on pipes, not a terminal`;
 	if (b === 0x0d && was[0] === 0x0a) return `${said}: your exec turns \\r into \\n, as newline translation does. Pass every character on as it comes`;
