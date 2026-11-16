@@ -173,6 +173,14 @@ describe("harnessOptions", () => {
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
   });
+  it("offers a harness the server adds (one entry of its table) after the built-in ones, by the label the server gives it, else its id", () => {
+    const listed = [{ id: "acme", label: "Acme", available: false, reason: "Acme stands in here." }, { id: "pi", available: true }, { id: "zed", available: true }];
+    expect(harnessOptions(listed)).toEqual([
+      { id: "pi", label: "Pi", available: true, reason: undefined },
+      { id: "acme", label: "Acme", available: false, reason: "Acme stands in here." },
+      { id: "zed", label: "zed", available: true, reason: undefined },
+    ]);
+  });
   it("offers OpenCode last of the harnesses, when the server lists it", () => {
     const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
     expect(harnessOptions(listed)).toEqual([
