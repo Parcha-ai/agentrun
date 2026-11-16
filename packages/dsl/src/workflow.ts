@@ -2399,8 +2399,11 @@ async function decide<T>(
     // rejected was billed, and is booked at its cost, or an unknown one.
     const lost = error instanceof DecisionProviderError && error.code === "outcome_unknown";
     const charge = chargedCost(error);
-    const spent: JudgeResult | undefined = charge !== undefined ? { answers: {}, cost_usd: charge,
-      ...((error as DecisionProviderError).costBasis !== undefined ? { cost_basis: (error as DecisionProviderError).costBasis } : {}) } : undefined;
+    // A request cut to fit that failed carries the state it was sent: the recorder sizes the request by it, not by the state asked.
+    const sentState = sentOf(undefined, error);
+    const spent: JudgeResult | undefined = charge !== undefined || sentState ? { answers: {}, ...(charge !== undefined ? { cost_usd: charge } : {}),
+      ...((error as DecisionProviderError).costBasis !== undefined ? { cost_basis: (error as DecisionProviderError).costBasis } : {}),
+      ...(sentState ? { state_sent: sentState } : {}) } : undefined;
     // The status is read before the caller reacts: a request that fails on its own is `failed`, even when
     // its failure is what cancels the others.
     const failed = receipt(spent, { status: signal?.aborted && !lost ? "cancelled" : "failed", rule: null, action: null, error });

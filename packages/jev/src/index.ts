@@ -232,9 +232,13 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
   let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
   // The context the images take: each use of a reference adds its image again (https://docs.typesafe.ai/images).
   let imageTokens = 0, imageUses = 0;
+  const held: ImageTokens = { state: 0, questions: {} };
   if (carriesImage) {
     // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
-    const texts = [...stringValues(request.state), ...Object.values(request.questions).flatMap(question => isRecord(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
+    const stateTexts = [...stringValues(request.state)];
+    const questionTexts = Object.entries(request.questions).map(([id, question]) => [id, isRecord(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : []] as const);
+    const usesIn = (texts: readonly string[], reference: string) => texts.reduce((count, text) => count + text.split(reference).length - 1, 0);
+    for (const [id] of questionTexts) held.questions[id] = 0;
     assets = Object.create(null) as Record<string, Image>; assetDigests = Object.create(null) as Record<string, { sha256: string; mime: string; bytes: number }>;
     for (const reference of references) {
       const image = given[reference];
@@ -242,13 +246,17 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
         && isRecord(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
         && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
       if (!sound) throw invalid("invalid_assets", `Each image is a PNG or JPEG file of at most ${MAX_IMAGE_BYTES / 1024 / 1024} MiB, with bytes that are that type and a plain reference. No request was sent.`);
-      const uses = texts.reduce((count, text) => count + text.split(reference).length - 1, 0);
+      const stateUses = usesIn(stateTexts, reference);
+      const uses = stateUses + questionTexts.reduce((count, [, texts]) => count + usesIn(texts, reference), 0);
       if (uses === 0) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
       const size = imageDimensions(image.bytes);
       if (size === null) throw invalid("invalid_assets", `The image ${reference} has no width and height its header can be read from. No request was sent.`);
       if (size.width > JEV_MAX_IMAGE_SIDE_PX || size.height > JEV_MAX_IMAGE_SIDE_PX) throw invalid("invalid_assets",
         `The image ${reference} is ${size.width}x${size.height} px; Jev takes at most ${JEV_MAX_IMAGE_SIDE_PX} px on each side. Render it smaller (a letter page at 140 dpi is 1190x1540). No request was sent.`);
-      imageTokens += uses * jevImageTokens(size.width, size.height);
+      const each = jevImageTokens(size.width, size.height);
+      held.state += stateUses * each;
+      for (const [id, texts] of questionTexts) held.questions[id] += usesIn(texts, reference) * each;
+      imageTokens += uses * each;
       imageUses += uses;
       assets[reference] = new Image(image.bytes);
       assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
@@ -256,7 +264,7 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
   }
   // Jev's context: a request that may not fit the default goes with the long-context header; one that may not fit that
   // either has its longest state values cut. Never sent over it: Jev would refuse it whole (HTTP 400 max_tokens_exceeded).
-  const fit = fitContext(request.state, request.questions, longContext, references, imageTokens);
+  const fit = fitContext(request.state, request.questions, longContext, references, held);
   const context = longContext ? JEV_CONTEXT_TOKENS.long : JEV_CONTEXT_TOKENS.perQuestion;
   if (fit === null) throw invalid("over_context", imageTokens > 0
     ? `Jev's questions and the request's ${imageUses} image use${imageUses === 1 ? "" : "s"} (held at ${imageTokens} tokens, each use of a reference adding its image again), with the state's names and shape, are over its ${context}-token context even with every state value cut; send fewer or smaller images, or ask fewer or shorter questions. No request was sent.`
@@ -294,16 +302,21 @@ export function jevImageTokens(width: number, height: number): number {
 /** RFC 6901 JSON Pointer of a key path. */
 const pointer = (path: readonly (string | number)[]): string => path.map(key => `/${String(key).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
 
+/** The tokens a request's images are held for, every use of a reference counted: in the state, and in each question by id. */
+type ImageTokens = { state: number; questions: Record<string, number> };
+
 /** What a request sends for `state` and `questions` to stay inside Jev's context (JEV_CONTEXT_TOKENS), measured by the
  *  bytes that bound its text's tokens, with `imageTokens` (its images, every use) held apart: the state as is when it fits
  *  the default context; else, with `longContext`, as is under the long-context header (`long`) when it fits that; else its
  *  string values cut, longest first, to one common length each ends at (JEV_CUT_MARK), as long as the room left allows,
  *  each one cut named by its place, its bytes and its bytes as sent (`cut`). A string holding an image reference is never
  *  cut. Null when even every value cut would not fit: the questions and images alone are too long. */
-function fitContext(state: unknown, questions: Record<string, unknown>, longContext: boolean, keep: readonly string[], imageTokens: number): { state: unknown; long: boolean; cut: DecisionStateCut[] } | null {
-  const longest = Math.max(0, ...Object.entries(questions).map(([id, question]) => jsonBytes({ [id]: question })));
+function fitContext(state: unknown, questions: Record<string, unknown>, longContext: boolean, keep: readonly string[], images: ImageTokens): { state: unknown; long: boolean; cut: DecisionStateCut[] } | null {
   const all = jsonBytes(questions);
-  const room = (perQuestion: number, perRequest: number) => Math.min(perQuestion - longest, perRequest - all) - FRAME_TOKENS - imageTokens;
+  const allImages = images.state + Object.values(images.questions).reduce((sum, tokens) => sum + tokens, 0);
+  // A question's request holds the state and that question, with the images either names; the whole request holds every use.
+  const tightest = (perQuestion: number) => Math.min(perQuestion, ...Object.entries(questions).map(([id, question]) => perQuestion - jsonBytes({ [id]: question }) - images.state - (images.questions[id] ?? 0)));
+  const room = (perQuestion: number, perRequest: number) => Math.min(tightest(perQuestion) , perRequest - all - allImages) - FRAME_TOKENS;
   const bytes = jsonBytes(state);
   const normal = room(JEV_CONTEXT_TOKENS.perQuestion, JEV_CONTEXT_TOKENS.perRequest);
   if (bytes <= normal) return { state, long: false, cut: [] };
