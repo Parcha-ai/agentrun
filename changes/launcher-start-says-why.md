@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun
-kind: fix
----
-`npx @parcha/agentrun` never fails to start without saying why. A start that fails says, on stderr, the step that failed, how the server ended (its exit code; the signal that ended it, with a hint when a SIGKILL nobody sent points to the system running out of memory; still running after 60 seconds without printing its address, and stopped, with a SIGKILL if a SIGTERM did not end it; or never started, with the error), the server's last lines on stderr and on stdout, and the start log, `start.log` in the data folder (`~/.agentrun` unless `--data` names one), which holds everything the server wrote in that start. Each start overwrites it, private to you. Before, a server that printed nothing on stdout left only "AgentRun did not start; the server's own message, if it gave one, is above.", with no exit code or signal; a launcher that could not be run ended in a stack trace; a server that ignored the SIGTERM after the 60 seconds left the command waiting for ever; and a server command (`import`, ...) that could not be started exited 1 saying nothing.
