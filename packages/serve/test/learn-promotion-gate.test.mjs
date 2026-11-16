@@ -1,14 +1,14 @@
 // The promotion gate (runner/promotion.ts promotionGate). A digest the old graded path promoted (source dry_run, over a
 // store of graded runs): once per 20 graded runs it served, its thresholds refit (a new revision, promoted on the rows it
-// was fit on, when they move within the bar) and it is held when its graded runs fall more than 2 points under the
-// agent's by hand. Escalation never holds it. A new revision is checked once (startCheck): one check at a time, only the
+// was fit on, when they move within the bar). Grades never hold it (the shadow audit's hold rule does, runner/audit.ts).
+// A new revision is checked once (startCheck): one check at a time, only the
 // folder's newest, on the inputs of the agent's last compile_after completed runs; reserved before its runs start.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 
 const { promotionGate } = await import("../dist/runner/promotion.js");
-const { GRADES_KEPT, gradesOf, putGrade, promotionOf, promotionsOf, PROMOTIONS_KEPT, recordPromotion, REFIT_EVERY } = await import("../dist/learn/promote.js");
+const { putGrade, promotionOf, promotionsOf, PROMOTIONS_KEPT, recordPromotion, REFIT_EVERY } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 
 const flowOf = (guard) => JSON.stringify({ v: 2, name: "answer", schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } }, input: { schemaId: "In" }, output: { schemaId: "In", path: "question" },
@@ -71,23 +71,6 @@ test("20 graded runs it served: its guard refit to the cheapest threshold within
   assert.equal(commits.length, 1);
 });
 
-test("graded runs it served more than 2 points under the agent by hand, nothing to refit: held; hand-backs graded right never hold it", async () => {
-  const text = flowOf(undefined);
-  const wrong = await storeOf({ text, served: Array.from({ length: REFIT_EVERY }, (_, i) => [i % 4 !== 0, 0.9]) });
-  assert.equal(await wrong.gate({ name: "answer", workflow: text }, wrong.digest), false);
-  const held = (await promotionsOf(wrong.settings, "a")).at(-1);
-  assert.deepEqual({ decided: held.decided, source: held.source }, { decided: "hold", source: "graded" });
-  assert.match(held.reason, /20 graded runs it served were right 75\.0% of the time, more than 2 pts under the agent's 100\.0% by hand/);
-  // Every one handed back (its guard under threshold) and graded right: the agent's answers, all right. It serves on.
-  const guarded = flowOf({ signal: "self", threshold: 0.5 });
-  const handed = await storeOf({ text: guarded, served: Array.from({ length: REFIT_EVERY }, () => [true, 0.2]) });
-  assert.equal(await handed.gate({ name: "answer", workflow: guarded }, handed.digest), true);
-  assert.equal((await promotionsOf(handed.settings, "a")).at(-1).decided, "promote");
-  // Nor do they bring its guard down: what it would have answered past 0.2 nobody read, so no refit lands.
-  assert.deepEqual(handed.commits, [], `no refit over hand-backs with no answer: ${handed.logs.join("\n")}`);
-  assert.equal((await promotionsOf(handed.settings, "a")).at(-1).digest, handed.digest);
-});
-
 // Review on #2833 (Greptile P1): the graded check reads the outcomes recorded on the served runs, never a rescore of every
 // guard on the run: guards on a run can belong to other workflows, and they would turn a right answer into a hand-back
 // counted at the agent's lower accuracy.
@@ -100,24 +83,6 @@ test("another workflow's escalated guard on a served run never holds it: the gra
   const { gate, settings, digest } = await storeOf({ text, served, byHand: 10, byHandWrong: 1, other });
   assert.equal(await gate({ name: "answer", workflow: text }, digest), true);
   assert.equal((await promotionsOf(settings, "a")).at(-1).decided, "promote");
-});
-
-test("the graded check keeps coming past the grades kept: new wrong grades that push old right ones out still hold it", async () => {
-  const text = flowOf(undefined);
-  const { gate, settings, digest } = await storeOf({ text, served: Array.from({ length: REFIT_EVERY }, () => [true, 0.9]) });
-  const grade = (run, correct, path = "workflow") => putGrade(settings, "a", { run, correct, source: "eval", at: run, path, ...(path === "workflow" ? { workflow: "answer", digest } : {}) });
-  assert.equal(await gate({ name: "answer", workflow: text }, digest), true, "checked at its first 20, all right");
-  // Up to the grades kept (500: 10 by hand, 490 it served, all right): checked again.
-  for (let i = 0; i < GRADES_KEPT - 10 - REFIT_EVERY; i++) await grade(`more-${i}`, true);
-  assert.equal(await gate({ name: "answer", workflow: text }, digest), true);
-  // Ten more by hand, all right, and 20 it served wrong: the oldest 30 grades fall out of the 500 kept, so the count it
-  // served stays 490. The 20 are new all the same: checked, 470 of 490 right is more than 2 pts under the agent's 100%.
-  for (let i = 0; i < 10; i++) await grade(`hand-new-${i}`, true, "agent");
-  for (let i = 0; i < REFIT_EVERY; i++) await grade(`wrong-${i}`, false);
-  assert.equal((await gradesOf(settings, "a")).length, GRADES_KEPT);
-  assert.equal(await gate({ name: "answer", workflow: text }, digest), false, "held on its new wrong grades");
-  const held = (await promotionsOf(settings, "a")).at(-1);
-  assert.deepEqual({ decided: held.decided, source: held.source }, { decided: "hold", source: "graded" });
 });
 
 // Review on #2644 (refit races): two claims checking the same window at once compute the same cursor; only the claim whose

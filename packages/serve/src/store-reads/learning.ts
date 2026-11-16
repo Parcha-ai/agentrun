@@ -63,7 +63,8 @@ export type RunRecords = {
 /** Agent `agentId`'s runs' records read at once, whatever their number: its runs' launches (Store.runs.launches) and every
  *  round its runs' learning kept with the learning runs they name (Store.learning.kept), two reads beside `listed` (its
  *  runs, as runs.list read them). Each answers as the store's per-run read does: a run of `listed` with no launch row is
- *  StoreLaunchMissing, one that kept no learning has no round. A run not of `listed` is read from the store. */
+ *  StoreLaunchMissing, one that kept no learning has no round. A run not of `listed` is read from the store, but for an
+ *  audit's shadow run: `listed` is every run of the agent, its shadows among them. */
 export async function agentRecordsOf(store: Store, agentId: string, listed: readonly RunRecord[]): Promise<RunRecords> {
   const [starts, kept] = await Promise.all([store.runs.learningStarts(agentId), store.learning.kept(agentId)]);
   const ours = new Set(listed.map((run) => run.id));
@@ -80,7 +81,9 @@ export async function agentRecordsOf(store: Store, agentId: string, listed: read
         if (!startOf.has(runId)) throw new StoreLaunchMissing(runId);
         return learningStartOfStored(startOf.get(runId));
       },
-      get: async (id) => rows.get(id) ?? store.runs.get(id),
+      // An audit's shadow run is the agent's: one not among `listed` (every run of the agent) was never started, so a
+      // run's shadow (allInOf) is no read a run.
+      get: async (id) => rows.get(id) ?? (isShadowRun(id) ? undefined : store.runs.get(id)),
     },
     learning: {
       proposal: async (runId, round) => {
