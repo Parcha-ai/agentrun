@@ -22,6 +22,11 @@ export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
  *  (an in-process runner's) holding the lock a begin waited on. `where`: its database (Connection.where), so a wait for
  *  the write lock knows a holder of this process on the same database (lockWait). */
 const OPEN = new Set<{ readonly opened: Error; readonly began: number; readonly where: string }>();
+/** The interactive transactions of this process whose begin is with its worker, not yet answered: each on its database
+ *  (`where`). Such a begin may hold the write lock already, its answer waiting for the event loop, and after a hold-up
+ *  the answers of two workers come back in no set order, so a wait that ran out then can be read before that begin's
+ *  answer adds it to OPEN (lockWait). */
+const BEGINNING = new Set<{ readonly where: string }>();
 
 /** `opened`'s frames: where a transaction was asked for, without the Error line itself. */
 const framesOf = (opened: Error): string => (opened.stack ?? "").split("\n").slice(1).join("\n");
@@ -270,25 +275,34 @@ export class Connection implements SqliteDatabase, StoreConnection {
    *  sent again, with the held-up time given back: that holder's statements wait for the same event loop, and its deadline
    *  counts only the time this process could run (store/deadline.ts runnableDeadline), so the wait for it counts the same
    *  way, and the holder, once it runs again, commits or meets its deadline. A wait on another process's write, or one
-   *  this process could run through, ends StoreBusy as ever. */
-  async #lockWait<T>(send: (busyMs: number | undefined) => Promise<T>): Promise<T> {
+   *  this process could run through, ends StoreBusy as ever.
+   *  Every wait is measured, and the holder looked for when it runs out, never when it is sent: a holder's begin posted
+   *  in the same turn may take the lock before its answer makes it known. `self`: this request's own begin (BEGINNING),
+   *  never its own holder. */
+  async #lockWait<T>(send: (busyMs: number | undefined) => Promise<T>, self?: { readonly where: string }): Promise<T> {
     let left = this.#busyTimeoutMs;
     for (;;) {
-      const here = [...OPEN].some((open) => open.where === this.#where);
-      if (!here) return send(left < this.#busyTimeoutMs ? left : undefined);
       const clock = runnableDeadline(left, () => {});
       const sent = performance.now();
       try {
         return await send(left < this.#busyTimeoutMs ? left : undefined);
       } catch (error) {
+        if (!(error instanceof StoreBusy)) throw error;
         const held = clock.held();
-        if (!(error instanceof StoreBusy) || held === 0) throw error;
+        if (held === 0 || !this.#heldHere(self)) throw error;
         left -= performance.now() - sent - held;
         if (left <= 0) throw error;
       } finally {
         clock.clear();
       }
     }
+  }
+
+  /** A transaction of this process on this database is open, or its begin is with its worker (other than `self`). */
+  #heldHere(self?: { readonly where: string }): boolean {
+    for (const open of OPEN) if (open.where === this.#where) return true;
+    for (const beginning of BEGINNING) if (beginning !== self && beginning.where === this.#where) return true;
+    return false;
   }
 
   /** The executor that sends straight to the worker: a transaction's handle, valid while `live()` says so. */
@@ -353,14 +367,19 @@ export class Connection implements SqliteDatabase, StoreConnection {
       // Its wait for the database's lock (another process's write) bounded by what the deadline leaves: a lock still held
       // when that runs out is the deadline's end, not the connection's own busy wait.
       const busyMs = until !== undefined ? Math.max(0, until - Date.now()) : undefined;
+      // Until its begin is answered, it may hold the lock unknown to OPEN: another wait that runs out meanwhile finds it.
+      const beginning = { where: this.#where };
+      BEGINNING.add(beginning);
       try {
         // Counted from its call, its wait is the deadline's, the wall clock's; else its wait for a holder of this process
         // gives back the time this process was held up (lockWait).
         if (busyMs !== undefined) await this.#send({ op: "begin", full, ...(read ? { read } : {}), busyMs });
-        else await this.#lockWait((wait) => this.#send({ op: "begin", full, ...(read ? { read } : {}), ...(wait !== undefined ? { busyMs: wait } : {}) }));
+        else await this.#lockWait((wait) => this.#send({ op: "begin", full, ...(read ? { read } : {}), ...(wait !== undefined ? { busyMs: wait } : {}) }), beginning);
       } catch (error) {
         if (error instanceof StoreBusy && busyMs !== undefined && busyMs < this.#busyTimeoutMs) throw holderNamed(new StoreDeadline(deadlineMs), { opened });
         throw error instanceof StoreBusy ? holderNamed(error, { opened }) : error;
+      } finally {
+        BEGINNING.delete(beginning);
       }
       const open = { opened, began: Date.now(), where: this.#where };
       OPEN.add(open);
