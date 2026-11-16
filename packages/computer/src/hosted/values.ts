@@ -35,7 +35,7 @@ const PACKED_JSON_MAX = 1 << 20;
  * host of a string list stores each as name=value. unpackLabels reads the map back exactly. A map that does not fit
  * room (count, bytes and valueBytes, of the packed labels), or whose JSON is past PACKED_JSON_MAX, is refused in words.
  */
-export function packLabels(labels: Record<string, string>, name: string, room: HostFacts["labels"] = {}): { labels: Record<string, string> } | { problem: string } {
+export function packLabels(labels: Record<string, string>, name: string, room: Exclude<HostFacts["labels"], "machine"> = {}): { labels: Record<string, string> } | { problem: string } {
 	const json = Buffer.from(JSON.stringify(labels));
 	if (json.length > PACKED_JSON_MAX) return { problem: `its labels come to ${json.length} bytes as JSON, past the ${PACKED_JSON_MAX} a packed map holds` };
 	const payload = deflateRawSync(json).toString("base64url");

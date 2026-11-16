@@ -30,7 +30,8 @@ export interface MachineHost {
 	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. A native name
 	 * the vendor already has throws exists (a REST host's named call: hosted/rest.ts), and the adapter adopts the machine
 	 * the name lists, as a retry does. An answer that never comes is not a machine the adapter forgets: it lists by
-	 * req.labels and deletes what it finds.
+	 * req.labels and deletes what it finds. A host with facts.labels "machine" keeps neither: req.name is its native
+	 * name where it has one (Machine.name), and the adapter writes req.labels into the machine itself.
 	 */
 	create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }>;
 	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a HostError not_found). */
@@ -42,7 +43,8 @@ export interface MachineHost {
 	 * timer moved: E2B's). It may answer more machines than carry all the labels (a vendor that filters by some, or
 	 * none): the adapter keeps those whose get does. A listing may lag a create: two creates of one request on two
 	 * provider instances can then both make a machine, and the adapter deletes every one but the oldest (createdAt), so
-	 * a vendor may see a second create deleted.
+	 * a vendor may see a second create deleted. With facts.labels "machine" it lists by req.name where the vendor lists by
+	 * name, else every machine: the adapter keeps those of the name, then reads each one's labels from inside it.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
 	/**
@@ -84,8 +86,8 @@ export interface MachineHost {
 	 * vendor's own timer (facts.lifetime "vendor"), or the janitor's deadline label (facts.lifetime "janitor"). A refusal
 	 * (a HostError limit, in words) when no end the vendor takes lands there without moving it earlier than it is or past
 	 * the most: nothing moves then. The adapter reads the end back with get (deadlineOf, the deadline label: a vendor that
-	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. Optional: a host without
-	 * it has no extend.
+	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. With facts.labels
+	 * "machine", the adapter then moves the deadline label in the machine itself. Optional: a host without it has no extend.
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
@@ -145,8 +147,13 @@ export interface MachineRequest {
  */
 export interface Machine {
 	id: string;
-	/** Every label it carries, the adapter's own included. */
+	/** Every label it carries, the adapter's own included; with facts.labels "machine", none (the adapter reads them). */
 	labels: Record<string, string>;
+	/**
+	 * With facts.labels "machine": the vendor's native name, the MachineRequest.name create gave it, where the vendor
+	 * keeps one. A machine of a request's name whose labels are not written yet is the request's (provider.md).
+	 */
+	name?: string;
 	/**
 	 * starting: not yet running; stopped: there, not running, and not being deleted (paused, asleep): listed, so the
 	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
@@ -211,9 +218,12 @@ export interface HostFacts {
 	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
 	 * Absent: no bound. packed: the host stores the labels as packLabels packs them (./hosted/values.ts: one name to
 	 * list by, the map in parts of at most valueBytes each) and get answers unpackLabels' map; count and bytes are then
-	 * the packed labels'.
+	 * the packed labels'. "machine": the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in
+	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as
+	 * JSON, what a run's output keeps (OUTPUT_MAX, ./hosted/process.ts). Only with
+	 * lifetime "vendor": a machine whose labels were never written is ended by the vendor's timer alone.
 	 */
-	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } };
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a
