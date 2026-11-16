@@ -15,6 +15,12 @@ it in your browser (`--no-open`, a CI run or a machine with no display skips tha
 each version of this command runs the server it was released with. Node.js 24.22.3 or newer, on macOS or Linux; an older
 Node gets one line naming that floor.
 
+A start that fails says why on stderr: the step that failed, how the server ended (its exit code or signal, or still
+running after 60 seconds without printing its address, and stopped), its last lines on stderr and stdout, and
+`~/.agentrun/start.log` (in the folder `--data` names), which holds everything the server wrote in that start. Each start
+overwrites that log; it is private to you, as the server's first lines name its API token. A log the disk could not hold
+all of is named with the error that cut it short.
+
 Where Docker answers on this machine, a new agent runs in a Docker box of its own with a shell, and a line on stderr,
 after the address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).` Where it does not, that line says why
 and that new agents run on the runner. A Docker box's image is built on its first run, which shows that on its
@@ -24,9 +30,17 @@ pi runs every agent out of the box. The Claude Code and Codex harnesses need the
 one is missing, AgentRun says so with the one command to paste: `npx` with this package, the server and that harness's
 package at their versions, with `--data` naming the same store.
 
-With no `AGENT_MODEL`, the server runs a current model of the first provider it has a key for, Anthropic, then OpenAI,
-then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your environment, or a key saved in
-the console's Settings → Model keys, which counts from the save on. Other commands are the server's:
+It needs no model key to start. In the console, set a password, then Continue with ChatGPT (Settings → Model keys, or
+the first screen), then run your first agent: Codex and pi agents run on your ChatGPT plan, and the sign-in finishes
+by itself on this computer. Claude Code, OpenCode, Jev decisions and paid tools need their own keys. Eligible usage in
+this app uses your ChatGPT plan. Manage usage in your ChatGPT settings. The sign-in is yours: don't let other people run
+agents on this server with it.
+
+Or add a model key. With no `AGENT_MODEL`, the server runs a current model of the first provider it has a key for,
+Anthropic, then OpenAI, then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your
+environment, or a key saved in the console's Settings → Model keys, which counts from the save on. Signed in with
+ChatGPT, pi and Codex run on the plan's model by default, key or not, unless `AGENT_MODEL` names another. Other
+commands are the server's:
 `npx @parcha/agentrun import` brings in your local Claude Code, Codex and pi sessions, and
 `npx @parcha/agentrun reset-password` clears the console's password. `--data DIR` and `--port N` change where it keeps
 its data and the port it takes.

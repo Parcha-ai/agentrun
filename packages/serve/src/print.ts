@@ -37,11 +37,12 @@ export const logLine = (event: string, fields: Record<string, string | number> =
   [`at=${new Date().toISOString()}`, `event=${event}`, ...Object.entries(fields).map(([k, v]) => `${k}=${value(v)}`)].join(" ");
 
 /** The log line of a runner's start or end event (runner.ts RunnerEvent): `run_started` (run, agent, kind) once a run's
- *  first claim, `run_ended` (run, agent, status, cost_usd) once it is final. Any other event has none. Ids and numbers
- *  only: no token or secret reaches a line. */
-export function runLine(event: { type: string; runId?: string; agent?: string; kind?: string; status?: string; costUsd?: number | null }): string | undefined {
+ *  first claim, `run_ended` (run, agent, status, cost_usd) once it is final: `cost_usd` the exact cost or "unknown", and
+ *  beside an unknown one `cost_usd_at_most` when the run's stored cost is the most it can have cost. Any other event has
+ *  none. Ids and numbers only: no token or secret reaches a line. */
+export function runLine(event: { type: string; runId?: string; agent?: string; kind?: string; status?: string; costUsd?: number | null; costAtMostUsd?: number }): string | undefined {
   if (event.type === "started") return logLine("run_started", { run: event.runId!, agent: event.agent!, kind: event.kind! });
-  if (event.type === "ended") return logLine("run_ended", { run: event.runId!, agent: event.agent!, status: event.status === "ended" ? "completed" : event.status!, cost_usd: event.costUsd ?? "unknown" });
+  if (event.type === "ended") return logLine("run_ended", { run: event.runId!, agent: event.agent!, status: event.status === "ended" ? "completed" : event.status!, cost_usd: event.costUsd ?? "unknown", ...(event.costAtMostUsd !== undefined ? { cost_usd_at_most: event.costAtMostUsd } : {}) });
   return undefined;
 }
 

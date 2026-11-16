@@ -16,6 +16,8 @@ const { bookedAsk } = await import("../dist/runner/learning-ask.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const { gradeCapOf } = await import("../dist/runner/learning-end.js");
+const { bookedSpend } = await import("../dist/runner/metrics.js");
+const { runEntries } = await import("../dist/store-reads/journal.js");
 const { beforeRequestOf } = await import("../../run-adapters/dist/kernel/cap/index.js");
 
 const MODEL = "claude-sonnet-5-5";
@@ -162,6 +164,47 @@ const lingeringResponses = (lingerMs) => (sent) => async (_url, init = {}) => {
     },
   }), { status: 200, headers: { "content-type": "text/event-stream" } });
 };
+
+/** A provider whose answer the proxy can't read a usage from (its input count is no number): the request is answered at
+ *  no known price, booked under a cap at the figure the cap held it at. */
+function unreadableUsage(sent) {
+  return async (_url, init = {}) => {
+    const body = JSON.parse(String(init.body ?? "{}"));
+    sent.push(body);
+    return sse([
+      { type: "message_start", message: { id: "msg_x", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: "many", output_tokens: 1 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done." } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: USED.output } },
+      { type: "message_stop" },
+    ]);
+  };
+}
+
+test("a capped run with a request answered at no known price: its grade's room is the cap less that request's held figure, never $0 and never the whole cap; with no figure at all, the room is unknown (null), never $0", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const CAP = 1;
+  const sent = [];
+  const ask = bookedAsk({ provider: { api: "anthropic-messages", origin: "https://job.invalid", credential: () => `not-a-secret-${"x"}` }, model: MODEL, price, fetch: unreadableUsage(sent), beforeRequest: beforeRequestOf({ capUsd: () => CAP, modelOf: () => GRADER }) });
+  await ask({ prompt: "Do the job.", maxTokens: 1_000 }, new AbortController().signal, { journal: () => store.journal(claim), flush: () => store.flush() });
+  assert.equal(sent.length, 1);
+  const shown = bookedSpend(await runEntries(store, "run-1", ctx), "model");
+  assert.deepEqual([shown.usd, shown.unpriced], [null, 1], "the request's own cost is unknown: the run's cost reads unknown, one request not priced");
+  const held = await spendInRecords(store, "run-1");
+  assert.ok(held > 0 && held < CAP, `the request counts at its hold for the cap: ${held}`);
+  const room = await gradeCapOf(store, "run-1", 1, CAP);
+  assert.equal(eight(room), eight(CAP - held), "the room is the cap less the request's held figure");
+  // An uncapped request (no hold) answered at no known price: what the run spent under its cap is unknown, so its room is
+  // unknown too, never $0 (which read as "no room under the cap").
+  await store.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" });
+  const open = await store.claim("run-2", "runner-a", { leaseMs: 60_000 });
+  await bookedAsk({ provider: { api: "anthropic-messages", origin: "https://job.invalid", credential: () => `not-a-secret-${"x"}` }, model: MODEL, price, fetch: unreadableUsage(sent) })({ prompt: "Do the job.", maxTokens: 1_000 }, new AbortController().signal, { journal: () => store.journal(open), flush: () => store.flush() });
+  assert.equal(await gradeCapOf(store, "run-2", 1, CAP), null, "unknown, never $0");
+});
 
 test("a grade on a gateway's Responses stream that stays open after its answer is priced, never $0: the ask reads the spend once the proxy has booked the request", async (t) => {
   const { end, store } = await learnedUnder(t, 1, { api: "openai-responses", origin: lingeringResponses(300) });

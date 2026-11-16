@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { DEFER_CATALOG_OVER } from "@parcha/agentrun-kernel";
+import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, type StoreRole, storeTarget, Unanswered } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
@@ -484,7 +485,7 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   await saidReleased(w.events);
   resumedOnceByB(w.events, row);
   saidTakenOver(await w.liveRows(), "runner-a");
-  return { ...(await w.read()), ran };
+  return { ...(await w.read()), ran, w };
 }
 
 /** How processStopped reads a process's state: /proc/<pid>/stat's text (throws where there is no /proc), and `ps -o
@@ -1172,12 +1173,14 @@ const CASES: readonly Case[] = [
   },
   {
     id: "meta-codemode-crash",
-    title: "a crash after a codemode script's call's intent: the script runs again, the call is told interrupted, never run twice, and the script ends there",
+    title: "a crash after a codemode script's call's intent: the script runs again, the call is told interrupted in the one wording every harness gives it, never run twice, and the script ends there",
     async body(subject, t) {
       const script = "await tools.effect({});\nawait tools.read({});\nreturn 'end';";
-      const { ran } = await crashThenResume(subject, t, "effect", "beforeResult", [{ call: "codemode", args: { script } }, { say: "done" }]);
+      const { ran, w } = await crashThenResume(subject, t, "effect", "beforeResult", [{ call: "codemode", args: { script } }, { say: "done" }]);
       assert.equal(ran.effect, 1, "the effect ran once, never again after the crash");
       assert.equal(ran.read, 0, "the script ended at the interrupted call: nothing after it ran");
+      // Its row reads the kernel's words for an outcome not known (INTERRUPTED_TEXT), on pi, claude-agent and opencode alike.
+      await nestedRowsShown(w, "codemode", [{ tool: "effect", result: new RegExp(`^${INTERRUPTED_TEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }]);
     },
   },
 ];

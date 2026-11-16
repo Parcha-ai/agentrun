@@ -2,13 +2,16 @@
 // the eval's grader agent, no key and no network.
 //
 // The package's agent follows its run's input, one step a request:
-// - `Call <tool> with <json>`, one line each: that call, in order (an MCP tool by its wire name, mcp__<server>__<tool>);
+// - `Call <tool> with <json>`, one line each: that call, in order (an MCP tool by its wire name, mcp__<server>__<tool>),
+//   each `{{env:<NAME>}}` in its json that environment variable's value (a secret the run's input never holds);
 // - `Write <path>: <text>`: the write tool, making that file in the run's work folder;
 // - `Page through the filed answer`: as a model that follows the words it is given would, the read tool on the file the
 //   last result says the whole answer is filed at (`in the run's files at <path>`), from the line that result names
 //   (`offset=<n>`), then again from each `offset=<n>` the read answers, until a read names none;
 // - `Answer:` and the lines after it: the final answer, with `{{last-result}}` the text of the last tool result,
-//   `{{tools}}` the names of the tools the run was given, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned), and
+//   `{{tools}}` the names of the tools the run was given, `{{describe:<tool>}}` that tool's description as the run was
+//   handed it, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned),
+//   `{{today}}` the day its system prompt's environment line names (environment.ts, "Today is <day> (<zone>)"), and
 //   `{{flaky:<a>|<b>}}` <a> the first time any run of this server answers it and <b> after (a count kept in the file
 //   AGENTRUN_TEST_EVAL_COUNTER names).
 // - `Hold until stopped.`: with AGENTRUN_TEST_EVAL_HOLD set, the run writes that file once it holds, so a test knows the
@@ -54,6 +57,8 @@ function flaky(first, later) {
 
 /** The names of the tools the run was given: the context's, else those its messages added. */
 const toolsOf = (context) => [...new Set([...(context.tools ?? []), ...context.messages.flatMap((m) => m.toolsAdded ?? [])].map((tool) => tool.name))];
+/** The description of the run's tool `name`, as it was handed it; null when it has none. */
+const describedOf = (context, name) => [...(context.tools ?? []), ...context.messages.flatMap((m) => m.toolsAdded ?? [])].find((tool) => tool.name === name)?.description ?? null;
 
 /** Where the last result says the whole answer is filed, and the line it says to go on from. */
 const FILED = /in the run's files at (\S+?)(?=[\]:;,\s]|$)/;
@@ -70,7 +75,7 @@ function nextCall(input, said) {
         at++;
         continue;
       }
-      return call ? [call[1], JSON.parse(call[2])] : ["write", { path: write[1], content: `${write[2]}\n` }];
+      return call ? [call[1], JSON.parse(call[2].replace(/\{\{env:(\w+)\}\}/g, (_, name) => process.env[name] ?? ""))] : ["write", { path: write[1], content: `${write[2]}\n` }];
     }
     if (line !== "Page through the filed answer") continue;
     const path = FILED.exec(said[at - 1] ?? "")?.[1];
@@ -110,6 +115,8 @@ export default function reply(context, faux) {
   return faux.message(answer
     .replaceAll("{{last-result}}", textOf(results.at(-1)?.content ?? ""))
     .replaceAll("{{tools}}", toolsOf(context).join(", "))
+    .replace(/\{\{describe:([^}]+)\}\}/g, (_, name) => String(describedOf(context, name)))
+    .replaceAll("{{today}}", /^Today is (.+?) \([^)]+\)\./m.exec(system)?.[1] ?? "(no environment line)")
     .replace(/\{\{learned:([^}]+)\}\}/g, (_, text) => (system.includes(text) ? "yes" : "no"))
     .replace(/\{\{flaky:([^|}]*)\|([^}]*)\}\}/g, (_, a, b) => flaky(a, b)));
 }

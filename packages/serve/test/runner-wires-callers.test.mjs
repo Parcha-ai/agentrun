@@ -184,6 +184,20 @@ for (const wire of Object.keys(SOURCES)) {
   });
 }
 
+test("a workflow model node whose route tells a refused credential (a ChatGPT plan's) tells it the credential the provider answered 401 to", async (t) => {
+  const gateway = await startFauxGateway({ call: () => ({ name: "submit", input: { answer: 42 } }) });
+  t.after(() => gateway.close());
+  const route = await routeFor("openai-responses", gateway);
+  const told = [];
+  let sent = 0;
+  const unauthorized = async () => (sent += 1, Response.json({ error: { message: "bad token" } }, { status: 401 }));
+  const refusing = { ...route, provider: { ...route.provider, refused: async (credential) => void told.push(credential) }, fetch: unauthorized };
+  const { row } = await workflowOn(t, async () => providerFromRoute(refusing), 100);
+  assert.notEqual(row.state, "ended", JSON.stringify(row));
+  assert.ok(sent >= 1, "the node's request reached the provider");
+  assert.ok(told.length >= 1 && told.every((credential) => credential === KEY), `told the refused credential: ${told.length}`);
+});
+
 test("the table names every wire", () => {
   assert.deepEqual(Object.keys(SOURCES).sort(), Object.keys(WIRES).sort());
 });

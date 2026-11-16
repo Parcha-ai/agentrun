@@ -387,10 +387,10 @@ test("the launcher keeps no seal key of its own: with none handed it reads, make
   assert.deepEqual(readdirSync(fresh), [], "nothing is made under the config home");
 });
 
-test("the names AgentRun's own tools are called by, hands and monid, are no MCP server's: a PUT under one is 422 on its name, with why, and nothing is saved", async (t) => {
+test("the name AgentRun's own tools are called by, hands, is no MCP server's: a PUT under it is 422 on its name, with why, and nothing is saved", async (t) => {
   const { api } = previews;
   const server = await fake(t, {});
-  for (const name of ["hands", "monid"]) {
+  for (const name of ["hands"]) {
     const refused = await api("PUT", `/settings/mcp-servers/${name}`, { url: server.url, auth: { type: "none" } });
     assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.fields?.map((f) => [f.field, f.reason])], [422, "input_invalid", [["name", "reserved"]]], `${name}: ${JSON.stringify(refused.body)}`);
     assert.match(refused.body.error.fields[0].message, new RegExp(`'${name}' is reserved for AgentRun's own tools`));

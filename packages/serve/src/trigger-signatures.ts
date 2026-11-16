@@ -1,9 +1,10 @@
-// The signature schemes a webhook trigger takes, in one table: each names the header its signature comes in, checks a
+// The signature schemes, in one table: each names the header its signature comes in, checks a
 // request's headers before its body is read, verifies the request under the trigger's secret, and reads the request's
 // firing key (from what its signature covers, so a replay under a new id is the same firing) and its event (what a
-// trigger's accept rules match). A request is checked by the one
-// scheme whose signature header it carries; a trigger's `signature` names the scheme it takes. A new scheme is one entry
-// here: the source's schema and its check read the table's keys.
+// trigger's accept rules match). A webhook trigger's `signature` names one of SCHEME_NAMES, and its request is checked by
+// the one of those whose signature header it carries. `composio` is a Composio trigger's alone (trigger-composio.ts
+// checks the project's deliveries with it): a webhook trigger never takes it. A new webhook scheme is one entry here and
+// its name in SCHEME_NAMES: the webhook source's schema and its check read that list.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { HOOK_TOLERANCE_S, headersRefusal, HOOK_ID, MIN_KEY_BYTES, verify as verifyStandard, verifyWithKey } from "./standard-webhooks.js";
 import { isObject } from "./validate.js";
@@ -11,10 +12,8 @@ import { isObject } from "./validate.js";
 type Headers = Record<string, string | string[] | undefined>;
 export type Scheme = {
   /** The header its signature comes in: a request that carries it, and no other header's, is checked by a scheme that
-   *  names it; where several do (`composio` shares `webhook-signature` with `standard`) the trigger's own `signature` picks. */
+   *  names it. */
   signatureHeader: string;
-  /** Its secret is the sender's own, given at the trigger's create and rotation, never one this server mints. */
-  givenSecret?: true;
   /** How a sender signs under it, for the OpenAPI document. */
   describe: string;
   /** Why the headers alone are refused, before a byte of the body is read. */
@@ -94,14 +93,14 @@ export const SIGNATURE_SCHEMES = {
       };
     },
   },
-  // Composio's (docs.composio.dev webhooks, @composio/core's verifyWebhook): the Standard Webhooks headers and message
-  // ("{id}.{timestamp}.{body}", `v1,<base64 HMAC-SHA256>`), but keyed by the UTF-8 bytes of the whole secret string
-  // Composio minted, not by a base64-decoded `whsec_` key. Every trigger of its project comes to the one webhook URL, so
-  // the event is the body's metadata.trigger_slug, and `where` reads the trigger's own data under /data.
+  // Composio's (docs.composio.dev webhooks, @composio/core's verifyWebhook), for a Composio trigger's deliveries alone: the
+  // Standard Webhooks headers and message ("{id}.{timestamp}.{body}", `v1,<base64 HMAC-SHA256>`), but keyed by the UTF-8
+  // bytes of the whole secret string Composio minted for the project's subscription, not by a base64-decoded `whsec_` key.
+  // Every event of the project comes to its one route, so the event is the body's metadata.trigger_slug, and `where`
+  // reads the trigger's own data under /data.
   composio: {
     signatureHeader: "webhook-signature",
-    givenSecret: true,
-    describe: `\`composio\` takes a Composio trigger's delivery (the webhook subscription whose URL is the trigger's hook_url): the Standard Webhooks headers and message, \`v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">\`, keyed by the UTF-8 bytes of the whole secret string Composio gave the subscription (make the trigger first, register its hook_url as Composio's webhook subscription, then \`POST /v2/triggers/{id}/secret\` with \`{secret}\`; until then every request is refused, and this server never makes one), with the same ${HOOK_TOLERANCE_S} s window and firing key (\`webhook-id\`). Its event is the body's \`metadata.trigger_slug\` (\`GITHUB_ISSUE_ADDED_EVENT\`), else its top-level \`type\` (the subscription's account events, \`composio.connected_account.expired\`), and \`where\` pointers read the payload under \`/data\`.`,
+    describe: `\`composio\` takes a Composio project's delivery to a Composio trigger's route (/hooks/composio/{hook}): the Standard Webhooks headers and message, \`v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">\`, keyed by the UTF-8 bytes of the whole secret string Composio made for the project's subscription (this server makes the subscription and keeps its secret sealed), with the same ${HOOK_TOLERANCE_S} s window and firing key (\`webhook-id\`). Its event is the body's \`metadata.trigger_slug\` (\`GITHUB_ISSUE_ADDED_EVENT\`), else its top-level \`type\` (the subscription's account events, \`composio.connected_account.expired\`), and \`where\` pointers read the payload under \`/data\`.`,
     precheck: headersRefusal,
     verify: (key, headers, body, nowMs) => verifyWithKey(Buffer.from(key, "utf8"), headers, body, nowMs),
     firingKeyOf: (headers) => headers["webhook-id"] as string,
@@ -122,14 +121,13 @@ export const SIGNATURE_SCHEMES = {
 } satisfies Record<string, Scheme>;
 
 export type SchemeName = keyof typeof SIGNATURE_SCHEMES;
-export const SCHEME_NAMES = Object.keys(SIGNATURE_SCHEMES) as SchemeName[];
+/** The schemes a webhook trigger's `signature` may name: every one but `composio`, a Composio trigger's. */
+export const SCHEME_NAMES: readonly SchemeName[] = ["standard", "github"];
 export const DEFAULT_SCHEME: SchemeName = "standard";
 
-/** The scheme a request asks for: the one whose signature header it carries. Schemes that share a header (`standard` and
- *  `composio`) are told apart by the trigger's own (`wanted`, its `signature`): a request is verified under the trigger's
- *  scheme, so one signed for the other fails its check as any bad signature does. With no `wanted` (before the trigger is
- *  read, where the headers' check is the same for both) the first of them stands in. `refusal` when it carries no
- *  signature header, or the headers of more than one. */
+/** The webhook scheme a request asks for: the one of SCHEME_NAMES whose signature header it carries. Were two to share a
+ *  header, the trigger's own (`wanted`, its `signature`) would pick, and with no `wanted` (before the trigger is read) the
+ *  first of them. `refusal` when it carries no signature header, or the headers of more than one. */
 export function schemeOf(headers: Headers, wanted?: string): { name: SchemeName; scheme: Scheme } | { refusal: string } {
   const carried = SCHEME_NAMES.filter((name) => headers[SIGNATURE_SCHEMES[name].signatureHeader] !== undefined);
   const byHeader = new Set(carried.map((name) => SIGNATURE_SCHEMES[name].signatureHeader));

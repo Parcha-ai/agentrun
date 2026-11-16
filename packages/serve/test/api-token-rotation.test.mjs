@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { call, client, serve } from "./support.mjs";
+import { call, client, serve, storeBytes } from "./support.mjs";
 
 const { acceptedTokens, bearerCheck, DEFAULT_TOKEN_ID, parseTokens, TOKENS_ENV, tokenProblem } = await import("../dist/api-token.js");
 const { banner } = await import("../dist/print.js");
@@ -247,4 +247,51 @@ test("a listed token met alone is cut by import's redaction and the host's, as A
     if (before === undefined) delete process.env.AGENTRUN_TOKENS;
     else process.env.AGENTRUN_TOKENS = before;
   }
+});
+
+test("the observation routes take any listed token, log its id, and refuse any other", async (t) => {
+  const lines = [];
+  const server = await serve(t, { token: OLD, tokens: [{ id: "ci-new", token: NEW }], runner: false, log: (line) => lines.push(line) });
+  const origin = server.baseUrl.replace(/\/v2$/, "");
+  const identity = async (token) => {
+    const res = await fetch(`${origin}/api/v2/control/identity`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    await res.text();
+    return res.status;
+  };
+  for (const [token, id] of [[OLD, "default"], [NEW, "ci-new"]]) {
+    lines.length = 0;
+    assert.equal(await identity(token), 200, `${id} on /api/v2/control`);
+    const line = requestLines(lines, "/api/v2/control/identity");
+    assert.ok(line.length === 1 && new RegExp(` token=${id}( |$)`).test(line[0]), `the request line names ${id}: ${lines.join("\n")}`);
+  }
+  lines.length = 0;
+  assert.equal(await identity(OTHER), 401, "another token");
+  assert.equal(await identity(undefined), 401, "no token");
+  assert.ok(requestLines(lines, "/api/v2/control/identity").every((line) => !/ token=/.test(line)), "a refused request names no token");
+  assert.ok(lines.every((line) => !line.includes(OLD) && !line.includes(NEW)), "no log line holds a secret");
+});
+
+test("imported remote history has every listed token cut, not only the server's first", async (t) => {
+  const server = await serve(t, { token: OLD, tokens: [{ id: "ci-new", token: NEW }], runner: false });
+  const request = async (method, path, body, token = NEW) => {
+    const res = await fetch(server.baseUrl + path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: res.status, body: await res.json() };
+  };
+  const capabilities = { native_execution: false, history_import: true };
+  const enroll = await request("POST", "/connectors/enrollment", { capabilities });
+  assert.equal(enroll.status, 200, "a listed token enrolls a connector");
+  const registered = await request("POST", "/connectors", { installation_id: "history-source", operation_id: "one", capabilities }, enroll.body.enrollment_token);
+  assert.equal(registered.status, 200, JSON.stringify(registered.body));
+  const id = registered.body.connector.id, credential = registered.body.credential;
+  const call = (method, path, body) => request(method, `/connectors/${id}${path}`, body, credential);
+  const target = { runtime: "codex", project: "/source/project", selector: { kind: "project" }, machine_id: "remote-machine", version: "1.0", model: "original-model", fingerprint: "f".repeat(64), configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "unavailable", usage: true } };
+  assert.equal((await call("POST", "/import", { target_id: "selected", target, history_only: true })).status, 200);
+  const pasted = `Tokens pasted by mistake: ${OLD} ${NEW}`;
+  const session = { source: "codex", id: "source-session", startedAt: "2026-01-01T09:00:00Z", endedAt: "2026-01-01T09:01:00Z", state: "completed", model: "openai/source-model", activeMs: 60_000, firstPrompt: pasted,
+    turns: [{ role: "user", text: pasted, at: Date.parse("2026-01-01T09:00:00Z") }, { role: "assistant", text: "Done.", at: Date.parse("2026-01-01T09:01:00Z"), calls: [], usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 0 } }] };
+  const imported = await call("POST", "/targets/selected/history", { sessions: [session] });
+  assert.equal(imported.status, 200, JSON.stringify(imported.body));
+  const bytes = storeBytes(server.data);
+  assert.equal(bytes.includes(Buffer.from(OLD)), false, "the default token is cut");
+  assert.equal(bytes.includes(Buffer.from(NEW)), false, "the listed token is cut");
 });

@@ -1,6 +1,7 @@
 // A note the host has for the session's next main-model request (ModelProxyHooks.note, the spend cap's wrap-up): the
-// proxy adds it to that request's body through the policy (addNote), after everything the client sent, before it
-// measures the body, so the cap admits the note's bytes too. Taken once, by a paid main-model request only: never by a
+// proxy adds it to that request's body through the policy (addNote), after everything the client sent. It asks for the
+// note once the body is measured as its admission reads it (its bytes, or the provider's or the local count), and the cap
+// admits the note's bytes on top. Taken once, by a paid main-model request only: never by a
 // free route (a token count) or a client's small-model side call, and never when the policy cannot place it. No network:
 // the provider is a recording fetch.
 import assert from 'node:assert/strict';
@@ -140,16 +141,17 @@ test('a request the host sends beside the harness (a side key\'s, its host label
   assert.deepEqual(forwarded, [client], 'its body goes as its client sent it, without the note');
 });
 
-test('a request that took the note and whose client goes before its admission (while its tokens are counted) gives it back as it goes: the next request carries it at once, never after a lease runs out', async (t) => {
+test('a request whose client goes while its tokens are counted never takes the note (it is counted before the note is asked for): the next request takes it and carries it at once, never after a lease runs out', async (t) => {
   // The host as the runner's wrap-up is: one offer at a time, held for the request that took it until its admission
   // tells it, or until that request gives it back (noteReturned).
   let offered;
+  let takes = 0;
   const returned = [];
   const told = [];
   const asked = [];
   const forwarded = [];
   const hooks = {
-    note: () => (offered ? undefined : (offered = NOTE)),
+    note: () => ((takes += 1), offered ? undefined : (offered = NOTE)),
     noteReturned: (note) => {
       returned.push(note);
       if (offered === note) offered = undefined;
@@ -178,17 +180,13 @@ test('a request that took the note and whose client goes before its admission (w
   const p = await startModelProxy({ policy: { ...withNote, countInput: counter }, model: 'main-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch }, KEY);
   t.after(() => p.close());
   const { hostname, port } = new URL(p.url);
-  // Request 1 takes the note; its client goes while its tokens are counted, before its admission.
+  // Request 1's client goes while its tokens are counted, before the note is asked for.
   const first = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } });
   first.on('error', () => {});
   first.end(JSON.stringify(client));
   await counted;
+  assert.equal(takes, 0, 'the note is not asked for while the request is counted');
   first.destroy();
-  for (let i = 0; returned.length === 0; i++) {
-    assert.ok(i < 100, 'the note is given back as the request goes');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.deepEqual([returned, asked.length, forwarded.length], [[NOTE], 0, 0], 'given back once, never admitted, never sent');
   // Request 2 takes it at once and carries it: admitted with it, told once, forwarded with it.
   const at = Date.now();
   await new Promise((resolve) => {
@@ -197,6 +195,82 @@ test('a request that took the note and whose client goes before its admission (w
     req.end(JSON.stringify(client));
   });
   assert.ok(Date.now() - at < 5_000, `carried at once: ${Date.now() - at} ms`);
+  assert.deepEqual([takes, returned], [1, []], 'asked for once, by the request that carried it; nothing given back');
   assert.deepEqual([asked.map((r) => r.noted ?? false), told], [[true], [NOTE]], 'the next request is admitted carrying it, told once');
   assert.deepEqual(forwarded.map((b) => b.messages.at(-1)), [{ role: 'note', text: NOTE }], 'and sent with it');
+});
+
+test('a note its policy fails to place is given back at once: the request goes as its client sent it, and the next one carries the note', async (t) => {
+  let offered;
+  let fail = true;
+  const returned = [];
+  const asked = [];
+  const forwarded = [];
+  const hooks = {
+    note: () => (offered ? undefined : (offered = NOTE)),
+    noteReturned: (note) => (returned.push(note), offered === note && (offered = undefined)),
+    beforeRequest: async (request) => (asked.push(request), request.noted ? (offered = undefined) : undefined),
+    afterRequest: async () => {},
+  };
+  const placing = { ...withNote, addNote: (body, text) => { if (fail) { fail = false; throw new Error('no place for it'); } return withNote.addNote(body, text); } };
+  const fetch = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{"usage":{}}', { status: 200, headers: { 'content-type': 'application/json' } }));
+  const p = await startModelProxy({ policy: placing, model: 'main-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  const send = () => new Promise((resolve) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => { res.resume(); res.on('end', resolve); res.on('error', resolve); });
+    req.on('error', resolve);
+    req.end(JSON.stringify(client));
+  });
+  await send();
+  assert.deepEqual([returned, asked.map((r) => r.noted ?? false), forwarded], [[NOTE], [false], [client]], 'given back once; the request admitted and sent as its client sent it');
+  await send();
+  assert.deepEqual(asked.map((r) => r.noted ?? false), [false, true], 'the next request carries it');
+  assert.deepEqual(forwarded[1].messages.at(-1), { role: 'note', text: NOTE });
+});
+
+/** A host whose cap is the wrap-up's: the note it is asked for with (NoteRequest) and every admission, per request. */
+async function counting(t, policy) {
+  const takenWith = [];
+  const asked = [];
+  const forwarded = [];
+  const hooks = {
+    note: (_model, request) => (takenWith.push(request), takenWith.length === 1 ? NOTE : undefined),
+    beforeRequest: async (request) => void asked.push(request),
+    afterRequest: async () => {},
+  };
+  const fetch = async (url, init) => {
+    if (String(url).endsWith('/count')) return new Response(JSON.stringify({ input_tokens: 40 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    forwarded.push(init.body);
+    return new Response('{"usage":{}}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const p = await startModelProxy({ policy, model: 'main-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  await new Promise((resolve) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => { res.resume(); res.on('end', resolve); res.on('error', resolve); });
+    req.on('error', resolve);
+    req.end(JSON.stringify(client));
+  });
+  return { takenWith, asked, forwarded };
+}
+
+test('the note is asked for on the input count its admission reads: a local count (a gateway, serve\'s translation) and not the body\'s bytes; the noted request is that count and the note\'s bytes', async (t) => {
+  const local = { ...withNote, countInputLocally: () => 30 };
+  const { takenWith, asked, forwarded } = await counting(t, local);
+  const plainBytes = Buffer.byteLength(JSON.stringify(client));
+  assert.ok(plainBytes > 30, `the body is ${plainBytes} bytes, more than its count`);
+  assert.deepEqual(takenWith, [{ inputTokensMax: 30 }], 'the note is asked for with the count, not the bytes');
+  assert.equal(asked[0].inputTokensMaxWithoutNote, 30, 'the same figure the admission has without the note');
+  const added = Buffer.byteLength(forwarded[0]) - plainBytes;
+  assert.equal(asked[0].inputTokensMax, 30 + added, `with the note: the count and the ${added} bytes the note adds`);
+});
+
+test('the note is asked for on the provider\'s count where its admission reads one, and the local count is not taken then', async (t) => {
+  let localCounts = 0;
+  const counter = { origin: 'https://provider.invalid', path: '/count', body: (body) => body, headers: (sent) => sent, tokensOf: (answer) => answer.input_tokens };
+  const provider = { ...withNote, countInput: counter, countInputLocally: () => ((localCounts += 1), 35) };
+  const { takenWith, asked } = await counting(t, provider);
+  assert.deepEqual(takenWith, [{ inputTokensMax: 40 }], 'the note is asked for with the provider\'s count');
+  assert.deepEqual([asked[0].inputTokensMaxWithoutNote, localCounts], [40, 0], 'the admission\'s figure without the note; no local count');
 });

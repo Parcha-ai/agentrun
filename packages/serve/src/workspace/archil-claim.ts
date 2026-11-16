@@ -75,6 +75,9 @@ export interface ArchilClaim {
   /** Removes the run's mount credential at Archil by its identifier (the computer's release, the run's end). Idempotent:
    *  none minted, or removed already, is nothing to do. */
   revoke(): Promise<void>;
+  /** Takes on the credential an earlier claim of the run minted, the one in the computer that claim kept at the run's
+   *  park (computer-kept.ts) and this claim attached again: nothing is minted, and this claim's revoke removes it. */
+  inherit(): void;
   /** Every value held, for the redaction set. */
   readonly secrets: ReadonlySet<string>;
   /** Drops every value held: the loop ended, or the claim is lost. */
@@ -132,6 +135,8 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   let minted: Promise<MountCredential> | undefined;
   /** A mint was asked for since the last revoke: its user may stand at Archil though no answer said so. */
   let asked = false;
+  /** An earlier claim's credential was taken on (inherit) since the last revoke: its user stands at Archil, long listed. */
+  let inherited = false;
   /** The identifier and token of the credential minted, until it is removed. */
   let live: MountCredential | undefined;
   const release = (): void => {
@@ -153,13 +158,15 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
       held.delete(credential.token);
     }
     const mount = options.mount;
-    if (!asked || mount === undefined) return;
+    if (!(asked || inherited) || mount === undefined) return;
+    const minting = asked;
     asked = false;
+    inherited = false;
     // No signal: a lost claim's is aborted already, and this remove is what its loss asks for.
     await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
     // A mint never heard of: its user may not be in the list yet, whatever this read found (another epoch's user it
     // removed is not this mint's), so the list is read once more past Archil's lag, and every match then removed too.
-    if (credential === undefined) {
+    if (credential === undefined && minting) {
       await new Promise((done) => setTimeout(done, LOST_MINT_REREAD_MS));
       await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
     }
@@ -202,6 +209,9 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
       return credential.token;
     },
     revoke,
+    inherit: () => {
+      inherited = true;
+    },
     release,
   };
 }

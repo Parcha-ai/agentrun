@@ -232,3 +232,18 @@ test("a learned_workflow call's result row carries the nodes its workflow ran, e
   assert.ok(!JSON.stringify(rows).includes(HELD.slice(0, 12)), "no part of the error's text, a secret's start among it");
   assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1")?.learned_nodes, undefined, "another call's row carries none");
 });
+
+// A replay run's call rerun after a park and refused before any node ran keeps an entry of its own (nodes [], ended
+// failed). The call's row shows the nodes of its last entry that ran a node, so the owner still sees what the workflow did.
+test("a learned_workflow call rerun and refused before any node ran still shows its earlier attempt's nodes", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  const nodes = [{ label: "fetch", kind: "call", status: "ok", duration_ms: 12 }];
+  await run(store, clock, { id: "r1", start: T0, calls: [["learned_workflow", { name: "answer", input: {} }, false]], extra: [
+    { kind: LEARNED_NODES, data: { call: "c0", workflow: "answer", nodes } },
+    { kind: LEARNED_NODES, data: { call: "c0", workflow: "answer", nodes: [], ended: "failed" } },
+  ] });
+  const rows = await runTimeline(store, "r1", context, { settled: true });
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c0");
+  assert.deepEqual(result?.learned_nodes, nodes, JSON.stringify(result));
+});

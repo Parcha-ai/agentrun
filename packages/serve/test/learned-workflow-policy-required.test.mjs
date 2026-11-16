@@ -15,7 +15,7 @@ const run = { workflows: [flow], granted: ["web_fetch"], env: {}, work: "/nonexi
 test("a learned workflow run with no tool policy runs nothing and says why; never a call node on a default of allow", async () => {
   for (const missing of [{}, { policy: () => "allow" }, { denyFrom: () => "default" }]) {
     const out = await runLearned({ ...run, ...missing }, flow, { url: "http://127.0.0.1:9/" });
-    assert.deepEqual(out, { text: "The learned workflow fetch-one was not run: its run gave no tool policy for its call nodes", isError: true, nodes: [] }, JSON.stringify(Object.keys(missing)));
+    assert.deepEqual(out, { text: "The learned workflow fetch-one was not run: its run gave no tool policy for its call nodes", isError: true, nodes: [], ended: "failed" }, JSON.stringify(Object.keys(missing)));
   }
 });
 

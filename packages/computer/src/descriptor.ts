@@ -1,6 +1,6 @@
 // A provider's descriptor: everything a server, Settings and the conformance kit need to know of a vendor before any
 // of its code loads. Each vendor declares one, once, in its descriptor module (src/descriptors/<id>.ts, data and a lazy
-// load() alone), and its provider module takes its MOUNT and CAPABILITIES from it. The kind registry's PROVIDERS and
+// load() alone), and its provider module reads its mounts and capabilities from it. The kind registry's PROVIDERS and
 // the provider registry are derived from the descriptors; nothing beside them repeats what a descriptor says.
 import type { ComputerSettingKind, KindCapabilities } from "./kinds.js";
 import type { MountKind, Unmounted } from "./mount.js";
@@ -72,9 +72,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 */
 	readonly unmounted?: Unmounted;
 	/**
-	 * The network forms its computers make, as its providers' capabilities().network declare them: ["none"], a remote
-	 * computer whose programs run in a network of their own; ["open"], the vendor's own network, which no allowlist of
-	 * this server reaches; Docker's makes all three. A provider of several configurations declares every form they make.
+	 * The network forms its computers make and enforce, as its providers' capabilities().network declare them: ["none"],
+	 * a remote computer whose programs run in a network of their own and nothing else; ["open"], the vendor's own network,
+	 * which no allowlist of this server reaches; a hosted computer through init's egress proxy (hosted/network.ts) makes
+	 * all three, as Docker's does. A form not declared is refused at check, never widened or narrowed to another. A
+	 * provider of several configurations declares every form they make.
 	 */
 	readonly network: readonly NetworkForm[];
 	/**
@@ -88,7 +90,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 * default, and the caller refuses the setting in words (Docker's sandbox: the server builds its image, prepareImage).
 	 */
 	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
-	/** Its built providers have prepareImage(): the image a computer starts from is made or pulled before the first create. */
+	/**
+	 * Its built providers have prepareImage(), the declaration: the image a computer starts from is made or pulled before
+	 * the first create. Settings reads this without loading the provider; the Core case provider.prepare-image holds the
+	 * two to agree.
+	 */
 	readonly prepareImage?: boolean;
 	/**
 	 * The server's environment variable that, when its operator sets it, names the image every computer of this provider

@@ -22,6 +22,7 @@ import { storeOn as newStore } from "./store-helpers.mjs";
 import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
 /** The owner's sign-in phrase, made up for these tests. */
@@ -543,7 +544,7 @@ async function storeOn(t, key, net) {
 async function target(t) {
   const hits = [];
   const path = `/internal/admin-${randomBytes(8).toString("hex")}`;
-  const http = createServer((req, res) => (req.url?.startsWith(path) && hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const http = createServer((req, res) => stranger(req, res, { own: (at) => at.startsWith(path) }) || (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
   return { url: `http://127.0.0.1:${http.address().port}${path}?op=x`, hits };
@@ -597,6 +598,36 @@ test("a request is dialled at the address checked, never at the name's next answ
   assert.ok(!net.dialled.some(([, address]) => address === privateAddress), "never at the private answer");
 });
 
+/** Google's authorization server as its metadata names it (accounts.google.com/.well-known/openid-configuration): its
+ *  authorization endpoint, the scopes it lists (no offline_access: Google asks for offline access with access_type). */
+const GOOGLE = { authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth", scopes_supported: ["openid", "email", "profile"], code_challenge_methods_supported: ["plain", "S256"] };
+
+/** The authorization URL a sign-in to the public MCP server starts on, its authorization server publishing `metadata`. */
+async function startedAt(t, metadata) {
+  const store = await storeOn(t, sealKey(), await publicNetwork(metadata));
+  return new URL((await store.oauthStart("drive", { url: "https://mcp.example.test/mcp" })).authorization_url);
+}
+
+test("a sign-in whose authorization endpoint is Google's asks for offline access (access_type=offline, prompt=consent), so Google gives a refresh token and the server stays signed in past the hour", async (t) => {
+  const google = await startedAt(t, GOOGLE);
+  assert.equal(`${google.origin}${google.pathname}`, GOOGLE.authorization_endpoint);
+  assert.equal(google.searchParams.get("access_type"), "offline");
+  assert.deepEqual(google.searchParams.getAll("prompt"), ["consent"], "consent asked once, so a sign-in again gets a refresh token too");
+  // Nothing else differs from another authorization server's start: the same parameters, these two added.
+  const other = await startedAt(t, {});
+  assert.deepEqual([...google.searchParams.keys()].filter((key) => !["access_type", "prompt"].includes(key)).sort(), [...other.searchParams.keys()].sort());
+});
+
+test("a sign-in at any other authorization server is unchanged: no access_type, no prompt", async (t) => {
+  const other = await startedAt(t, {});
+  assert.equal(`${other.origin}${other.pathname}`, "https://as.example.test/authorize");
+  assert.equal(other.searchParams.get("access_type"), null);
+  assert.equal(other.searchParams.get("prompt"), null);
+  // A Google name anywhere but the authorization endpoint's host is not Google's endpoint.
+  const lookalike = await startedAt(t, { authorization_endpoint: "https://as.example.test/accounts.google.com/o/oauth2/v2/auth" });
+  assert.equal(lookalike.searchParams.get("access_type"), null);
+});
+
 test("two tabs signing in at once each keep their own cookie, and both finish; a finished sign-in clears its cookie", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api } = await serve(t);
@@ -634,7 +665,7 @@ test("a sign-in starts on the address the authorization server sends the browser
 
 test("the default network dials the address it is given, whatever the name: a name no resolver knows reaches the checked address", async (t) => {
   const heard = [];
-  const http = createServer((req, res) => (heard.push(req.headers.host), res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}')));
+  const http = createServer((req, res) => stranger(req, res) || (heard.push(req.headers.host), res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}')));
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
   const { port } = http.address();
@@ -659,7 +690,7 @@ async function harnessServe(t, harness) {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   await copyStandIn(standIn);
   const gateway = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
@@ -867,7 +898,7 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
 /** A loopback service on `host` that counts what reaches it; undefined where this machine can't listen there. */
 async function targetOn(t, host) {
   const hits = [];
-  const http = createServer((req, res) => (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const http = createServer((req, res) => stranger(req, res) || (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
   const listening = await new Promise((resolve) => http.once("error", () => resolve(false)).listen(0, host, () => resolve(true)));
   if (!listening) return undefined;
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));

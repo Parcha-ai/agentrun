@@ -20,9 +20,8 @@ const OWNER_REPO = new Set(["pull_request_read", "get_file_contents", "get_repos
 for (const name of ["code-review", "release-notes"]) {
   test(`${name}: every GitHub tool is pinned to the owner and repo it was applied to, reads too, and no search is listed`, () => {
     const p = pkg(name);
-    assert.equal(p.parameters.owner?.required, true, "owner is its own parameter");
-    assert.equal(p.parameters.repo?.required, true, "repo is its own parameter");
-    assert.ok(!new RegExp(p.parameters.repo.pattern, "u").test("acme/shop"), "repo is a name alone, never owner/name");
+    assert.deepEqual(p.parameters.required, ["owner", "repo"], "owner and repo are each a required parameter");
+    assert.ok(!new RegExp(p.parameters.properties.repo.pattern, "u").test("acme/shop"), "repo is a name alone, never owner/name");
     const github = need(p, "github");
     const searches = github.tools.filter((tool) => tool.startsWith("search_"));
     assert.deepEqual(searches, [], "a free-text search reaches every repository the token does");
@@ -53,10 +52,10 @@ test("release-notes: its one write still only opens an issue, on its own reposit
   assert.deepEqual(pin.issue_write, { ...SCOPE, method: "create" });
 });
 
-test("market-monitor: Slack and Gmail send only to the channel set, under any name the action takes it by", () => {
+test("market-monitor: Slack and Gmail send only to the channel set; an alias neither listing declares is left to the gate", () => {
   const p = pkg("market-monitor");
-  assert.deepEqual(need(p, "slack").pin, { SLACK_SEND_MESSAGE: { channel: "${parameters.channel}", channel_id: null } });
-  assert.deepEqual(need(p, "gmail").pin, { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", to: null, cc: null, bcc: null, extra_recipients: null, from_email: null } });
+  assert.deepEqual(need(p, "slack").pin, { SLACK_SEND_MESSAGE: { channel: "${parameters.channel}" } });
+  assert.deepEqual(need(p, "gmail").pin, { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null, from_email: null } });
 });
 
 test("inbound-lead: HubSpot only adds a note, reading nothing (the agent holds web_fetch), never updates a contact; Slack sends to its one channel", () => {
@@ -68,8 +67,8 @@ test("inbound-lead: HubSpot only adds a note, reading nothing (the agent holds w
   assert.equal(hubspot.required, false);
   assert.equal(hubspot.reason, "Adds a note to the lead's contact in your HubSpot; reads nothing from it. The note can't be limited to one contact yet.");
   assert.deepEqual(hubspot.pin, {}, "the note's destination is a per-run contact: the owner ticks it at apply");
-  assert.equal(p.parameters.crm_score_property, undefined, "no score property to write: an update could overwrite any field");
-  assert.deepEqual(need(p, "slack").pin, { SLACK_SEND_MESSAGE: { channel: "${parameters.slack_channel}", channel_id: null } });
+  assert.equal(p.parameters.properties.crm_score_property, undefined, "no score property to write: an update could overwrite any field");
+  assert.deepEqual(need(p, "slack").pin, { SLACK_SEND_MESSAGE: { channel: "${parameters.slack_channel}" } });
 });
 
 test("each of them has a case where the untrusted text asks for another repository's file, and every case reads", () => {

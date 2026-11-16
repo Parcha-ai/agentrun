@@ -52,6 +52,21 @@ function fieldOf(s: unknown, required: boolean): FieldSpec | null {
   });
 }
 
+/** An object schema's properties as fields, in its order (`skip` left out), or null when one is no scalar and no list of
+ *  one. A template's parameters (served compiled as inputs are) are always fields. */
+export function schemaFields(schema: unknown, skip?: string): [string, FieldSpec][] | null {
+  const properties = isObject(schema) && isObject(schema.properties) ? schema.properties : {};
+  const required = isObject(schema) && Array.isArray(schema.required) ? schema.required : [];
+  const fields: [string, FieldSpec][] = [];
+  for (const [key, s] of Object.entries(properties)) {
+    if (key === skip) continue;
+    const field = fieldOf(s, required.includes(key));
+    if (!field) return null;
+    fields.push([key, field]);
+  }
+  return fields;
+}
+
 /** How the run forms take an agent's input, from its definition's input_schema (see AgentInput). The message is
  *  required when the schema's `required` lists `content`, or when it requires no other property. */
 export function agentInputOf(schema: unknown): AgentInput {
@@ -62,13 +77,8 @@ export function agentInputOf(schema: unknown): AgentInput {
   const required = Array.isArray(schema.required) ? schema.required.filter((k): k is string => typeof k === "string") : [];
   // A required property the schema doesn't describe has no field to fill.
   if (required.some((k) => k !== "content" && !Object.hasOwn(properties, k))) return whole();
-  const fields: [string, FieldSpec][] = [];
-  for (const [key, s] of Object.entries(properties)) {
-    if (key === "content") continue;
-    const field = fieldOf(s, required.includes(key));
-    if (!field) return whole();
-    fields.push([key, field]);
-  }
+  const fields = schemaFields(schema, "content");
+  if (!fields) return whole();
   if (!fields.length) return { kind: "message" };
   return { kind: "fields", form: { fields, contentRequired: required.includes("content") || !required.some((k) => k !== "content") } };
 }
@@ -124,36 +134,20 @@ export function fieldValues(form: InputForm, text: ParameterText): Record<string
 export const inputOf = (form: InputForm, content: string, text: ParameterText): Record<string, unknown> =>
   ({ ...(content.trim() ? { content } : {}), ...fieldValues(form, text) });
 
-/** The input field a refusal's issue is at (`input.company`, an item's `input.topics.1`), or null for one at no input
- *  field. */
-export const fieldOfIssue = (path: string): string | null => /^input\.([^.]+)(?:\.|$)/.exec(path)?.[1] ?? null;
+/** The field a refusal's issue is at (`input.company`, an item's `input.topics.1`; under `root`, `parameters.repo`), or
+ *  null for one at no field. */
+export const fieldOfIssue = (path: string, root = "input"): string | null => path.startsWith(`${root}.`) ? path.slice(root.length + 1).split(".")[0]! : null;
 
 const kindWords = (f: FieldSpec) => (f.type === "integer" ? "a whole number" : f.type === "number" ? "a number" : f.type === "boolean" ? "true or false" : "text");
+const LIST_OF: Record<FieldSpec["type"], string> = { string: "text", integer: "whole numbers", number: "numbers", boolean: "true or false" };
+/** What a field takes, in the words its refusals use: "text", "a whole number", a list's "a list of whole numbers". */
+export const fieldKind = (f: FieldSpec) => (f.array ? `a list of ${LIST_OF[f.type]}` : kindWords(f));
 
 /** What a run form says of a refused field, by its label (paramIssueWords' words for a parameter); a list's item is said
  *  as a line of it. A reason with no words here keeps the server's. */
 export function fieldIssueWords(issue: FieldIssue, key: string, f: FieldSpec): string {
   const label = fieldLabel(key, f);
-  if (f.array && issue.reason === "wrong_type") return issue.field === `input.${key}` ? `${label} takes a list, one item a line.` : `Each line of ${label} is ${kindWords(f)}.`;
+  if (f.array && issue.reason === "wrong_type") return issue.field.endsWith(`.${key}`) ? `${label} takes a list, one item a line.` : `Each line of ${label} is ${kindWords(f)}.`;
   if (f.array && issue.reason === "not_an_option" && f.enum?.length) return `Each line of ${label} is one of: ${f.enum.map(String).join(", ")}.`;
   return paramIssueWords(issue, key, f, label);
 }
-
-/** The typed input a run's first message carries back: the server writes it as the message (left out when there is
- *  none), a blank line, then `Input:` and the other fields as JSON in a fence longer than any run of backticks inside.
- *  Null when the message ends in no such block. */
-export function typedInputFrom(message: string): Record<string, unknown> | null {
-  const fence = /\n(`{3,})$/.exec(message)?.[1];
-  if (!fence) return null;
-  const opening = `Input:\n${fence}json\n`;
-  const at = message.lastIndexOf(opening);
-  if (at < 0 || (at > 0 && !message.slice(0, at).endsWith("\n\n"))) return null;
-  let fields: unknown;
-  try { fields = JSON.parse(message.slice(at + opening.length, message.length - fence.length - 1)); } catch { return null; }
-  if (!isObject(fields)) return null;
-  return { ...(at > 0 ? { content: message.slice(0, at - 2) } : {}), ...fields };
-}
-
-/** Whether an input_schema requires a field other than the message. */
-export const requiresFields = (schema: unknown) =>
-  isObject(schema) && Array.isArray(schema.required) && schema.required.some((k) => k !== "content");

@@ -85,6 +85,44 @@ test("sweepMachines over a run's label: what the conformance runner calls at a r
 	assert.equal(fake.live().length, 1, "another run's machine is not this run's sweep's");
 });
 
+test("with labels kept in the machine, both sweeps read the machines of the image they are given beside the box images, and never another image's", async () => {
+	const KEEPS = { facts: { labels: "machine" }, timer: "none" };
+	const filed = { file: { ...OURS, ...RUN } };
+	const fake = fakeHost(KEEPS);
+	const custom = fake.add({ ...filed, image: "custom:1" });
+	const boxed = fake.add({ ...filed, image: "agentrun-box-0123456789ab" });
+	const foreign = fake.add({ ...filed, image: "ubuntu:24.04" });
+	const plain = await sweepMachines(fake.host, { labels: RUN, waitMs: 300, pollMs: 5 });
+	assert.deepEqual(plain.value, { swept: 1, gone: 1, stillThere: [], leftAlone: 0 }, "with no image given, the box images alone");
+	assert.deepEqual([custom.deleted, boxed.deleted], [false, true]);
+	const given = await sweepMachines(fake.host, { labels: RUN, image: "custom:1", waitMs: 300, pollMs: 5 });
+	assert.deepEqual(given.value, { swept: 1, gone: 1, stillThere: [], leftAlone: 0 }, "the run's image too");
+	assert.equal(custom.deleted, true);
+	// The command: --image names it.
+	const cli = fakeHost(KEEPS);
+	const file = join(DIR, "before-image.json");
+	assert.equal((await sweep(["--provider", "fakehost", "--before", file], cli.host)).code, 0);
+	const made = cli.add({ ...filed, image: "custom:1" });
+	const after = await sweep(["--provider", "fakehost", "--after", file, "--image", "custom:1"], cli.host);
+	assert.equal(after.code, 0, after.err);
+	assert.deepEqual(JSON.parse(after.out), { swept: 1, gone: 1, stillThere: [], leftAlone: 0 });
+	assert.equal(made.deleted, true);
+	assert.equal(foreign.deleted, false, "another image's machine is never touched");
+	assert.equal((fake.labelRuns ?? []).some((run) => run.machine === foreign.id), false, "nor run in");
+});
+
+test("sweepMachines keeps to the run's label where the host's listing answers more machines than carry it", async () => {
+	const fake = fakeHost();
+	const listing = fake.host.list;
+	fake.host.list = (labels, ctx) => listing(OURS, ctx);
+	const left = fake.add({ labels: { ...OURS, ...RUN } });
+	const other = fake.add({ labels: { ...OURS, "agentrun.conformance": "another-run" } });
+	const swept = await sweepMachines(fake.host, { labels: RUN, waitMs: 300, pollMs: 5 });
+	assert.deepEqual(swept.value, { swept: 1, gone: 1, stillThere: [], leftAlone: 0 });
+	assert.equal(left.deleted, true);
+	assert.equal(other.deleted, false, "another run's machine is never deleted");
+});
+
 test("a provider that names where it lists (sweepScope: an app and a server): --before records it, and --after refuses a file of another place, or one that names none, before any list or delete", async () => {
 	const fake = fakeHost();
 	const scope = "the app computers on https://api.example.invalid:443";

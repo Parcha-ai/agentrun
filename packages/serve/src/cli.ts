@@ -29,7 +29,7 @@ surviveClosedPipes();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
-       agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
+       agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -81,7 +81,9 @@ printed only by the start that made it. AGENTRUN_TOKENS, when set, holds more to
 commas or whitespace (each secret 32 characters or more): every one opens what the token opens, AGENTRUN_TOKEN's id is
 "default", and the request lines name the id of the token used, never a secret. Set alone, it takes DIR/.token's place.
 AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
-published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
+published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is.
+AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most requests on free models ($0 in the catalog) a run makes, capped
+or not (ChatGPT-plan requests don't count): the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
@@ -112,11 +114,26 @@ session found, those imported before included, and the address to open the conso
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
 own in this process, over a temp data directory removed at the end, so it never touches your server; --server URL runs
-them on that server instead, its token in AGENTRUN_API_KEY, and archives the agents it made. --runs N runs each case N
+them on that server instead, its token in AGENTRUN_API_KEY, and archives the agents it made. --on-data DIR runs its own
+server on DIR, a stopped server's data folder, so the runs use what that server keeps (its ChatGPT sign-in) and a case's
+fakes (its clock, its mailbox) still bind; it archives the agents it made there and leaves the folder and its settings,
+and is refused while another server holds DIR, when DIR has enabled triggers or runs not ended, or for an email case
+when DIR's server keeps an email account. --runs N runs each case N
 times in place of its own count; --grader-model is the llm graders' model (default: the server's); --faux answers every
 model request from MODULE, as the server's --faux does. Progress goes to stderr, a summary to stdout, the whole report
 as JSON to --report FILE. Exit 0 when every case passed, 1 when one failed, 2 when the flags, the package or a case are
 wrong and nothing ran. Real runs cost money: each case's prompt.md caps each of its runs (max_cost_usd).`;
+
+if (process.argv[2] === "remote-bridge") {
+  const { runRemoteWorkerBridge } = await import("./native/remote-worker-bridge.js");
+  await runRemoteWorkerBridge();
+  process.exit(0);
+}
+
+if (process.argv[2] === "native") {
+  const { nativeMain } = await import("./native/cli.js");
+  process.exit(await nativeMain(process.argv.slice(3)));
+}
 
 if (process.argv[2] === "reset-password") {
   let dir: string | undefined;
@@ -158,12 +175,12 @@ if (process.argv[2] === "validate-template") {
 // 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
 // ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
 if (process.argv[2] === "eval-template") {
-  const { CaseError, evalTemplate, exitCodeOf, markdownReport } = await import("./template-eval.js");
+  const { CaseError, evalTemplate, exitCodeOf, markdownReport, ON_DATA_WITH_SERVER } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
     try {
-      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" }, data: { type: "string" } } });
+      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" }, data: { type: "string" }, "on-data": { type: "string" } } });
     } catch (error) {
       return usage((error as Error).message);
     }
@@ -173,6 +190,8 @@ if (process.argv[2] === "eval-template") {
   if (given.runs !== undefined && !/^[1-9]\d{0,2}$/.test(given.runs)) usage("--runs takes a whole number from 1 to 999.");
   if (given.server !== undefined && !(URL.canParse(given.server) && /^https?:$/.test(new URL(given.server).protocol))) usage("--server takes the server's http(s) address.");
   if (given.server !== undefined && given.faux !== undefined) usage("--faux is the model of the server it starts itself, and --server names another server.");
+  if (given.server !== undefined && given["on-data"] !== undefined) usage(`${ON_DATA_WITH_SERVER}.`);
+  if (given["on-data"] === "") usage("--on-data takes a server's data folder.");
   const token = given.server === undefined ? undefined : secret("AGENTRUN_API_KEY") || secret("AGENTRUN_TOKEN");
   if (given.server !== undefined && !token) usage("--server needs that server's token in AGENTRUN_API_KEY.");
   // The report is written after every case ran, so where it goes is checked now, before anything runs or is paid for.
@@ -211,7 +230,8 @@ if (process.argv[2] === "eval-template") {
     const report = await evalTemplate({
       dir: resolve(positionals[0]!), cases: given.case, ...(given.runs !== undefined ? { runs: Number(given.runs) } : {}),
       ...(given.server !== undefined ? { server: { baseUrl: given.server, token: token! } } : {}), ...(given["grader-model"] !== undefined ? { graderModel: given["grader-model"] } : {}),
-      ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), log: (line) => console.error(line), signal: stop.signal,
+      ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), ...(given["on-data"] !== undefined ? { data: resolve(given["on-data"]) } : {}),
+      log: (line) => console.error(line), signal: stop.signal,
     });
     // A stop asked as the eval ended still stops it: no report, 130.
     stop.signal.throwIfAborted();

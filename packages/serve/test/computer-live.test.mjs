@@ -193,6 +193,80 @@ test("close ends the viewer and drops the row; a computer that goes ends the vie
   await assert.rejects(new Promise((resolve, reject) => tcp(b.row.port, "127.0.0.1").once("connect", resolve).once("error", reject)), "nothing listens after close");
 });
 
+test("a park's close tells the viewer what the run waits for and that the computer is kept, how long, and what to say after: never that it ended", async (t) => {
+  for (const [kind, input, cause, waits] of [
+    ["desktop", "desktop", "approval", "Waiting for your approval. The desktop is kept for 10 minutes."],
+    ["desktop", "desktop", "answer", "Waiting for your answer. The desktop is kept for 10 minutes."],
+    ["phone", "android", "cap", "Waiting for you to raise the spend cap. The phone is kept for 10 minutes."],
+    ["desktop", "desktop", "refusal", "Paused: the next step doesn't fit the spend cap. Waiting for you to raise it. The desktop is kept for 10 minutes."],
+    ["desktop", "desktop", "workflow", "Waiting for your approval of the workflow's step. The desktop is kept for 10 minutes."],
+  ]) {
+    const store = fakeLiveViewersStore();
+    const one = await opened(t, { store, kind, input, tag: `cmp-${cause}` });
+    const ws = await viewerOf(one.row);
+    const until = Date.now() + 600_000;
+    await one.view.close({ parked: cause, until });
+    const said = await next(ws, "ended");
+    assert.deepEqual({ ...said, keptMs: undefined }, { type: "ended", reason: "parked", message: waits, keptMs: undefined, lapsed: `The ${kind} wasn't kept: 10 minutes passed. A new one starts when the run goes on.` });
+    assert.ok(said.keptMs > 590_000 && said.keptMs <= 600_000, `kept for the rest of the 10 minutes: ${said.keptMs}`);
+    assert.doesNotMatch(said.message, /ended/);
+    assert.deepEqual(await readLiveViewers(store, KEY, RUN), [], "the row is dropped: no take-over while parked");
+  }
+});
+
+/** Resolves once the run has no viewer row (the view closed): each look waits a turn of the event loop, never a clock. */
+async function rowGone(store) {
+  for (let turn = 0; turn < 1_000; turn += 1) {
+    if ((await readLiveViewers(store, KEY, RUN)).length === 0) return true;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return false;
+}
+
+test("a watch that ends gone asks whether the computer is gone: one its provider no longer has closes its view released (the row dropped, nothing listening); one still there keeps its view", async (t) => {
+  // Still there: the daemon's stream ended, the machine stands. The viewer is told why, and the view stays.
+  const asked = [];
+  let answer = false;
+  const store = fakeLiveViewersStore();
+  const a = await opened(t, { store, gone: async () => (asked.push("gone?"), answer) });
+  const ws = await viewerOf(a.row);
+  await a.watch.opened();
+  a.watch.end("gone", "the daemon's stream ended");
+  assert.deepEqual(await next(ws, "ended"), { type: "ended", reason: "gone", message: "the daemon's stream ended" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(asked, ["gone?"], "asked once, at the watch's end");
+  assert.deepEqual((await readLiveViewers(store, KEY, RUN)).map((v) => v.id), [a.row.id], "a computer still there keeps its view");
+  // Deleted: the next viewer's watch ends gone, the provider no longer has the computer, and the view closes released.
+  answer = true;
+  const again = await viewerOf(a.row);
+  for (let turn = 0; turn < 1_000 && a.watch.state.opened < 2; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(a.watch.state.opened, 2, "the second viewer's watch started");
+  a.watch.end("gone", "the computer computer-0123456789ab (sbx-1) was deleted: E2B no longer has it");
+  assert.equal((await next(again, "ended")).reason, "gone");
+  assert.equal(await rowGone(store), true, "the row is dropped: the server reads no viewer, so the Screen tab says released");
+  assert.deepEqual(asked, ["gone?", "gone?"]);
+  await assert.rejects(new Promise((resolve, reject) => tcp(a.row.port, "127.0.0.1").once("connect", resolve).once("error", reject)), "nothing listens once it is released");
+  // An ending that is not the computer's (refused, unreachable) asks nothing.
+  const b = await opened(t, { tag: "cmp-desktop-2", gone: async () => (asked.push("b?"), true) });
+  const third = await viewerOf(b.row);
+  await b.watch.opened();
+  b.watch.end("unreachable", "the network dropped");
+  assert.equal((await next(third, "ended")).reason, "unreachable");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(asked, ["gone?", "gone?"], "an unreachable end asks nothing");
+});
+
+test("a watch that cannot start because its computer is not found asks whether the computer is gone, and a gone one's view closes released", async (t) => {
+  const store = fakeLiveViewersStore();
+  let asked = 0;
+  const watch = fakeWatch({ start: { ok: false, error: { code: "not_found", message: "no E2B computer is computer-0123456789ab (sbx-1)" } } });
+  const a = await opened(t, { store, watch, gone: async () => ((asked += 1), true) });
+  const ws = await viewerOf(a.row);
+  assert.equal((await next(ws, "ended")).type, "ended");
+  assert.equal(await rowGone(store), true, "the row is dropped");
+  assert.equal(asked, 1);
+});
+
 test("a stale claim is refused fenced: nothing handed over and nothing left listening; a bad tag and a kind that does not fit its input are refused before anything starts", async () => {
   const store = fakeLiveViewersStore();
   const stale = store.claim(RUN);

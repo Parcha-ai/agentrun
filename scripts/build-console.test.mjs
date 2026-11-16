@@ -56,6 +56,9 @@ test('a changed source rebuilds; a file touched but unchanged does not; a change
   r.put('packages/serve/src/timeline/labels.ts', 'export const nameOf = (t) => `${t}!`;\n');
   assert.equal(r.build(), 'built', "the timeline library's labels the console imports are its inputs too");
   r.asked.length = 0;
+  r.put('packages/serve/src/tool-names.ts', 'export const WIRE_NAME = /^x$/;\n');
+  assert.equal(r.build(), 'built', "serve's tool-name grammar the console imports is its input too");
+  r.asked.length = 0;
   r.put('packages/pi-browser/src/core/contract.ts', 'export const BROWSER_TOOL_NAMES = ["run", "snapshot"];\n');
   assert.equal(r.build(), 'built', "pi-browser's tool list the console imports is its input too");
   r.asked.length = 0;

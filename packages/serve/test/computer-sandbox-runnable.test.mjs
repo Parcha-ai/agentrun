@@ -74,19 +74,29 @@ async function saveAndStart(api, id, setting) {
   };
 }
 
-for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["modal", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" }]]) {
-  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset)`, async (t) => {
+for (const kind of ["sandbox", "desktop"]) {
+  test(`Mode 2: an agent whose computer is an E2B ${kind}, its key saved, is ready, warned of nothing at its save and never refused for its computer or its place at its run's start: E2B starts from the box template its prepareImage() answers`, async (t) => {
     const api = await server(t, { archil: true });
-    const saved = await api("PUT", `/computers/${provider}/keys`, keys);
+    const saved = await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.equal(saved.body.ready, true, `${provider} is ready with its key saved: ${JSON.stringify(saved.body)}`);
-
-    const said = await saveAndStart(api, `remote-${provider}`, { computer: { kind: "sandbox", provider } });
-    assert.deepEqual(said.saved, [], `the agent is saved with a warning on its computer or place: ${JSON.stringify(said)}`);
-    assert.deepEqual(said.refused, [], `the run is refused for its computer or place: ${JSON.stringify(said)}`);
-    assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, `the run is refused for its place: ${JSON.stringify(said)}`);
+    assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+    const said = await saveAndStart(api, `remote-e2b-${kind}`, { computer: { kind, provider: "e2b" } });
+    assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+    assert.doesNotMatch(said.started[2] ?? "", /E2B (sandbox|desktop) can't/, JSON.stringify(said));
+    assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, JSON.stringify(said));
   });
 }
+
+test("Mode 2: an agent whose computer is a Modal sandbox, its keys saved, is ready, warned of nothing at its save and never refused for its computer at its run's start: Modal starts from the box image its prepareImage() answers", async (t) => {
+  const api = await server(t, { archil: true });
+  const saved = await api("PUT", "/computers/modal/keys", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+  const said = await saveAndStart(api, "remote-modal", { computer: { kind: "sandbox", provider: "modal" } });
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", /Modal sandbox can't/, JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, JSON.stringify(said));
+});
 
 test("an agent whose computer is an e2b sandbox with no key saved is refused in Mode 2 in words that name Settings → Computers", async (t) => {
   const api = await server(t, { archil: true });
@@ -185,7 +195,7 @@ test("Mode 1: an e2b sandbox is refused, as a sandbox there needs a bind mount o
   const saved = await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const said = await saveAndStart(api, "remote-mode1", { computer: { kind: "sandbox", provider: "e2b" } });
-  const words = /^Mode 1 runs a sandbox only on Docker: a E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
+  const words = /^Mode 1 runs a sandbox only on Docker: an E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
   assert.equal(said.refused.length, 1, JSON.stringify(said));
   assert.deepEqual(said.refused[0].slice(0, 2), ["definition.computer", "not_set_up_here"], JSON.stringify(said));
   assert.match(said.refused[0][2], words);

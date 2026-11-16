@@ -55,7 +55,7 @@ function catOf(argv, cwd, computer) {
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [], listeners = [], listenerSearchIncomplete = [] }) {
+function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [], listeners = [], listenerSearchIncomplete = [], rootRunsWritable = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
 	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
@@ -80,6 +80,17 @@ function output(argv, { uid, status, users, user, probe, pathSockets = [], socke
 		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
 	}
 	if (argv[0] === "env") return "PATH=/usr/bin:/bin\nHOME=/home/fake\n";
+	if (argv[0] === "sh" && argv[2]?.startsWith("# agentrun-conformance: root-runs\n")) {
+		// isolation.root-runs' check: each path given and every directory above it, writable when rootRunsWritable names it.
+		const lines = [];
+		for (const path of argv.slice(4)) {
+			for (let at = path; ; at = at.slice(0, at.lastIndexOf("/")) || "/") {
+				lines.push(`${rootRunsWritable.includes(at) ? "writable" : "closed"} ${at}`);
+				if (at === "/") break;
+			}
+		}
+		return `${lines.join("\n")}\n`;
+	}
 	if (argv[0] === "sh" && argv[2]?.includes('echo ok > "$HOME/x"')) return "ok\n";
 	return `${argv.slice(1).join(" ")}\n`;
 }
@@ -220,6 +231,8 @@ function fakeDaemon(hello, computer) {
  *   `listeners`: the TCP and UDP listeners `computerd probe --sockets` reports in the programs' own network, as computerd
  *   writes them (default none; "no list": a daemon that lists none); `listenerSearchIncomplete`: the tables it could not
  *   read.
+ * - `rootRunsWritable`: the paths isolation.root-runs' check reads as writable by the computer's user (default none).
+ * - `readable`: files the computer's user reads, by path, with their text (default none).
  * - `persistence`: capabilities().persistence ({ keepsState: true, resume }), left out unless given. With it, check()
  *   takes spec.owner with no lifetime, create labels the computer with its owner, release "detach" stops an agent's
  *   computer with its files kept (and, with resume, its processes), and attach with a claim brings it back under the
@@ -229,6 +242,8 @@ function fakeDaemon(hello, computer) {
  * - `gpu`: capabilities().gpu, left out unless given (a computer asked with one has it, read back by attach and listed by
  *   nvidia-smi -L inside); `gpuUnseen`: its programs see no GPU (nvidia-smi not found); `gpuReadBack`: what attach
  *   reports instead; `checkIgnoresGpu`: check() takes any spec.gpu, declared or not.
+ * - `wakesDeleted`: a connect to a deleted computer is refused not_found, and brings it back, as a vendor that wakes a
+ *   machine on the next request does.
  */
 export function fakeComputers({
 	id = "fake",
@@ -279,6 +294,8 @@ export function fakeComputers({
 	socketSearchIncomplete = [],
 	listeners = [],
 	listenerSearchIncomplete = [],
+	rootRunsWritable = [],
+	readable = {},
 	display,
 	persistence,
 	brokenPersistence,
@@ -286,6 +303,7 @@ export function fakeComputers({
 	gpuUnseen = false,
 	gpuReadBack,
 	checkIgnoresGpu = false,
+	wakesDeleted = false,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -303,6 +321,8 @@ export function fakeComputers({
 		return asked.kind === "bind" ? asked.path : join(disks[asked.disk], asked.folder);
 	};
 	const computers = new Map();
+	/** The computers release delete removed, by name: wakesDeleted brings one back. */
+	const deleted = new Map();
 	const made = [];
 	const calls = [];
 	let connections = 0;
@@ -379,7 +399,7 @@ export function fakeComputers({
 					processes: [],
 					listPage,
 					tree: new Map(),
-					contents: new Map(),
+					contents: new Map(Object.entries(readable).map(([path, text]) => [path, Buffer.from(text)])),
 					filesPage,
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
@@ -387,6 +407,7 @@ export function fakeComputers({
 					socketSearchIncomplete,
 					listeners,
 					listenerSearchIncomplete,
+					rootRunsWritable,
 					display,
 					...(spec.gpu && !gpuUnseen ? { gpus: spec.gpu } : {}),
 					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
@@ -443,7 +464,10 @@ export function fakeComputers({
 		},
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
-			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
+			if (!computers.has(ref.name)) {
+				if (wakesDeleted && deleted.has(ref.name)) computers.set(ref.name, deleted.get(ref.name));
+				return fail("not_found", `no computer ${ref.name}`);
+			}
 			const value = { protocol: PROTOCOL_VERSION, version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
@@ -473,7 +497,10 @@ export function fakeComputers({
 			}
 			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
 			if (record && how === "stop") record.state = "stopped";
-			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);
+			if (record && how === "delete" && !keepOnRelease) {
+				computers.delete(ref.name);
+				deleted.set(ref.name, record);
+			}
 			return ok(undefined);
 		},
 	};

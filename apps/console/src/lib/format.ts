@@ -62,8 +62,9 @@ const soFarDollars = (usd: number) => {
   return `$${whole}.${places.replace(/0+$/, "").padEnd(2, "0")}`;
 };
 
-/** The cost known so far, when the server can't give the whole (costsofar/1: `so_far_usd` and `unpriced`, sent only while
- *  `usd` is null); undefined when it says neither. */
+/** The cost known so far, when the server can't give the whole (costsofar/1: `so_far_usd` and `unpriced` while `usd` is
+ *  null); undefined when it says neither, or when `usd` is known (beside an `upper_bound` the server sends them too, and
+ *  the bound is what is said). */
 export const soFar = (c: Cost | null | undefined): (Cost & { so_far_usd: number; unpriced: number }) | undefined =>
   c && c.usd === null && typeof c.so_far_usd === "number" && typeof c.unpriced === "number" ? (c as Cost & { so_far_usd: number; unpriced: number }) : undefined;
 
@@ -76,11 +77,20 @@ export const soFarNote = (c: { unpriced: number }, { ended = false }: { ended?: 
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
 export const runEnded = (status: string | undefined | null): boolean => typeof status === "string" && ENDED_STATUSES.has(status);
 
+/** A known $0 that is a free model's (the server's `free`, freemodel/1): every model request went to a model whose known
+ *  price is $0 for every token. Said as the server's usage row says it. */
+export const FREE_COST = "$0 · free model";
+const freeCost = (c: { usd: number | null; free?: boolean }) => c.usd === 0 && c.free === true;
+
+/** A known cost that counts a request cut with no answer at what its cap held for it (the server's `upper_bound`,
+ *  cutathold/1): the most the run can have cost, said "at most $0.25", never as the exact figure. */
+const atMost = (c: { upper_bound?: boolean }) => (c.upper_bound === true ? "at most " : "");
+
 /** A charge on a timeline row, in words: "$0.0018", or what is known so far ("so far $0.001, 1 not priced") when one of its
  *  charges has no price; on a run that has ended (`ended`), what is known without "so far" ("$0.001 known, 1 not priced"),
  *  as cost says the run's. */
-export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number }, { ended = false }: { ended?: boolean } = {}): string =>
-  u.usd !== null ? dollars(u.usd)
+export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number; upper_bound?: boolean }, { ended = false }: { ended?: boolean } = {}): string =>
+  u.usd !== null ? `${atMost(u)}${dollars(u.usd)}`
     : typeof u.so_far_usd === "number" ? (ended ? `${soFarDollars(u.so_far_usd)} known, ${u.unpriced ?? 0} not priced` : `so far ${soFarDollars(u.so_far_usd)}, ${u.unpriced ?? 0} not priced`)
     : "not priced";
 
@@ -88,13 +98,35 @@ export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpric
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
  *  no price). When the server says what is known so far, that is said ("so far $0.0123 · 1 not priced"), never as the
  *  whole cost; a run that has ended (`ended`) says what is known without "so far" ("$0.0123 known · 1 not priced"), as its
- *  usage row says its cost. Never a billed amount, never an invented zero. */
+ *  usage row says its cost. Never a billed amount, never an invented zero. A run on the server's ChatGPT plan alone says
+ *  its tokens ("41.2K tokens · Using ChatGPT plan"), never "$0.00"; one that also spent dollars says them, then "+ ChatGPT
+ *  plan". A run whose every model request went to a free model (`free`: its known price is $0 for every token) says why
+ *  its cost is $0 (FREE_COST). */
 export function cost(c: Cost | null | undefined, { ended = false }: { ended?: boolean } = {}): string {
+  const plan = planOf(c);
+  if (plan && c?.usd === 0) return `${compact(plan.tokens)} tokens · Using ChatGPT plan`;
+  const words = dollarWords(c, ended);
+  return plan ? `${words} + ChatGPT plan` : words;
+}
+function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   const known = soFar(c);
   const est = (x: Cost) => (isEstimate(x) ? " est." : "");
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
-  return `${dollars(c.usd)}${est(c)}`;
+  if (freeCost(c)) return FREE_COST;
+  return `${atMost(c)}${dollars(c.usd)}${est(c)}`;
+}
+
+/** What a run used on the server's ChatGPT plan (chatgpt/1 `cost.plan`): its requests there and their tokens, which cost
+ *  no dollars here; undefined for a run that made none. A run on the plan alone says its tokens, never "$0.00" (cost). */
+export const planOf = (c: Cost | null | undefined): { requests: number; tokens: number } | undefined =>
+  c?.plan && c.plan.requests > 0 ? c.plan : undefined;
+
+/** 1,284 / 12.9K / 4.2M. */
+export function compact(n: number): string {
+  if (n < 10_000) return n.toLocaleString("en-US");
+  const [v, unit] = n < 1e6 ? [n / 1e3, "K"] : n < 1e9 ? [n / 1e6, "M"] : [n / 1e9, "B"];
+  return `${v < 100 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)}${unit}`;
 }
 
 /** A run's cost as its header says it, beside its spend cap when it has one (`cap`, the run's `cost.cap_usd`): "$0.0059
@@ -104,7 +136,7 @@ export function costOfCap(c: Cost | null | undefined, cap: number | null | undef
   const shown = text ?? cost(c, { ended });
   if (typeof cap !== "number") return shown;
   // One figure ("$0.0059 est.", "<$0.0001"): "of" the cap. A partial total ("$0.0188 + 2 unknown") or a word: the cap after.
-  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !!c && c.usd !== null;
+  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !planOf(c) && !!c && c.usd !== null && !freeCost(c);
   return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
 }
 const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;

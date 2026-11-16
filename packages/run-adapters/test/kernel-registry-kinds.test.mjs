@@ -1,12 +1,12 @@
 // The kernel registry's computer tools: a run whose computer is a desktop or a phone sees the host tools of its shell
-// plus the computer's tools its groups offer (computer_observe, computer_act, computer_screenshot, computer_script where
-// the host runs scripts, and the hand-over), under its kind's settings key, and nothing else. Each runs on the hands'
+// plus the computer's tools its groups offer (computer_observe, computer_act, computer_screenshot, computer_op for a
+// codemode script's other ops, and the hand-over), under its kind's settings key, and nothing else. Each runs on the hands'
 // one computer port, its value back as the answer's structured value with images' data left out, its images in the
 // answer's images. A computer tool the run does not have is refused in words. A browser computer is no kind of the
 // registry's: its tools are the host's browser tool's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPABILITY_KINDS, COMPUTER_TOOL_SCHEMAS, computerDeclarations, computerToolDefs, computerToolsFor, createRegistry, hostToolDefs, NEEDS_A_COMPUTER } from "@parcha/agentrun-kernel/kernel";
+import { CAPABILITY_KINDS, COMPUTER_OP_TOOL, COMPUTER_TOOL_SCHEMAS, computerOpsFor, computerToolDefs, computerToolsFor, createRegistry, hostToolDefs, NEEDS_A_COMPUTER } from "@parcha/agentrun-kernel/kernel";
 import { fakeComputerPort, PNG, refusal } from "./registry-ports.mjs";
 import { localHands } from "./registry-support.mjs";
 
@@ -18,39 +18,49 @@ const HANDOFF = "computer_request_handoff";
 const MAC = ["ui", "screen", "input.pointer", "input.keys", "apps", "exec", "files"];
 const handsWith = (ports) => ({ ...localHands().hands, ...ports });
 
-test("the computer's tools follow the host tools, as its groups offer them; computer_script only where the host runs scripts", () => {
+test("the computer's tools follow the host tools, as its groups offer them: computer_op where an op past the step tools is offered; no computer_script", () => {
   assert.deepEqual(CAPABILITY_KINDS, ["desktop", "phone"], "a browser is no kind of the registry's");
-  const mac = createRegistry({ maxExecS: 600, shell: "local", kinds: ["desktop"], groups: MAC, executors: { ...injected, computer_script: script } });
-  assert.deepEqual(mac.list().map((def) => def.name), [...LOCAL, "computer_observe", "computer_act", "computer_screenshot", "computer_script", HANDOFF]);
-  const noScripts = createRegistry({ maxExecS: 600, shell: "local", kinds: ["desktop"], groups: MAC, executors: injected });
-  assert.deepEqual(noScripts.list().map((def) => def.name), [...LOCAL, "computer_observe", "computer_act", "computer_screenshot", HANDOFF]);
-  // No screen: no screenshot; nothing to observe or act on: only the hand-over.
-  assert.deepEqual(computerToolsFor(["ui"]), ["computer_observe", "computer_act", "computer_script", HANDOFF]);
-  assert.deepEqual(computerToolsFor(["exec"]), [HANDOFF]);
+  const mac = createRegistry({ maxExecS: 600, shell: "local", kinds: ["desktop"], groups: MAC, executors: injected });
+  assert.deepEqual(mac.list().map((def) => def.name), [...LOCAL, "computer_observe", "computer_act", "computer_screenshot", COMPUTER_OP_TOOL, HANDOFF]);
+  // An executor the host still hands for computer_script is never listed: no computer has it.
+  const stale = createRegistry({ maxExecS: 600, shell: "local", kinds: ["desktop"], groups: MAC, executors: { ...injected, computer_script: script } });
+  assert.ok(!stale.list().some((def) => def.name === "computer_script"));
+  // No screen: no screenshot; ui alone has no op past the step tools: no computer_op.
+  assert.deepEqual(computerToolsFor(["ui"]), ["computer_observe", "computer_act", HANDOFF]);
+  // A shell alone: computer_op (shell.run) and the hand-over.
+  assert.deepEqual(computerToolsFor(["exec"]), [COMPUTER_OP_TOOL, HANDOFF]);
   // No kinds: today's rows, unchanged.
   assert.deepEqual(createRegistry({ maxExecS: 600, shell: "local", executors: injected }).list(), hostToolDefs({ maxExecS: 600, shell: "local" }));
 });
 
-test("each tool's definition: its kind's gate name and settings key, the generated schema; a look is replay-safe, an act or a script is not", () => {
+test("each tool's definition: its kind's gate name and settings key, the generated schema; a look is replay-safe, an act or an op is not", () => {
   for (const kind of ["desktop", "phone"]) {
     const defs = computerToolDefs(kind, MAC);
     assert.deepEqual(defs.map((def) => [def.name, def.gateName, def.settingsKey, def.replaySafe]), [
       ["computer_observe", `host:${kind}/computer_observe`, kind, true],
       ["computer_act", `host:${kind}/computer_act`, kind, false],
       ["computer_screenshot", `host:${kind}/computer_screenshot`, kind, true],
-      ["computer_script", `host:${kind}/computer_script`, kind, false],
+      [COMPUTER_OP_TOOL, `host:${kind}/${COMPUTER_OP_TOOL}`, kind, false],
       [HANDOFF, `host:${kind}/${HANDOFF}`, kind, false],
     ]);
-    for (const def of defs.slice(0, 4)) assert.equal(def.parameters, COMPUTER_TOOL_SCHEMAS[def.name]);
+    for (const def of defs.slice(0, 3)) assert.equal(def.parameters, COMPUTER_TOOL_SCHEMAS[def.name]);
+    const ops = defs[3].parameters.properties.op.enum;
+    assert.ok(ops.includes("shell.run") && ops.includes("files.write") && !ops.includes("act") && !ops.includes("observe"), `computer_op's op is a computer op no step tool runs: ${JSON.stringify(ops)}`);
   }
+  assert.deepEqual(computerOpsFor(MAC), ["input.act", "apps.list", "apps.open", "shell.run", "files.read", "files.write", "files.list", "files.stat"]);
+  assert.deepEqual(computerOpsFor(["ui", "screen"]), []);
 });
 
-test("computer_script's words declare the computer object for its groups only", () => {
-  const shell = computerToolDefs("desktop", ["exec"]).find((def) => def.name === "computer_script").description;
-  assert.ok(shell.includes(computerDeclarations(["exec"])));
-  assert.ok(shell.includes("readonly shell:"));
-  assert.ok(!shell.includes("app(id?: string): App;"), "no app() without the ui group");
-  assert.ok(computerToolDefs("desktop", MAC).find((def) => def.name === "computer_script").description.includes("app(id?: string): App;"));
+test("computer_op runs an op on the computer port, its value the answer's structured value; it refuses an op a step tool runs, and one the computer has not", async () => {
+  const computer = fakeComputerPort({ answers: { "shell.run": (args) => ({ value: { exitCode: 0, stdout: `ran ${args.command}` }, text: `ran ${args.command}`, images: [] }) } });
+  const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["desktop"], groups: MAC, executors: injected });
+  const hands = handsWith({ computer });
+  const ran = await registry.invoke(COMPUTER_OP_TOOL, { op: "shell.run", args: { command: "id" } }, { hands });
+  assert.deepEqual(ran.structured, { exitCode: 0, stdout: "ran id" });
+  const stepped = await registry.invoke(COMPUTER_OP_TOOL, { op: "act", args: { steps: [] } }, { hands });
+  assert.match(stepped.error, /computer_op does not run act: call computer_act/);
+  assert.ok((await registry.invoke(COMPUTER_OP_TOOL, { op: "launch.missiles", args: {} }, { hands })).error);
+  assert.deepEqual(computer.calls, [["shell.run", { command: "id" }]], "only the op it runs reached the computer");
 });
 
 test("observe, act and screenshot run on the computer port: the surface's text, its images, its value with image data left out", async () => {
@@ -110,5 +120,5 @@ test("the generated schemas are what model APIs take: inline, closed, no draft-0
   assert.ok(!text.includes("$ref") && !text.includes('"items":['));
   for (const schema of Object.values(COMPUTER_TOOL_SCHEMAS)) assert.deepEqual([schema.type, schema.additionalProperties], ["object", false]);
   assert.deepEqual(COMPUTER_TOOL_SCHEMAS.computer_act.required, ["steps"]);
-  assert.deepEqual(COMPUTER_TOOL_SCHEMAS.computer_script.required, ["code"]);
+  assert.ok(!("computer_script" in COMPUTER_TOOL_SCHEMAS), "no computer_script schema");
 });

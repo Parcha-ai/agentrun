@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { createClient } from "@/lib/client";
 import type { ToolKey, ToolKeys } from "@/lib/v2";
@@ -48,7 +48,7 @@ function server(views: ToolKeys[], write: (call: Call) => Response | Promise<Res
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
 async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -70,6 +70,58 @@ async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) 
 }
 
 describe("KeysPage", () => {
+  it("Paste reads the clipboard into only the selected field and waits for Save", async () => {
+    const readText = vi.fn().mockResolvedValue(FAKE);
+    vi.stubGlobal("navigator", { clipboard: { readText } });
+    const { v2, calls } = server([view({})]);
+    const page = await open(v2);
+    const target = page.row("Browserbase").querySelector('[data-secret="tool:BROWSERBASE_PROJECT_ID"]')!;
+    await page.click(target, /^Paste$/);
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(page.input("BROWSERBASE_PROJECT_ID").value).toBe(FAKE);
+    expect(page.input("BROWSERBASE_API_KEY").value).toBe("");
+    expect(document.activeElement).toBe(page.input("BROWSERBASE_PROJECT_ID"));
+    expect(page.host.innerHTML).not.toContain(FAKE);
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+    expect(page.button(page.row("Browserbase"), /^Save$/)?.disabled).toBe(false);
+    await page.click(page.row("Browserbase"), /^Save$/);
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ values: { BROWSERBASE_PROJECT_ID: FAKE } });
+  });
+
+  it.each(["empty", "denied", "unavailable"])("leaves a focused manual-paste field when clipboard is %s", async (mode) => {
+    vi.stubGlobal("navigator", mode === "unavailable" ? {} : { clipboard: { readText: () => mode === "denied" ? Promise.reject(new Error("denied")) : Promise.resolve("") } });
+    const { v2, calls } = server([view({})]);
+    const page = await open(v2);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    expect(page.input("PARALLEL_API_KEY").value).toBe("");
+    expect(document.activeElement).toBe(page.input("PARALLEL_API_KEY"));
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+  });
+
+  it("does not replace manual typing while a clipboard read is pending", async () => {
+    let resolve!: (text: string) => void;
+    vi.stubGlobal("navigator", { clipboard: { readText: () => new Promise<string>((r) => { resolve = r; }) } });
+    const { v2 } = server([view({})]);
+    const page = await open(v2);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    await page.type("PARALLEL_API_KEY", OTHER);
+    await act(async () => resolve(FAKE));
+    expect(page.input("PARALLEL_API_KEY").value).toBe(OTHER);
+  });
+
+  it("does not paste a delayed read into a field reopened after Cancel", async () => {
+    let resolve!: (text: string) => void;
+    const readText = vi.fn().mockImplementationOnce(() => new Promise<string>((r) => { resolve = r; })).mockResolvedValue("");
+    vi.stubGlobal("navigator", { clipboard: { readText } });
+    const { v2 } = server([view({})]);
+    const page = await open(v2);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    await page.click(page.row("Parallel"), /^Cancel$/);
+    await page.click(page.row("Parallel"), /^Paste$/);
+    await act(async () => resolve(FAKE));
+    expect(page.input("PARALLEL_API_KEY").value).toBe("");
+  });
+
   it("shows each field set or not set, and where it comes from", async () => {
     const { v2 } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "console"), BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "env") })]);
     const page = await open(v2);
@@ -226,16 +278,16 @@ describe("KeysPage", () => {
     expect(page.input("MONID_API_KEY").value).toBe("");
   });
 
-  it("lists a model provider's key under Model keys, before the tools' keys, and saves it through its own route; with none, no headings", async () => {
+  it("lists a model provider's key under Model keys, before the tools' keys, and saves it through its own route; with none, the one section keeps its name", async () => {
     const plain = view({});
     const anthropic: ToolKey = servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"], check: null });
     const { v2, calls } = server([{ ...plain, keys: [...plain.keys.map((k) => ({ ...k, kind: "tool" as const })), anthropic] }]);
     const page = await open(v2);
     expect([...page.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Model keys", "Tool keys"]);
-    const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
+    const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > div > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
     expect([labels("Model keys"), labels("Tool keys")]).toEqual([["Anthropic"], ["Parallel", "Monid", "Browserbase"]]);
-    expect(page.host.querySelector('section[aria-label="Model keys"] > p')?.textContent).toBe("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
-    expect(page.host.querySelector('section[aria-label="Tool keys"] > p')).toBeNull();
+    expect(page.host.querySelector('section[aria-label="Model keys"] h2 + div p')?.textContent).toBe("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
+    expect(page.host.querySelector('section[aria-label="Tool keys"] h2 + div')).toBeNull();
     expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses pi, claude-agent");
     await page.click(page.row("Anthropic"), /^Paste$/);
     await page.type("ANTHROPIC_API_KEY", FAKE);
@@ -245,7 +297,7 @@ describe("KeysPage", () => {
     act(() => root?.unmount());
     document.body.innerHTML = "";
     const older = await open(server([plain]).v2);
-    expect(older.host.querySelectorAll("h2")).toHaveLength(0);
+    expect([...older.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Tool keys"]);
     expect(older.host.textContent).not.toContain("We recommend an OpenRouter key");
     expect(older.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search");
   });

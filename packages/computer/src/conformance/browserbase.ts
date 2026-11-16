@@ -1,6 +1,6 @@
 // Browserbase for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider browserbase`.
-// It makes a real, billed Browserbase session, so it runs only with AGENTRUN_COMPUTER_LIVE_BROWSERBASE=1 and a key the
-// lead has OKed, under COMPUTER_BROWSERBASE_API_KEY (and COMPUTER_BROWSERBASE_PROJECT_ID for a direct key). The provider
+// It makes a real, billed Browserbase session, so it runs only with AGENTRUN_COMPUTER_LIVE_BROWSERBASE=1 and a key for
+// an account you can bill, under COMPUTER_BROWSERBASE_API_KEY (and COMPUTER_BROWSERBASE_PROJECT_ID for a direct key). The provider
 // reads no environment: this module reads its own COMPUTER_BROWSERBASE_* names (never BROWSERBASE_API_KEY, which may
 // hold another project's key) and passes each to create() as its option. The live switch is checked first, before any
 // other setting is read. The run makes one session, shared by every case, and releases it.
@@ -53,7 +53,7 @@ export function conformanceImage(): string {
 /** The provider the CLI runs; throws in words without the live switch, or when the key is missing. */
 export async function createProvider({ env = process.env, ...transport }: BrowserbaseModuleOptions = {}): Promise<BrowserbaseProvider> {
 	if (env[BROWSERBASE_ENV.live] !== "1") {
-		throw new Error(`the Browserbase conformance module makes a real, billed session: set ${BROWSERBASE_ENV.live}=1, with a key the lead has OKed, to run it`);
+		throw new Error(`the Browserbase conformance module makes a real, billed session: set ${BROWSERBASE_ENV.live}=1, with a key for an account you can bill, to run it`);
 	}
 	return create({ ...settingsFromEnv(env), ...transport });
 }

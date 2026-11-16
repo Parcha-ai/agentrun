@@ -34,7 +34,6 @@ import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import { parseAllow } from "./docker/egress-proxy.js";
 import type { KindCapabilities } from "./kinds.js";
 import { BROWSER_FILE, type BrowserRecord, type BrowserState, CHROME_PID_FILE, EGRESS_SOCKET_FILE, PROFILE_DIR, READY_MS, STATE_FILE, SUPERVISOR_FILE, type SupervisorLine } from "./local-supervisor.js";
-import type { MountKind } from "./mount.js";
 import type {
 	AttachedComputer,
 	CallContext,
@@ -66,8 +65,6 @@ const SOCKET_PATH_MAX = 107;
 /** How long a release waits for the supervisor, then for Chrome, to end. */
 const END_MS = 10_000;
 
-/** A browser takes no mount: its descriptor's (descriptors/local-chrome.ts). */
-export const MOUNT: readonly MountKind[] = LOCAL.mounts;
 /** The networks a local browser runs on, its descriptor's: through its egress proxy, public addresses ("open"), or only
  *  the hosts of a list ("allow"), public ones still. */
 const NETWORK: readonly NetworkForm[] = LOCAL.network;
@@ -97,8 +94,6 @@ const networkRecord = (network: unknown): { allow?: string[] } => {
 /** A browser's network as list, attach and network() read it back from browser.json. */
 const networkRead = (record: BrowserRecord): NetworkPolicy => (record.allow ? { allow: [...record.allow] } : "open");
 
-/** The one configuration it offers, its descriptor's: a browser with a CDP target. */
-export const CAPABILITIES: readonly KindCapabilities[] = LOCAL.capabilities;
 
 export interface LocalBrowserOptions {
 	/** The Chrome or Chromium to run; default the one findChrome finds in `env`, then in the usual places. */
@@ -165,7 +160,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 			isolation: "host",
 			os: "linux",
 			daemon: "none",
-			groups: [...(CAPABILITIES[0] as KindCapabilities).groups],
+			groups: [...(LOCAL.capabilities[0] as KindCapabilities).groups],
 			maxLifetimeMs: LOCAL_MAX_LIFETIME_MS,
 			release: ["delete"],
 			browser: { timeout: "wall-clock" },

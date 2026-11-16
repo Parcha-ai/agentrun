@@ -273,7 +273,9 @@ test('a request the runner refuses is never forwarded, and answers a status the 
   const r = await send(p.url);
   assert.equal(r.status, 400);
   assert.match(r.text, /turn_limit/);
-  assert.deepEqual([forwarded.length, hooks.after.length, hooks.before], [0, 0, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(JSON.stringify({ model: 'session-model', input: 'hi' })) }]]);
+  // The runner is asked with the client's signal (a client that goes leaves the cap's line), and nothing more.
+  assert.ok(hooks.before.every((asked) => asked.signal instanceof AbortSignal), 'each ask carries its client signal');
+  assert.deepEqual([forwarded.length, hooks.after.length, hooks.before.map(({ signal: _signal, ...asked }) => asked)], [0, 0, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(JSON.stringify({ model: 'session-model', input: 'hi' })) }]]);
   const own = await proxy(t, { refuse: 'budget', policy: { ...policy, refusedStatus: 403 } });
   assert.equal((await send(own.p.url)).status, 403);
 });
@@ -823,6 +825,21 @@ test("a provider's error answer costs nothing, whatever cost its headers name", 
   const { p, hooks } = await proxy(t, { fetch: async () => new Response('{"error":"overloaded"}', { status: 529, headers: { 'x-litellm-response-cost': '0.5' } }) });
   await send(p.url, { path: '/v1/test?beta=true' });
   assert.deepEqual(hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }]);
+});
+
+test("an error answer the policy ends the run on (a plan's limit reached) is answered in the policy's words and keeps the provider's request ids for its records", async (t) => {
+  const finalError = (status, text) => (status === 429 && /usage_limit_exceeded/.test(text) ? { message: 'The plan limit is reached.', code: 'plan_limit_reached' } : undefined);
+  const ids = { 'x-request-id': 'req_plan_1', 'openai-request-id': 'req-openai-1' };
+  const { p, hooks } = await proxy(t, {
+    policy: { ...policy, finalError },
+    fetch: async () => new Response('{"error":{"code":"usage_limit_exceeded"}}', { status: 429, headers: { 'content-type': 'application/json', ...ids, 'set-cookie': 'session=provider-secret' } }),
+  });
+  const r = await send(p.url, { path: '/v1/test?beta=true' });
+  assert.equal(r.status, 400, 'answered at the refused status, which no client asks again on');
+  assert.deepEqual(JSON.parse(r.text), { error: { message: 'The plan limit is reached.', type: 'agentrun_proxy', code: 'plan_limit_reached' } });
+  await until(() => hooks.after.length === 1, "the request's booking");
+  assert.deepEqual(hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: 0, providerIds: ids }], 'booked at nothing, with the ids the provider gave it');
+  assert.equal(r.headers['set-cookie'], undefined, "nothing else of the provider's headers reaches the client");
 });
 
 test("the run's books keep each turn's figure and where it came from: the gateway's, with the table's beside it, or the table's, estimated", async (t) => {
