@@ -696,7 +696,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
-  // The email tools (email/tools.ts) on the server's one email account (the email account setting, /v2/settings/email), every harness's as web_fetch is;
+  // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;
   // the mail libraries load at the first bind.
   [EMAIL_SEARCH]: emailTool(EMAIL_SEARCH),
   [EMAIL_READ]: emailTool(EMAIL_READ),

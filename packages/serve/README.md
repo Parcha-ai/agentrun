@@ -2076,20 +2076,8 @@ delivery on the payload's tag, for tracing. A request that carries no scheme's s
 one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
 checked before the body is read.
 
-`composio` takes [Composio](https://composio.dev) trigger events. Register the trigger's `hook_url` as Composio's webhook
-subscription (`POST /api/v3.1/webhook_subscriptions` with `enabled_events: ["composio.trigger.message"]`); Composio
-answers with a `secret` it makes, which you give here, whole and as Composio shows it, with `POST /v2/triggers/{id}/secret`
-and the body `{"secret": "..."}` (the same call replaces it when you rotate it in Composio). A composio trigger is made with no
-secret (the URL carries its id, so Composio can only make the secret after); until one is set every request is refused. It is sealed as a minted one is and never shown again; this server never
-makes one for a composio trigger. Composio signs as Standard Webhooks does (`webhook-id`, `webhook-timestamp`, `webhook-signature`) but keyed by the
-UTF-8 bytes of that secret string, not a decoded `whsec_` key, which is why a `standard` trigger cannot take it. The
-firing's key is `webhook-id`, the event is the body's `metadata.trigger_slug`, so `accept: [{"event":
-"GITHUB_ISSUE_ADDED_EVENT"}]` takes one Composio trigger's events, and a rule's `where` pointers read the payload under
-`/data`. The subscription also delivers account events (`composio.connected_account.expired`,
-`composio.connected_account.activated`, `composio.trigger.disabled`), signed the same way, with no slug: their event is the
-body's top-level `type`, so `accept` can take them too. A Composio project's subscription posts every event to the one URL it names, so it fires that one composio
-trigger and its agent: other triggers never see those deliveries, whatever their `accept`. The tag also names
-`trigger_id` and `user_id`.
+A webhook trigger takes no `composio` signature (`422`, pointing to the console's Triggers → New app trigger): Composio's
+events start runs through a [Composio trigger](#composio-triggers), whose server makes and keeps the subscription.
 
 `accept` makes a trigger take only the events it names, from the delivery alone:
 
@@ -2154,6 +2142,44 @@ one message per id; a firing driven again after a restart first looks for it the
 never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
 5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
 with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+
+### Composio triggers
+
+A trigger with `source: {kind: "composio", server, event, config}` starts a run on an event in an app that a saved
+[Composio](#composio) server connects: `server` names the saved server, `event` is one of its toolkit's events
+(Composio's trigger slug, `GITHUB_ISSUE_CREATED_TRIGGER`), listed with each one's config schema by `GET
+/v2/settings/mcp-servers/{name}/composio/events`, and `config` is that event's config (`{owner, repo}` for a GitHub
+issue). The console makes one in Triggers → New app trigger. The create does the Composio side with the server's saved
+key, in order, and undoes what it made when a later step fails:
+
+- The Composio project's webhook subscription (one a project), at this server's address `/v2/hooks/composio/{hook}`,
+  the first time a trigger needs one, and reused after. Composio's secret for it is sealed under the hook's scope and
+  never answered, logged or put in an event.
+- The event's trigger instance, by upsert, for the account the server is connected as. Triggers with the same server,
+  event and config share Composio's one instance: it is turned off only when every trigger holding it is off, and
+  deleted with the last.
+- The trigger here. Its `source` names what was made: `instance_id` and `hook`.
+
+The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
+address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`
+says whether there is one, never the address, and the console turns New app trigger off without one, with the line
+"App triggers need this server's public address: set AGENTRUN_PUBLIC_URL and restart." A subscription at another
+address is `409 composio_subscription_elsewhere` with `details.webhook_url`, in the words "Composio sends this
+project's events to <url> now. Moving them here stops them arriving there: anything listening at <url> (another
+AgentRun server, or a tool of yours) gets no more events." The same create with `source.move_subscription: true` moves
+it here. `409 composio_not_connected` (with `details.connect_url`, Composio's page to connect it) when the server's
+Composio user has no connected account, `409 composio_account_ambiguous` (`details.accounts`) when it has several: a
+trigger runs as one, never one picked.
+
+Every event of the project comes to its one route, checked by the `composio` scheme: the Standard Webhooks headers
+and message, keyed by the UTF-8 bytes of the subscription's whole secret string, with the same 5-minute window, and
+`webhook-id` as the firing's key. The delivery fires each trigger whose instance is its `metadata.trigger_id` and whose
+`accept` takes it, each its own run. Its event is the body's `metadata.trigger_slug`, and a rule's `where` pointers
+read the payload under `/data`. The agent gets the body inside `<trigger-payload source="composio" scheme="composio"
+event="..." trigger_id="..." user_id="..." untrusted>`. Pausing, resuming and deleting a trigger, and the server turning
+one off itself, follow on Composio once the change holds here; what Composio could not do is said, with what to do by
+hand. `GET /v2/settings/mcp-servers/{name}/composio/triggers` lists a server's Composio triggers with whether Composio
+has each instance on, and the subscription's place.
 
 ### GitHub triggers (Connect GitHub)
 

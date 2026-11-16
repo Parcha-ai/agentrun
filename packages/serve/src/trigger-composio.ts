@@ -5,7 +5,7 @@
 // of the project's route, /v2/hooks/composio/{hook}, whose secret (the subscription's, Composio's own) is sealed under
 // that scope. Every event of the project comes to that one route, checked once with the secret (trigger-signatures.ts's
 // composio scheme); each trigger whose instance is the delivery's metadata.trigger_id and whose `accept` takes it fires,
-// each its own run. Old webhook triggers with `signature: composio` are another source (trigger-webhook.ts), unchanged.
+// each its own run. This is the one way Composio's events start runs: a webhook trigger takes no composio signature.
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 import { type Scheme, SIGNATURE_SCHEMES } from "./trigger-signatures.js";

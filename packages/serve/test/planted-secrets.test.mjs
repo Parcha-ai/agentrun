@@ -61,7 +61,7 @@ test("no planted secret shows in any GET (by every id a plant made), a plant's a
   // Every answer a plant gets, as the owner's session or as the token, is read too (answerSources).
   const answers = [];
   const as = (by, headers) => async (method, path, body) => {
-    const res = await call(server.port, { method, path, headers: { ...json, ...headers }, body: body ?? (method === "GET" ? undefined : {}) });
+    const res = await call(server.port, { method, path, headers: { ...json, ...headers }, body });
     let parsed;
     try {
       parsed = JSON.parse(res.text);

@@ -1,4 +1,4 @@
-// The server's one email account (the email account setting, /v2/settings/email): where its mail is read (IMAP) and
+// The server's one email account (Settings → Email, /v2/settings/email): where its mail is read (IMAP) and
 // sent (SMTP), the address it sends as, and who signs in. Kept whole in ONE row of the one store's sealed keys
 // (EMAIL_ACCOUNT_ROW, beside the tool keys): the servers, the address, the user and the password sealed together as one
 // JSON value, saved in one write, so a read gets one account or the other, never one's servers with another's password,
@@ -165,5 +165,5 @@ export async function removeAccount(store: AccountStore): Promise<void> {
 }
 
 /** The refusal for a tool or a trigger when no account is kept. */
-export const NO_ACCOUNT = "This server has no email account: save one with PUT /v2/settings/email.";
+export const NO_ACCOUNT = "This server has no email account: save one in Settings → Email.";
 export const noAccount = () => new ApiError("input_invalid", NO_ACCOUNT, { fields: [{ field: "source.account", reason: "not_set", message: NO_ACCOUNT }] });

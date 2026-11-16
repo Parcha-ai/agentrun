@@ -4,7 +4,7 @@
 // changed UIDVALIDITY the same, said; the cursor (UIDVALIDITY and the last UID) survives a restart; a Message-ID seen
 // twice fires once; a poll takes at most 20 messages, oldest first; a message this server sent (X-AgentRun-Sent) is
 // left, and said; `accept` takes and ignores. Every read is a PEEK: the inbox reads unread after. A server that can't be
-// reached is said on the trigger and never turns it off; three refused sign-ins in a row do, naming PUT /v2/settings/email.
+// reached is said on the trigger and never turns it off; three refused sign-ins in a row do, naming Settings → Email.
 // The schedules' own tests (triggers.test.mjs) stand as they are.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -24,12 +24,12 @@ async function trigger(api, body) {
   return res.body;
 }
 
-test("no account: an email trigger is refused, naming PUT /v2/settings/email; a source past its bounds is refused field by field", { timeout: 60_000 }, async (t) => {
+test("no account: an email trigger is refused, naming Settings → Email; a source past its bounds is refused field by field", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock(T0), runner: false });
   await made(api, "mail");
   const none = await api("POST", "/triggers", emailTrigger("mail"));
   assert.equal(none.status, 422, JSON.stringify(none.body));
-  assert.match(JSON.stringify(none.body), /save one with PUT \/v2\/settings\/email/);
+  assert.match(JSON.stringify(none.body), /Settings → Email/);
   const faux = await mailbox(t);
   await saved(api, faux);
   const bad = await api("POST", "/triggers", emailTrigger("mail", { every_s: 30, account: "work", accept: [{ event: "push" }], folder: "x" }));
@@ -204,7 +204,7 @@ test("25 new messages: a poll takes the oldest 20, the next poll the other 5; a 
   await follow(api, started.run_id, ["completed"]);
 });
 
-test("an unreachable server is said on the trigger as its last check and never turns it off; three refused sign-ins in a row do, naming PUT /v2/settings/email", { timeout: 150_000 }, async (t) => {
+test("an unreachable server is said on the trigger as its last check and never turns it off; three refused sign-ins in a row do, naming Settings → Email", { timeout: 150_000 }, async (t) => {
   const clock = fakeClock(T0);
   const { api, baseUrl } = await serve(t, { triggerClock: clock, runner: false });
   const faux = await mailbox(t);
@@ -235,7 +235,7 @@ test("an unreachable server is said on the trigger as its last check and never t
   const off = await checked(api, id, minute(7));
   assert.equal(off.enabled, false, "the third refusal in a row turns it off");
   assert.equal(off.disabled.reason, "sign_in_refused");
-  assert.match(off.disabled.detail, /saved with PUT \/v2\/settings\/email/);
+  assert.match(off.disabled.detail, /Settings → Email/);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.deepEqual(schemaProblems(doc, doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema, off), []);
   const commands = faux.commands();
