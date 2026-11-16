@@ -4,7 +4,7 @@
 // rented by the minute, so nothing is built without AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS=1, and a run's phones live at
 // most 10 min.
 // The provider reads no environment: this module reads these names and passes them in as options.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -245,7 +245,7 @@ function optionsOf({ env = process.env, adb, uiFixture = UI_FIXTURE_APK, ...rest
 		maxLifetimeMs: RUN_MAX_LIFETIME_MS,
 		// The Full ui cases act on the fixture. Without its APK they skip, each saying it is not installed, and the
 		// report's notes say why (conformanceNotes).
-		apks: existsSync(uiFixture) ? [uiFixture] : [],
+		apks: existsSync(uiFixture) ? [{ path: uiFixture, sha256: createHash("sha256").update(readFileSync(uiFixture)).digest("hex") }] : [],
 		...rest,
 	};
 }
