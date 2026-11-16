@@ -5079,6 +5079,10 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio?: {
+        removed: boolean;
+        note: string;
+      };
     };
   };
   saveToolKey: {

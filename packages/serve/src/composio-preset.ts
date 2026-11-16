@@ -252,16 +252,17 @@ function said(name: string, removed: string[], kept: (Thing & { by?: string })[]
 }
 
 /** What the answer to a delete says when this server could not ask Composio at all (the saved key does not open here, or
- *  the address names no Composio server): all of it is left there, to remove by hand.
- *  `mcp` false: a save over a server, which removes no MCP server, says what it keeps too. */
-export const composioNote = (name: string, cleanup?: Cleanup, mcp = true): { removed: false; note: string } =>
-  ({ removed: false, note: said(name, [], mcp ? [] : cleanup?.kept ?? [], [`${listed([...(mcp ? ["the MCP server it made"] : []), ...(cleanup?.remove ?? []).map((thing) => named(thing))])} (the saved key doesn't open here)`]).note });
+ *  the address names no Composio server): all of it is left there, to remove by hand. `mcp`: the MCP server left, by its
+ *  id when known (true: the one it made; false: none). `over`: a save over a server, which says what it keeps too. */
+export const composioNote = (name: string, cleanup?: Cleanup, mcp: string | boolean = true, over = false): { removed: false; note: string } =>
+  ({ removed: false, note: said(name, [], over ? cleanup?.kept ?? [] : [], [`${listed([...(typeof mcp === "string" ? [named({ kind: "mcp", id: mcp })] : mcp ? ["the MCP server it made"] : []), ...(cleanup?.remove ?? []).map((thing) => named(thing))])} (the saved key doesn't open here)`]).note });
 
 /** Deleting a preset server: the Composio MCP server `id` it made is deleted as `key` (the saved credential, held for this
  *  call only), then what `cleanup` says this server made for it and nothing else uses (composio-made.ts: its connected
  *  accounts, then their auth config). Composio's 404 is "already gone"; a refusal, or no answer, leaves that one there and
  *  says so, for the delete of our own row to go on regardless. The answer says in words what went, what stays and why.
- *  No `id`: a save over a server, which removes only what the save before made and it no longer stands on. */
+ *  A save over a server does the same with what the save before made that it left (ComposioDropped); no `id` when the
+ *  row still names the MCP server it named. */
 export async function composioForget(control: ComposioControl, key: string, id: string | undefined, name: string, signal?: AbortSignal, cleanup?: Cleanup): Promise<{ removed: boolean; note: string }> {
   const removed: string[] = [];
   const left = await removing(asking(control, key, signal, "it is still there"), [...(id ? [{ kind: "mcp" as const, id }] : []), ...(cleanup?.remove ?? [])], removed);

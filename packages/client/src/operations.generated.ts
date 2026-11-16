@@ -3240,6 +3240,10 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio?: {
+    removed: boolean;
+    note: string;
+  };
 };
 
 /** Read activity and token usage reported by externally running agents (GET /observations). */

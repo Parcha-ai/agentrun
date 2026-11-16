@@ -129,7 +129,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             </>
           )}>
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}|${form.add?.preset ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} taken={servers} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}|${form.add?.preset ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} taken={servers} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => (said?: { removed: boolean; note: string }) => { if (said) setRemovedNote(said); setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} settings={settings} settingsBusy={settingsBusy} settingsProblem={settingsProblem?.server === s.name ? settingsProblem.problem : null} onSettings={(edit) => void saveSettings(s.name, edit)} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })}
@@ -484,7 +484,7 @@ const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. A new
  *  server's form offers the URL presets (MCP_URL_PRESETS): one fills the name (the first free one of `taken`), address,
  *  credential and toolkit, and says its note; `add.preset` opens the form with one filled. */
-function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; taken: readonly Pick<McpServer, "name">[] | null; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; taken: readonly Pick<McpServer, "name">[] | null; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: (said?: { removed: boolean; note: string }) => void }) {
   const form = useRef<HTMLFormElement>(null);
   const linked = saved ? undefined : urlPresetOf(add?.preset);
   const [preset, setPreset] = useState<McpPreset | undefined>(linked);
@@ -562,8 +562,8 @@ function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, 
     if (!addable) return;
     if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
     // No prices are sent: this form sets none, and the server keeps the saved ones for the tools still listed at the same
-    // address when a PUT has none.
-    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth(), kind()); form.current?.reset(); onSaved(); });
+    // address when a PUT has none. A change that moved a Composio server off Composio says what it removed there.
+    void act(async () => { const answer = await v2.saveMcpServer(name.trim(), url.trim(), auth(), kind()); form.current?.reset(); onSaved(answer.composio); });
   };
   const canSave = !busy && addable && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   // A preset fills the form as typing would: a new preview is asked for, and anything filled stays the owner's to change.
