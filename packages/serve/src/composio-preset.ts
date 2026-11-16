@@ -199,7 +199,10 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     if (url && savedUrl && (await savedUrl().catch(() => undefined)) === url) throw error;
     const left = await removing(ask, [...madeHere].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]), []);
     if (!left.length || !(error instanceof ApiError)) throw error;
-    throw new ApiError(error.code, `${error.message} ${said(name, [], [], left).note}`, error.extra, error.headers);
+    // In its message, and in its details too when it was refused on a field (422 input_invalid): a page that shows the
+    // fields' words in place of the message still says what is left at Composio.
+    const note = said(name, [], [], left).note;
+    throw new ApiError(error.code, `${error.message} ${note}`, error.extra.fields?.length ? { ...error.extra, details: { ...error.extra.details, composio: note } } : error.extra, error.headers);
   }
 }
 

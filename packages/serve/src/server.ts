@@ -121,7 +121,7 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
-import { type ComposioDropped, mcpServersOverStore } from "./mcp-servers-store.js";
+import { type ComposioDropped, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
@@ -1700,6 +1700,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     signal: stopping.signal,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
+  /** What a save refused while Composio triggers use the server says to do once they are gone (composio-triggers.ts inUse). */
+  const SAVE_AFTER_TRIGGERS = "then save the server again";
   /** What a save over a preset server left at Composio (ComposioDropped), removed there with the key it was made with, in
    *  words; when that key doesn't open here, all of it said to remove by hand. */
   const composioLeft = async (name: string, dropped: ComposioDropped) =>
@@ -3748,22 +3750,28 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
         const body = await bodyOf(req);
-        const saving = (dropped?: (left: ComposioDropped) => void) => mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, dropped);
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
         if (!(await mcpServers.composioPreset(id))) {
-          const saved = await saving();
+          const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined);
           await refreshMcpMeta();
           return send(res, 200, saved);
         }
-        // A preset server's, in the Composio turn: a save that moves it off Composio removes there what its save made (the
-        // MCP server, then what no other saved server uses), as a delete does, with the key it was saved with, and says so.
-        const answer = await inComposioTurn(async () => {
-          const over: { dropped?: ComposioDropped } = {};
-          const saved = await saving((left) => (over.dropped = left));
-          await refreshMcpMeta();
-          return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
-        });
-        return send(res, 200, answer);
+        // A preset server's: listed as any save is, at once; then its write and cleanup in the Composio turn and its
+        // project's. A save that moves it off Composio is refused while Composio triggers use it, in the delete's words;
+        // else it removes there what its save made (the MCP server, then what no other saved server uses), as a delete
+        // does, with the key it was saved with, and says so.
+        const over: { dropped?: ComposioDropped; note?: Awaited<ReturnType<typeof composioLeft>> } = {};
+        const guard: SaveGuard = {
+          turn: (work) => inComposioTurn(async () => {
+            const done = await composioTriggers.inTurnOf(id, work);
+            if (over.dropped) over.note = await composioLeft(id, over.dropped);
+            return done;
+          }),
+          inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS),
+        };
+        const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left), guard);
+        await refreshMcpMeta();
+        return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
       case "listComposioTools":
@@ -3775,10 +3783,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // In the Composio turn. A save over a preset server removes there, once it is saved, the MCP server the save before
         // made and what that save made that this one no longer stands on (an account of another user, an auth config of
         // another toolkit), with the key it was made with, and says so as a delete does; what another saved server uses is
-        // that one's now, and said too.
+        // that one's now, and said too. A save as another user or auth config is refused while Composio triggers use the
+        // server, in the delete's words, checked in its project's turn before the row is written.
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
-          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, undefined, made, stands, (left) => (over.dropped = left)), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+          const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };
+          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, undefined, made, stands, (left) => (over.dropped = left), guard), id, stopping.signal, async () => (await mcpServers.get(id)).url);
           await refreshMcpMeta();
           return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
         });

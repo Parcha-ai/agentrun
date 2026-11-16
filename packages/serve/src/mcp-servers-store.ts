@@ -73,6 +73,9 @@ function composioKeyOf(open: RemovedMcpServer["opened"]): string | undefined {
  *  Composio). `cleanup`: what that save had made there besides that this one no longer stands on (composio-made.ts
  *  droppedOf; all of it, as a delete's cleanupOf, for a row moved off Composio). */
 export type ComposioDropped = ({ key: string } | { unusable: true }) & { cleanup: Cleanup; mcp?: string };
+/** A preset row's save guard (McpServersOverStore.save): `turn`, the Composio turns its write and cleanup take; `inUse`,
+ *  refused while Composio triggers use the server (composio-triggers.ts inUse). */
+export type SaveGuard = { turn: <T>(work: () => Promise<T>) => Promise<T>; inUse: () => Promise<void> };
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
  *  client, with its secret) sealed together by its state, the rest of its working state plain JSON the callback rebuilds.
@@ -265,8 +268,11 @@ export class McpServersOverStore {
    *  for its delete. `dropped` is told what a save over a preset server leaves to do there, once the row is written: the
    *  MCP server the save before made, when the row names it no longer, and what else that save made that this one no
    *  longer stands on (all of it, for an ordinary save that moves the row off Composio, as a delete), which another saved
-   *  server's record now owns or the caller removes. */
-  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void) {
+   *  server's record now owns or the caller removes. `guard`, a preset row's: the turn its write and cleanup take, once
+   *  the listing is done (never across it), and the check of the triggers that use it, made in that turn before a write
+   *  that leaves what they stand on (an ordinary save moving the row off Composio, a preset save as another user or auth
+   *  config): refused, nothing written. */
+  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
     // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
@@ -327,54 +333,64 @@ export class McpServersOverStore {
         ...(priced && Object.keys(priced).length ? { prices: priced } : {}),
       };
     };
-    const saved = keeping
-      // Re-applied only onto a row that still holds a credential of this auth type at this origin: never onto another one's.
-      // It writes no credential column, so it never drops or replaces one.
-      ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && new URL(fresh.url).origin === url.origin)
-      // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
-      : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
-    if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn));
-    // The Composio MCP server the row named before, when the preset made it (the row was a preset server) and the row names
-    // it no longer: a preset save over it made a new one, or an ordinary save moved the row off Composio.
-    const madeBefore = wasPreset && (made || moved) ? composioServerId(was!.url) : undefined;
-    const leftMcp = madeBefore !== undefined && madeBefore !== composioServerId(url.href) ? madeBefore : undefined;
-    let left: Cleanup | undefined;
-    // What it stands on at Composio: what the preset found and made, over what the server saved before over this row had
-    // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
-    if (made && stands) {
-      const others = (await this.composioRecords()).filter(([other]) => other !== name);
-      const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
-      const record = madeToWrite(stands, before, others.map(([, other]) => other));
-      await this.store.settings.put(composioMadeKey(name), storedMade(record, saved));
-      // What the save before made that this one no longer stands on: another saved server's now (its record rewritten to
-      // own it), or the caller's to remove at Composio, with the key it was made with.
-      if (was && before) {
-        const done = droppedOf(before, record, others.map(([other, mine]): [string, ComposioMade] => [other, mine]));
-        await this.handOver(others, done.handover);
-        left = done.cleanup;
+    // From here, in the guard's turn (a preset row's): what it stood on read, the triggers checked, the row written, and
+    // what it leaves at Composio counted.
+    const write = async () => {
+      if (guard && wasPreset) {
+        const stood = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
+        if (moved || (made && stands && (!stood || stood.user !== stands.user || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
       }
-    } else if (moved) {
-      // Moved off Composio: what its save made there goes as a delete's does (cleanupOf), the MCP server first, unless the
-      // new address names the same Composio MCP server, which still stands on it.
-      const before = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
-      await this.store.settings.remove(composioMadeKey(name));
-      // Only for a caller in the Composio turn (`dropped`), so no preset save still at Composio is counted out.
-      if (before && leftMcp && dropped) {
+      const saved = keeping
+        // Re-applied only onto a row that still holds a credential of this auth type at this origin: never onto another one's.
+        // It writes no credential column, so it never drops or replaces one.
+        ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && new URL(fresh.url).origin === url.origin)
+        // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
+        : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
+      if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn));
+      // The Composio MCP server the row named before, when the preset made it (the row was a preset server) and the row names
+      // it no longer: a preset save over it made a new one, or an ordinary save moved the row off Composio.
+      const madeBefore = wasPreset && (made || moved) ? composioServerId(was!.url) : undefined;
+      const leftMcp = madeBefore !== undefined && madeBefore !== composioServerId(url.href) ? madeBefore : undefined;
+      let left: Cleanup | undefined;
+      // What it stands on at Composio: what the preset found and made, over what the server saved before over this row had
+      // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
+      if (made && stands) {
         const others = (await this.composioRecords()).filter(([other]) => other !== name);
-        const done = cleanupOf(before, others.map(([other, record]): [string, ComposioMade] => [other, record]));
-        await this.handOver(others, done.handover);
-        left = done.cleanup;
+        const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
+        const record = madeToWrite(stands, before, others.map(([, other]) => other));
+        await this.store.settings.put(composioMadeKey(name), storedMade(record, saved));
+        // What the save before made that this one no longer stands on: another saved server's now (its record rewritten to
+        // own it), or the caller's to remove at Composio, with the key it was made with.
+        if (was && before) {
+          const done = droppedOf(before, record, others.map(([other, mine]): [string, ComposioMade] => [other, mine]));
+          await this.handOver(others, done.handover);
+          left = done.cleanup;
+        }
+      } else if (moved) {
+        // Moved off Composio: what its save made there goes as a delete's does (cleanupOf), the MCP server first, unless the
+        // new address names the same Composio MCP server, which still stands on it.
+        const before = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
+        await this.store.settings.remove(composioMadeKey(name));
+        // Only for a caller in the Composio turn (`dropped`, with its `guard`), so no preset save still at Composio is counted out.
+        if (before && leftMcp && dropped) {
+          const others = (await this.composioRecords()).filter(([other]) => other !== name);
+          const done = cleanupOf(before, others.map(([other, record]): [string, ComposioMade] => [other, record]));
+          await this.handOver(others, done.handover);
+          left = done.cleanup;
+        }
       }
-    }
-    if (was && (leftMcp || left?.remove.length || left?.kept.length)) {
-      let key: string | undefined;
-      try {
-        key = composioKeyOf(openMcpRow(this.sealKey, was));
-      } catch {
-        key = undefined;
+      if (was && (leftMcp || left?.remove.length || left?.kept.length)) {
+        let key: string | undefined;
+        try {
+          key = composioKeyOf(openMcpRow(this.sealKey, was));
+        } catch {
+          key = undefined;
+        }
+        dropped?.({ ...(key ? { key } : { unusable: true as const }), cleanup: left ?? { remove: [], kept: [] }, ...(leftMcp ? { mcp: leftMcp } : {}) });
       }
-      dropped?.({ ...(key ? { key } : { unusable: true as const }), cleanup: left ?? { remove: [], kept: [] }, ...(leftMcp ? { mcp: leftMcp } : {}) });
-    }
+      return saved;
+    };
+    const saved = guard ? await guard.turn(write) : await write();
     await this.store.flush();
     return this.view(saved);
   }
