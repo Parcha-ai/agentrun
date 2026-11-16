@@ -1091,6 +1091,62 @@ describe("Settings → MCP servers, URL presets", () => {
     expect(p.host.querySelector('[role="note"][data-mcp-preset]')?.textContent).toMatch(/sign in/i);
   });
 
+  it("a preset clears a credential typed for another server, so none is sent to the preset's address", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.pick("bearer");
+    await p.type("mcp-token", "tok-for-another-server");
+    await p.click(/^GitHub \(token\)$/);
+    expect(p.input("mcp-token").value).toBe("");
+    await p.click(/^Preview$/);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://api.githubcopilot.com/mcp/", auth: { type: "bearer" } } }]);
+  });
+
+  it("a preset clears the scopes and client typed for another OAuth server", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Linear$/);
+    await p.type("mcp-scopes", "read write");
+    await p.type("mcp-client-id", "linear-client");
+    await p.type("mcp-client-secret", "linear-secret");
+    await p.click(/^Notion$/);
+    expect(p.input("mcp-scopes").value).toBe("");
+    expect(p.input("mcp-client-id").value).toBe("");
+    expect(p.input("mcp-client-secret").value).toBe("");
+  });
+
+  it("the presets wait for the saved servers to be read, so none picks a name that is taken", async () => {
+    let list!: (r: Response) => void;
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? new Promise<Response>((r) => { list = r; }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+    await act(async () => { list(json(200, { servers: [saved({ name: "parallel" })] })); });
+    await p.settle();
+    await p.click(/^Parallel Search$/);
+    expect(p.input("mcp-name").value).toBe("parallel-2");
+  });
+
+  it("a list that can't be read leaves the presets off", async () => {
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? refusal(500, "internal", "down") : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+  });
+
+  it("a new server's name already saved can't be saved: it would replace that server", async () => {
+    const s = server([[saved({ name: "fake" })]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "fake");
+    await p.type("mcp-url", "https://mcp.example.test/mcp");
+    await p.click(/^Preview$/);
+    expect(p.text()).toMatch(/fake is saved already/);
+    expect(p.button(/^Save$/)?.disabled).toBe(true);
+    expect(s.writes().filter((c) => c.method === "PUT")).toEqual([]);
+  });
+
   it("a deep link with an unknown preset id opens the plain form", async () => {
     const p = await open(server([[]]).v2, { add: route("#/settings/mcp?add=foo&preset=nope").add });
     expect(p.input("mcp-name").value).toBe("foo");
