@@ -1,5 +1,4 @@
 /** Compatibility routes for the existing source-side CLI. Only bearer auth; browser cookies confer no authority. */
-import { createHash, timingSafeEqual } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
@@ -9,7 +8,6 @@ import {
   Observations,
 } from "./observer.js";
 const PREFIX = "/api/v2/control";
-const digest = (v: string) => createHash("sha256").update(v).digest();
 const send = (
   res: ServerResponse,
   status: number,
@@ -65,7 +63,9 @@ export async function observationHttp(
   res: ServerResponse,
   url: URL,
   observer: Observations,
-  ownerToken: string,
+  /** Whether the Authorization header holds one of the server's API tokens (api-token.ts bearerCheck: every entry
+   *  compared in constant time). */
+  authorized: (header: string | undefined) => boolean,
 ): Promise<void> {
   try {
     const path = url.pathname.slice(PREFIX.length),
@@ -99,12 +99,7 @@ export async function observationHttp(
               );
       return send(res, 200, result);
     }
-    if (
-      !timingSafeEqual(
-        digest(String(req.headers.authorization ?? "")),
-        digest("Bearer " + ownerToken),
-      )
-    )
+    if (!authorized(req.headers.authorization))
       throw new ObservationError(401, "connector_unauthorized");
     const workspace = url.searchParams.get("workspace_id");
     if (workspace !== null && workspace !== "local")

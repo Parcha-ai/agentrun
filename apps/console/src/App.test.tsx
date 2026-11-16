@@ -41,6 +41,7 @@ describe("route", () => {
     expect(route("#/triggers/new")).toEqual({ section: "triggers", trigger: null, kind: "schedule" });
     expect(route("#/triggers/new-webhook")).toEqual({ section: "triggers", trigger: null, kind: "webhook" });
     expect(route("#/triggers/new-github")).toEqual({ section: "triggers", trigger: null, kind: "github" });
+    expect(route("#/triggers/new-feed")).toEqual({ section: "triggers", trigger: null, kind: "feed" });
     expect(route("#/triggers/trg_1")).toEqual({ section: "triggers", trigger: "trg_1" });
     expect(route("#/triggers/trg_1/edit")).toEqual({ section: "triggers", trigger: "trg_1", edit: true });
   });

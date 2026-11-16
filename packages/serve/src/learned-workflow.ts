@@ -32,7 +32,7 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
-import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode } from "./learned-nodes.js";
+import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode, type LoopRow } from "./learned-nodes.js";
 import { guardJevOn, guardLine, rowOf, stepGuard } from "./runner/step-guard.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
@@ -365,17 +365,20 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       // written outside the stopped call's context, and still ends as a stop.
       const trace: LearnedNode[] = [];
       const guards: GuardRow[] = [];
+      // Every loop's exit (`loops`, uncapped too: a quote re-pick is a loop's second pass, which the run's metrics count).
+      const loops: LoopRow[] = [];
       // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not; so
       // does how the workflow ended (`ended`, LearnedEnded), the one thing a replay's outcome reads (workflow-first.ts
       // pathMetrics): a replay run keeps its entry whatever ran, so a refusal before any node is read as one.
       const keep = (signal: Context, ended?: LearnedEnded) => {
         const skipped = run.replay?.skipped;
-        if (!trace.length && !guards.length && !skipped && !(run.replay && ended)) return undefined;
-        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(guards.length ? { guards } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
+        // A loop's exit counts too: a loop over an empty map ends no node, yet its row is the run's (metrics `loops`).
+        if (!trace.length && !guards.length && !loops.length && !skipped && !(run.replay && ended)) return undefined;
+        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(guards.length ? { guards } : {}), ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
       };
       let said: Awaited<ReturnType<typeof runLearned>>;
       try {
-        said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace, guards, run.nestedOf?.(api.callId));
+        said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace, guards, run.nestedOf?.(api.callId), loops);
       } catch (error) {
         await keep(BACKGROUND_CONTEXT);
         throw error;
@@ -394,8 +397,8 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
  *  `nested`: the session's tools as calls nested in this one, which its MCP nodes run as; and the values its first run
  *  fixed (`memo`), so a rerun of the call (after a park, a crash) goes on from what its model, decision and call nodes
  *  answered then, its MCP calls with the arguments they were asked and approved with, each recorded one answered from its
- *  record, never sent twice. */
-export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], guards: GuardRow[] = [], nested?: NestedCalls): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded }> {
+ *  record, never sent twice. `loops`: where each loop's exit is added (LoopRow), as `guards` are. */
+export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], guards: GuardRow[] = [], nested?: NestedCalls, loops: LoopRow[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded }> {
   const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes, ended: "failed" as const });
   if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
   const dsl = await import("@parcha/agentrun-dsl");
@@ -537,6 +540,11 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const soft = replay ? dsl.softEscalates(doc) : undefined;
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
+    if (event.type === "loop.exited") {
+      const detail = (event.detail ?? {}) as { reason?: unknown; iterations?: unknown };
+      if (typeof detail.iterations === "number") loops.push({ node: String(event.label), iterations: detail.iterations, met: detail.reason === "condition_met" });
+      return;
+    }
     if (event.type === "escalate.evaluated") {
       const detail = (event.detail ?? {}) as { fired?: unknown; soft?: unknown };
       if (detail.soft === true) guards.push({ node: String(event.label), signal: "escalate", p: detail.fired === true ? 0 : 1, threshold: SOFT_ESCALATE_THRESHOLD, escalated: false });

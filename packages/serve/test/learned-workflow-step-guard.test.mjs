@@ -58,7 +58,7 @@ async function decisionsOf(t, env = {}) {
 
 /** One learned_workflow call of `flow` on a stand-in model that submits `submitted` (its confidence beside its record),
  *  with the run's `decisions` and gate `policy`: what it said, the entries it kept (its trace) and the trace's nodes. */
-async function call(t, flow, { submitted = { answer: 42 }, decisions, policy = () => "allow" } = {}) {
+async function call(t, flow, { submitted = { answer: 42 }, decisions, policy = () => "allow", input = { question: "six times seven" } } = {}) {
   const work = mkdtempSync(join(tmpdir(), "learned-guard-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const models = {
@@ -72,7 +72,7 @@ async function call(t, flow, { submitted = { answer: 42 }, decisions, policy = (
   const tool = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: JSON.stringify(flow) }], granted: [], env: {}, work, models, modelOf: () => ({ provider: "stand-in", modelId: "stand-in" }), policy, denyFrom: () => "agent", ...(decisions ? { decisions } : {}) });
   const kept = [];
   const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
-  const said = await tool.execute({ name: "answer", input: { question: "six times seven" } }, api, { abortSignal: new AbortController().signal });
+  const said = await tool.execute({ name: "answer", input }, api, { abortSignal: new AbortController().signal });
   const nodes = kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.nodes ?? [];
   return { said, kept, nodes, text: (said.output ?? []).map((part) => part.text ?? "").join("") };
 }
@@ -250,6 +250,23 @@ test("a replay's outcome reads how its workflow ended: a recovered node failure 
   assert.equal(pathMetrics(launch, handedBack, recovered).replay.outcome, "handed_back", "a failed item the map collected, then an escalation: handed back");
   assert.equal(pathMetrics(launch, handedBack, [entry("failed", [{ label: "check", kind: "extract", status: "failed", duration_ms: 3 }])]).replay.outcome, "failed");
   assert.equal(pathMetrics(launch, handedBack, []).replay.outcome, "failed", "no word of how it ended (refused before any node ran): no evidence");
+});
+
+test("a loop's exit is kept when no node ended: a loop over an empty map still leaves its loops row in the call's entry", { timeout: 60_000 }, async (t) => {
+  const flow = {
+    v: 2, name: "answer",
+    schemas: {
+      In: { type: "object", required: ["question", "items"], properties: { question: { type: "string" }, items: { type: "array", items: { type: "string" } } } },
+      Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
+      Picked: { type: "array", items: { type: "object" } },
+    },
+    input: { schemaId: "In" }, output: { schemaId: "Picked", path: "picked" },
+    root: { node: "loop", label: "each", maxIters: 2, until: { predicate: "empty", path: "items" },
+      body: { node: "map", label: "pick", itemsPath: "items", as: "picked", body: { node: "extract", label: "one", instructions: "Say {item}.", out: "Answer", as: "one" } } },
+  };
+  const { kept, nodes } = await call(t, flow, { input: { question: "none", items: [] } });
+  assert.deepEqual(nodes, [], "no node ended");
+  assert.deepEqual(kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.loops, [{ node: "each", iterations: 1, met: true }]);
 });
 
 test("a learned_workflow call keeps how its workflow ended beside its nodes: escalated, complete, or failed", { timeout: 60_000 }, async (t) => {

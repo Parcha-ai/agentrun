@@ -121,9 +121,12 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   // `agentCall`: the agent's first answer is this tool call (its next, once a tool result is in, its text). `agentText`:
-  // the agent's text for a request, by its body (undefined: AGENT_SAYS).
+  // the agent's text for a request, by its body (undefined: AGENT_SAYS). `submitted` as a function: the record of the
+  // n-th node submission (0 first), given that request's body.
+  let submits = 0;
+  const submit = (body) => (typeof submitted === "function" ? submitted(body, submits++) : submitted ?? { answer: answer ?? (sure ? 42 : 41), sure });
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: submitted ?? { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
+    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: submit(body) } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : (agentText?.(body) ?? AGENT_SAYS)),
   });
   let runner;
@@ -353,6 +356,49 @@ test("a quote in no page: the workflow's quote_missing escalate hands the run ba
   const alone = await piRun(t, cited("has been in Lisbon since 1987"));
   assert.deepEqual(alone.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
   assert.equal(alone.row.metrics?.path, "workflow", JSON.stringify(alone.row.metrics));
+});
+
+// H5d's re-pick: a quote miss writes the answer once more (the same step, the draft in its state) before the escalate
+// hands back. The answer step is the body of a loop of 2 until the same quote_missing check passes; the run's metrics
+// keep each loop's exit (`loops`: its label, its passes, whether `until` held), so a re-pick is counted, and its
+// request is the run's like any node's.
+const QUOTES_MISSING = { predicate: "quote_missing", path: "answer.evidence", field: "quote", pages: ["page"] };
+const repickFlow = { ...citedFlow, root: { node: "chain", steps: [
+  { node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: QUOTES_MISSING }, body: citedFlow.root.steps[0] },
+  citedFlow.root.steps[1],
+] } };
+const MISSED = "Our workshop opened in Porto in 1990";
+const FOUND = "has been in Lisbon since 1987";
+/** The re-pick flow on the page: the n-th answer quotes `quotes[n]` (the last one past its end). */
+const repicking = (...quotes) => ({ ...cited(quotes[0]), flows: [{ name: "answer", description: "Answers from a page, quoting it", workflow: repickFlow }], submitted: (_body, n) => ({ answer: "Lisbon", evidence: [{ quote: quotes[Math.min(n, quotes.length - 1)] }] }) });
+const submits = (gateway) => gateway.requests.filter((request) => isNode(request) && !hasResult(request.body));
+
+test("a quote miss re-picks once: the re-pick's found quote answers alone, one more node request, its $ in the run's cost and the loop's two passes in its metrics; a second miss hands back after exactly one re-pick; a quote found first runs no re-pick", async (t) => {
+  const kept = await piRun(t, repicking(MISSED, FOUND));
+  assert.equal(kept.row.state, "ended", JSON.stringify(kept.row));
+  assert.deepEqual(kept.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.equal(kept.row.metrics?.path, "workflow", JSON.stringify(kept.row.metrics));
+  const [draft, again, ...more] = submits(kept.gateway);
+  assert.ok(draft && again && !more.length, `two answers, the draft and its re-pick: ${submits(kept.gateway).length}`);
+  assert.ok(textOf(again.body).includes(MISSED) && !textOf(draft.body).includes(MISSED), "the re-pick reads the failed draft in its state");
+  assert.deepEqual(kept.gateway.requests.filter((request) => !isNode(request)), [], "no agent request");
+  assert.ok(kept.timeline.some((row) => ["assistant", "final_answer"].includes(row.kind) && (row.text ?? "").includes(FOUND)), "the re-pick's answer is the run's");
+  assert.deepEqual(kept.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, workflow: "answer" }]);
+  const booked = kept.turns.reduce((sum, turn) => sum + (typeof turn.usd === "number" ? turn.usd : 0), 0);
+  assert.ok(Math.abs((kept.row.costUsd ?? 0) - booked) < 1e-9 && kept.requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL).length === 2, `the run's cost is both node requests' booked $: ${kept.row.costUsd} vs ${booked}`);
+
+  const back = await piRun(t, repicking(MISSED, "Our second workshop is in Faro"));
+  assert.deepEqual(back.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  assert.equal(back.row.metrics?.path, "handed_back", JSON.stringify(back.row.metrics));
+  const firstAgent = back.gateway.requests.findIndex((request) => !isNode(request));
+  assert.equal(submits({ requests: back.gateway.requests.slice(0, firstAgent) }).length, 2, "the draft and one re-pick, never a third");
+  assert.match(textOf(back.gateway.requests[firstAgent].body), /handed the job back at its step "quotes"/);
+  assert.deepEqual(back.row.metrics?.loops, [{ node: "repick", iterations: 2, met: false, workflow: "answer" }]);
+
+  const first = await piRun(t, repicking(FOUND));
+  assert.deepEqual(first.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.equal(submits(first.gateway).length, 1, "found first: no re-pick");
+  assert.deepEqual(first.row.metrics?.loops, [{ node: "repick", iterations: 1, met: true, workflow: "answer" }]);
 });
 
 test("handed back: the compile turn asks for the workflow's next revision by its name, with the workflow as it is", async (t) => {

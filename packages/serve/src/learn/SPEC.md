@@ -225,6 +225,23 @@ Over a cap is refused, never cut.
   straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters
   are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
   reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
+  Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
+  `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
+  `pages`), its body the step that answers, which reads the failed draft in its state: that step has no `state` map
+  (the DSL sends a step with one only the keys it names, each pass a fresh model session, so the second pass would not
+  see the draft, and naming the answer there fails the first pass, before any draft exists), and a draft whose step
+  writing the answer in the loop has one is refused. A quote found first costs no
+  re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. The check
+  is a step of the top-level chain after the loop, never inside it: a `quote_missing` escalate anywhere in the loop's
+  body (a composed workflow's included) hands back on the first draft's miss, so the loop never re-picks, and a draft
+  with one there is refused. A loop exit is kept in the call's journal entry even when no node ended. A loop's
+  `until` is one predicate and none joins two, so the answer's quotes have one check: a draft whose quotes need two
+  different checks (`quotes: string | [{quote}]`, or quotes in two places) is refused, since a loop watching one would
+  let the other hand back with no re-pick; the detail asks for one place one check reads. On H5d
+  (preregistered, 259 dead-site merchants) the check fired on 31; the answer step once more over the run's pages kept
+  26, right 76.9% against the drafts' 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost
+  21.7%. Each loop exit is a row of the run's metrics (`loops`: `{node, iterations, met, workflow}`), so a re-pick
+  (`iterations` 2) and whether it found its quotes (`met`) are counted; its request is booked as any node's.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 - A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked

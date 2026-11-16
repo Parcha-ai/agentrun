@@ -360,6 +360,9 @@ test("every route, called with no credential, enforces its public, owner, API or
       // A webhook trigger's request is let in by its signature alone (standard-webhooks.ts): neither the session nor the
       // token stands for it.
       else if (route.name === "receiveHook") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
+      // A hosted machine's daemon fetch takes the token its create minted (computer-attach.ts daemon): neither the session
+      // nor the owner's token stands for it.
+      else if (route.name === "getComputerDaemon") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
       // Approving or restoring a note, making a learned workflow an agent or replaying its revision, and answering a tool
       // call's approval take the owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs,
       // learn-restore.test.mjs, learn-promote.test.mjs, learn-replay-api.test.mjs, tool-gate.test.mjs). So does a run's live

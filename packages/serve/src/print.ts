@@ -2,21 +2,24 @@
 // refused credential (logfmt: `at=<time> event=<name> key=value ...`). No line holds a token or any part of one.
 import { join } from "node:path";
 
-/** Where the token came from: made at this start (printed this once), kept in DIR/.token, or the environment's. */
-export type TokenSource = "made" | "file" | "env";
+/** Where the token came from: made at this start (printed this once), kept in DIR/.token, the environment's
+ *  (AGENTRUN_TOKEN), or the token list's alone (AGENTRUN_TOKENS). */
+export type TokenSource = "made" | "file" | "env" | "list";
 
 /** The banner's lines. The token is printed only when this start made it; else where it is. `publicUrl` is the address
  *  people open (AGENTRUN_PUBLIC_URL), which the base URL and the link use. With `accounts` the page is the owner's
  *  password, so its link holds nothing; with none, the link holds this start's launch code (`launchCode`), never the
- *  token. `apiOnly`: no console to open, so the line says what is served instead. `boxes`: which boxes are ready, in
+ *  token. `tokenIds`: the ids of the tokens the server takes (api-token.ts), named when there is more than one or a list
+ *  gave them, never a secret. `apiOnly`: no console to open, so the line says what is served instead. `boxes`: which boxes are ready, in
  *  words (Serve's boxesLine), last. */
-export function banner(o: { url: string; baseUrl: string; data: string; token: string; source: TokenSource; listen?: string; publicUrl?: string; accounts?: boolean; apiOnly?: boolean; launchCode?: string; boxes?: string }): string[] {
-  const where = o.source === "env" ? "$AGENTRUN_TOKEN" : `<in ${join(o.data, ".token")}>`;
+export function banner(o: { url: string; baseUrl: string; data: string; token: string; source: TokenSource; tokenIds?: readonly string[]; listen?: string; publicUrl?: string; accounts?: boolean; apiOnly?: boolean; launchCode?: string; boxes?: string }): string[] {
+  const where = o.source === "env" ? "$AGENTRUN_TOKEN" : o.source === "list" ? "<a secret in $AGENTRUN_TOKENS>" : `<in ${join(o.data, ".token")}>`;
   const key = o.source === "made" ? o.token : where;
   return [
     `agentrun-serve on ${o.baseUrl} (agent store in ${o.data}${o.listen ? `, listening on ${o.listen}` : ""})`,
     `AGENTRUN_BASE_URL=${o.publicUrl ? `${o.publicUrl}/v2` : o.baseUrl}`,
     `AGENTRUN_API_KEY=${key}`,
+    ...(o.tokenIds && (o.tokenIds.length > 1 || o.source === "list") ? [`API tokens taken (ids): ${o.tokenIds.join(", ")}`] : []),
     o.apiOnly
       ? "API only (AGENTRUN_API_ONLY=1): the run routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused."
       : o.accounts || o.launchCode === undefined ? `Open ${o.publicUrl ?? o.url}/` : `Open ${o.publicUrl ?? o.url}/?launch=${o.launchCode}`,
