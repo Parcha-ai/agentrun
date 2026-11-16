@@ -691,12 +691,12 @@ test("a push that fails or lands changed is refused in words, no phoned starts, 
 	}
 });
 
-test("the apks option's APKs install once per phone before phoned starts, pushed under their sha256; a refused or missing one fails connect in words", async () => {
+test("the apks option's APKs install once per phone before phoned starts, pushed under their sha256; a refused one fails connect in words", async () => {
 	const apk = join(dir, "fixture.apk");
 	writeFileSync(apk, "an APK's bytes, which the fake phone never opens");
 	const sha = createHash("sha256").update(readFileSync(apk)).digest("hex");
 	const remote = `/data/local/tmp/apk-${sha.slice(0, 16)}.apk`;
-	const { provider, fake } = await setup({}, { apks: [apk] });
+	const { provider, fake } = await setup({}, { apks: [{ path: apk, sha256: sha }] });
 	const { value: ref } = await provider.create(SPEC, req());
 	const first = await provider.connect(ref);
 	assert.equal(first.ok, true, JSON.stringify(first));
@@ -713,7 +713,7 @@ test("the apks option's APKs install once per phone before phoned starts, pushed
 	assert.equal(fake.phone.phoned.length, 2);
 	await again.value.close();
 
-	const refusing = await setup({ installFails: true }, { apks: [apk] });
+	const refusing = await setup({ installFails: true }, { apks: [{ path: apk, sha256: sha }] });
 	const refused = await refusing.provider.connect((await refusing.provider.create(SPEC, req())).value);
 	assert.equal(refused.ok, false);
 	assert.deepEqual([refused.error.code, refused.error.vendor], ["vendor", "phone-harness"]);
@@ -721,17 +721,60 @@ test("the apks option's APKs install once per phone before phoned starts, pushed
 	assert.deepEqual(refusing.fake.phone.phoned, [], "no phoned starts on a phone that refused an APK");
 	assert.equal(refusing.fake.phone.connected.size, 0, "and the transport is let go");
 
-	const corrupt = await setup({ pushCorrupts: true }, { apks: [apk] });
+	const corrupt = await setup({ pushCorrupts: true }, { apks: [{ path: apk, sha256: sha }] });
 	const changed = await corrupt.provider.connect((await corrupt.provider.create(SPEC, req())).value);
 	assert.match(changed.error.message, /^the APK fixture\.apk reached the phone changed: /);
 	assert.deepEqual(corrupt.fake.phone.installed, [], "an APK that landed changed is never installed");
+});
+
+test("an APK that is not there, or whose bytes are not its pinned sha256, is refused in words before a phone is rented; PHONE_HARNESS_APKS names them as the option does", async () => {
+	const apk = join(dir, "wikipedia.apk");
+	writeFileSync(apk, "the Wikipedia app's bytes, which the fake phone never opens");
+	const sha = createHash("sha256").update(readFileSync(apk)).digest("hex");
+	const other = "0".repeat(64);
 
 	const gone = join(dir, "no-such.apk");
-	const missing = await setup({}, { apks: [gone] });
-	const notThere = await missing.provider.connect((await missing.provider.create(SPEC, req())).value);
+	const missing = await setup({}, { apks: [{ path: gone, sha256: sha }] });
+	const notThere = await missing.provider.create(SPEC, req());
+	assert.equal(notThere.ok, false);
 	assert.equal(notThere.error.code, "not_found");
-	assert.equal(notThere.error.message, `the APK no-such.apk, which the provider's apks option names, is not at ${gone} (ENOENT)`);
-	await assert.rejects(create({ apiKey: KEY, apks: apk }), /options\.apks .* is not a list of APK paths/);
+	assert.equal(notThere.error.message, `the APK no-such.apk is not at ${gone} (ENOENT): no phone was rented`);
+	assert.deepEqual(missing.fake.requests(), [], "nothing was asked of the phone harness");
+
+	const pinned = await setup({}, { apks: [{ path: apk, sha256: other }] });
+	const mismatch = await pinned.provider.create(SPEC, req());
+	assert.equal(mismatch.ok, false);
+	assert.equal(mismatch.error.code, "refused");
+	assert.equal(mismatch.error.message, `the APK wikipedia.apk at ${apk} is not the one pinned: its sha256 is ${sha}, not ${other}: no phone was rented`);
+	assert.deepEqual(pinned.fake.requests(), [], "nothing was asked of the phone harness");
+
+	// The server's setting (the descriptor's hostEnv): a comma list of <absolute path>@sha256:<hex>, the option's APKs.
+	const named = await setup({}, { env: { PHONE_HARNESS_APKS: ` ${apk}@sha256:${sha} ,` } });
+	const made = await named.provider.create(SPEC, req());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const connected = await named.provider.connect(made.value);
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	assert.deepEqual(named.fake.phone.installed, [sha], "the APK the setting names, installed");
+	await connected.value.close();
+	const wrong = await setup({}, { env: { PHONE_HARNESS_APKS: `${apk}@sha256:${other}` } });
+	assert.equal((await wrong.provider.create(SPEC, req())).error.code, "refused");
+	assert.deepEqual(wrong.fake.requests(), []);
+
+	// A phone another provider made (a runner's restart) is held to the pin at connect, as its create was.
+	writeFileSync(apk, "other bytes, put there since the phone was made");
+	const later = await create({ apiKey: KEY, fetch: named.fake.fetch, adb: named.fake.adb, ledger: named.ledger, now: named.fake.clock.now, sleep: named.fake.clock.sleep, phoned: PHONED_JAR, apks: [{ path: apk, sha256: sha }] });
+	const refused = await later.connect(made.value);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /^the APK wikipedia\.apk at .* is not the one pinned: its sha256 is [0-9a-f]{64}, not [0-9a-f]{64}$/);
+
+	for (const [given, words] of [
+		[{ apks: [apk] }, /^Error: options\.apks .* is not a list of \{ path, sha256 \}: an APK file's absolute path and its sha256, 64 lowercase hex digits$/],
+		[{ apks: [{ path: "wikipedia.apk", sha256: sha }] }, /options\.apks .* is not a list of \{ path, sha256 \}/],
+		[{ env: { PHONE_HARNESS_APKS: apk } }, /^Error: PHONE_HARNESS_APKS is a comma list of <absolute path>@sha256:<64 hex digits>, the APKs every phone installs: .*wikipedia\.apk" is not one$/],
+		[{ env: { PHONE_HARNESS_APKS: `wikipedia.apk@sha256:${sha}` } }, /^Error: PHONE_HARNESS_APKS is a comma list/],
+		[{ env: { PHONE_HARNESS_APKS: `${apk}@sha256:${sha.toUpperCase()}` } }, /^Error: PHONE_HARNESS_APKS is a comma list/],
+	]) await assert.rejects(create({ apiKey: KEY, ...given }), words, JSON.stringify(given));
 });
 
 test("without phoned's jar, connect is not_found in words naming the build; a phoned that never says hello is refused naming its log on the phone", async () => {
