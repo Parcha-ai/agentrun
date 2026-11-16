@@ -6,7 +6,7 @@ import type { Client } from "@/lib/client";
 import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine } from "@/lib/learningLoop";
+import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // An agent's cost per run, run after run (GET /v2/agents/{id}/learning/cost): every run's all-in $ (its own cost and what
@@ -21,12 +21,18 @@ import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 const LIMIT = 1000;
 /** What a person does to get the chart: the short and the empty states say it. */
 export const HOW = "Turn learning on and run the same job about 20 times: each run's cost shows here, and where a learned workflow takes the job over, the line falls.";
+type LearningExecution = "hosted" | "native" | "sdk";
+const howFor = (execution: LearningExecution) => execution === "native"
+  ? "Native run costs include reported model usage and AgentRun learning. Compare repeated jobs; accepted notes and skills do not enable workflow takeover."
+  : execution === "sdk"
+    ? "SDK run costs include reported backend usage and AgentRun learning. Your backend keeps launching jobs and binds the tools an accepted workflow can use."
+    : HOW;
 
 /** The chart's card for an agent, read when it shows. `quiet`: under the Learning tab's own empty state, which already
  *  says what to do, so a series under two runs (and a read that failed) shows nothing. */
 /** `promotions`: the agent's promotion records when the page read them (the Learning tab shares one read); else the chart
  *  reads its own. `onCost`: told each answer, for the tab's story. */
-export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost }: { v2: Client; agentId: string; on: boolean; quiet?: boolean; promotions?: readonly Promotion[]; onCost?: (cost: LearningCost) => void }) {
+export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost, execution = "hosted" }: { execution?: LearningExecution; v2: Client; agentId: string; on: boolean; quiet?: boolean; promotions?: readonly Promotion[]; onCost?: (cost: LearningCost) => void }) {
   const [data, setData] = useState<LearningCost | null>(null);
   const [own, setOwn] = useState<readonly Promotion[]>([]);
   const records = promotions ?? own;
@@ -46,7 +52,7 @@ export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost 
   if (quiet && (!data || data.runs.filter((r) => r.total_usd !== null).length < 2)) return null;
   if (error && !data) return <ProblemCard problem={problem(error, "the cost per run")} onRetry={() => setAsked((n) => n + 1)} className="" />;
   if (!data) return <Bone className="h-[320px] w-full" />;
-  return <CostChart data={data} on={on} promotions={records} />;
+  return <CostChart data={data} on={on} promotions={records} execution={execution} />;
 }
 
 const M = { top: 30, right: 16, bottom: 30, left: 60 };
@@ -56,7 +62,7 @@ const FLAG_GAP = 16;
 const H = 260;
 
 /** The chart itself, from the server's answer. `on`: the agent learns (the notes under it say what to do when not). */
-export function CostChart({ data, on, width: fixed, promotions = [] }: { data: LearningCost; on: boolean; width?: number; promotions?: readonly Promotion[] }) {
+export function CostChart({ data, on, width: fixed, promotions = [], execution = "hosted" }: { execution?: LearningExecution; data: LearningCost; on: boolean; width?: number; promotions?: readonly Promotion[] }) {
   const points = useMemo(() => plotted(data.runs), [data.runs]);
   // The line is the job's cost: a replay run (a revision run alone on a graded input, learning's spend) is drawn, not meant.
   const job = useMemo(() => points.filter(counted), [points]);
@@ -93,7 +99,7 @@ export function CostChart({ data, on, width: fixed, promotions = [] }: { data: L
       <Card title="Cost per run" headline={null}>
         <div className="px-4 py-8 text-center" role="status">
           <p className="font-mono text-body">{points.length ? "One run so far." : "No run with a known cost yet."}</p>
-          <p className="mx-auto mt-1 max-w-prose text-body text-muted-foreground">{HOW}</p>
+          <p className="mx-auto mt-1 max-w-prose text-body text-muted-foreground">{howFor(execution)}</p>
           {notes.map((n) => <p key={n} className="mx-auto mt-1 max-w-prose text-small text-muted-foreground">{n}</p>)}
         </div>
         {/* Who finished each run does not need a cost: the strip draws on the runs' own axis whenever there are runs. */}
@@ -280,7 +286,7 @@ export function CostChart({ data, on, width: fixed, promotions = [] }: { data: L
           {above ? ` ${above === 1 ? "1 run costs" : `${above} runs cost`} more than ${usd(top)} and ${above === 1 ? "is" : "are"} drawn at the top.` : ""}
           {s.before ? " The dashed line is what a run cost the agent before a learned workflow took over, learning left out; after it, every run counts learning in, so the drop never flatters learning." : ""}
         </p>
-        {[...notes, ...shortOf(data, on)].map((n) => <p key={n} className="mt-1 text-small text-muted-foreground">{n}</p>)}
+        {[...notes, ...shortOf(data, on, execution)].map((n) => <p key={n} className="mt-1 text-small text-muted-foreground">{n}</p>)}
       </figure>
       <details className="border-t px-4 py-2">
         <summary className="caps cursor-pointer text-label text-muted-foreground">Table</summary>
@@ -404,9 +410,11 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
 }
 
 /** What the series still needs before it says what learning did, in the words of what to do next. */
-function shortOf(data: LearningCost, on: boolean): string[] {
+function shortOf(data: LearningCost, on: boolean, execution: LearningExecution): string[] {
   const s = data.summary;
+  if (!s.takeover && execution !== "hosted") return [howFor(execution)];
   if (!s.takeover) return [on ? "No learned workflow has finished a run alone yet. Keep running the same job: once one does, a marker shows where, and the level after it." : HOW];
+  if (s.withheld) return [`${withheldWords(s.withheld)}: ${WITHHELD_NEXT}.`];
   if (s.times_cheaper === null && s.after) return [`${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} since the workflow took over: how many times cheaper it is shows after 20.`];
   return [];
 }

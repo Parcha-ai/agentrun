@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, call, follow, serve } from "./support.mjs";
+import { agentLink } from "../dist/console-links.js";
 
 const PUBLIC = "https://agents.example.com";
 
@@ -88,6 +89,35 @@ test("an agent named new gets the console's own address for it (its Runs tab), n
   const created = await server.api("POST", "/agents", agent("new"));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.equal(created.body.console_url, `${server.url}/#/agents/new/runs`);
+});
+
+for (const [label, options, originOf] of [["the request's address", {}, (host) => `http://${host}`], ["the public URL", { publicUrl: PUBLIC }, () => PUBLIC]]) {
+  test(`an agent named connect gets its Runs tab on create, read, list and idempotent replay at ${label}`, async (t) => {
+    const server = await serve(t, options);
+    const [a, b] = [`localhost:${server.port + 1000}`, `localhost:${server.port + 2000}`];
+    const created = await through(server, a)("POST", "/agents", agent("connect"), { "idempotency-key": "connect-1" });
+    assert.equal(created.status, 201, created.text);
+    const read = await through(server, b)("GET", "/agents/connect");
+    assert.equal(read.status, 200, read.text);
+    const listed = await through(server, b)("GET", "/agents");
+    assert.equal(listed.status, 200, listed.text);
+    assert.deepEqual(listed.json.agents.map((a) => a.agent_id), ["connect"]);
+    const retried = await through(server, b)("POST", "/agents", agent("connect"), { "idempotency-key": "connect-1" });
+    assert.equal(retried.status, 201, retried.text);
+    assert.equal(retried.headers["idempotent-replayed"], "true");
+    assert.equal(retried.json.agent_id, created.json.agent_id);
+    assert.deepEqual(
+      [created.json.console_url, read.json.console_url, listed.json.agents[0].console_url, retried.json.console_url],
+      [a, b, b, b].map((host) => `${originOf(host)}/#/agents/connect/runs`),
+    );
+  });
+}
+
+test("only exact setup-form names get a Runs suffix; other agent links keep their encoded identifier", () => {
+  for (const id of ["new", "connect"]) assert.equal(agentLink(PUBLIC, id), `${PUBLIC}/#/agents/${id}/runs`);
+  for (const [id, encoded] of [["Connect", "Connect"], ["connect-now", "connect-now"], ["new-agent", "new-agent"], ["connect/child ?#%", "connect%2Fchild%20%3F%23%25"]]) {
+    assert.equal(agentLink(PUBLIC, id), `${PUBLIC}/#/agents/${encoded}`);
+  }
 });
 
 test("a public URL given with a trailing slash makes no double slash", async (t) => {

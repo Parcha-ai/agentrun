@@ -263,13 +263,18 @@ export type ComputerCallStore = Pick<Store, "command" | "commands" | "runs" | "a
 /** What a take-over or a hand-back answers: who drives now, and the answer the agent gets when it answered its ask. */
 export type ComputerHoldAnswer = { readonly hold: HoldState; readonly outcome?: AskOutcome };
 
-/** The kind of computer run `runId`'s revision asks for, when it is one a person watches and takes (a desktop or a phone). */
-export async function runViewedKind(store: Pick<Store, "runs" | "agents">, runId: string): Promise<ViewedKind | undefined> {
+/** The kind of computer run `runId`'s revision asks for (its `computer` or `place`); undefined where it says neither. */
+export async function runComputerKind(store: Pick<Store, "runs" | "agents">, runId: string): Promise<string | undefined> {
   const run = await store.runs.get(runId);
   const revision = run ? await store.agents.revision(run.revisionId) : undefined;
   const body = revision?.body;
   const setting = body && typeof body === "object" ? settingOfDefinition(body as { computer?: unknown; place?: unknown }) : undefined;
-  const kind = setting?.computer.kind;
+  return setting?.computer.kind;
+}
+
+/** The kind of computer run `runId`'s revision asks for, when it is one a person watches and takes (a desktop or a phone). */
+export async function runViewedKind(store: Pick<Store, "runs" | "agents">, runId: string): Promise<ViewedKind | undefined> {
+  const kind = await runComputerKind(store, runId);
   return kind === "desktop" || kind === "phone" ? kind : undefined;
 }
 

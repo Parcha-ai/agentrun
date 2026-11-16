@@ -461,6 +461,10 @@ public final class UiDriver {
 			// a window expect reads that app's main window, never the one in front.
 			if (target.app == null && aimed != null) target.app = appOf(aimed);
 			String first = aimed == null ? "" : new Look(aimed, false).fingerprint();
+			// Only an act that may follow the app in front reads it (follow): with neither a window target nor a window
+			// expect, and an app to compare.
+			boolean mayFollow = target.window == null && target.app != null && (expect == null || !expect.window);
+			String frontBefore = mayFollow ? device.apps().foreground() : null;
 			List<Object> answers = new ArrayList<>(steps.size());
 			boolean refused = false;
 			for (Step s : steps) {
@@ -480,6 +484,7 @@ public final class UiDriver {
 				}
 			}
 			boolean waitsForWindow = expect != null && expect.window;
+			if (mayFollow) follow(a11y, target, frontBefore, cancel);
 			// Every verdict of the act reads one final view, read after its last settle (ui-engine.ts, the same rule): a
 			// set's hold, the expect, and the state it answers. A poll's look only says when to read it again.
 			Final read = readFinal(a11y, target, waitsForWindow, cancel);
@@ -524,6 +529,29 @@ public final class UiDriver {
 			if (last == null) return Json.obj("steps", answers, "window", "closed", "changed", true, "expect", met == null ? Json.OMIT : met);
 			State now = record(last);
 			return Json.obj("steps", answers, "state", now.id, "changed", !first.equals(last.fingerprint()), "expect", met == null ? Json.OMIT : met);
+		}
+	}
+
+	/**
+	 * A step that opens another app's page (Settings' search is Settings Intelligence's activity) puts that app in front
+	 * at once, and its window reaches the tree later, the act's own window still there, unchanged, until it does: read
+	 * then, the act answered unchanged with the new page on the screen. So when the app in front after the steps is
+	 * neither the one before them nor the act's, the act follows it, as after a nav step: it waits for that app's window,
+	 * at most MAX_SETTLE_MS, and the settle, the expect and the answered state are that window's. A window target or a
+	 * window expect names the window it reads, so neither follows.
+	 */
+	private void follow(Device.Accessibility a11y, Target target, String frontBefore, Wire.Cancel cancel) throws InterruptedException {
+		if (target.window != null || target.app == null) return;
+		String front = device.apps().foreground();
+		if (front == null || front.equals(frontBefore) || front.equals(target.app)) return;
+		target.app = front;
+		Device.Clock clock = device.clock();
+		long start = clock.now();
+		for (;;) {
+			for (Device.AxWindow w : a11y.windows()) if (front.equals(appOf(w))) return;
+			if (clock.now() - start >= MAX_SETTLE_MS) return;
+			cancel.check();
+			clock.sleep(Settle.POLL_MS);
 		}
 	}
 

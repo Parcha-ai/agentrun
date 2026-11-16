@@ -1,0 +1,99 @@
+{
+  "description": "An escalate guarded by quote_missing lets the run go on when every quote is in a fetched page: verbatim, once case, spacing and punctuation are normalised, or read as its letters and digits alone.",
+  "workflow": {
+    "v": 2,
+    "name": "quote-missing-passes",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "answer"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "call",
+          "label": "fetch",
+          "via": "tool",
+          "tool": "browse",
+          "args": {
+            "url": "{url}"
+          },
+          "out": "Any",
+          "as": "page",
+          "deadline_s": 10
+        },
+        {
+          "node": "escalate",
+          "label": "quotes",
+          "when": {
+            "predicate": "quote_missing",
+            "path": "answer.quotes",
+            "pages": ["page"]
+          },
+          "kind": "quote_missing",
+          "stage": "answer",
+          "summary": "a quote is in no fetched page"
+        }
+      ]
+    }
+  },
+  "input": {
+    "url": "https://shop.example",
+    "answer": {
+      "quotes": [
+        "Hand-made wallets and belts",
+        "OUR WORKSHOP   has been",
+        "in Lisbon, since 1987!"
+      ]
+    }
+  },
+  "script": {
+    "effect": {
+      "/root/steps/0": {
+        "result": {
+          "title": "Shop",
+          "body": ["Hand-made wallets and belts.", "Our workshop has been in Lisbon since 1987."]
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "url": "https://shop.example",
+      "answer": {
+        "quotes": [
+          "Hand-made wallets and belts",
+          "OUR WORKSHOP   has been",
+          "in Lisbon, since 1987!"
+        ]
+      },
+      "page": {
+        "title": "Shop",
+        "body": ["Hand-made wallets and belts.", "Our workshop has been in Lisbon since 1987."]
+      }
+    },
+    "output": {
+      "quotes": [
+        "Hand-made wallets and belts",
+        "OUR WORKSHOP   has been",
+        "in Lisbon, since 1987!"
+      ]
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:fetch",
+        "node.end:fetch:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:quotes:false"
+      ]
+    }
+  }
+}

@@ -1,12 +1,15 @@
 // The email trigger: a source on a clock that polls (trigger-adapter.ts `poll`). Every every_s seconds, on a grid from the
 // epoch, it reads the server's email account's mailbox (INBOX by default) over IMAP, read-only, and each message that
 // came since its cursor is one firing through the path a pushed event takes (triggers.ts): its accept filter, a run per
-// message, max_active_runs, its key kept for its day. The cursor is the mailbox's UIDVALIDITY and the last UID read, in
-// the trigger's own settings, kept only once the poll's firings are recorded, so a restart goes on from it. Its start
+// message, max_active_runs, its key kept for its day. The cursor is the account it was read on (its user, IMAP host and
+// port: nothing secret), the mailbox, its UIDVALIDITY and the last UID read, in the trigger's own settings, kept only once
+// the poll's firings are recorded, so a restart goes on from it. Its start
 // (the engine's start hook) is taken when the trigger is made, when an edit changes its mailbox or account, and when it
 // is turned on again: mail from before then starts no run, and that is said; any other edit keeps the cursor. A start
-// that can't sign in is taken at the first poll that does, and said; a UIDVALIDITY the server changed the same. A message's key is
-// its Message-ID (else UIDVALIDITY:UID), so one seen twice fires once. At most POLL_TAKES messages a poll, oldest first. A
+// that can't sign in is taken at the first poll that does, and said; a UIDVALIDITY the server changed the same, and so
+// another account saved in its place (PUT /v2/settings/email). A message's key is its Message-ID (else UIDVALIDITY:UID), so
+// one seen twice fires once; its attrs say where it was found (mailbox, UIDVALIDITY, UID), which a run's thread is read
+// from (email/tools.ts). At most POLL_TAKES messages a poll, oldest first. A
 // message this server sent (X-AgentRun-Sent, email/tools.ts email_send) is left, and said. An unreachable server is said
 // on the trigger and tried at the next time; a refused sign-in counts (the engine turns the trigger off at the third).
 import { DEFAULT_ACCOUNT, NO_ACCOUNT, type OpenedAccount } from "./email/account.js";
@@ -23,7 +26,10 @@ const EVENT = "message";
 const CURSOR = "cursor";
 
 type EmailSource = { kind: "email"; account: string; mailbox: string; every_s: number; accept?: Rule[] };
-type Cursor = { mailbox: string; uidvalidity: string; uid: number };
+type Cursor = { account?: string; mailbox: string; uidvalidity: string; uid: number };
+
+/** Which account a cursor was read on: its user, IMAP host and port, nothing secret (the cursor is a public setting). */
+const accountKey = (account: OpenedAccount) => `${account.user.trim().toLowerCase()}@${account.imap.host.toLowerCase()}:${account.imap.port}`;
 
 /** The source's own fields, checked: each issue through `bad`. Undefined when one does not read. */
 function fieldsOf(value: Record<string, unknown>, bad: (field: string, reason: string, message: string) => void): EmailSource | undefined {
@@ -49,7 +55,7 @@ function cursorOf(text: string | undefined): Cursor | undefined {
   if (!text) return undefined;
   try {
     const value = JSON.parse(text) as Cursor;
-    return typeof value.mailbox === "string" && typeof value.uidvalidity === "string" && Number.isSafeInteger(value.uid) ? value : undefined;
+    return (value.account === undefined || typeof value.account === "string") && typeof value.mailbox === "string" && typeof value.uidvalidity === "string" && Number.isSafeInteger(value.uid) ? value : undefined;
   } catch {
     return undefined;
   }
@@ -90,14 +96,14 @@ function fittedPayload(whole: Record<string, unknown>): Record<string, unknown> 
   return withText(lo);
 }
 
-/** A message as the event its trigger fires: its payload (JSON, untrusted, whole within the engine's bound), its attrs,
- *  keyed by its Message-ID. */
+/** A message as the event its trigger fires: its payload (JSON, untrusted, whole within the engine's bound), its attrs
+ *  (who, what, and where it was found: the run's thread is read from there), keyed by its Message-ID. */
 function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => Record<string, unknown>): PolledEvent {
   const payload = fittedPayload(payloadOf(m));
   return {
     key: m.message_id ?? `${cursor.uidvalidity}:${m.uid}`,
     text: JSON.stringify(payload),
-    attrs: { from: m.from, subject: m.subject, ...(m.message_id ? { message_id: m.message_id } : {}) },
+    attrs: { from: m.from, subject: m.subject, ...(m.message_id ? { message_id: m.message_id } : {}), mailbox: cursor.mailbox, uidvalidity: cursor.uidvalidity, uid: String(m.uid) },
     event: EVENT,
     body: payload,
     cursor: kept(cursor),
@@ -108,13 +114,14 @@ function eventOf(m: MailMessage, cursor: Cursor, payloadOf: (m: MailMessage) => 
 /** `n` messages, in words. */
 const messages = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
 
-/** The cursor at the end of `source`'s mailbox as it is now, and how many messages it holds: where watching starts. */
-async function endOf(session: ImapSession, source: EmailSource): Promise<{ cursor: Cursor; exists: number }> {
+/** The cursor at the end of `source`'s mailbox on `account` as it is now, and how many messages it holds: where watching
+ *  starts. */
+async function endOf(session: ImapSession, source: EmailSource, account: OpenedAccount): Promise<{ cursor: Cursor; exists: number }> {
   const path = await session.resolve(source.mailbox);
   const box = await session.open(path);
   // The newest UID there: UIDNEXT's one before, else the highest a search finds.
   const uid = box.uidNext > 0 ? box.uidNext - 1 : Math.max(0, ...(await session.uids({ all: true })));
-  return { cursor: { mailbox: path, uidvalidity: box.uidValidity, uid }, exists: box.exists };
+  return { cursor: { account: accountKey(account), mailbox: path, uidvalidity: box.uidValidity, uid }, exists: box.exists };
 }
 
 /** The history line of a start taken for `why`, with `exists` messages left. */
@@ -130,7 +137,7 @@ const unchecked = (source: Source, why: StartWhy) =>
 async function start(source: EmailSource, account: OpenedAccount, why: StartWhy): Promise<StartResult> {
   const { MailError, withImap } = await import("./email/mail.js");
   return withImap(account, async (session) => {
-    const end = await endOf(session, source);
+    const end = await endOf(session, source, account);
     return { check: { ok: true, message: `Watching ${source.mailbox}.` }, note: watching(source, end.exists, why), cursor: kept(end.cursor) };
   }).catch((error: unknown): StartResult => {
     const failure = error instanceof MailError ? error : new MailError("failed", String((error as Error)?.message ?? error));
@@ -143,10 +150,14 @@ async function start(source: EmailSource, account: OpenedAccount, why: StartWhy)
 async function poll(source: EmailSource, account: OpenedAccount, cursor: Cursor | undefined): Promise<PollResult> {
   const { MailError, payloadOf, READ_BYTES, withImap } = await import("./email/mail.js");
   return withImap(account, async (session) => {
-    const end = await endOf(session, source);
+    const end = await endOf(session, source, account);
     const path = end.cursor.mailbox;
     // No start yet (one that could not sign in, or a cursor kept before starts were taken): this check takes it.
     if (!cursor || cursor.mailbox !== path) return { check: { ok: true, message: `Watching ${source.mailbox}.` }, note: watching(source, end.exists, "created"), cursor: kept(end.cursor) };
+    // Another account saved in its place (or a cursor that names none): its UIDs are another mailbox's, so it starts over.
+    if (cursor.account !== end.cursor.account) {
+      return { check: { ok: true, message: `Watching ${source.mailbox} again: the email account changed.` }, note: `The email account changed: watching ${source.mailbox} from now; the ${messages(end.exists)} there won't start runs.`, cursor: kept(end.cursor) };
+    }
     if (cursor.uidvalidity !== end.cursor.uidvalidity) {
       return { check: { ok: true, message: `Watching ${source.mailbox} again: the mail server rebuilt it.` }, note: `${source.mailbox} was rebuilt on the mail server (its UIDVALIDITY changed): watching it from now; the ${messages(end.exists)} there won't start runs.`, cursor: kept(end.cursor) };
     }

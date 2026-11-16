@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -51,10 +52,13 @@ func SocketPath() string {
 }
 
 // Egress is init's relay for a computer whose network is an allowlist: it listens on Listen, the computer's loopback,
-// and carries each connection to the egress proxy's Unix socket at Socket. An empty Socket is no relay.
+// and carries each connection to the egress proxy's Unix socket at Socket. An empty Socket is no relay. Proxy is the pid
+// of the proxy this init started itself (egress.StartProxy), its child, which it neither sweeps nor ends: the proxy is
+// another user's, and ends once init is gone.
 type Egress struct {
 	Listen string
 	Socket string
+	Proxy  int
 }
 
 // Init runs as the computer's first process. It is a child subreaper (PID 1 is one anyway), serves every connection on
@@ -122,14 +126,14 @@ func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fen
 			end.Reset(time.Until(deadline.At()))
 			logger.Printf("init: the deadline moved to %s", deadline.At().UTC().Format(time.RFC3339Nano))
 		case <-signals:
-			sweep()
+			sweep(relay.Proxy)
 		case <-tick.C:
-			sweep()
+			sweep(relay.Proxy)
 		case sig := <-stop:
 			deadline.Stop(fmt.Sprintf("init was sent %v", sig))
 			logger.Printf("init: %v, ending every process", sig)
 			_ = listener.Close()
-			shutdown()
+			shutdown(relay.Proxy)
 			return 0
 		case <-end.C:
 			// Decided under the lock deadline.extend takes: an extension either lands first and moves the deadline,
@@ -141,7 +145,7 @@ func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fen
 			}
 			logger.Printf("init: the deadline %s has come, ending every process and the computer", deadline.At().UTC().Format(time.RFC3339Nano))
 			_ = listener.Close()
-			shutdown()
+			shutdown(relay.Proxy)
 			return 0
 		}
 	}
@@ -185,8 +189,9 @@ func listen(socket string) (net.Listener, error) {
 }
 
 // sweep reaps every child that has ended and is no guard, and kills every other child that is no guard, with all under
-// it: such a child is an orphan handed to init because the guard above it died.
-func sweep() {
+// it: such a child is an orphan handed to init because the guard above it died. The egress proxy init started (spare;
+// 0 is none) is reaped once it has ended, and never killed.
+func sweep(spare int) {
 	execrun.WithGuards(func(isGuard func(int) bool) {
 		self := os.Getpid()
 		children := proctree.Children()
@@ -198,6 +203,9 @@ func sweep() {
 				_, _ = syscall.Wait4(child, nil, syscall.WNOHANG, nil)
 				continue
 			}
+			if child == spare {
+				continue
+			}
 			for _, d := range proctree.Descendants(child) {
 				_ = syscall.Kill(d, syscall.SIGKILL)
 			}
@@ -207,12 +215,13 @@ func sweep() {
 }
 
 // shutdown asks every guard to end its program (SIGTERM, then the guard's SIGKILL KillGrace later), waits for them,
-// then kills whatever is left under init and reaps it.
-func shutdown() {
+// then kills whatever is left under init and reaps it: all but the egress proxy init started (spare), another user's,
+// which ends once init is gone.
+func shutdown(spare int) {
 	execrun.EndAll(stopSlack)
 	deadline := time.Now().Add(stopSlack)
 	for time.Now().Before(deadline) {
-		left := proctree.Descendants(os.Getpid())
+		left := slices.DeleteFunc(proctree.Descendants(os.Getpid()), func(pid int) bool { return pid == spare })
 		for _, pid := range left {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}

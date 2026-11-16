@@ -75,6 +75,89 @@ test("a URL on a port other than 80 or 443 is refused before its host is looked 
   assert.deepEqual(looked, [], "no lookup for a port it refuses");
 });
 
+/** The fake network, with `body` served as `type` at `url`. */
+function serving(url, type, body) {
+  const net = network();
+  return { ...net, fetchImpl: async (asked, init) => (asked.href === url ? new Response(body, { status: 200, headers: { "content-type": type } }) : net.fetchImpl(asked, init)) };
+}
+
+test("a page that is not HTML lists the absolute URLs its text holds: a JSON body's string values, a text body's URLs", async () => {
+  const incidents = JSON.stringify({ page: { url: "https://www.githubstatus.com" }, incidents: [{ name: "Degraded Actions", shortlink: "https://stspg.io/abc", note: "see https://www.githubstatus.com/incidents/x1#update and mailto:help@github.example", relative: "/incidents/x1" }] });
+  const json = await fetchPage("http://public.example/api/v2/incidents.json", serving("http://public.example/api/v2/incidents.json", "application/json", incidents));
+  assert.equal(json.ok, true, JSON.stringify(json));
+  assert.deepEqual(json.links, ["https://www.githubstatus.com/", "https://stspg.io/abc", "https://www.githubstatus.com/incidents/x1"], "each once, in the body's order, without its fragment; no mailto or relative path");
+  assert.equal(json.text, incidents, "the text is the body as it came");
+  // A body that is one JSON string is read as JSON too: its escapes undone, and a URL whole kept whole.
+  const { linksOf } = await import("../dist/web-fetch-direct.js");
+  assert.deepEqual([...linksOf(String.raw`"https:\/\/stspg.io\/abc"`)], ["https://stspg.io/abc"]);
+  assert.deepEqual([...linksOf('"https://en.example/wiki/Yahoo!"')], ["https://en.example/wiki/Yahoo!"]);
+  const notes = "Status: https://status.example/a, then (https://en.wikipedia.org/wiki/Foo_(bar)) and 'https://b.example/O'Reilly'.";
+  const text = await fetchPage("http://public.example/status.txt", serving("http://public.example/status.txt", "text/plain", notes));
+  assert.deepEqual(text.links, ["https://status.example/a", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/O'Reilly"], "a sentence's punctuation, an unopened bracket and a closing quote stay outside a URL");
+});
+
+test("the URLs a hostile text writes out are read in one pass: runs of schemes, closing brackets and nesting take no longer than their length", async () => {
+  const { linksOf } = await import("../dist/web-fetch-direct.js");
+  const n = 400_000;
+  const texts = ["https://".repeat(n / 8), `https://a.example/${")".repeat(n)}`, `https://a.example/${"(".repeat(n)}${".".repeat(n)}`, `${"[".repeat(5_000)}"https://deep.example/"${"]".repeat(5_000)}`, `${"](".repeat(n / 2)} https://after.example/`, `<f${" a='".repeat(n / 4)}`, `<f${" a=".repeat(n / 3)}`, `<f a="${"&amp;".repeat(n / 5)}`];
+  const started = performance.now();
+  const found = texts.map((text) => [...linksOf(text)]);
+  const ms = performance.now() - started;
+  assert.ok(ms < 1_000, `read in ${Math.round(ms)} ms, not under 1,000`);
+  assert.deepEqual(found.slice(1, 5), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
+});
+
+/** A GitHub releases.atom, as github.com serves it: each entry's link in an attribute, its content escaped HTML. */
+const RELEASES_ATOM = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/vitejs/vite/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/vitejs/vite/releases?q=v8&amp;expanded=true"/>
+  <title>Release notes from vite</title>
+  <entry>
+    <id>tag:github.com,2008:Repository/257485422/v8.2.6</id>
+    <link rel="alternate" type="text/html" href="https://github.com/vitejs/vite/releases/tag/v8.2.6"/>
+    <title>v8.2.6</title>
+    <content type="html">&lt;p&gt;See &lt;a href=&quot;https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md&quot;&gt;the changelog&lt;/a&gt;.&lt;/p&gt;</content>
+  </entry>
+</feed>`;
+
+test("an Atom feed lists its entries' links: an attribute's URL, and its escaped content's, with XML's entities undone", async () => {
+  const url = "http://public.example/vitejs/vite/releases.atom";
+  const page = await fetchPage(url, serving(url, "application/atom+xml; charset=utf-8", RELEASES_ATOM));
+  assert.equal(page.ok, true, JSON.stringify(page));
+  // A single-quoted attribute ends at its quote too, and an entity in it is undone.
+  const { linksOf } = await import("../dist/web-fetch-direct.js");
+  assert.deepEqual([...linksOf("<feed><link href='https://example.com/release'/><link href = 'https://example.com/a?x=1&amp;y=O&apos;Reilly'/></feed>")], ["https://example.com/release", "https://example.com/a?x=1&y=O%27Reilly"], "an apostrophe in a query, as the URL standard writes it");
+  // An attribute named in any script is read so too.
+  assert.deepEqual([...linksOf("<feed><link é:href='https://example.com/ns'/></feed>")], ["https://example.com/ns"]);
+  // A double-quoted attribute is left as it is, an "='" in its query too.
+  assert.deepEqual([...linksOf(`<feed><link href="https://example.com/?q='hello'&amp;x=1"/></feed>`)], ["https://example.com/?q=%27hello%27&x=1"]);
+  // Every URL the body writes out, the one in its tag URI's id too; its namespace's name is an identifier, not a link.
+  assert.deepEqual(page.links, ["https://github.com/vitejs/vite/releases", "https://github.com/vitejs/vite/releases?q=v8&expanded=true", "https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md"]);
+});
+
+test("a releases.atom entry's links are its <link href> and its escaped content's pull URL, exactly: no entity runs into a link", async () => {
+  const atom = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <entry>
+    <id>tag:github.com,2008:Repository/257485422/v8.2.6</id>
+    <link rel="alternate" type="text/html" href="https://github.com/vitejs/vite/releases/tag/v8.2.6"/>
+    <title>v8.2.6</title>
+    <content type="html">&lt;ul&gt;&lt;li&gt;fix: &lt;a href=&quot;https://github.com/vitejs/vite/pull/123&quot;&gt;#123&lt;/a&gt; by &lt;a class=&quot;user-mention&quot;&gt;someone&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;</content>
+  </entry>
+</feed>`;
+  const url = "http://public.example/vitejs/vite/releases.atom";
+  const page = await fetchPage(url, serving(url, "application/atom+xml; charset=utf-8", atom));
+  assert.deepEqual(page.links, ["https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/pull/123"], "a namespace's name is not a link");
+  assert.equal(page.links.some((link) => link.includes("&quot;") || link.includes("%22")), false);
+});
+
+test("an HTML page's links stay its link targets alone, as before: a URL written in its text is not one", async () => {
+  const html = `<html><head><title>Public page</title></head><body><p>Mirror: https://bare.example/x</p><a href="/about">About</a> <a href="https://other.example/x#part">Other</a></body></html>`;
+  const page = await fetchPage("http://public.example/", serving("http://public.example/", "text/html; charset=utf-8", html));
+  assert.equal(JSON.stringify(page.links), '["http://public.example/about","https://other.example/x"]');
+});
+
 /** What each web_fetch call of run `runId` was answered, parsed, from its journal in the store (support.mjs journalOf). */
 function pagesOf(data, runId) {
   return journalOf(data, runId)

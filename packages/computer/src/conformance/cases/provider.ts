@@ -6,12 +6,31 @@
 import { randomBytes } from "node:crypto";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
-import { type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
+import { type ComputerConnection, type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
 import { b64, CASE_LABEL, decode } from "./util.js";
 
 /** Labels for one case's computers: the run's, and the case's own. */
 const own = (t: CaseContext, name: string) => ({ ...t.runLabels, [CASE_LABEL]: name });
+
+/** Gets url with curl as the computer's user, through the proxy its programs are told of (no host bypasses it): curl's exit,
+ *  the HTTP code and the CONNECT code. Undefined, observed, on a computer that is not Linux with exec, or where the image
+ *  has no curl or no proxy is set. */
+const CURL = `command -v curl >/dev/null 2>&1 || { echo nocurl; exit 0; }; [ -n "\${HTTPS_PROXY:-\${https_proxy:-}}" ] || { echo noproxy; exit 0; }; c=$(curl -sS -o /dev/null --noproxy '' --max-time 30 -w '%{http_code} %{http_connect}' "$1" 2>/dev/null); echo "$? $c"`;
+async function curled(t: CaseContext, { client, hello }: ComputerConnection, url: string): Promise<{ exit: number; code: string; connect: string } | undefined> {
+	if (hello.os !== "linux" || !hello.groups.includes("exec")) {
+		t.observe(`the computer runs ${hello.os}${hello.groups.includes("exec") ? "" : " with no exec"}, so the egress proxy's answers were not read with curl`);
+		return undefined;
+	}
+	const ran = t.ok(await client.call("exec.run", { argv: ["sh", "-c", CURL, "sh", url], timeoutMs: 60_000 }), `curl ${url}`);
+	const out = decode(ran.stdout).trim();
+	if (out === "nocurl" || out === "noproxy") {
+		t.observe(out === "nocurl" ? "the image has no curl, so the egress proxy's answers were not read" : "no proxy is set for the computer's programs: its open network is the vendor's own, with no egress proxy to read");
+		return undefined;
+	}
+	const [exit, code, connect] = out.split(" ");
+	return { exit: Number(exit), code: code ?? "", connect: connect ?? "" };
+}
 const names = async (t: CaseContext, labels: Record<string, string>) =>
 	t
 		.ok(await t.provider.list(labels), `list ${JSON.stringify(labels)}`)
@@ -403,6 +422,21 @@ export const providerCases: Case[] = [
 			);
 			const connected = await t.connect(ref);
 			t.deepEqual(t.ok(await connected.client.call("ping", {}), "ping"), {}, "ping in an open computer");
+			// Where open goes through an egress proxy (the programs are told of one), it reaches the public internet alone:
+			// a name, with no resolver of the programs' own, and never metadata, a private address or the vendor's agent.
+			const web = await curled(t, connected, "https://example.com/");
+			if (web === undefined) return;
+			t.equal(`${web.exit} ${web.code}`, "0 200", "curl by name to https://example.com/ through the egress proxy");
+			const refusedTargets: [string, string][] = [
+				["http://169.254.169.254/latest/meta-data/", "metadata (169.254.169.254), plain HTTP"],
+				["https://169.254.169.254/", "metadata (169.254.169.254), CONNECT"],
+				["https://10.0.0.1/", "a private address"],
+				...(t.provider.capabilities().vendorAgentPorts ?? []).map((port): [string, string] => [`http://127.0.0.1:${port}/`, `the vendor's agent's port ${port} on the loopback`]),
+			];
+			for (const [url, what] of refusedTargets) {
+				const refused = await curled(t, connected, url);
+				t.assert(refused !== undefined && (refused.code === "403" || refused.connect === "403"), `${what}: the egress proxy refuses ${url} with 403, not ${JSON.stringify(refused)}`);
+			}
 		},
 		{ level: "full", needs: ["network:open"] },
 	),
@@ -412,6 +446,12 @@ export const providerCases: Case[] = [
 			const policy = { allow: ["example.com"] };
 			const ref = await t.create({ labels: own(t, "allow"), network: policy });
 			t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), policy, "the allowlist read back");
+			const connected = await t.connect(ref);
+			const listed = await curled(t, connected, "https://example.com/");
+			if (listed === undefined) return;
+			t.equal(`${listed.exit} ${listed.code}`, "0 200", "curl by name to https://example.com/, on the list, through the egress proxy");
+			const off = await curled(t, connected, "https://example.org/");
+			t.equal(off?.connect, "403", "https://example.org/, off the list: the egress proxy refuses its CONNECT with 403");
 		},
 		{ level: "full", needs: ["network:allow"] },
 	),

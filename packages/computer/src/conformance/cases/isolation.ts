@@ -2,16 +2,18 @@
 // (capabilities().vendorAgentPorts), and no outside address, sees its own loopback alone, and finds nothing listening in
 // its own network but computerd: computerd init --own-network at work. And it can write nothing root runs.
 import { DAEMON_IN_COMPUTER, SOCKET_DIR } from "../../drift.js";
+import { EGRESS_PROXY_SOCKET } from "../../hosted/network.js";
 import { ARCHIL_HELPER, ARCHIL_SYNC_SOCKET } from "../../mount-archil.js";
 import type { ComputerClient } from "../../protocol.js";
 import type { Case, CaseContext } from "../types.js";
 
 /**
- * The unix sockets a program of the computer's user may connect to: the computer's own, computerd's and the Archil sync
- * socket (which only syncs). A network namespace does not cut a path socket, and every program in the namespace reaches
- * an abstract name (@...), so any other socket is a door out.
+ * The unix sockets a program of the computer's user may connect to: the computer's own, computerd's, the Archil sync
+ * socket (which only syncs) and, under network open or a list, the egress proxy's (which reaches the public internet
+ * alone, as the spec's network asked). A network namespace does not cut a path socket, and every program in the
+ * namespace reaches an abstract name (@...), so any other socket is a door out.
  */
-export const OWN_SOCKETS: readonly string[] = [`${SOCKET_DIR}/computerd.sock`, ARCHIL_SYNC_SOCKET];
+export const OWN_SOCKETS: readonly string[] = [`${SOCKET_DIR}/computerd.sock`, ARCHIL_SYNC_SOCKET, EGRESS_PROXY_SOCKET];
 
 /**
  * The outside the case also probes: a public IP literal on 443, and a DNS name on 443, which a program could reach only

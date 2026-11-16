@@ -57,7 +57,8 @@ export type TemplateApplied = Answer<"applyTemplate">;
 /** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
 
-/** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
+/** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact
+ *  part and held count); `usd` is said first whenever it is known (format.ts chargeWords, soFar). */
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];

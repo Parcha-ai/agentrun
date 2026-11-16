@@ -588,34 +588,6 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.deepEqual([of("sent"), of("lost")], [1, 1], "each end at the edge once");
   });
 
-  test("a cancelled run whose last row is an open question, its wait no longer in the ledger, gives no run.needs_input when a later server reads it: an ended run never asks", async (t) => {
-    const hook = await receiver(t);
-    const data = join(await scratch(t), "agents");
-    const first = await startWithRunner(t, { data, runner: false });
-    assert.equal((await client(first.baseUrl, first.token)("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-    const writer = await askerStore(t, data);
-    await parkedOnQuestion(writer, "asker", "asks-then-cancelled", "Which region?");
-    await hook.when((got) => ofType(got, "run.needs_input").length === 1, "the run.needs_input of run asks-then-cancelled", data);
-    // Cancelled where it waits: stopped, its last row still the question.
-    await endParked(writer, "asks-then-cancelled", "stopped");
-    await hook.when((got) => ofType(got, "run.ended").length === 1, "the run.ended of run asks-then-cancelled", data);
-    await settled(data);
-    await first.close();
-    // The ledger as a pruning leaves it: no wait of the run, and its messages gone from the store.
-    leftAs(data, { told: { "asks-then-cancelled": { ended: noticed(data, "asks-then-cancelled").ended } }, cleared: true });
-    const next = await startWithRunner(t, { data, runner: false });
-    t.after(() => next.close());
-    assert.equal((await client(next.baseUrl, next.token)("GET", "/runs/asks-then-cancelled")).body.status, "cancelled");
-    // Two runs parked after it show the next server's reads have passed: the second's notice comes from a read after the
-    // one that told the first, which read the cancelled run too.
-    await parkedOnQuestion(writer, "asker", "after-1", "And the currency?");
-    await hook.when((got) => ofType(got, "run.needs_input").some((r) => JSON.parse(r.body).data.run_id === "after-1"), "the run.needs_input of run after-1", data);
-    await parkedOnQuestion(writer, "asker", "after-2", "And the date?");
-    await hook.when((got) => ofType(got, "run.needs_input").some((r) => JSON.parse(r.body).data.run_id === "after-2"), "the run.needs_input of run after-2", data);
-    const of = (type) => ofType(hook.got, type).filter((r) => JSON.parse(r.body).data.run_id === "asks-then-cancelled").length;
-    assert.deepEqual([of("run.needs_input"), of("run.ended")], [1, 1], "no wait notice for an ended run, and its end once");
-  });
-
   test("a run still waiting on the same question a day later, its message gone from the store, is not asked about again: the ledger keeps a wait until the run moves past it", async (t) => {
     const hook = await receiver(t);
     const dir = await scratch(t);

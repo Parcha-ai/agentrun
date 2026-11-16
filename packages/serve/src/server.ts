@@ -1,6 +1,9 @@
+import { maintainObservations, Observations } from './observation/observer.js';
+import { isObservationRoute, observationHttp } from './observation/http.js';
 import { SdkRuns, sdkOf } from "./sdk/runs.js";
 import { gradeRouteFor } from "./runner/harness-loops.js";
 import { routeOf as sdkModelRoute } from "./runner/model-route.js";
+import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
 import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from "./native/binding.js";
@@ -59,7 +62,8 @@ import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, over
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
-import { type ComputerOf, computerView, type JournalEntry, sessionIn } from "./computer-view.js";
+import { type ComputerOf, computerView, type JournalEntry, lapsedOf, sessionIn } from "./computer-view.js";
+import { readKept } from "./workspace/computer-kept.js";
 import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
@@ -155,7 +159,7 @@ import { readApprovers, writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
-import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
+import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
@@ -437,6 +441,7 @@ export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
   | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
+  {method:"GET",pattern:/^\/observations$/,name:"getObservations"},
   {method:"GET",pattern:/^\/connectors$/,name:"listRemoteConnectors"},
   {method:"POST",pattern:/^\/connectors\/enrollment$/,name:"enrollRemoteConnector"},
   {method:"POST",pattern:/^\/connectors$/,name:"registerRemoteConnector"},
@@ -628,13 +633,18 @@ export const ROUTES: readonly Route[] = [
  *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
  *  launch would be; off, saying why, where it has none or its browser resolves unavailable here. Where the agent's
  *  computer is a browser, that browser, whose keys are the computer's (checked at the run's start), never the plane's.
+ *  A run whose agent's computer is a sandbox (`own`, its revision's kind) and has no browser has a computer with no
+ *  screen: off says so, never that its agent has none; its browser, where it has the tool, is its view, and why that
+ *  browser is unavailable is said as for any run.
  *  TODO: the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
-function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer", own?: string): ComputerOf {
   if (kept === ON_COMPUTER) return { kind: "browser" };
   const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
-  if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : "this run's agent has no computer" };
+  if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : own === "sandbox" ? SANDBOX_NO_SCREEN : "this run's agent has no computer" };
   return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
 }
+
+const SANDBOX_NO_SCREEN = "A sandbox has no screen: what the agent runs in it is on the timeline.";
 
 /** The run's kept browser vendor, over the store, as computerOf reads it: the vendor its launch plane resolved at start
  *  (the same source the runner's claim reads), normalized to the vendor name (keptVendor) so recheckPlane re-resolves it as
@@ -992,11 +1002,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`),
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
   }), (error) => onSqlite && error instanceof StoreOwned, replacedUntil, waitingForReplaced);
-  stops.push(() => store.close());
+  let stopObservationRetention: () => Promise<void> = async () => undefined;
+  stops.push(async () => { await stopObservationRetention(); await store.close(); });
   // The packages served: the bundled ones, read and checked before the start, and those imported here, which the store
   // keeps and are checked again as they load (template-import.ts). One that no longer checks is left out, said in the log.
   const registry = new TemplateRegistry(templates);
   await loadImported({ registry, store }, (id, why) => log?.(logLine("template_import_skipped", { template: id, why })));
+  stopObservationRetention = await maintainObservations(new Observations(store), {
+    onError: () => { process.stderr.write("agentrun-serve: observation retention failed; retrying on the next sweep\n"); },
+  });
   // The person's own computers paired with this server (computer-attach.ts): their live sockets are this process's hub,
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
@@ -1442,11 +1456,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
-  /** What a learning batch's loop reads of a run, from its view. */
+  /** What a learning batch's loop reads of a run, from its view. Its `cost_usd` is the exact cost: a batch's figures say
+   *  no "at most", so a view cost marked `upper_bound` reads null there, as the run's stored cost does (RunRow.costUsd). */
   const batchRunView = async (runId: string): Promise<RunSnap | undefined> => {
     const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
     if (!v) return undefined;
-    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
+    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" && v.cost.upper_bound !== true ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
   };
   // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
   // state is the store's settings, so a batch still running when the server stopped takes up again as it starts. Its reads
@@ -2093,12 +2108,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
       const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, shellOf, offers, mcp, monid })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, shellOf, offers, mcp, monid, decisionPrice });
+      const capped = await blockersOf(env, shape, {}, { capped: true, capUsd: body.maxCostUsd, boxes: boxOffers, computerReady, shellOf, offers, mcp, monid, decisionPrice });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
-      // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
+      // agent saves and updates, and only a run under the cap is refused (409). So is a cap below what the model needs for
+      // one more step and an answer (`short`): the agent saves, and its runs wrap up at their first tool call. A tool's
+      // pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));
-      blockers.push(...added.filter((b) => b.unpriced));
-      blockers.push(...added.filter((b) => !b.unpriced).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
+      blockers.push(...added.filter((b) => b.unpriced || b.short));
+      blockers.push(...added.filter((b) => !b.unpriced && !b.short).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
     }
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
@@ -3126,6 +3143,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
         return send(res,answer.status,receipt,answer.headers);
       }
+      case "getObservations": {
+        const days = Number(url.searchParams.get("days") ?? 30);
+        if (!Number.isInteger(days) || days < 1 || days > 31) throw new ApiError("input_invalid", "Choose an observation window from 1 to 31 days.");
+        return send(res, 200, await new Observations(store).snapshot(days, url.searchParams.get("session_id") ?? undefined));
+      }
       case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
       case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
       case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
@@ -3422,7 +3444,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const kept = await keptBrowserOf(store, run.id);
         // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
         // none with its kind, never off as if the agent had none (#2170).
-        const viewed = family === "computer" ? await runViewedKind(store, run.id) : undefined;
+        const own = family === "computer" ? await runComputerKind(store, run.id) : undefined;
+        const viewed = own === "desktop" || own === "phone" ? own : undefined;
+        // A parked run's desktop or phone is no screen being opened: its claim let it go, or kept it for the resume
+        // (computer-kept.ts; the run's timeline says until when), and once its time passed, the timeout's words.
+        const parked = family === "computer" && !run.terminal && (await store.runs.get(run.id))?.state === "parked";
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
@@ -3431,8 +3457,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             }
             return computerViewerLink(store, sealKey, run.id, answers);
           },
-          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
-          session: (kind) => sessionIn(kind, entries, run.terminal),
+          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
+          session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
+          lapsed: async (kind) => (parked ? lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), Date.now()) : undefined),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -4132,7 +4159,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
+    if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (isObservationRoute(raw)) return void observationHttp(req, res, url, new Observations(store), token).catch(fail);
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
@@ -4239,7 +4268,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // change would be the next seam.
   const RUN_CHANGES_POLL_MS = 250;
   const final = (row: { state: string }) => (FINAL_STATES as readonly string[]).includes(row.state);
-  const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
+  /** A row its stop ended (stopEnd), which may stand at the person's stop (store.ts stoppedByPerson: an agentic run, its
+   *  status input_required and idle, a message continues it) and not have ended: its view says which. */
+  const stopRow = (row: RunRow) => row.state === "stopped" && row.outcome === "stopped" && row.importedFrom === null;
+  const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}), ...(stopRow(row) ? { stop: true } : {}) });
   /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
   const endNotice = async (id: string) => {
     const row = await store.runs.get(id);
@@ -4263,9 +4295,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** When each held wait (a run waiting on its person with its claim held) was last read again. */
   const heldReadAt = new Map<string, number>();
   const HELD_WAIT_REREAD_MS = 1_000;
-  const waitKinds = new Set(["question", "approval", "budget", "browser"]);
+  const waitKinds = new Set(["question", "approval", "budget", "browser", "computer", "stopped"]);
   /** The wait of a run its runner left parked (or let go of), or holds in its claim, told once per ask: its marker the
-   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (a stop's when it waits on no card). False when it
+   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (none when the run waits on no card). False when it
    *  is not done (a read that failed, or its notice not saved): it is read again. */
   const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
@@ -4273,13 +4305,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
-    // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last.
-    const marker = waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
-    if (!marker) return (readWaits.set(row.id, seen), true);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
-    const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
-    const wait = { kind } as NonNullable<RunNotice["pending"]>;
-    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: wait };
+    // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last. A stop's is when
+    // its stop ended the row: rows its stopped turn still streams in (a late result, a charge) never move it.
+    const marker = card === "stopped" && row.endedAt !== null ? `stopped:${new Date(row.endedAt).toISOString()}` : waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
+    if (!marker) return (readWaits.set(row.id, seen), true);
+    // Its kind is the read's own `pending.kind` (a stop's is stoppedTurn's), so the notice and GET never disagree; a wait
+    // whose card is withheld is a question. A run idle on nothing named (its harness ended its turn on its own) names no kind.
+    const kind = typeof card === "string" && waitKinds.has(card) ? card : view.state === "waiting" ? "question" : undefined;
+    const wait = kind === undefined ? undefined : ({ kind } as NonNullable<RunNotice["pending"]>);
+    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", ...(wait ? { pending: wait } : {}) };
     if (!(await toldAll(row.id, waitSubscribers.map((tell) => () => tell(notice, wait, marker))))) return false;
     readWaits.set(row.id, seen);
     return true;
@@ -4290,10 +4325,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (an end's time, a wait's ask), on which each dedupes in a ledger of its own. An end from while no server was up
    *  reaches the webhook alone, through its own catch-up (webhooks.ts catchUp). */
   const endedSubscribers: Array<(run: RunNotice, marker: string) => unknown> = [];
-  const waitSubscribers: Array<(run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown> = [];
+  const waitSubscribers: Array<(run: RunNotice, wait: RunNotice["pending"], marker: string) => unknown> = [];
   const runNotices = {
     onEnded: (tell: (run: RunNotice, marker: string) => unknown) => void endedSubscribers.push(tell),
-    onWaits: (tell: (run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown) => void waitSubscribers.push(tell),
+    onWaits: (tell: (run: RunNotice, wait: RunNotice["pending"], marker: string) => unknown) => void waitSubscribers.push(tell),
   };
   runNotices.onEnded(async (run, marker) => {
     if ((await webhooks.emit("run.ended", run, marker)) === "unsaved") throw new Error("its run.ended is not saved yet");
@@ -4325,6 +4360,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const tellEnd = async (id: string): Promise<boolean> => {
     const now = await endNotice(id).catch((error: Error) => (sayUnread(id, error.message), undefined));
     if (now === undefined) return false;
+    // A person's stop of an agentic run ends its row but not the run: it reads input_required (pending kind stopped), so
+    // it is told as that wait, run.needs_input, never as an end.
+    if (now?.notice.status === "input_required") {
+      const row = await rowNow(id);
+      if (row === UNREAD) return (sayUnread(id, "its row could not be read"), false);
+      const told = row === undefined || (await tellWait(row).catch((error: Error) => (sayUnread(id, error.message), false)));
+      if (told) unreadSaid.delete(id);
+      return told;
+    }
     readWaits.delete(id);
     heldReadAt.delete(id);
     if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return (unreadSaid.delete(id), true);
@@ -4358,7 +4402,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const tellLetGo = async (id: string): Promise<boolean> => {
     const row = await rowNow(id);
     if (row === UNREAD) return (sayUnread(id, "its row could not be read"), false);
-    if (row === undefined || !letGo(row)) return true;
+    if (row === undefined || !(letGo(row) || stopRow(row))) return true;
     const told = await tellWait(row).catch((error: Error) => (sayUnread(id, error.message), false));
     if (told) unreadSaid.delete(id);
     return told;
@@ -4431,7 +4475,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (endsLeft): it is before the feed's head, so no change of the feed brings it back.
     const unsaved = await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
     for (const id of unsaved) endsLeft.add(id);
-    for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
+    // A run that stands at a person's stop waits too (tellWait reads its view: one its stop ended reads no wait).
+    for (const row of rows) if (!closing && (letGo(row) || stopRow(row)) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
   followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
@@ -4446,6 +4491,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     stopping.abort();
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
     plan.close();
+    const observationStopped = stopObservationRetention();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
     // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the store closes.
@@ -4461,6 +4507,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     await installStopped;
+    await observationStopped;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;

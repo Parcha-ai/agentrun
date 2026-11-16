@@ -48,7 +48,8 @@ export const ORGO = defineProvider({
 	metered: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper.
 	mounts: [],
-	// The Linux desktop's: none (computerd holds its programs to loopback).
+	// The Linux desktop's: none (computerd holds its programs to loopback). Not open or a list: Orgo's own adapter starts
+	// no egress proxy, the one way out of that loopback the shared hosted adapter has (hosted/network.ts).
 	network: ["none"],
 	capabilities: ORGO_CONFIGURATIONS,
 	parked: ORGO_PARKED,

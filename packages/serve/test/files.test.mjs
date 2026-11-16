@@ -19,7 +19,7 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   await symlink(join(data, "outside.txt"), join(work, "link.txt"));
   const list = await api("GET", `/runs/${run_id}/files`);
   assert.equal(list.status, 200);
-  assert.deepEqual(list.body.files.map((f) => f.path), ["page.html", "report.md", "sub/a b.txt"], "no dotfile, no .agents/skills, no symlink");
+  assert.deepEqual(list.body.files.map((f) => f.path), ["inputs/message.md", "page.html", "report.md", "sub/a b.txt"], "the run's message, and no dotfile, no .agents/skills, no symlink");
   assert.deepEqual([list.body.complete, list.body.truncated], [true, false]);
   const report = await fetch(`${baseUrl}/runs/${run_id}/files/report.md`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal(await report.text(), "# Report\n\nThe answer is 42.\n");

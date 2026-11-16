@@ -51,8 +51,9 @@ const isCompile = (body) => /Compile the whole job/.test(lastUserText(body));
  *  the next runner takes the run over. `priceOf(body)`: what a request the provider answered is booked at (each answer's
  *  booking reads the figure of the request it answers, in order). `script`: the job's turn (the model's steps before
  *  the learning's). `toolsOf(lose)`: the session's tools; `lose()` counts a loss as a held request does and gives a call
- *  that never returns on that runner. `restartLimit`: pi's (MAX_RESTARTS). Settles at the run's end or park. */
-async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf, script: jobScript = [{ say: ANSWER }], toolsOf = () => ({}), restartLimit = MAX_RESTARTS }) {
+ *  that never returns on that runner. `restartLimit`: pi's (MAX_RESTARTS). `inputOf(body)`: the input tokens each answer
+ *  reports billed (scriptedOrigin's). Settles at the run's end or park. */
+async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf, script: jobScript = [{ say: ANSWER }], toolsOf = () => ({}), restartLimit = MAX_RESTARTS, inputOf }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-learning-claim-lost-"));
   const clock = { skewMs: 0 };
   const now = () => Date.now() + clock.skewMs;
@@ -92,7 +93,7 @@ async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf, s
     const step = (request.messages ?? []).filter((message) => message.role === "assistant").length;
     const script = [...jobScript, ...Array.from({ length: step }, () => ({ say: isCompile(request) ? "No change." : REFLECTED }))];
     prices.push(priceOf(request));
-    return scriptedOrigin(script, sent)(url, init);
+    return scriptedOrigin(script, sent, { inputOf })(url, init);
   };
   const fetch = async (url, init = {}) => {
     const request = JSON.parse(String(init.body ?? "{}"));
@@ -208,20 +209,30 @@ test("the walk's shape (chain run 9): a job answered for $1.554, its look-back c
   // First claim: the look-back is admitted with $3.446 left and cut ($1.913): $3.467 booked. Second claim: $1.533 is
   // left, under the look-back's input alone ($1.3604) and its least answer, so the cap refuses it. Run 9 booked $5.38 on
   // its $5 cap; here nothing is booked past it.
+  // Each answer reports its request's input billed at the most a request of its bytes can bill: its bytes and the
+  // 675-token tool-use prompt. So a later request's bound from the earlier one's bill (the bill and the bytes it adds) is
+  // never below its bytes, and each request is held at its bytes, as in run 9. (A provider that bills less leaves more
+  // room; reporting less than a request's real tokens is a bill no provider gives.)
   const PRICED = Object.freeze({ ...SONNET, price: { input: 200, output: 900, cacheRead: 0, cacheWrite: 200 }, outputCeiling: 614 });
   const toolsOf = () => ({ fetch_page: { name: "fetch_page", replaySafe: true, run: () => "the page" } });
   const CAP = 5;
+  const judged = [];
   const { server, store, row, sent } = await lostRun(t, {
     capUsd: CAP,
-    runCap: { modelOf: () => PRICED },
+    runCap: { modelOf: () => PRICED, judged: (request, answer) => void judged.push({ request, answer }) },
     held: isLookBack,
     losses: 1,
     priceOf: () => 0.777,
     endOfRunOf: realLearning,
     script: [{ call: "fetch_page" }, { say: ANSWER }],
     toolsOf,
+    inputOf: (body) => Buffer.byteLength(JSON.stringify(body), "utf8") + 675,
   });
   assert.equal(sent.filter(isLookBack).length, 1, `the look-back went out on the first claim, never on the second: ${sent.length} requests`);
+  // The cap judged the look-back on both claims at its 6,802 tokens: admitted with $3.446 left, then refused with
+  // $1.533 left, its least ($1.913) past what is left.
+  const lookBacks = judged.slice(2).map(({ request, answer }) => ({ bound: request.inputTokensMax, spent: Math.round(request.spentUsd * 1e4) / 1e4, refused: typeof answer?.refuse === "string" }));
+  assert.deepEqual(lookBacks, [{ bound: 6_802, spent: 1.554, refused: false }, { bound: 6_802, spent: 3.467, refused: true }], JSON.stringify(judged.map(({ request, answer }) => ({ bound: request.inputTokensMax, spent: request.spentUsd, answer }))));
   const budgets = await rootEntries(store, "agentrun.budget");
   assert.deepEqual(budgets, [], `no budget pause for learning spend: ${JSON.stringify(budgets)}`);
   assert.equal(row.state, "ended", `the run's status is its job's turn's: completed, never failed over its cap for learning spend: ${JSON.stringify(row)}`);
@@ -232,8 +243,8 @@ test("the walk's shape (chain run 9): a job answered for $1.554, its look-back c
   assert.ok(answers.includes(ANSWER), `the job's answer is the run's: ${JSON.stringify(answers)}`);
   const kept = await server.learning.proposal("run-1");
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.reason], ["dropped", "no_budget"], `the learning dropped for the cap, never the run: ${JSON.stringify(kept?.proposal)}`);
-  // The spend stays booked: the job's $1.554 and the cut look-back at its hold, within the cap. The run's cost shows what
-  // is known ($1.554) and the cut request as not priced, never $0.
+  // The spend stays booked: the job's $1.554 and the cut look-back at its hold, within the cap. The run's cost counts the
+  // cut request at that hold, the most it can have cost, and says so (upper_bound): known, never blanked, never $0.
   const entries = (await journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx)).entries;
   const asked = new Map(entries.filter((one) => one.kind === "runner.request").map((one) => [one.data.turn, one.data]));
   const turns = entries.filter((one) => one.kind === "runner.turn").map((one) => one.data);
@@ -245,7 +256,8 @@ test("the walk's shape (chain run 9): a job answered for $1.554, its look-back c
   assert.ok(near(answered, 1.554), `the job's answers booked at $1.554: ${answered}`);
   const total = answered + cuts[0];
   assert.ok(near(total, 3.467) && total <= CAP, `$3.467 booked, within the $5 cap: ${total}`);
-  assert.deepEqual([view.cost.usd, view.cost.cap_usd, view.cost.so_far_usd, view.cost.unpriced], [null, CAP, 1.554, 1], `the run's cost: $1.554 known, the cut request not priced: ${JSON.stringify(view.cost)}`);
+  // Beside the bound: the job's $1.554 known, the one look-back counted at its hold.
+  assert.deepEqual([view.cost.usd, view.cost.cap_usd, view.cost.so_far_usd, view.cost.unpriced, view.cost.upper_bound], [3.467, CAP, 1.554, 1, true], `the run's cost: at most $3.467, the cut request at its hold: ${JSON.stringify(view.cost)}`);
 });
 
 test("a job that answered after a tool call faulted on every restart, lost mid look-back: the next claim ends the run failed in the same words as without the takeover", { timeout: 180_000 }, async (t) => {

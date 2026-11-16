@@ -31,7 +31,7 @@ const PROVIDER = "agentrun-grade";
  *  `model`, priced by `price`. A model on neither wire comes as the route's Messages translation (model-route.ts
  *  messagesFetch, its `fetch`). */
 export interface GraderRoute {
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly usageCost?: boolean };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   readonly model: string;
   /** The catalog's entry for the model (whether it reasons, its window), as pi's session takes it (model-route.ts). */
   readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number };
@@ -108,8 +108,6 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         ...(options.price ? { price: options.price as never } : {}),
         ...(options.provider.headers ? { headers: options.provider.headers } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
-        // An answer that states its cost (OpenRouter's) is booked at it, the price's figure beside it (model-route.ts).
-        ...(options.provider.usageCost ? { usageCost: true } : {}),
       }, randomBytes(32).toString("base64url"));
       try {
         // pi-ai's client of the route's wire at the proxy (port-models.ts sessionProvider), as pi's session reaches its own.

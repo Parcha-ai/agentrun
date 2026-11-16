@@ -14,6 +14,8 @@ import { check, markExample } from "../harness.mjs";
 const SAMPLE = JSON.parse(readFileSync(new URL("../../src/components/CostPerRun.sample.json", import.meta.url), "utf8"));
 export const WIDTHS = [1440, 820, 390];
 const WF = "sort-invoice";
+/** The story's cheaper headline: the sample's 7.0 over the serving refit's replay (95% vs 94% on 40), which cleared the bar. */
+const CHEAPER = "About 7x cheaper at the same accuracy";
 const D0 = "c0ffee00c0ffee00", D1 = "a12596c0a12596c0", D2 = "1a48d30c1a48d30c";
 const runAt = (n) => SAMPLE.runs.find((r) => r.n === n);
 const later = (n, minutes) => new Date(Date.parse(runAt(n).started_at) - minutes * 60_000).toISOString();
@@ -98,14 +100,16 @@ export default {
         await page.goto(`${base}/#/agents/${enc}/learning`);
         await page.reload();
         const story = page.getByTestId("loop-story");
-        await story.getByText("7.0x cheaper").waitFor().catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "learning-loop-failed.png"), fullPage: true }); throw e; });
+        await story.getByText(CHEAPER).waitFor().catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "learning-loop-failed.png"), fullPage: true }); throw e; });
         await page.getByRole("region", { name: "Learned workflow" }).getByText("Revision 3 of 3").waitFor();
         await page.evaluate(() => document.fonts.ready);
         check(await page.evaluate((t) => document.documentElement.classList.contains(t), theme), `${at}: the page is not in the ${theme} theme`);
 
         // The story: each stage's value and state.
         const stages = await story.locator("li").evaluateAll((els) => els.map((el) => `${el.getAttribute("data-testid")}=${el.getAttribute("data-state")}:${el.querySelector('[data-testid$="-value"]')?.textContent}`));
-        check(stages.join("|") === `stage-notes=done:3 notes|stage-compiled=done:${WF}|stage-took_over=done:Run 21|stage-cheaper=done:7.0x cheaper|stage-unsure=watch:5% handed back`, `${at}: the story says ${stages.join("|")}`);
+        const replayed = await story.getByTestId("stage-cheaper").textContent();
+        check(/Replay: workflow 95% vs agent 94% on 40 inputs · served 59 runs, handed back 3/.test(replayed ?? ""), `${at}: the cheaper stage says ${replayed}`);
+        check(stages.join("|") === `stage-notes=done:3 notes|stage-compiled=done:${WF}|stage-took_over=done:Run 21|stage-cheaper=done:${CHEAPER}|stage-unsure=watch:5% handed back`, `${at}: the story says ${stages.join("|")}`);
         await shoot(story, `loop-story-${theme}-${width}.png`);
 
         // The cost chart: a flag per record kind on its run, the server's headline with the hand-back rate.
@@ -153,6 +157,20 @@ export default {
         for (const t of m.past) wrong.push(`${at}: ${t} runs past its card`);
         if (m.sideways) wrong.push(`${at}: the page scrolls sideways`);
       }
+    }
+    // Withheld: a run's cost unknown and one known only as at most; the summary has no ratio and the story says why.
+    // The newest route on a URL answers it (Playwright runs matching routes newest first).
+    await page.route(new RegExp(`/v2/agents/${enc}/learning/cost(\\?.*)?$`), (route) => route.fulfill({ json: { ...SAMPLE, agent: id, summary: { ...SAMPLE.summary, times_cheaper: null, withheld: { unknown: 1, at_most: 1 } } } }));
+    await page.evaluate(() => localStorage.setItem("agentrun.theme", "light"));
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width < 600 ? 3200 : 2000 });
+      await page.goto(`${base}/#/agents/${enc}/learning`);
+      await page.reload();
+      const story = page.getByTestId("loop-story");
+      await story.getByText("No ratio yet").waitFor();
+      const said = await story.getByTestId("stage-cheaper").textContent();
+      check(/1 run's cost unknown, 1 known only as at most: how many times cheaper shows once every run's cost is known/.test(said ?? "") && !/\dx cheaper/.test(said ?? ""), `withheld ${width}px: the cheaper stage says ${said}`);
+      await shoot(story, `loop-story-withheld-light-${width}.png`);
     }
     // Early: an agent with one note and no workflow yet says how far it is from a compile.
     const early = await api("POST", "/agents", { definition: { version: 1, name: "Invoice sorter, new", instructions: "Answer with the ledger account.", harness: "pi", tools: [], skills: [], learning: true } });

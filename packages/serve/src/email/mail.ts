@@ -16,6 +16,15 @@ import { type Endpoint, type OpenedAccount, securityOf } from "./account.js";
 export const CONNECT_TIMEOUT_MS = 15_000;
 /** How long a connection may sit with no answer. */
 export const SOCKET_TIMEOUT_MS = 60_000;
+/** How long a run's email tool waits on an answer: a search the server has not indexed takes minutes on a large mailbox. */
+export const TOOL_SOCKET_TIMEOUT_MS = 5 * 60_000;
+/** A test's IMAP socket timeout, in place of every other (setSocketTimeoutForTests). */
+let testSocketTimeoutMs: number | undefined;
+/** Tests only: every IMAP session's socket timeout made `ms` (undefined: each its own again), so a server that never
+ *  answers is given up on in a test's time. */
+export function setSocketTimeoutForTests(ms: number | undefined): void {
+  testSocketTimeoutMs = ms;
+}
 /** The most of a message a search reads: its headers and the start of its text, for the snippet. */
 export const SEARCH_BYTES = 256 * 1024;
 /** The most of a message a read or a poll takes. */
@@ -157,8 +166,10 @@ export const readOf = (m: MailMessage) => ({ ...payloadOf(m), references: m.refe
 export const foundOf = (m: MailMessage) => ({ message_id: m.message_id, from: m.from, to: m.to, subject: m.subject, date: m.date, snippet: clip(m.text.replace(/\s+/g, " ").trim(), SNIPPET_CHARS), unread: !m.flags.includes("\\Seen"), attachments: m.attachments });
 
 /** The IMAP search clause that takes the messages of a thread whose ids are `ids`: a message is in it when its Message-ID,
- *  one of its References or its In-Reply-To is one of them. */
-export const threadClause = (ids: readonly string[]): SearchObject => ({ or: ids.flatMap((id): SearchObject[] => ["message-id", "references", "in-reply-to"].map((name) => ({ header: { [name]: id } }))) });
+ *  one of its References or (with `inReplyTo`) its In-Reply-To is one of them. */
+export const threadClause = (ids: readonly string[], inReplyTo = true): SearchObject => ({
+  or: ids.flatMap((id): SearchObject[] => ["message-id", "references", ...(inReplyTo ? ["in-reply-to"] : [])].map((name) => ({ header: { [name]: id } }))),
+});
 /** Whether `m` is in the thread of `ids` (the clause's own test, checked again on what the server answered). */
 export const inThread = (m: Pick<MailMessage, "message_id" | "references" | "in_reply_to">, ids: ReadonlySet<string>): boolean =>
   (m.message_id !== null && ids.has(m.message_id)) || (m.in_reply_to !== null && ids.has(m.in_reply_to)) || m.references.some((id) => ids.has(id));
@@ -230,6 +241,13 @@ export class ImapSession {
     return (await Promise.all(rows.map((row) => headOf(row, path)))).sort((a, b) => a.uid - b.uid);
   }
 
+  /** The clause that takes the thread of `ids` on this server. Gmail (X-GM-EXT-1) indexes Message-ID and References but
+   *  not In-Reply-To, a search by which takes minutes on a large mailbox: there a reply is found by its References, which
+   *  a mail client writes with its In-Reply-To. */
+  threadQuery(ids: readonly string[]): SearchObject {
+    return threadClause(ids, !this.can("X-GM-EXT-1"));
+  }
+
   /** Whether the server says it does `capability` (X-GM-EXT-1: Gmail's labels). */
   can(capability: string): boolean {
     return this.client.capabilities.has(capability);
@@ -268,9 +286,12 @@ export class ImapSession {
   }
 }
 
-/** `work` in one IMAP session of `account`, signed in, then signed out. A failure is a MailError. */
-export async function withImap<T>(account: OpenedAccount, work: (session: ImapSession) => Promise<T>): Promise<T> {
+/** `work` in one IMAP session of `account`, signed in, then signed out, waiting on each answer `socketTimeoutMs` at most
+ *  (SOCKET_TIMEOUT_MS by default). A failure is a MailError; a server that answers nothing for that long, one that says
+ *  the server took too long. */
+export async function withImap<T>(account: OpenedAccount, work: (session: ImapSession) => Promise<T>, options: { socketTimeoutMs?: number } = {}): Promise<T> {
   const security = securityOf(account.imap);
+  const socketTimeoutMs = testSocketTimeoutMs ?? options.socketTimeoutMs ?? SOCKET_TIMEOUT_MS;
   const client = new ImapFlow({
     host: account.imap.host,
     port: account.imap.port,
@@ -282,10 +303,14 @@ export async function withImap<T>(account: OpenedAccount, work: (session: ImapSe
     disableCompression: true,
     connectionTimeout: CONNECT_TIMEOUT_MS,
     greetingTimeout: CONNECT_TIMEOUT_MS,
-    socketTimeout: SOCKET_TIMEOUT_MS,
+    socketTimeout: socketTimeoutMs,
   });
-  // A socket error after a command is answered by the command that waits on it; one with none waiting must not throw.
-  client.on("error", () => {});
+  // A socket error after a command is answered by the command that waits on it; one with none waiting must not throw. A
+  // socket timeout (the server silent past socketTimeoutMs) is kept, so the words say the server was slow, not unreachable.
+  let silent = false;
+  client.on("error", (error: { code?: unknown } | undefined) => {
+    if (error?.code === "ETIMEOUT") silent = true;
+  });
   try {
     await client.connect();
   } catch (error) {
@@ -295,6 +320,7 @@ export async function withImap<T>(account: OpenedAccount, work: (session: ImapSe
   try {
     return await work(new ImapSession(client));
   } catch (error) {
+    if (silent && !(error instanceof MailError)) throw new MailError("failed", `${account.imap.host} took too long to search: it answered nothing for ${Math.round(socketTimeoutMs / 1000)} s, so the connection was closed (IMAP). Try again later.`);
     throw mailError(error, account.imap, "IMAP", account.password);
   } finally {
     await client.logout().catch(() => client.close());

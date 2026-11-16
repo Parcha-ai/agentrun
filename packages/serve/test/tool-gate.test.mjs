@@ -755,14 +755,14 @@ test("once a parked call with a held key in its arguments is approved, the resum
 /** The call id of a parked run's web_fetch call (parked's rows), read from its call's row. */
 const callOf = ({ rows }) => rows.find((row) => row.kind === "tool_use" && row.tool_name === "web_fetch")?.tool_use_id;
 
-/** Run `runId` once its runner has applied a stop: no call waits, nothing works. A stop is a command row the runner applies
- *  (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
+/** Run `runId` once its runner has applied a stop: no call waits, nothing works, and it reads pending kind stopped. A stop
+ *  is a command row the runner applies (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
 async function stoppedView(api, runId, deadlineMs = 30_000) {
   const end = Date.now() + deadlineMs;
   for (;;) {
     const view = (await api("GET", `/runs/${runId}`)).body;
-    if (view.pending === null && view.state === "idle") return view;
-    assert.ok(Date.now() < end, `run ${runId} did not read stopped: ${view.status}/${view.state}, pending ${view.pending?.id}`);
+    if (view.pending?.kind === "stopped" && view.state === "idle") return view;
+    assert.ok(Date.now() < end, `run ${runId} did not read stopped: ${view.status}/${view.state}, pending ${JSON.stringify(view.pending)}`);
     await sleep(250);
   }
 }
@@ -782,8 +782,8 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const early = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
   const stopped = await stoppedView(first.api, stopRun);
-  // A person's stop ends the turn, not the run: input_required and idle with nothing pending, as main's stop leaves one.
-  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
+  // A person's stop ends the turn, not the run: input_required and idle, pending kind stopped (no approval waits).
+  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
   // On the runner a parked call has its call's row and no result row of its own (the park writes none).
@@ -806,12 +806,12 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const again = await serve(t, { ...GATE, data: first.data, openSetup: false });
   const answerAgain = await ownerAgain(again);
   assert.equal((await answerAgain(stopRun, stopId, { decision: "allow" })).status, 409, "after a restart too");
-  assert.equal((await again.api("GET", `/runs/${stopRun}`)).body.pending, null);
+  assert.deepEqual((await again.api("GET", `/runs/${stopRun}`)).body.pending, { kind: "stopped" }, "still stopped after a restart, no approval pending");
   await sleep(3_000);
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
+test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, pending kind stopped, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
@@ -833,7 +833,7 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
       assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
       await follow(api, runId, ["input_required"], { deadlineMs: 30_000 });
       const view = (await api("GET", `/runs/${runId}`)).body;
-      assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
+      assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
       // Past the turn's 8 s: a turn the stop did not cut would have answered by now.
       await sleep(10_000);
       const after = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
@@ -981,7 +981,7 @@ test.skip("a stop or a cancel that lands after an answer, before the run's proce
   }
   for (const name of ["allow-stop", "decline-stop"]) {
     const view = (await api("GET", `/runs/${runs[name].runId}`)).body;
-    assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], `${name}: stopped`);
+    assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], `${name}: stopped`);
   }
   assert.deepEqual(await dialled(), [], "no call ran");
 });

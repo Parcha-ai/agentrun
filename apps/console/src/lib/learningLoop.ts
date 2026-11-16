@@ -188,8 +188,10 @@ export function storyOf(input: {
   /** The agent's learning: `notes` keeps notes and never compiles (the runner skips the compile turn), so the story
    *  promises no workflow, takeover or cheaper runs it will never get. */
   mode?: "full" | "notes";
+  /** Native runs learn notes/skills; SDK workflows run only through their backend-owned bridge. */
+  execution?: "hosted" | "native" | "sdk";
 }): Stage[] {
-  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full" } = input;
+  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full", execution = "hosted" } = input;
   const notesOnly = mode === "notes";
   const active = workflows.filter((w) => w.status === "active");
   const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
@@ -212,6 +214,10 @@ export function storyOf(input: {
     detail: compiledNotes ? `${compiledNotes} compiled into a workflow` : notes ? "kept from its runs, read by every later run" : "none yet: a run keeps what it learns at its end",
     state: notes ? "done" : "now",
   });
+  if (execution === "native") {
+    stages.push({ key: "compiled", title: "Learning", value: "Notes and skills", detail: "Native runs receive accepted notes and skills; learned workflows are unavailable.", state: "later" });
+    return stages;
+  }
   if (active.length || (lastCompile && lastCompile.digest)) {
     const name = active[0]?.name ?? lastCompile?.workflow ?? "a workflow";
     stages.push({ key: "compiled", title: "Compiled", value: name, detail: lastCompile ? `from ${lastCompile.from_notes.length} ${lastCompile.from_notes.length === 1 ? "note" : "notes"}, ${lastCompile.attempts.length} ${lastCompile.attempts.length === 1 ? "attempt" : "attempts"}` : "a learned workflow", state: "done" });
@@ -220,7 +226,11 @@ export function storyOf(input: {
   } else if (notesOnly) {
     stages.push({ key: "compiled", title: "Compile", value: "Notes only", detail: `this agent learns notes only: no workflow compiles from them. Full learning compiles one at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: "later" });
   } else {
-    stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
+    stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: execution === "sdk" ? `With workflow learning and backend tool bindings, compilation starts at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs` : `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
+  }
+  if (execution === "sdk") {
+    if (!notesOnly) stages.push({ key: "took_over", title: "Use workflow", value: "Backend decides", detail: "Your backend keeps launching each run. The SDK can call accepted workflows through MCP with explicitly bound tools.", state: active.length ? "now" : "later" });
+    return stages;
   }
   if (s?.takeover) {
     stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone"), state: stopped || (newest?.decided === "hold" && !champion) ? "warn" : "done" });
@@ -233,10 +243,12 @@ export function storyOf(input: {
   } else if (!notesOnly) {
     stages.push({ key: "took_over", title: "Take over", value: "Not yet", detail: "a compiled workflow replays on graded runs, then serves first when it does as well as the agent", state: "later" });
   }
-  if (s?.after && s.before) {
+  if (s?.takeover && s.withheld) {
+    stages.push({ key: "cheaper", title: "Cheaper", value: "No ratio yet", detail: `${withheldWords(s.withheld)}: ${WITHHELD_NEXT}`, state: "now" });
+  } else if (s?.after && s.before) {
     const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in since`;
     const ratio = s.times_cheaper;
-    if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", value: `${timesWord(ratio)} cheaper`, detail: words, state: "done" });
+    if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio), state: "done" });
     // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
     else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesWord(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
     else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
@@ -249,6 +261,28 @@ export function storyOf(input: {
     stages.push({ key: "unsure", title: "Unsure", value: rate, detail: shaky ? `most at "${shaky.node}": ${shaky.escalated} of ${shaky.runs} under ${shaky.threshold.toFixed(2)}` : `of ${back!.ran} runs it ran first`, state: back && back.back / back.ran > 0.25 ? "warn" : "watch" });
   }
   return stages;
+}
+
+/** Why the cost summary has no times-cheaper figure (its `withheld`): "3 runs' cost unknown, 1 known only as at most". */
+export function withheldWords(w: { unknown: number; at_most: number }): string {
+  const runs = (n: number) => `${n} ${n === 1 ? "run's" : "runs'"} cost`;
+  if (!w.unknown) return `${runs(w.at_most)} known only as at most`;
+  return `${runs(w.unknown)} unknown${w.at_most ? `, ${w.at_most} known only as at most` : ""}`;
+}
+export const WITHHELD_NEXT = "how many times cheaper shows once every run's cost is known";
+
+/** The tab's cheaper headline over a ratio above 1 (the lead's rule, 11-15): "About Nx cheaper at the same accuracy" only
+ *  when the serving promotion's replay cleared the bar, with that replay and what was served under it; else the ratio
+ *  alone, and why accuracy is not claimed. */
+function cheaperClaim(s: LearningCost["summary"], ratio: number): { value: string; detail: string } {
+  const n = ratio >= 1.5 ? `${Math.round(ratio)}x` : `${ratio.toFixed(1)}x`;
+  const r = s.replay;
+  const scored = r ? `workflow ${Math.round(r.workflow_pct)}% vs agent ${Math.round(r.agent_pct)}% on ${r.n} inputs` : "";
+  if (r?.cleared) {
+    const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}` : "";
+    return { value: `About ${n} cheaper at the same accuracy`, detail: `Replay: ${scored}${served}` };
+  }
+  return { value: `${n} cheaper`, detail: `accuracy not claimed: ${r ? `its replay was below the bar (${scored})` : "no replay yet"}` };
 }
 
 /** A dollar level as the chart says it (costPerRun.ts level): three figures under a dollar. */

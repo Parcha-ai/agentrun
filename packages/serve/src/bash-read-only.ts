@@ -44,6 +44,7 @@
 // search (grep -r, rg, git grep, git log -p) reads every file the folder holds. The folder holds the run's own files
 // (its checkout, its inputs), never a key of the server's, and the agent may read all of it.
 import { posix } from "node:path";
+import { READ_ONLY_REFUSED } from "./refusal-words.js";
 
 /** The policies an agent may set on bash (tool_settings.bash.policy). */
 export const BASH_POLICIES = ["read-only"] as const;
@@ -143,7 +144,7 @@ const WATCHERS: ReadonlySet<string> = new Set(["bash_output", "bash_list", "bash
 export const READ_ONLY_HINT = "Use read commands only: git diff, show, log, grep, ls-files, merge-base or rev-parse; grep -n; sed -n 'N,Mp' FILE; cat, head, tail, wc, ls; find without -exec. Pipe only into head, tail, sed -n, grep, wc, sort, uniq, cut, tr or nl, with no redirection but 2>/dev/null or 2>&1, no $ or backticks, and quote glob patterns.";
 
 /** The refusal of a call under the read-only policy, as the model reads it: the reason, that it did not run, and what may. */
-export const readOnlyText = (tool: string, reason: string, notRun: string): string => `${tool} is read-only for this agent, so this call was refused: ${reason}. ${notRun} ${READ_ONLY_HINT}`;
+export const readOnlyText = (tool: string, reason: string, notRun: string): string => `${tool}${READ_ONLY_REFUSED}${reason}. ${notRun} ${READ_ONLY_HINT}`;
 
 // The never-open list: any path segment `.ssh`, or a final name matching.
 const SECRET = [/^\.env/, /^id_rsa/, /\.pem$/, /\.key$/, /^\.npmrc$/, /^\.netrc$/, /^\.git-credentials$/, /^credentials(\.json)?$/];

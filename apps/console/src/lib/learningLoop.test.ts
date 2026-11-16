@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { binsOf, compiledInto, guardFor, guardsOfText, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf } from "./learningLoop";
+import { binsOf, compiledInto, guardFor, guardsOfText, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf, withheldWords } from "./learningLoop";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
 // The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
 // standings, the replay line, guards read from a workflow's JSON, p bins by grade, notes' compiled_into, and the story.
 
 const at = (h: number) => new Date(Date.UTC(2026, 10, 1) + h * 3_600_000).toISOString();
-const run = (n: number, path: CostRun["path"]): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", learned_revision: null, cost_usd: 0.1, learning_usd: 0, total_usd: 0.1 });
+const run = (n: number, path: CostRun["path"]): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", learned_revision: null, cost_usd: 0.1, cost_upper_bound: false, learning_usd: 0, total_usd: 0.1 });
 const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a".repeat(16), at: at(3), decided: "promote", source: "replay", reason: "as good as the agent", ...over } as Promotion);
 // A record keeps no `alone`: proofOf counts it from the record (n - handed_back), so one stored before any replay said it
 // reads the same.
@@ -130,7 +130,7 @@ describe("notes and the story", () => {
     expect(compiledInto("---\nname: x\n---\ncompiled_into: sort-invoice")).toBeNull();
     expect(compiledInto("no front matter")).toBeNull();
   });
-  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, ...over }, workflows: [] });
+  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...over }, workflows: [] });
   const base = { notes: 0, compiledNotes: 0, runs: 0, workflows: [], cost: null, promotions: [], serving: [], loop: null };
   it("champion/challenger: while a revision replays, or after its replay held it, the one promoted before keeps serving and the story says both", () => {
     const champion = record({ replay: REPLAY });
@@ -181,9 +181,38 @@ describe("notes and the story", () => {
     const stages = storyOf({ ...base, notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({ replay: REPLAY })],
       cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([
-      ["notes", "3 notes", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7.0x cheaper", "done"], ["unsure", "33% handed back", "warn"],
+      ["notes", "3 notes", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7x cheaper", "done"], ["unsure", "33% handed back", "warn"],
     ]);
     expect(stages[4]!.detail).toBe('most at "classify": 1 of 3 under 0.70');
+  });
+  // The lead's rule (11-15): "at the same accuracy" only when the serving promotion's replay cleared the bar; else the
+  // ratio alone and why accuracy is not claimed. A ratio whose runs' cost isn't all known is no ratio: the sentence says why.
+  const took = { takeover: { n: 2, run_id: "r2" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
+  const cheaper = (over: Partial<LearningCost["summary"]>) => storyOf({ ...base, notes: 3, runs: 80, cost: cost({ ...took, ...over }) }).find((s) => s.key === "cheaper")!;
+  it("with a cleared replay: about N times cheaper at the same accuracy, the replay and what it served under it", () => {
+    const stage = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true } });
+    expect([stage.value, stage.detail, stage.state]).toEqual(["About 7x cheaper at the same accuracy", "Replay: workflow 86% vs agent 82% on 40 inputs · served 59 runs, handed back 3", "done"]);
+    expect(cheaper({ times_cheaper: 6.6, replay: { n: 20, workflow_pct: 80.4, agent_pct: 82, cleared: true }, hand_backs: { ran: 1, back: 0 } }).value).toBe("About 7x cheaper at the same accuracy");
+    expect(cheaper({ times_cheaper: 1.3, replay: { n: 20, workflow_pct: 90, agent_pct: 90, cleared: true } }).value).toBe("About 1.3x cheaper at the same accuracy");
+  });
+  it("without a cleared replay: the ratio alone, and why accuracy is not claimed", () => {
+    const none = cheaper({ times_cheaper: 7 });
+    expect([none.value, none.detail, none.state]).toEqual(["7x cheaper", "accuracy not claimed: no replay yet", "done"]);
+    const below = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 70, agent_pct: 82, cleared: false } });
+    expect([below.value, below.detail]).toEqual(["7x cheaper", "accuracy not claimed: its replay was below the bar (workflow 70% vs agent 82% on 40 inputs)"]);
+  });
+  it.each([
+    [{ unknown: 3, at_most: 1 }, "3 runs' cost unknown, 1 known only as at most"],
+    [{ unknown: 1, at_most: 0 }, "1 run's cost unknown"],
+    [{ unknown: 0, at_most: 2 }, "2 runs' cost known only as at most"],
+  ])("withheld %o: no ratio, and the sentence says why", (withheld, why) => {
+    const stage = cheaper({ times_cheaper: null, withheld, replay: { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true } });
+    expect([stage.value, stage.detail, stage.state]).toEqual(["No ratio yet", `${why}: how many times cheaper shows once every run's cost is known`, "now"]);
+    expect(withheldWords(withheld)).toBe(why);
+  });
+  it("withheld with no known run before the takeover still says why, never 'not yet'", () => {
+    const stage = cheaper({ before: null, times_cheaper: null, withheld: { unknown: 18, at_most: 0 } });
+    expect(stage.value).toBe("No ratio yet");
   });
   // A workflow that costs as much as the agent, or more, is not a cheaper run: never "0.5x cheaper", never Done.
   it.each([[0.5, "Not cheaper yet: 2.0x the cost", "now"], [1, "Same cost", "now"]])("a times_cheaper of %s does not read as cheaper", (ratio, value, state) => {

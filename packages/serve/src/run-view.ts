@@ -21,6 +21,8 @@ import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
 import { pointerHash, type signInReads } from "./sign-ins-store.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+import { costWordsOf, type CostWords, usageParts } from "./runner/metrics.js";
+import type { CostParts } from "@parcha/agentrun-kernel";
 
 /** The sign-in read surface a run's served view needs: a run's handed-pointer cut reads only `peek` (the agent's saved
  *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
@@ -35,6 +37,14 @@ const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind 
 export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
+};
+
+/** The run's cost in its usage row's own words (a bound with its exact part and holds, an unknown cost with what is
+ *  known), for a reader that joins it with more charges (costWordsOf over usageParts): undefined before any request
+ *  (nothing spent), `{ usd: null }` for a usage row that says nothing. */
+export const usageWordsOf = (rows: readonly TimelineEvent[]): NonNullable<TimelineEvent["usage"]> | { usd: null } | undefined => {
+  const usage = usageOf(rows);
+  return usage ? (usage.usage ?? { usd: null }) : undefined;
 };
 
 /** Whether `row` carries a paid tool's charge counted here: `tool`'s alone when given, every other tool's with `others`
@@ -55,32 +65,17 @@ export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string, others
 export const knownToolCostOf = (rows: readonly TimelineEvent[], tool?: string, others = false): number =>
   rows.reduce((sum, row) => (!chargeOf(row, tool, others) ? sum : sum + (row.usage!.usd ?? row.usage!.so_far_usd ?? 0)), 0);
 
-/** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
- *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
+/** A run's cost for its views, in the words its Cost says it (costsofar/1, cutathold/1): its usage row's, joined with a
+ *  workflow's booked decisions (`decisions`, their parts; null when they could not be read, which says nothing) by the
+ *  one rule (costWordsOf over usageParts), so a bound on the row stays a bound, its exact part apart: any charge of no
+ *  known cost makes the cost unknown with the exact charges alone known, never a hold. With no decisions and no usage
+ *  row: what the store kept when it carried the run back (`stored`, exact; 0 before any request, unknown when it kept
+ *  none). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
-export function costView(rows: readonly TimelineEvent[], stored: number | null | undefined, decisions?: number | null): number | null {
+export function costWordsOfView(rows: readonly TimelineEvent[], stored: number | null | undefined, decisions?: CostParts | null): CostWords {
   const usage = usageOf(rows);
-  // A workflow run's decisions, once its end is read: their cost joins its model nodes', and one unknown makes it unknown.
-  if (decisions !== undefined) {
-    const models = usage ? (usage.usage?.usd ?? null) : 0;
-    return models === null || decisions === null ? null : models + decisions;
-  }
-  if (!usage) return stored === undefined ? 0 : stored;
-  return usage.usage?.usd ?? null;
-}
-
-/** What a run whose cost is unknown has cost so far (costsofar/1): the sum of its charges whose cost is known, and how many
- *  have none, from its usage row, plus a workflow's decisions (`decisions`: their known sum and how many are not known;
- *  null when they could not be read, which says nothing). Undefined while the cost is known, when the row says neither
- *  (an older run's), or when a workflow's decisions are unreadable. No ceiling is claimed. */
-export type SoFar = { so_far_usd: number; unpriced: number };
-export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: number; unpriced: number } | null): SoFar | undefined {
-  if (decisions === null) return undefined;
-  const usage = usageOf(rows)?.usage;
-  const models = !usage ? { known: 0, unpriced: 0 } : usage.usd !== null ? { known: usage.usd, unpriced: 0 } : usage.so_far_usd !== undefined && usage.unpriced !== undefined ? { known: usage.so_far_usd, unpriced: usage.unpriced } : undefined;
-  if (!models) return undefined;
-  const unpriced = models.unpriced + (decisions?.unpriced ?? 0);
-  return unpriced > 0 ? { so_far_usd: Math.round((models.known + (decisions?.known ?? 0)) * 1e6) / 1e6, unpriced } : undefined;
+  if (decisions === undefined && !usage) return { usd: stored === undefined ? 0 : stored };
+  return costWordsOf([usageParts(usageWordsOf(rows)), ...(decisions !== undefined ? [decisions] : [])]);
 }
 
 /** Whether a run's cost (`usd`) is $0 because every model request went to a free model (one whose known price is $0 for
@@ -103,8 +98,12 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
   const usd = rows[at]?.usage?.usd;
   if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
   const { usage: _, ...usage } = rows[at]!;
+  // What is known spent: a figure that counts a hold (`upper_bound`) is the most it can have cost, its exact part
+  // (usageParts) the spend. Past the cap by its exact part: spent, said so; by its holds alone: at most, never "spent".
+  const parts = usageParts(rows[at]!.usage);
+  const spent = parts?.known ?? usd;
   // In cents: what it went over by rounded up.
-  const summary = `Spent ${cents(usd)}, ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
+  const summary = spent > cap + FIT_TOLERANCE ? `Spent ${cents(spent)}, ${centsUp(spent - cap)} over the run's cap of ${cents(cap)}` : `At most ${cents(usd)} spent, at most ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
   const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary, text: null };
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
@@ -403,6 +402,12 @@ export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number },
   return !rows.some((r) => isMessageRow(r) && placeOf(r.id) > at);
 };
 export const stopped = (run: Pick<RunView, "meta" | "rows">) => stoppedAt(run.meta, run.rows);
+/** A turn a person's stop ended, where the run still stands: statusOf's stop read (input_required and idle, by the stop
+ *  mark, stopped). The run read, the run list and the run.needs_input webhook all say `pending` kind stopped by this
+ *  one test, so they never disagree. A turn its harness ended on its own reads the same pair with no stop mark, and is
+ *  not this. */
+export const stoppedTurn = (run: Pick<RunView, "meta" | "rows">, read: { status: Status; state: State }): boolean =>
+  read.status === "input_required" && read.state === "idle" && stopped(run);
 
 /** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
 export const waitingApproval = (run: Pick<RunView, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
@@ -467,7 +472,7 @@ export const raisedToGo = (run: RunView): boolean => raisedSince(run) && continu
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
+export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "stopped" } | null;
 export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -789,6 +794,13 @@ const unrefused = (row: TimelineEvent): TimelineEvent => {
   const { refused: _refused, ...rest } = row;
   return rest;
 };
+/** A row made from a call's own row for its approval or for what came of it: without the `refused` mark (unrefused), and
+ *  without the computer calls the call made, which are its own result row's alone, as a call that never waited has
+ *  them (a sum over rows counts each once). */
+const madeFrom = (row: TimelineEvent): TimelineEvent => {
+  const { computer_calls: _calls, computer_calls_dropped: _dropped, ...rest } = unrefused(row);
+  return rest;
+};
 /** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */
 const approvalRowId = (callId: string) => `approval:${callId}`;
 
@@ -840,17 +852,17 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? (answer.decision === "deny" ? "Denied by the tool's setting on this server" : "Allowed by the tool's setting") : "Asked your approval";
     // Its time is the ask's (the gate's requestedAt), never the row it was made from.
     const when = approval.requested_at ? { timestamp: approval.requested_at, created_at: approval.requested_at } : {};
-    const asked: TimelineEvent = { ...unrefused(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const asked: TimelineEvent = { ...madeFrom(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     const placed = !askHere ? [own] : result ? [asked, own] : [own, asked];
     if (!last || !outcome) return placed;
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
-    const told: TimelineEvent = { ...unrefused(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    const told: TimelineEvent = { ...madeFrom(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
     // A person's message that declined the call (runs-over-store.ts message: a deny carrying their words) is theirs as any
     // message is: its own row, between the approval and what came of it, as main's declineBy kept it.
     if (answer!.decision === "deny" && answer!.by === "message" && answer!.note) {
       const words = redact(answer!.note);
-      const { origin: _origin, ...base } = unrefused(result ?? row);
+      const { origin: _origin, ...base } = madeFrom(result ?? row);
       const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
       return [...placed, theirs, told];
     }

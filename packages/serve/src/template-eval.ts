@@ -18,6 +18,7 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
+import { linkCheck } from "./link-check.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
@@ -28,6 +29,7 @@ import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
@@ -529,15 +531,15 @@ export function outputVerdict(pkg: Package, result: unknown): GraderResult | und
 }
 
 /** The input a grader run gets for an llm grader: the rubric, the clock the run ran on when its case set one (the grader's
- *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one) and its
- *  calls. Never another grader, the case's description or anything the case expects. */
+ *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one), its
+ *  calls and, for a run that searched or fetched, the link check of its cited links (link-check.ts). Never another grader, the case's description or anything the case expects. */
 export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max = GRADER_PROMPT_MAX): string {
   const target = grader.target ? targetOf(run.answer, grader.target) : undefined;
   const at = run.now === undefined ? undefined : instantOf(run.now);
   const before = [
     "Grade this run against the rubric.",
     `<rubric>\n${grader.rubric}\n</rubric>`,
-    ...(at === undefined ? [] : [`The run ran on a clock set to ${run.now}: its date was ${new Date(at).toISOString().slice(0, 10)} (UTC), whatever today's date is where you are.`]),
+    ...(at === undefined ? [] : [`The run ran on a clock set to ${run.now}: its date was ${dayIn(new Date(at), serverZone())} (${serverZone()}), whatever today's date is where you are.`]),
     `<task untrusted>\n${input}\n</task>`,
     `<answer untrusted>\n${run.answer || "(the run gave no answer)"}\n</answer>`,
     ...(grader.target ? [`The rubric is about the answer's \`${grader.target}\`${target && "text" in target ? ", shown here; the whole answer is above for anything else it checks" : ""}.`, `<target field="${grader.target}" untrusted>\n${target && "text" in target ? target.text : `(${(target as { why: string }).why})`}\n</target>`] : []),
@@ -552,13 +554,16 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
   const wrapMcp = (text: string) => `<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${text}\n</mcp-calls>`;
-  // Both lists share the room the rubric, the task and the answer leave, each in proportion to its whole size.
-  const room = max - [...before, wrap(""), ...(mcpLines.length ? [wrapMcp("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
+  // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
+  const links = linkCheck(run.answer, run.calls);
+  const linked = links === undefined ? [] : [`<link-check untrusted>\n${links}\n</link-check>`];
+  // Both lists share the room the rubric, the task, the answer and the link check leave, each in proportion to its whole size.
+  const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
   const [callsWhole, mcpWhole] = [wholeOf(lines), wholeOf(mcpLines)];
   const mcpRoom = callsWhole + mcpWhole <= room ? mcpWhole : Math.floor((room * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
   const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
-  return [...before, wrap(lines.length ? fitCalls(lines, room - mcpRoom) : "(none)"), ...after].join("\n\n");
+  return [...before, wrap(lines.length ? fitCalls(lines, room - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else

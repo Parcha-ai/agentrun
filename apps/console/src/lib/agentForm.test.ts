@@ -61,6 +61,21 @@ describe("editBody", () => {
     expect(body.definition).not.toHaveProperty("thinking");
   });
 
+  it("converts a workflow to agentic using the requested instructions, model and thinking, not the saved kind", () => {
+    const result = editBody(w, { workflow: undefined, instructions: "Investigate the ticket.", model: "anthropic/example-model", thinking: "high" }, "Convert");
+    expect(result.definition).toMatchObject({ instructions: "Investigate the ticket.", model: "anthropic/example-model", thinking: "high", version: workflow.body.revisions + 1 });
+    expect(result.definition).not.toHaveProperty("workflow");
+    expect(result.unchanged).toBe(false);
+  });
+
+  it("converts agentic to workflow by trimming agentic prompt fields from the requested workflow, keeping common settings", () => {
+    const saved = { ...agent.body, definition: { ...agent.body.definition, thinking: "high", harness: "codex", computer: { kind: "desktop", provider: "e2b" } } } as never;
+    const result = editBody(saved, { workflow: WORKFLOW_STARTER }, "Convert");
+    expect(result.definition).toMatchObject({ workflow: WORKFLOW_STARTER, harness: "codex", computer: { kind: "desktop", provider: "e2b" }, tools: agent.body.definition.tools, version: agent.body.revisions + 1 });
+    for (const key of ["instructions", "model", "thinking"]) expect(result.definition).not.toHaveProperty(key);
+    expect(result.unchanged).toBe(false);
+  });
+
   it("sends no empty model: empty means the server's default", () => {
     expect(editBody(a, { model: "" }, "").definition).not.toHaveProperty("model");
   });

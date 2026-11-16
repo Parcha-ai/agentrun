@@ -72,9 +72,14 @@ The tools are there too, as `tools.computer_observe(...)` and `tools.computer_ac
 pixels: `image(shot)` shows it to you, as returning it does.
 
 **On Codex** there is no `codemode` and no `computer`: Codex runs scripts in its own code mode, which calls the tools in
-your list, and each call answers JSON text to parse. The desktop's apps, shell and files are `computer_op` there, one
-call per op with its arguments, named as `computer`'s methods are: `computer_op({op: "shell.run", args: {command:
-"hostname"}})`, `computer_op({op: "apps.open", args: {id: "firefox-esr", url: "https://example.com/"}})`.
+your list. Codex's exec has no top-level `return` (it is a SyntaxError there, and nothing runs): a script's output goes
+through `text(...)`. The desktop's apps, shell and files are `computer_op` there, one call per op with its arguments, named as
+`computer`'s methods are: `computer_op({op: "shell.run", args: {command: "hostname"}})`, `computer_op({op: "apps.open",
+args: {id: "firefox-esr", url: "https://example.com/"}})`. Every answer is text, and a failed op never throws: an op that
+ran answers JSON, so `JSON.parse` it (shell.run's has `exitCode`, `stdout`, `stderr`). A refused op answers the gate's
+words, which open with `Permission denied:` or `The user denied this`, or give the tool's name then `is read-only for this
+agent, so this call was refused:` or `can't be called:`. A failed op answers its error's words. Neither is JSON: check
+before you parse.
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
 screenshot pixels (`computer.screen.shot()`), for what one app's window can't reach: a drag from one app to another (a
@@ -121,7 +126,7 @@ target, and take another screenshot to see what your steps did. Click a field be
 
 Open an app from a script with `computer.apps.open("mousepad")`, by its id, its name or its program: it answers once
 the app's window shows in front, and the app stays open. `computer.apps.list()` names the apps the desktop has (the
-text editor, the terminal, Firefox). With the tools, name the app: `computer_observe` or `computer_act` with
+text editor, the terminal, Firefox). App ids come from `apps.list`: call it before `apps.open`. With the tools, name the app: `computer_observe` or `computer_act` with
 `app: "org.xfce.mousepad"` opens it, or brings it in front, first. A screenshot with no app in front lists the ids. `computer.shell.run` ends everything its command started when it returns, so an
 app it starts closes at once; `computer.processes.start` keeps a program that is not one of the listed apps.
 
