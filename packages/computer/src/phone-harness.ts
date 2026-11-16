@@ -52,6 +52,12 @@ export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
 export const DEFAULT_READY_MS = 240_000;
+/**
+ * The live view's frame width when its caller asks none: phoned's own default (1280) is wider than a phone, so each
+ * frame went at the screen's full size, about 2.2 times the pixels of a 1080-wide phone's at this width, over a link
+ * to a cloud phone. The viewer fits the whole phone in its Screen tab, so 720 × 1600 still fills it.
+ */
+const PHONE_FRAME_WIDTH = 720;
 /** How long one API request may take by default: a stalled request is cut off, and create's own calls stay bounded. */
 const DEFAULT_REQUEST_MS = 30_000;
 /** How long one adb call may take. */
@@ -779,12 +785,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	/**
-	 * The live view: the phone client's screen.watch on a connection of the watch's own (daemonWatch), PNG frames from
-	 * screencap. Upright with no rotation of ours: screencap gives the display in its current orientation, and input tap
-	 * and swipe take that same space, so each frame's width and height come from its own screencap, never from wm size.
+	 * The live view: phoned's screen.watch on a connection of the watch's own (daemonWatch), JPEG frames at most
+	 * PHONE_FRAME_WIDTH wide unless the caller asks a width, from the phone's screenshot. Upright with no rotation of
+	 * ours: the screenshot gives the display in its current orientation, and input taps and swipes take that same space,
+	 * so each frame's width and height come from its own screenshot, never from wm size.
 	 */
 	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
-		return daemonWatch(this, ref, handlers, options);
+		return daemonWatch(this, ref, handlers, { ...options, maxWidth: options?.maxWidth ?? PHONE_FRAME_WIDTH });
 	}
 
 	async #create(spec: ComputerSpec, name: string, requestKey: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
