@@ -748,6 +748,15 @@ test("an APK that is not there, or whose bytes are not its pinned sha256, is ref
 	assert.equal(mismatch.error.message, `the APK wikipedia.apk at ${apk} is not the one pinned: its sha256 is ${sha}, not ${other}: no phone was rented`);
 	assert.deepEqual(pinned.fake.requests(), [], "nothing was asked of the phone harness");
 
+	// A refused APK is read again on the next create: the right bytes put in its place since are taken, with no restart.
+	const fixable = join(dir, "fixable.apk");
+	writeFileSync(fixable, "not yet the pinned bytes");
+	const reused = await setup({}, { apks: [{ path: fixable, sha256: sha }] });
+	assert.equal((await reused.provider.create(SPEC, req())).error.code, "refused");
+	writeFileSync(fixable, readFileSync(apk));
+	const fixed = await reused.provider.create(SPEC, req());
+	assert.equal(fixed.ok, true, JSON.stringify(fixed));
+
 	// The server's setting (the descriptor's hostEnv): a comma list of <absolute path>@sha256:<hex>, the option's APKs.
 	const named = await setup({}, { env: { PHONE_HARNESS_APKS: ` ${apk}@sha256:${sha} ,` } });
 	const made = await named.provider.create(SPEC, req());

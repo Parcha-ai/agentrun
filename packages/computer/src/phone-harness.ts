@@ -1192,12 +1192,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok(undefined);
 	}
 
-	/** An APK of the apks option, read once, held to its pin: not_found when it is not there, refused when its bytes'
-	 *  sha256 is not the pinned one. */
+	/** An APK of the apks option, read once it matches, held to its pin: not_found when it is not there, refused when its
+	 *  bytes' sha256 is not the pinned one, and then read again next time, so the right file put there since is taken. */
 	async #apk({ path, sha256 }: PinnedApk): Promise<Result<PhoneFile>> {
 		const what = `the APK ${basename(path)}`;
 		const file = await this.#fileAt(path, (why) => `${what} is not at ${path} (${why})`);
 		if (!file.ok || file.value.sha256 === sha256) return file;
+		this.#files.delete(path);
 		return fail("refused", `${what} at ${path} is not the one pinned: its sha256 is ${file.value.sha256}, not ${sha256}`);
 	}
 
