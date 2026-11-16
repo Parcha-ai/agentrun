@@ -1,6 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-client, @parcha/agentrun
-kind: fix
----
-`GET /agents/{id}/learning/cost` counts only served runs on its after side: runs a learned workflow finished (`workflow`) or ran first and handed back (`handed_back`). A `replay` checks a new revision on a graded input and serves no one, and a run by hand after the takeover is not the workflow's, so neither moves `summary.after`, `times_cheaper`, `withheld` or `hand_backs`. The new `summary.after_state` says why `after` is null when it is: `no_served_runs` (no learned workflow has taken over) or `cost_unknown` (runs were served, none with a known cost); `priced` otherwise. The Learning tab says each figure's base: the headline and the chart's after line read "all-in over N served runs", a state with no served run priced is said in words, the "Since it learned" tile reads "medians of N runs started from what it learned", and a stopped workflow's level is "over its newest 10 priced runs" (the money rule's window, `workflows[].served`).
-The agent's learning and cost reads now take each run's launch, proposals and learning run in two batched store reads per agent instead of a few per run, and share a settled run's journal read across concurrent requests: on a 480-run agent, the cost read made 7 store calls instead of 1,549.
