@@ -287,6 +287,15 @@ describe("Triggers: editing a feed trigger", () => {
     expect(s.calls.filter((c) => c.method === "PATCH").at(-1)!.body).toEqual({ source: { kind: "feed", urls: [PULLS], every_s: 300, items: "", id: "/id" } });
   });
 
+  it("keeps a JSON list's updated and fields pointers, which the form has no box for, in the PATCH it sends", async () => {
+    const WIDE: Trigger = { ...BASE, id: "trg_w", name: "wide", source: { kind: "feed", urls: [PULLS], every_s: 300, id: "/number", updated: "/updated_at", fields: ["/number", "/title"] } };
+    const s = server({ triggers: [WIDE] });
+    const t = await open(s.v2, { trigger: "trg_w", edit: true }, 60);
+    await t.set("every", "10");
+    await t.click(/^Save feed$/);
+    expect(s.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ source: { kind: "feed", urls: [PULLS], every_s: 600, id: "/number", updated: "/updated_at", fields: ["/number", "/title"] } }]);
+  });
+
   it("keeps a pointer's spaces as typed: an unchanged \"/data \" sends no PATCH, and an edited one is sent with its spaces", async () => {
     const SPACED: Trigger = { ...BASE, id: "trg_p", name: "spaced", source: { kind: "feed", urls: [PULLS], every_s: 300, items: "/data ", id: "/number" } };
     const s = server({ triggers: [SPACED] });

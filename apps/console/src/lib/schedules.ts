@@ -555,7 +555,7 @@ export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSou
   };
   const { accept, issues: filter } = eventAcceptOf(FEED_EVENT, d.where, d.others, d.read?.accept?.[0] && !d.read.accept[0].actions?.length ? d.read.accept[0] : undefined);
   Object.assign(issues, filter);
-  return { source: { kind: "feed", urls, every_s: every, ...pointer("items"), ...pointer("id"), ...(accept.length ? { accept } : {}) }, issues };
+  return { source: { kind: "feed", urls, every_s: every, ...pointer("items"), ...pointer("id"), ...(d.read?.updated !== undefined ? { updated: d.read.updated } : {}), ...(d.read?.fields ? { fields: d.read.fields } : {}), ...(accept.length ? { accept } : {}) }, issues };
 }
 
 /** A new feed trigger's create body, or what is wrong: its source (feedSourceOf), and bodyOf's rules for the run it starts. */
