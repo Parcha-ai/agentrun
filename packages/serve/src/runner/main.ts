@@ -19,7 +19,7 @@ import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { claimInstallsStopped } from "../harness-install.js";
-import { HARNESS_TABLE_ENV } from "../harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf } from "../harness-table.js";
 import { maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
@@ -152,7 +152,7 @@ export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own:
  *  drops them. */
 export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out = runEnv(env);
-  for (const name of Object.keys(out)) if (name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV) delete out[name];
+  for (const name of Object.keys(out)) if (name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV || name === HARNESS_MODULES_ENV) delete out[name];
   return Object.assign(out, switches);
 }
 
@@ -332,16 +332,17 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
  *  [--name N]`. Each option with a value is also taken as `--option=value` (the bin hands a data directory that starts
  *  with "-" so, never read as an option); an empty one is refused like a missing one. `--faux`: the faux model module, a
  *  test switch, as the server's own --faux; the only way a runner loads one. */
-export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; faux?: string; check?: true } {
+export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; faux?: string; check?: true; harnessModules?: string[] } {
   let dataDir: string | undefined;
   let loops: number | undefined;
   let drainMs: number | undefined;
   let name: string | undefined;
   let faux: string | undefined;
   let check = false;
+  const harnessModules: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const given = argv[i]!;
-    const equals = /^(--(?:data|loops|drain-timeout|name|faux))=(.*)$/s.exec(given);
+    const equals = /^(--(?:data|loops|drain-timeout|name|faux|harness-module))=(.*)$/s.exec(given);
     const arg = equals ? equals[1]! : given;
     const value = () => {
       const next = equals ? equals[2] : argv[++i];
@@ -359,11 +360,12 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
       if (drainMs === undefined) throw new RunnerRefused(`--drain-timeout is a duration such as 6s, 500ms or 1m, not ${JSON.stringify(text)}`);
     } else if (arg === "--name") name = value();
     else if (arg === "--faux") faux = value();
+    else if (arg === "--harness-module") harnessModules.push(value());
     else if (arg === "--check") check = true;
-    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N] [--faux M], or --check --data D [--name N]`);
+    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N] [--faux M] [--harness-module M ...], or --check --data D [--name N]`);
   }
   if (!dataDir) throw new RunnerRefused("a runner needs its data directory: --data D");
-  return { dataDir, ...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(check ? { check: true as const } : {}) };
+  return { dataDir, ...(harnessModules.length ? { harnessModules } : {}),...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(check ? { check: true as const } : {}) };
 }
 
 /** Runs until SIGTERM or SIGINT, then closes. `ready` is called once the signals are handled, never before: a line that
@@ -427,7 +429,16 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   // A test switch is this start's option alone, as on the server (server.ts withoutFaux, fauxEnvOf): one the process
   // inherited (AGENTRUN_SERVE_FAUX*, the harness table, left in an operator's shell or a platform's settings) never loads
   // a module or decides what a run answers. --faux sets the faux model's.
-  const env: NodeJS.ProcessEnv = { ...withoutFaux(given), ...(args.faux ? { [FAUX_ENV]: resolve(args.faux) } : {}) };
+  // The owner's harness modules are this start's too: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES, as the
+  // server reads them, so a runner apart from the server runs the harnesses its table adds.
+  let modules: NodeJS.ProcessEnv;
+  try {
+    modules = harnessModulesEnv(harnessModulesOf(args.harnessModules, given), args.dataDir);
+  } catch (error) {
+    console.error(`agentrun-serve runner: ${(error as Error).message}`);
+    return 2;
+  }
+  const env: NodeJS.ProcessEnv = { ...withoutFaux(given), ...modules, ...(args.faux ? { [FAUX_ENV]: resolve(args.faux) } : {}) };
   const name = args.name ?? env.AGENTRUN_RUNNER_NAME ?? undefined;
   if (args.check) {
     if (!name) {

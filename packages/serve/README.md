@@ -2589,7 +2589,8 @@ codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGE
 ## Harnesses
 
 A definition names the harness that runs it: `pi` (the default, and what a definition that names none gets),
-`claude-agent`, `codex` or `opencode`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
+`claude-agent`, `codex`, `opencode`, or one of this server's harness modules adds (below). Any other is
+`422 input_invalid` on `definition.harness`. Every answer names it. An edit
 (`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
 back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
@@ -2662,6 +2663,31 @@ inlined in its system prompt.
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
+
+### Harness modules
+
+A harness is one entry in serve's harness table (`src/harness-table.ts`). Capabilities, a save's check, the runner and
+the console all read that table. An owner adds harnesses with a harness module: start the server with
+`--harness-module MODULE` (repeatable), or set `AGENTRUN_SERVE_HARNESS_MODULES=a,b`. A separate `agentrun-serve runner`
+takes the same flag and setting, and needs them to run the module's harnesses. MODULE is a path, or a package installed
+with `npm install --prefix <data>/harnesses <package>`.
+
+A module exports `entries(builtins)`, which returns new entries by id. Each entry gives `label`, `steer`, `runMib`,
+`oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`, `refusal` and its `runner`, and may give `promises`. A module
+adds harnesses and never replaces one. The start is refused, naming the module and the id, when a module:
+- names a built-in harness;
+- names an id another module adds;
+- gives an entry that is missing a member;
+- does not resolve.
+
+The harnesses a module adds are listed in `capabilities.harnesses` after the built-in ones. Each offer there carries a
+`label` and `promises`:
+- `resume`: `exact`, `load` or `restart`.
+- `tool_gate`: `every_call`, `permission` or `config`.
+- `billing`: `proxy` or `plan`.
+
+The built-in harnesses promise `exact`, `every_call` and `proxy`. These fields are marked
+`x-agentrun-serve: "harness-table/1"`.
 
 ## Decision workflows
 

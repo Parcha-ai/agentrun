@@ -63,7 +63,7 @@ test("a harness module adds a harness as one entry, outside a test runner too: t
 
   const named = { version: 1, name: "a", instructions: "Answer.", skills: [], tools: [], harness: "acme" };
   assert.deepEqual(definitionIssues(named, { harnesses: harnessIds(env) }), [], "a save on this server takes the id");
-  assert.deepEqual(definitionIssues(named).map((issue) => issue.code), ["not_an_option"], "one the table has not is still refused");
+  assert.deepEqual(definitionIssues(named).map((issue) => [issue.field, issue.reason]), [["definition.harness", "not_an_option"]], "one the table has not is still refused");
 
   assert.equal(resolveHarness("acme", env).record, "loop", "the module's runner");
   assert.equal(resolveHarness("acme", {}), undefined, "a server without the module runs none");
@@ -94,5 +94,5 @@ test("a server started with harnessModules lists the module's harness in capabil
   assert.equal(caps.harnesses.find((offer) => offer.id === "claude-agent")?.label, "Claude");
   const saved = await api("POST", "/agents", agent("acme-agent", { harness: "acme" }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
-  assert.ok(JSON.stringify(saved.body.warnings ?? []).includes("acme"), `warned: ${JSON.stringify(saved.body.warnings)}`);
+  assert.deepEqual(saved.body.warnings, [{ field: "definition.harness", reason: "not_set_up_here", message: "Acme stands in here: nothing runs it." }], "saved, warned with the harness's own reason");
 });

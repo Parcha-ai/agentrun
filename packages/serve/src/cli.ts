@@ -20,13 +20,14 @@ import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
 import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
 import { apiOnlyFrom } from "./api-only.js";
+import { harnessModulesOf } from "./harness-table.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
 
 // A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
 // command, the server and the runner alike.
 surviveClosedPipes();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
@@ -65,6 +66,11 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     notes changed last, whole, while they fit
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
+  --harness-module MODULE
+                    a harness module to add harnesses from (repeatable; default AGENTRUN_SERVE_HARNESS_MODULES, comma-
+                    separated): a path, or a package installed with npm install --prefix DIR/harnesses PACKAGE, whose
+                    entries(builtins) export adds harnesses of its own to this server and its runner. It never replaces
+                    a built-in harness (pi, claude-agent, codex, opencode); one that does, or is missing, refuses the start
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -284,6 +290,7 @@ try {
       "grade-model": { type: "string" },
       "learning-budget": { type: "string" },
       "no-runner": { type: "boolean", default: false },
+      "harness-module": { type: "string", multiple: true, default: [] },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -373,6 +380,8 @@ try {
     },
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
+    // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
+    ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),

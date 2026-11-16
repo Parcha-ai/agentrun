@@ -291,7 +291,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // test runner; anywhere else it is the built-ins), and the runner's record mode for it.
   const name = launch.harness ?? body.harness;
   const entry = harnessOf(deps.env, name);
-  const runner = name === undefined ? undefined : resolveHarness(name);
+  const runner = name === undefined ? undefined : resolveHarness(name, deps.env);
   if (!name || !entry?.facts || !entry.adapter || !runner) throw new Error(`run ${claim.runId}: ${JSON.stringify(name)} is not a CLI harness this runner runs`);
   const facts = entry.facts;
   // The level the harness thinks at: the run's effort, else above its highest (codex stops at xhigh) its highest. The

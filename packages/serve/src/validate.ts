@@ -66,8 +66,9 @@ export const skillNames = (files: Iterable<string>): string[] => [...files].filt
 /**
  * A definition as `POST /agents` and `PUT .../definition` take it: what one revision of an agent keeps. `instructions`
  * makes an agentic revision, `workflow` (an agentrun-dsl workflow) a workflow revision. `creating` asks for a name.
+ * `harnesses`: the ids `harness` may name, the server's table's (harness-table.ts harnessIds); the built-in ones by default.
  */
-export function definitionIssues(definition: unknown, { at = "definition", creating = true } = {}): InputIssue[] {
+export function definitionIssues(definition: unknown, { at = "definition", creating = true, harnesses = HARNESSES as readonly string[] }: { at?: string; creating?: boolean; harnesses?: readonly string[] } = {}): InputIssue[] {
   if (!isObject(definition)) return [issue(at, definition === undefined ? "missing" : "wrong_type", `${at} is not an object`)];
   const out: InputIssue[] = [];
   for (const key of Object.keys(definition)) {
@@ -97,7 +98,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
       }
     }
   }
-  if (d.harness !== undefined && !(HARNESSES as readonly unknown[]).includes(d.harness)) out.push(issue(`${at}.harness`, "not_an_option", `${at}.harness is one of ${HARNESSES.join(", ")}`));
+  if (d.harness !== undefined && !(harnesses as readonly unknown[]).includes(d.harness)) out.push(issue(`${at}.harness`, "not_an_option", `${at}.harness is one of ${harnesses.join(", ")}`));
   if (d.place !== undefined) out.push(...placeIssues(d.place, `${at}.place`));
   if (d.computer !== undefined) out.push(...computerIssues(d.computer, `${at}.computer`), ...settingConflict(d.computer, d.place, at));
   if (d.thinking !== undefined) {
@@ -172,10 +173,10 @@ export function skillIssues(named: unknown, files: Iterable<string>): InputIssue
 export type DefinitionBody = { definition: Json; skills?: Record<string, string>; note?: string };
 
 /** What is wrong with `{definition, skills?, note?}`, as checkDefinitionBody refuses it: every field issue. */
-export function definitionBodyIssues(body: Json, { creating = true } = {}): InputIssue[] {
+export function definitionBodyIssues(body: Json, { creating = true, harnesses }: { creating?: boolean; harnesses?: readonly string[] } = {}): InputIssue[] {
   const out: InputIssue[] = [];
   for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
-  out.push(...definitionIssues(body.definition, { creating }));
+  out.push(...definitionIssues(body.definition, { creating, ...(harnesses ? { harnesses } : {}) }));
   if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
   if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
   return out;
@@ -186,8 +187,8 @@ export function definitionBodyIssues(body: Json, { creating = true } = {}): Inpu
  * files (absent on an edit: the current revision's); `note` says what the revision changes. Throws `422 input_invalid`
  * naming every field that is wrong.
  */
-export function checkDefinitionBody(body: Json, { creating = true } = {}): DefinitionBody {
-  const out = definitionBodyIssues(body, { creating });
+export function checkDefinitionBody(body: Json, { creating = true, harnesses }: { creating?: boolean; harnesses?: readonly string[] } = {}): DefinitionBody {
+  const out = definitionBodyIssues(body, { creating, ...(harnesses ? { harnesses } : {}) });
   if (out.length) throw invalid(out);
   return { definition: body.definition as Json, ...(body.skills !== undefined || creating ? { skills: (body.skills ?? {}) as Record<string, string> } : {}), ...(typeof body.note === "string" ? { note: body.note } : {}) };
 }

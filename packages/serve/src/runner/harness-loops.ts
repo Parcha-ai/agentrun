@@ -94,7 +94,7 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry
     // whose visible record the loop keeps (record: "loop") runs the CLI spec (cli-run-spec.ts), one that keeps its own (pi)
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
-    const runner = resolveHarness(harness);
+    const runner = resolveHarness(harness, deps.env ?? process.env);
     if (runner) {
       // A run this host's memory never holds (host.ts neverFits: one run of its harness is more than the host has for runs)
       // fails at its claim, in the words a start of it is refused in here (harness.ts harnessOffers): a run another host
