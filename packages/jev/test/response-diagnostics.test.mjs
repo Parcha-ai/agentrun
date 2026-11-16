@@ -54,9 +54,9 @@ test('HTTP failures expose only the provider typed error fields', async () => {
       { providerType: 'billing_error', providerCode: 'quota_exhausted', providerErrorType: 'billing_error' }],
     [401, { error: { type: 'authentication_error', code: 'token_not_found_in_db', message: secret, param: 'None' } },
       { providerType: 'authentication_error', providerCode: 'token_not_found_in_db', providerErrorType: undefined }],
-    // The observed broker wraps the vendor object in a JSON string. It is message text, not a typed field.
+    // The observed broker wraps the vendor object in a JSON string; only its typed fields are exposed.
     [403, { error: { type: 'None', code: '403', message: JSON.stringify({ detail: { error_type: 'billing_error' } }) } },
-      { providerType: 'None', providerCode: '403', providerErrorType: undefined }],
+      { providerType: 'None', providerCode: '403', providerErrorType: 'billing_error' }],
   ];
   for (const [status, body, expected] of cases) {
     const run = createJevRunner({
@@ -78,10 +78,10 @@ test('HTTP failures expose only the provider typed error fields', async () => {
   }
 });
 
-test('generic adapter does not parse broker messages, unknown codes or wrong paths', async () => {
+test('generic adapter ignores unknown codes, wrong paths and non-JSON broker messages', async () => {
   for (const body of [secret, { message: 'max_tokens_exceeded' }, { detail: { error_type: 'MAX_TOKENS_EXCEEDED' } },
-    { detail: { error_type: secret } }, { error: { message: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } },
-    { error: { detail: { error_type: 'max_tokens_exceeded' } } }]) {
+    { detail: { error_type: secret } }, { error: { detail: { error_type: 'max_tokens_exceeded' } } },
+    { error: { message: `{"detail":{"error_type":"${secret}"}` } }]) {
     const run = createJevRunner({ maxAttempts: 3, client: { async systemOne() { throw new APIError(400, body, new Headers({ private: secret })); } } });
     await assert.rejects(run(params), error => { assert.equal(error.code, 'http'); assert.equal(error.status, 400); assert.equal(error.responseDiagnostic, undefined); assert.equal(error.message, 'Jev returned HTTP 400.'); safe(error); return true; });
   }

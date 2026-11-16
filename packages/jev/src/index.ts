@@ -179,16 +179,36 @@ function providerToken(value: unknown, lowerCase = false): string | undefined {
   if (typeof value !== "string" || value.length === 0 || value.length > 128) return undefined;
   return (lowerCase ? /^[a-z][a-z0-9_.-]*$/ : /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/).test(value) ? value : undefined;
 }
-/** Read typed fields from the JSON body's own shape. A broker's `message` is never parsed. */
-function providerDiagnostic(error: APIError): JevProviderDiagnostic | undefined {
-  const body = error.body;
-  if (!isRecord(body)) return undefined;
+/** Read typed fields from one JSON object, without accepting free text as a field value. */
+function providerFields(body: Record<string, unknown>): JevProviderDiagnostic {
   const nested = isRecord(body.error) ? body.error : undefined;
   const detail = isRecord(body.detail) ? body.detail : undefined;
-  const diagnostic = {
+  return {
     type: providerToken(body.type ?? nested?.type),
     code: providerToken(body.code ?? nested?.code),
     errorType: providerToken(detail?.error_type, true),
+  };
+}
+/** A broker can put the vendor's JSON object in `message`; read only its typed fields, never the message itself. */
+function wrappedProviderFields(message: unknown): JevProviderDiagnostic | undefined {
+  if (typeof message !== "string" || message.length < 2 || message.length > 16_384) return undefined;
+  try {
+    const body: unknown = JSON.parse(message);
+    return isRecord(body) ? providerFields(body) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function providerDiagnostic(error: APIError): JevProviderDiagnostic | undefined {
+  const body = error.body;
+  if (!isRecord(body)) return undefined;
+  const direct = providerFields(body);
+  const nested = isRecord(body.error) ? body.error : undefined;
+  const wrapped = wrappedProviderFields(nested?.message) ?? wrappedProviderFields(body.message);
+  const diagnostic = {
+    type: direct.type ?? wrapped?.type,
+    code: direct.code ?? wrapped?.code,
+    errorType: direct.errorType ?? wrapped?.errorType,
   };
   return diagnostic.type === undefined && diagnostic.code === undefined && diagnostic.errorType === undefined ? undefined : diagnostic;
 }
