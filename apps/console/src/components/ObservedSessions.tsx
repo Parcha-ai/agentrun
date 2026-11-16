@@ -1,4 +1,5 @@
 import { ArrowLeft, ArrowUpRight, RadioTower, RefreshCw } from "lucide-react";
+import { HarnessIcon } from "@/components/HarnessIcon";
 import { Banner, Button, Chip } from "@/components/ui";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
@@ -29,7 +30,7 @@ export function ObservedSessions({ read, view = "table", query = "", days = 30 }
     {view === "summary" && <p className="text-small text-muted-foreground">Session totals cover retained reports, independently of the aggregate range.</p>}
     {!sessions.length ? <p className="text-body text-muted-foreground">No observed session matches.</p> : view === "cards" ? <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">{sessions.map((session) => <li key={session.id} className="border p-5 transition-colors hover:border-border-strong">
       <a href={observationHash(session.id)} className="block space-y-3">
-        <div className="flex flex-wrap items-start gap-2"><h3 className="min-w-0 flex-1 break-words text-base font-semibold">{session.display_name}</h3><ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden /></div>
+        <div className="flex flex-wrap items-start gap-2"><HarnessIcon harness={session.harness} className="mt-0.5" /><h3 className="min-w-0 flex-1 break-words text-base font-semibold">{session.display_name}</h3><ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden /></div>
         <div className="flex flex-wrap gap-2"><Chip>{observedHarness(session.harness)}</Chip><Chip tone={observedTone(session)}>{observedState(session)}</Chip><Chip tone="muted">Observed</Chip></div>
         <p className="text-small text-muted-foreground">{session.models.join(", ") || "Model not reported"}</p>
         <p className="font-mono text-small text-muted-foreground">Session {session.id.slice(0, 8)} · Last received {when(session.received_at)}</p>

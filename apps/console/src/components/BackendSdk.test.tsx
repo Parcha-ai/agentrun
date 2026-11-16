@@ -1,3 +1,6 @@
+import claudeMark from "@/assets/coding-agents/claude-code-cli.svg";
+import codexMark from "@/assets/coding-agents/codex-cli.svg";
+import eveMark from "@/assets/harnesses/eve.svg";
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -64,7 +67,13 @@ describe('backend SDK agents', () => {
     });
 
     it(`${label} also identifies the runtime on the agent card without a managed launch`, () => {
-      const host = show(createElement(AgentsList, { agents: [agent(runtime)] }));
+      const bound = agent(runtime);
+      bound.definition.model = 'anthropic/claude-sonnet-4';
+      bound.definition.harness = 'pi'; // The SDK binding takes precedence over the server default.
+      const host = show(createElement(AgentsList, { agents: [bound] }));
+      const logo = host.querySelector<HTMLImageElement>('li button img')!;
+      expect(logo.getAttribute('src')).toBe(runtime === 'eve' ? eveMark : runtime === 'codex-sdk' ? codexMark : claudeMark);
+      expect(logo.getAttribute('aria-hidden')).toBe('true');
       expect(host.textContent).toContain(label);
       const action = host.querySelector('[data-handoff="Run Release backend"]')!;
       expect(action.getAttribute('data-playground')).toBeNull();
