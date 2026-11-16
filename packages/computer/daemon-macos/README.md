@@ -131,6 +131,14 @@ swift build --build-tests && swift test     # on a Mac; the core (ComputerdKit) 
   `packages/computer/src/conformance/ui-fixture.ts`). `COMPUTERD_UI_FIXTURE=1 scripts/bundle.sh` writes
   `build/UIFixture.app`; test-only.
 
+**Sign and notarize.** `COMPUTERD_SIGN_IDENTITY="Developer ID Application: <name> (<team>)"` signs for distribution,
+and `COMPUTERD_SIGN_KEYCHAIN=<path>` makes codesign take that identity from one keychain, such as a temporary one
+that never joins the search list. `scripts/notarize.sh build/Computerd.app` then sends the build to Apple's notary
+service with the API key stored in the notarytool profile `COMPUTERD_NOTARY_PROFILE` (made with
+`xcrun notarytool store-credentials`; `COMPUTERD_NOTARY_KEYCHAIN` names the keychain that holds it), staples the
+ticket, checks it with `stapler validate` and `spctl`, and writes `build/Computerd.zip` with its sha256. A rejected
+build fails with Apple's notary log.
+
 CI (`.github/workflows/computer-macos.yml`) builds and tests on `macos-26`, bundles the app, seeds the runner's grants,
 starts the app under launchd in the runner's desktop, and checks the socket's peer check, and runs the protocol's health, ui and input conformance cases
 (`scripts/ui-conformance.mjs`) through `computerd`, with the results in the job summary.
