@@ -25,6 +25,7 @@ const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { learningFolderOf, secretsShown, seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
 const endModule = await import("../dist/runner/learning-end.js").catch(() => ({}));
 const learningEndOfRun = (...args) => (typeof endModule.learningEndOfRun === "function" ? endModule.learningEndOfRun(...args) : assert.fail("learningEndOfRun is not there"));
 
@@ -38,6 +39,8 @@ after(closeOpenSessions);
 /** The end-of-run turn's answer: one note, in reflectPrompt's format. */
 const NOTE = "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n";
 const REFLECTED = `\`\`\`note retry-slowly.md\n${NOTE}\`\`\`\n\nReflected.`;
+/** The owner's feedback on a run (`start`'s `feedback`): a `learning: true` run looks back only with it. */
+const FEEDBACK = "Retry more slowly next time.";
 
 /** A store in a directory of its own, agent-1 of `body`, and run-1 launched with `launch`; `setup(server, dir)` first. */
 async function world(t, body, launchOf, setup = async () => {}) {
@@ -67,7 +70,10 @@ async function world(t, body, launchOf, setup = async () => {}) {
   /** Starts the runner: run-1 on the adapter loop with `endOfRun` its end-of-run step, its model following `script` with
    *  `tools` (each model request pushed on `requests`); any other run it claims (the learning run a proposal queues) is
    *  held, never run here, until the runner closes. */
-  const start = async (endOfRunOf, { script = [{ say: "The job's answer." }, { say: REFLECTED }], tools = {}, requests = [] } = {}) => {
+  const start = async (endOfRunOf, { script = [{ say: "The job's answer." }, { say: REFLECTED }], tools = {}, requests = [], feedback } = {}) => {
+    // `feedback`: a person's message queued before the runner claims the run, taken after the job's first: the owner's
+    // feedback a `learning: true` run looks back on (learning-end.ts ownerSaid).
+    if (feedback !== undefined) await sendCommand(server, "run-1", { kind: "steer", body: { text: feedback } });
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
@@ -129,23 +135,23 @@ const compiling = (count = 3) => async (dir) => {
 /** The compile turn's first ask among a run's user messages. */
 const compileAskIn = (users) => users.find((text) => text.startsWith("One more turn: write this agent's job as a learned workflow.")) ?? "";
 
-test("a learning agent's run, through a real runner, is asked its end-of-run turn and keeps its proposal beside its end, queueing the learning run", async (t) => {
+test("a learning agent's run with its owner's feedback, through a real runner, is asked its end-of-run turn and keeps its proposal beside its end, queueing the learning run", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
     const seed = await seedOf(dir, "agent-1");
     return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
   });
-  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }] });
   const row = await w.ended();
   const turn = await w.turnOf(row);
   assert.ok(turn.reflect, "the run was asked its end-of-run turn (its learn-reflect- submission)");
-  assert.deepEqual(turn.users, ["Follow the script.", turn.users[1]], "the job's message, then the turn's prompt");
-  assert.match(turn.users[1], /\.learning/, "the turn's prompt is the reflect prompt, naming the run's copy of its notes");
+  assert.deepEqual(turn.users, ["Follow the script.", FEEDBACK, turn.users[2]], "the job's message, the owner's feedback, then the turn's prompt");
+  assert.match(turn.users[2], /\.learning/, "the turn's prompt is the reflect prompt, naming the run's copy of its notes");
   const kept = await w.server.learning.proposal("run-1");
   assert.ok(kept, "the run kept its learning");
   assert.equal(kept.proposal?.state, "proposed", JSON.stringify(kept.proposal));
   assert.equal(kept.proposal?.notes, 1, "one note");
   assert.deepEqual(kept.proposal?.proposal?.notes, [{ file: "retry-slowly.md", text: NOTE }], "the note as the turn gave it, checked against its seed");
-  assert.deepEqual(kept.proposal?.proposal?.asked, ["Follow the script."], "what the person said in the run, as the grader reads it");
+  assert.deepEqual(kept.proposal?.proposal?.asked, ["Follow the script.", FEEDBACK], "what the person said in the run, as the grader reads it");
   assert.ok(kept.learningRunId, "it queued the learning run");
   const end = await runLearningEnd(w.server, "run-1");
   assert.deepEqual({ state: end?.state, reason: end?.reason, detail: end?.detail }, { state: "proposed", reason: null, detail: said.proposed(1, 0, 0) }, "the run's learning end reads it");
@@ -192,11 +198,11 @@ test("a workflow draft that fails its dry run is asked for again once, saying wh
     const seed = await seedOf(dir, "agent-1");
     return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
   });
-  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: `${REFLECTED}\n\n${draftBlock("answer")}` }] });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: `${REFLECTED}\n\n${draftBlock("answer")}` }] });
   const row = await w.ended();
   const turn = await w.turnOf(row);
-  assert.equal(turn.users.length, 3, `the job's message, the turn's prompt, and one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
-  assert.match(turn.users[2], /^Your workflow draft workflows\/answer\/workflow\.json did not pass its dry run\. What the check said is below, as data[\s\S]*----- begin \w+: its dry run -----\nits dry run failed/, turn.users[2]);
+  assert.equal(turn.users.length, 4, `the job's message, the owner's feedback, the turn's prompt, and one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
+  assert.match(turn.users[3], /^Your workflow draft workflows\/answer\/workflow\.json did not pass its dry run\. What the check said is below, as data[\s\S]*----- begin \w+: its dry run -----\nits dry run failed/, turn.users[3]);
   const kept = await w.server.learning.proposal("run-1");
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 1], JSON.stringify(kept?.proposal));
   assert.deepEqual(kept.proposal.proposal.dryRuns, { "workflows/answer/workflow.json": { status: "passed" } });
@@ -211,10 +217,10 @@ test("a re-ask whose answer keeps a note but still holds the broken draft does n
   // The second answer drops the first's good note for another, and repeats the draft its dry run failed.
   const other = "---\nname: Log the request\ndescription: Log every request\ntype: reference\n---\nLog each request before it is sent.\n";
   const partial = `\`\`\`note log-requests.md\n${other}\`\`\`\n\n${draftBlock("other")}`;
-  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: partial }] });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: partial }] });
   const row = await w.ended();
   const turn = await w.turnOf(row);
-  assert.equal(turn.users.length, 3, `one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
+  assert.equal(turn.users.length, 4, `one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
   const kept = await w.server.learning.proposal("run-1");
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 0], JSON.stringify(kept?.proposal));
   assert.deepEqual(kept.proposal.proposal.notes.map(({ file }) => file), ["retry-slowly.md"], "the first answer's note, not the failed repair's");
@@ -223,20 +229,20 @@ test("a re-ask whose answer keeps a note but still holds the broken draft does n
 test("an agent with 3 kept notes and no learned workflow gets a compile turn after its look-back, with its notes and the DSL's own reference; with 2 notes and no earlier runs, none", async (t) => {
   for (const count of [3, 2]) {
     const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling(count));
-    await w.start((deps) => learningEndOfRun(w.launch, deps));
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }] });
     const row = await w.ended();
     const { users } = await w.turnOf(row);
     const prompt = compileAskIn(users);
     if (count === 2) {
       assert.equal(prompt, "", "not due: no compile turn");
-      assert.equal(users.length, 2, "the job's message and the look-back's prompt");
+      assert.equal(users.length, 3, "the job's message, the owner's feedback and the look-back's prompt");
       continue;
     }
     assert.ok(prompt.includes("## The workflow language") && prompt.includes("## A worked example"), prompt.slice(0, 300));
     for (const file of ["rule-1.md", "rule-2.md", "rule-3.md"]) assert.ok(prompt.includes(file), file);
     assert.match(prompt, /This run's input has these fields: `content` \(string\)\./);
     // The look-back's prompt asks for no workflow draft any more: the 3-offers ask is gone.
-    assert.doesNotMatch(users[1], /has now served|workflow draft named/);
+    assert.doesNotMatch(users[2], /has now served|workflow draft named/);
   }
 });
 
@@ -308,7 +314,7 @@ test("a run's workflow draft whose ask-set MCP tools would not all fit on its le
   }, async (server) => {
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: names.map((name) => ({ name, description: "Create an issue", input_schema: { type: "object" } })) });
   });
-  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }, { say: answer }] });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: answer }, { say: answer }] });
   await w.ended();
   const kept = await w.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
@@ -330,7 +336,7 @@ test("a run's workflow draft calling an MCP tool with no declared price is propo
     }, async (server) => {
       await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], ...(prices ? { prices } : {}) });
     });
-    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: answer }] });
     await w.ended();
     const kept = await w.server.learning.proposal("run-1");
     assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
@@ -358,7 +364,7 @@ test("a draft naming a priced MCP tool with an escaped slash in its address is n
   }, async (server) => {
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], prices: { create_issue: 0.01 } });
   });
-  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: answer }] });
   await w.ended();
   const kept = await w.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
@@ -389,8 +395,12 @@ test("a run whose only work is one learned workflow that answers is not asked it
   assert.deepEqual({ state: end?.state, reason: end?.reason, detail: end?.detail }, { state: "dropped", reason: "empty", detail: said.onlyWorkflow });
 });
 
+// A notes job's run (`learning: "notes"`) looks back at every end, with or without its owner's feedback: the two below
+// test the learned-workflow rule alone.
+const notesFrom = (dir) => seedOf(dir, "agent-1").then((seed) => runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0, notesOnly: true }))(dir));
+
 test("a run with a learned workflow and one other tool is still asked its end-of-run turn", async (t) => {
-  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, learnsFrom);
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: "notes" }, notesFrom);
   await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ calls: [{ call: "learned_workflow" }, { call: "read" }] }, { say: "It is 42." }, { say: REFLECTED }], tools: { learned_workflow: workflow(async () => "{\"answer\":42}"), read } });
   const row = await w.ended();
   assert.ok((await w.turnOf(row)).reflect, "the run was asked its end-of-run turn");
@@ -399,7 +409,7 @@ test("a run with a learned workflow and one other tool is still asked its end-of
 });
 
 test("a run whose learned workflow fails is still asked its end-of-run turn", async (t) => {
-  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, learnsFrom);
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: "notes" }, notesFrom);
   await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ call: "learned_workflow" }, { say: "It failed." }, { say: REFLECTED }], tools: { learned_workflow: workflow(async () => { throw new Error("the workflow's node failed"); }) } });
   const row = await w.ended();
   assert.ok((await w.turnOf(row)).reflect, "the run was asked its end-of-run turn");
@@ -426,7 +436,7 @@ test("a run's workflow draft calling an MCP tool set to deny is left out naming 
       await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], prices: { create_issue: 0.01 } });
       if (where === "server") await saveToolSettings(server, DENY);
     });
-    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: answer }] });
     await w.ended();
     const kept = await w.server.learning.proposal("run-1");
     assert.equal(kept?.proposal?.workflows, 0, JSON.stringify(kept?.proposal));
@@ -452,7 +462,7 @@ test("on a run with decision providers the compile turn allows judge nodes and a
     const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
     const providers = await decisionProvidersIn({ TYPESAFE_API_KEY: "fake-test-key", AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
     assert.ok(providers?.providers.jev, "setup: the faux Jev");
-    await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }] });
+    await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }] });
     const row = await w.ended();
     const turn = await w.turnOf(row);
     const prompt = compileAskIn(turn.users).replace(/\s+/g, " ");
@@ -482,7 +492,7 @@ const compiledBlock = ({ output = "answer", tools } = {}) => `\`\`\`\`workflow a
 
 test("compile: a draft the checks refuse goes back with their words, up to 3 times; the fixed draft is proposed beside the note, every attempt recorded", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
-  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: compiledBlock({ tools: ["read"] }) }, { say: compiledBlock({ output: "other" }) }, { say: compiledBlock() }] });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: compiledBlock({ tools: ["read"] }) }, { say: compiledBlock({ output: "other" }) }, { say: compiledBlock() }] });
   const row = await w.ended();
   const { users } = await w.turnOf(row);
   const again = users.filter((text) => text.startsWith("Your workflow draft did not pass the checks"));
@@ -519,7 +529,7 @@ test("compile: a draft the checks refuse goes back with their words, up to 3 tim
 test("compile: a draft that never passes is never silent: its errors go with the learning entry and the look-back's note still goes on", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
   const bad = compiledBlock({ tools: ["read"] });
-  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: bad }, { say: bad }, { say: bad }, { say: bad }] });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: bad }, { say: bad }, { say: bad }, { say: bad }] });
   const row = await w.ended();
   const { users } = await w.turnOf(row);
   assert.equal(users.filter((text) => text.startsWith("Your workflow draft did not pass the checks")).length, 3, "three retries, no more");
@@ -553,7 +563,7 @@ const shapedBlock = (out) => `\`\`\`\`workflow answer\n---\ndescription: Picks a
 test("compile against the agent's output schema: a draft answering part of the object fails its dry run in the schema's words and the retry that answers the whole object is kept; with no output schema the partial draft is kept at once", async (t) => {
   for (const schema of [MCC_SCHEMA, undefined]) {
     const w = await world(t, { instructions: "Pick the code.", tools: ["read"], learning: true, ...(schema ? { outputSchema: schema } : {}) }, compiling());
-    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: shapedBlock(PART) }, { say: shapedBlock(MCC_SCHEMA) }] });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: shapedBlock(PART) }, { say: shapedBlock(MCC_SCHEMA) }] });
     const row = await w.ended();
     const { users } = await w.turnOf(row);
     const prompt = compileAskIn(users);
@@ -576,4 +586,30 @@ test("compile against the agent's output schema: a draft answering part of the o
     assert.deepEqual([kept.proposal.state, kept.proposal.workflows], ["proposed", 1]);
     assert.equal(kept.proposal.draft_errors, undefined, "no errors once it passed");
   }
+});
+
+// S1: what counts as the owner's feedback on a run (ownerSaid): a grade's words still pending (a FEEDBACK entry no end
+// came after), or a person's message after the job's first. Never the job's own message, the look-back's own asks, or a
+// grade's words a past end already closed.
+test("ownerSaid: a grade's pending words or a person's message after the first are feedback; the job's message, the look-back's asks and a closed round's words are not", () => {
+  const { ownerSaid } = endModule;
+  const row = (id, kind, extra = {}) => ({ id, kind, agent_label: null, parent_tool_use_id: null, text: null, ...extra });
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const asked = [row("0:3", "user_message", { text: "The task is done.", agent_label: "learning" }), row("0:4", "final_answer", { text: "NOTES", agent_label: "learning" })];
+  const words = { kind: "agentrun.feedback", data: { round: "look_back", correct: false, text: "Freight goes to 6400." } };
+  assert.equal(ownerSaid([], job), false, "the job's own message");
+  assert.equal(ownerSaid([], [...job, ...asked]), false, "the look-back's asks");
+  assert.equal(ownerSaid([words], job), true, "a grade's words, pending");
+  assert.equal(ownerSaid([words, { kind: "agentrun.end" }], job), false, "a round a past end closed");
+  assert.equal(ownerSaid([], [...job, ...asked, row("0:5", "user_message", { text: "Why 42?" })]), true, "a person's follow-up");
+});
+
+test("ownerSaid: a subagent's task prompt (a child conversation's user_message) is not the owner's feedback; a root message after the answer still is", () => {
+  const { ownerSaid } = endModule;
+  const row = (id, kind, extra = {}) => ({ id, kind, agent_label: null, parent_tool_use_id: null, text: null, ...extra });
+  const job = [row("0:1", "user_message", { text: "Question 1" })];
+  const child = row("1:1", "user_message", { text: "Research the freight rates", conversation_id: 1, parent_tool_use_id: "toolu_spawn" });
+  const answer = row("0:9", "final_answer", { text: "42" });
+  assert.equal(ownerSaid([], [...job, child, answer]), false, "a subagent's prompt");
+  assert.equal(ownerSaid([], [...job, child, answer, row("0:10", "user_message", { text: "Why 42?" })]), true, "a root follow-up after a subagent ran");
 });

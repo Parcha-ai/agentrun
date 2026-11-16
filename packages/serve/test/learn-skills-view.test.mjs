@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, learnedOnMain, learner, LEARN, made, repoOf, started } from "./learn-support.mjs";
+import { ended, fedBack, git, learnedOnMain, learner, LEARN, made, repoOf, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { call, cookieOf, runDir, serve, withEnv } from "./support.mjs";
 
@@ -33,13 +33,14 @@ const json = { "content-type": "application/json" };
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const enc = encodeURIComponent;
 
-/** A server for learning, and agent `id` whose run answers a note, a skill and a draft, its grader told `more`. */
+/** A server for learning, and agent `id` (`learning: true`) whose run, looking back on its owner's feedback, answers a
+ *  note, a skill and a draft, its grader told `more`. */
 async function learned(t, id, more = [], options = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const server = options.server ?? (await serve(t, { learning: "on", faux: LEARN, ...options.serve }));
-  await made(server.api, learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(ANSWER)}`, ...more].join("\n") }));
-  const runId = await started(server.api, id);
-  const { view } = await ended(server.api, runId);
+  await made(server.api, learner(id, { learning: true, instructions: ["Answer the question.", `Answer: ${JSON.stringify(ANSWER)}`, ...more].join("\n") }));
+  const { view } = await fedBack(server.api, id);
+  const runId = view.run_id;
   const merged = await learnedOnMain(server, id, runId);
   assert.equal(merged.result?.ok, true, JSON.stringify(merged));
   return { ...server, runId, view, repo: repoOf(server.data, id) };

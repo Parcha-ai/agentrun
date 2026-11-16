@@ -662,7 +662,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest
   // serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its dry run with fewer than
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
-  // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
+  // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   const promotion = claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   });

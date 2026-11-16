@@ -138,6 +138,9 @@ export const said = {
   /** A run whose only work was its learned workflows, each answering, with nothing said after its first message: it was
    *  not asked to look back (runner/learning-end.ts onlyLearnedWorkflows). */
   onlyWorkflow: "Nothing new: the run only ran a learned workflow.",
+  /** A run of an agent that learns workflows, with no feedback from its owner (no grade's words, no message after its
+   *  first): it was not asked to look back (runner/learning-end.ts ownerSaid); its trace is what a compile reads. */
+  noFeedback: "Not looked back on: this agent learns workflows, and it looks back only on your feedback.",
   /** A run started with `learning: "use"`: it read what its agent learned and kept nothing, as asked. */
   use: "Used what its agent learned; this run keeps nothing.",
   /** A merge whose every item the owner has since retired: nothing it learned is kept now. */

@@ -68,8 +68,9 @@ async function mode2End(t, { moveOn }) {
   assert.notEqual(decoy.notes["retry-slowly.md"], held, "with other content");
   if (moveOn) await landNote(disk, "agent-1", "check-first.md", CHECK);
 
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
-  const launch = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 1 } };
+  // A notes job (`learning: "notes"`): its run looks back at every end.
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: "notes" } });
+  const launch = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 1, notesOnly: true } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   const reflected = `\`\`\`note retry-slowly.md\n${held}\`\`\`\n\n\`\`\`note check-first.md\n${CHECK}\`\`\`\n\nReflected.`;
 

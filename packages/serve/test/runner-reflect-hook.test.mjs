@@ -13,7 +13,7 @@ const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
 const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
 /** A hook over fake deps; `answer` is what the turn's ask resolves with. */
-function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew, compileFacts, gradeCap } = {}) {
+function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew, compileFacts, ownerSaid, gradeCap } = {}) {
   const calls = { asked: [], checked: [] };
   const deps = {
     facts: async () => ({ learns: true, costUsd: 0.01, ...facts }),
@@ -27,6 +27,7 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
     now: () => AT,
     ...(nothingNew ? { nothingNew } : {}),
     ...(compileFacts ? { compileFacts } : {}),
+    ...(ownerSaid ? { ownerSaid } : {}),
     ...(gradeCap ? { gradeCap } : {}),
   };
   const hook = createReflectHook(deps);
@@ -315,6 +316,29 @@ test("a run that only ran its learned workflows is not asked, and its look back 
     const kept = await hook(input());
     assert.deepEqual(calls.asked, [], "nothing asked");
     assert.deepEqual(kept, { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, answered_at: new Date(AT).toISOString(), job_cost_usd: costUsd, look_back_usd: 0 } } }] }, `job cost ${costUsd}`);
+  }
+});
+
+// S1: an agent run of a job that compiles workflows looks back only on its owner's feedback (ownerSaid: a grade's words,
+// or a message after its first). Without it: no look-back request and $0 looking back; a compile due is asked alone.
+test("a run of a workflow job its owner said nothing on is not asked its look-back: $0 looking back, a due compile asked alone; with feedback it looks back", async () => {
+  const unheard = hookWith({ ownerSaid: async () => false, compileFacts: async () => undefined });
+  assert.deepEqual(await unheard.hook(unheard.input()), { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.noFeedback, ...ANSWERED } } }] });
+  assert.deepEqual(unheard.calls.asked, [], "no look-back request");
+
+  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
+  const due = async () => ({ mode: "new", reference: "REF", notes: [], traces: [], tools: [], judges: false });
+  const answer = { ended: true, answer: `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\`` };
+  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
+  const compiles = hookWith({ ownerSaid: async () => false, compileFacts: due, answer, check });
+  await compiles.hook(compiles.input());
+  assert.deepEqual(compiles.calls.asked.map(({ opts }) => opts.step), ["compile-1"], "the compile turn alone: no look-back asked");
+  assert.match(compiles.calls.asked[0].prompt, /^One more turn: write this agent's job as a learned workflow\./);
+
+  for (const ownerSaid of [async () => true, async () => { throw new Error("the read failed"); }]) {
+    const heard = hookWith({ ownerSaid, compileFacts: async () => undefined });
+    await heard.hook(heard.input());
+    assert.deepEqual(heard.calls.asked.map(({ prompt }) => prompt), [reflectPrompt({ dir: ".learning", active: 3, tools: ["read", "web_search"] })], "the look-back was asked");
   }
 });
 
