@@ -1,11 +1,12 @@
 // Opt-in integration proof. Never re-send a paid task after a failure or uncertain result.
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AgentRun } from '@parcha/agentrun-client';
-import { report } from './invoke.mjs';
+import { readReport, report } from './invoke.mjs';
 
 const PREFIX = 'Launch note:';
+const VISIBLE_PREFIX = /^(?:Launch note:|\*\*Launch note:\*\*)/i;
 const task = service => `Read release status for ${service} and report its service, version, test result and readiness.`;
 const teach = `${task('demo-api')} For this and future release reports, my formatting preference is to begin your final answer with the exact prefix "${PREFIX}" and use one concise sentence. Remember this preference for later release reports.`;
 const POLL_MS = 180_000;
@@ -44,6 +45,7 @@ async function runForSession(client, agentId, sessionId) {
 async function setLearning(client, agentId, learning) {
   const current = await client.agents.get(agentId);
   assert.equal(current.body.definition.sdk?.runtime, 'eve', 'The id is not the connected eve agent.');
+  if (current.body.definition.learning === learning) return { learning, version: current.body.definition.version, etag: current.etag, unchanged: true };
   assert.ok(current.etag, 'The server did not supply an ETag for the learning-setting change.');
   const { version: previousVersion, ...definition } = current.body.definition;
   const updated = await client.agents.update(agentId, {
@@ -73,10 +75,23 @@ function verifyOriginalTool(result, service, previousObservations) {
 /** Four fresh native eve sessions; only read polling is repeated. Existing baseline can be kept separately. */
 export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, apiKey = process.env.AGENTRUN_API_KEY,
   agentId = process.env.AGENTRUN_AGENT_ID, eveBaseUrl = process.env.EVE_BASE_URL,
-  eveBearer = process.env.EVE_BEARER_TOKEN, checkpoint = async () => {} } = {}) {
+  eveBearer = process.env.EVE_BEARER_TOKEN, checkpoint = async () => {}, resume } = {}) {
   if (!baseUrl || !apiKey || !agentId || !eveBaseUrl) throw new Error('Set AGENTRUN_BASE_URL, AGENTRUN_API_KEY, AGENTRUN_AGENT_ID and EVE_BASE_URL in the environment.');
   const client = new AgentRun({ baseUrl, apiKey, timeoutMs: 10_000, maxRetries: 0 });
-  const evidence = { agentId, prefix: PREFIX, startedAt: new Date().toISOString(), stage: 'preflight', sessions: {}, settings: [] };
+  if (resume) {
+    assert.equal(resume.agentId, agentId, 'The saved proof belongs to another AgentRun agent.');
+    assert.equal(resume.prefix, PREFIX, 'The saved proof uses a different teaching preference.');
+    assert.ok(!resume.runtime || resume.runtime === 'eve', 'The saved proof belongs to another runtime.');
+    assert.ok(resume.sessions && typeof resume.sessions === 'object' && Array.isArray(resume.settings), 'The saved proof is malformed.');
+    for (const saved of Object.values(resume.sessions)) assert.ok(!saved.run || saved.run.runtime === 'eve', 'A saved run belongs to another runtime.');
+  }
+  const priorStage = resume?.stage;
+  const evidence = resume ? structuredClone(resume) : { agentId, prefix: PREFIX, startedAt: new Date().toISOString(), stage: 'preflight', sessions: {}, settings: [] };
+  evidence.runtime = 'eve';
+  if (resume) {
+    evidence.resumptions = [...evidence.resumptions ?? [], { at: new Date().toISOString(), stage: priorStage, ...(evidence.failure ? { failure: evidence.failure } : {}) }];
+    delete evidence.failure;
+  }
   const save = async () => checkpoint(evidence);
   await save();
   const observations = new Set();
@@ -88,23 +103,37 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
     catch (error) { if (error.code !== 'not_found') throw error; }
     if (existing) {
       assert.equal(existing.body.definition.sdk?.runtime, 'eve', 'Use the dedicated eve example id.');
-      assert.equal(existing.body.definition.learning, false, 'Start with the example agent learning Off.');
-      const before = await client.learning.get(agentId);
-      assert.equal(before.notes.items.filter(note => note.status === 'active').length + before.skills.filter(skill => skill.status === 'active').length, 0,
-        'Use a fresh demonstration agent without existing accepted learning. Do not delete real learning to rerun this example.');
+      if (!resume) {
+        assert.equal(existing.body.definition.learning, false, 'Start with the example agent learning Off.');
+        const before = await client.learning.get(agentId);
+        assert.equal(before.notes.items.filter(note => note.status === 'active').length + before.skills.filter(skill => skill.status === 'active').length, 0,
+          'Use a fresh demonstration agent without existing accepted learning. Do not delete real learning to rerun this example.');
+      }
     }
+    if (resume) assert.ok(existing, 'The connected agent from the saved proof no longer exists.');
 
     const invoke = async (stage, input, service) => {
       evidence.stage = stage;
       await save();
-      const result = await report(input, { baseUrl: eveBaseUrl, bearer: eveBearer,
-        onStarted: async receipt => { evidence.sessions[stage] = { ...receipt, state: 'started' }; await save(); } });
-      evidence.sessions[stage] = { ...result, state: 'native_completed' };
+      const saved = evidence.sessions[stage];
+      if (resume && (saved || priorStage === stage)) assert.ok(saved?.sessionId, 'The previous task submission has no confirmed session id; inspect it rather than sending a replacement.');
+      let result;
+      if (saved?.sessionId) {
+        result = await readReport(saved.sessionId, { expectedTask: input, baseUrl: eveBaseUrl, bearer: eveBearer });
+        if (saved.turnId) assert.equal(result.turnId, saved.turnId, 'The saved native turn identity changed.');
+      } else {
+        evidence.sessions[stage] = { state: 'submitting' };
+        await save();
+        result = await report(input, { baseUrl: eveBaseUrl, bearer: eveBearer,
+          onStarted: async receipt => { evidence.sessions[stage] = { ...receipt, state: 'started' }; await save(); } });
+      }
+      evidence.sessions[stage] = { ...result, ...(saved?.run ? { run: saved.run } : {}), state: 'native_completed' };
       await save(); // Keep the native result even if telemetry or an assertion fails next.
       assert.ok(!sessionIds.has(result.sessionId), 'The learning comparison reused native conversation history.');
       sessionIds.add(result.sessionId);
       verifyOriginalTool(result, service, observations);
       const run = await runForSession(client, agentId, result.sessionId);
+      if (saved?.run?.runId) assert.equal(run.run_id, saved.run.runId, 'The saved AgentRun run identity changed.');
       evidence.sessions[stage].run = runSummary(run);
       await save();
       return { result, run };
@@ -113,13 +142,13 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
     const connected = await invoke('connected_off', task('demo-api'), 'demo-api');
     assert.equal(connected.run.sdk.learning_revision, null, 'The Off run unexpectedly received learning.');
     assert.equal(connected.run.learning ?? null, null, 'The Off run unexpectedly started reflection.');
-    assert.doesNotMatch(connected.result.answer, /^Launch note:/i, 'The baseline independently used the special prefix; this comparison is inconclusive.');
-    const before = await client.learning.get(agentId);
-
-    evidence.settings.push(await setLearning(client, agentId, 'notes'));
-    await save();
+    assert.doesNotMatch(connected.result.answer, VISIBLE_PREFIX, 'The baseline independently used the special prefix; this comparison is inconclusive.');
+    if (!evidence.sessions.taught?.sessionId) {
+      evidence.settings.push(await setLearning(client, agentId, 'notes'));
+      await save();
+    }
     const taught = await invoke('taught', teach, 'demo-api');
-    assert.match(taught.result.answer, /^Launch note:/i, 'The teaching turn did not follow the requested format.');
+    assert.match(taught.result.answer, VISIBLE_PREFIX, 'The teaching turn did not follow the requested format.');
     evidence.stage = 'waiting_for_independent_acceptance';
     await save();
     const acceptedRun = await poll(async options => {
@@ -138,21 +167,29 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
       ...learned.skills.filter(skill => skill.status === 'active' && skill.run === taught.run.run_id).map(skill => skill.file),
     ];
     assert.ok(acceptedFiles.length, 'No active run-generated lesson was accepted from this teaching turn.');
-    assert.ok(learned.main && learned.main !== before.main, 'The teaching turn did not create an accepted learning revision.');
+    assert.ok(learned.main && learned.main !== taught.run.sdk.learning_revision, 'The teaching turn did not create an accepted learning revision.');
     evidence.sessions.taught.run = runSummary(acceptedRun);
-    evidence.accepted = { revision: learned.main, files: acceptedFiles };
+    const acceptedRevision = evidence.accepted?.revision ?? learned.main;
+    assert.ok(acceptedRevision === learned.main || learned.log.items.some(change => change.commit === acceptedRevision), 'The previously accepted revision is absent from real learning history.');
+    evidence.accepted = { revision: acceptedRevision, files: acceptedFiles };
     await save();
 
+    if (!evidence.sessions.reused?.sessionId) {
+      evidence.settings.push(await setLearning(client, agentId, 'notes'));
+      await save();
+    }
     const reused = await invoke('reused', task('demo-worker'), 'demo-worker');
-    assert.equal(reused.run.sdk.learning_revision, learned.main, 'The fresh run did not receive the accepted learning revision.');
-    assert.match(reused.result.answer, /^Launch note:/i, 'The fresh session did not apply the accepted preference to the new service.');
+    assert.equal(reused.run.sdk.learning_revision, acceptedRevision, 'The fresh run did not receive the accepted learning revision.');
+    assert.match(reused.result.answer, VISIBLE_PREFIX, 'The fresh session did not apply the accepted preference to the new service.');
 
-    evidence.settings.push(await setLearning(client, agentId, false));
-    await save();
+    if (!evidence.sessions.control_off?.sessionId) {
+      evidence.settings.push(await setLearning(client, agentId, false));
+      await save();
+    }
     const control = await invoke('control_off', task('demo-worker'), 'demo-worker');
     assert.equal(control.run.sdk.learning_revision, null, 'The Off control unexpectedly received learning.');
     assert.equal(control.run.learning ?? null, null, 'The Off control unexpectedly started reflection.');
-    assert.doesNotMatch(control.result.answer, /^Launch note:/i, 'The Off control independently chose the same prefix; this comparison is inconclusive.');
+    assert.doesNotMatch(control.result.answer, VISIBLE_PREFIX, 'The Off control independently chose the same prefix; this comparison is inconclusive.');
     evidence.stage = 'passed';
     evidence.finishedAt = new Date().toISOString();
     await save();
@@ -170,13 +207,17 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
 if (import.meta.main) {
   const args = process.argv.slice(2);
   if (!args.includes('--live')) throw new Error('This starts four real eve model tasks and server reflection. Run with --live after the original baseline and extension setup.');
-  const outputAt = args.indexOf('--output');
-  const output = outputAt >= 0 ? args[outputAt + 1] : undefined;
-  if (outputAt >= 0 && (!output || output.startsWith('--'))) throw new Error('--output requires a new file path.');
-  if (args.some((arg, i) => arg !== '--live' && arg !== '--output' && !(outputAt >= 0 && i === outputAt + 1))) throw new Error('Usage: node validate.mjs --live [--output new-evidence.json]');
-  let created = false;
+  let output, resumePath;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--live') continue;
+    if (!['--output', '--resume'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Usage: node validate.mjs --live [--output new-evidence.json] [--resume saved-proof.json]');
+    if (args[i] === '--output') output = args[++i]; else resumePath = args[++i];
+  }
+  const resume = resumePath ? JSON.parse(await readFile(resumePath, 'utf8')) : undefined;
+  output ??= resumePath;
+  let created = output === resumePath && Boolean(resumePath);
   try {
-    const evidence = await demonstrate({ checkpoint: async value => {
+    const evidence = await demonstrate({ resume, checkpoint: async value => {
       if (output) {
         await writeFile(output, `${JSON.stringify(value, null, 2)}\n`, { flag: created ? 'w' : 'wx', mode: 0o600 });
         created = true;

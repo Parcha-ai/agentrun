@@ -60,7 +60,7 @@ Next, ask about a different fixture service in a fresh session **without repeati
 npm run invoke --prefix examples/eve-learning -- --live 'Read release status for demo-worker and report its service, version, test result and readiness.'
 ```
 
-The proof requires an accepted run-generated lesson, the accepted revision recorded on this new run, a completed original `release_status` call for `demo-worker`, and an answer beginning `Launch note:` with the new version `3.1.2`.
+The proof requires an accepted run-generated lesson, the accepted revision recorded on this new run, a completed original `release_status` call for `demo-worker`, and an answer beginning `Launch note:` with the new version `3.1.2`. Plain text and Markdown bold (`**Launch note:**`) render the same visible prefix and both count; the baseline and Off control must lack either form.
 
 Finally turn self-improvement Off and run that same `demo-worker` request in another fresh session. Its recorded learning revision must be absent, its original tool must still work, and the special prefix must not appear independently. A control that independently chooses the same wording is inconclusive, not a passing comparison.
 
@@ -75,5 +75,13 @@ npm run validate --prefix examples/eve-learning -- --live --output /tmp/eve-lear
 ```
 
 The validator reads the same `AGENTRUN_BASE_URL`, `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_ID`, `EVE_BASE_URL` and optional `EVE_BEARER_TOKEN` from its environment. It makes four native model tasks plus server reflection calls. The output path must be new. It checkpoints session ids immediately and saves answers, tool observations, run ids, setting changes and accepted revisions without credentials or receipt tokens. It never retries a paid task, seeds a lesson or force-approves one. If checking fails, stop and inspect the saved stage and existing session instead of blindly rerunning.
+
+To continue an interrupted validation without repeating completed model tasks:
+
+```sh
+npm run validate --prefix examples/eve-learning -- --live --resume /tmp/eve-learning-proof.json
+```
+
+Resume reads every saved native session's finite history and re-fetches its AgentRun run. It verifies one fresh turn, the exact original input, completed native tools and the recorded learning revision; saved answers alone are not trusted. Existing sessions are never resent or replaced. An unfinished session or uncertain submission without a confirmed session id stops the proof. Only stages that were never submitted may start a new task. The saved file is updated in place, preserving the earlier failure and resumption time; add `--output NEW_PATH` to save a separate continuation. A setting already at its intended value is left unchanged.
 
 For deployed eve applications, retain the original channel authentication and pass `EVE_BEARER_TOKEN` to the invocation script if that route requires a bearer credential. Never expose an unauthenticated local development server publicly.
