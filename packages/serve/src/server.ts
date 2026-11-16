@@ -163,7 +163,7 @@ import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./upl
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
-import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
@@ -417,6 +417,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
    *  process takes it (runner/beside.ts), so its runs can use them. */
   attachHub: AttachHub;
+  /** What a dial provider's create takes of this server (HostedProvider's dial): the address its machines dial
+   *  (AGENTRUN_PUBLIC_URL, absent without one), the tokens it mints for them (computer-attach.ts machineTokens) and the
+   *  hub their sockets land in. The runner beside the server hands it to its remote providers (runner/beside.ts). */
+  dial: HostedDial;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
@@ -538,6 +542,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/computers\/pairings$/, name: "createPairing" },
   { method: "POST", pattern: /^\/computers\/pair$/, name: "pairComputer" },
   { method: "GET", pattern: /^\/computers\/attach$/, name: "attachComputer" },
+  // A hosted machine's computerd build, fetched at its boot with the token its create minted (computer-attach.ts daemon).
+  { method: "GET", pattern: /^\/computers\/daemon$/, name: "getComputerDaemon" },
   { method: "DELETE", pattern: /^\/computers\/([^/]+)$/, name: "deleteComputer" },
   { method: "GET", pattern: /^\/workspace\/archil$/, name: "getWorkspaceArchil" },
   { method: "PUT", pattern: /^\/workspace\/archil$/, name: "putWorkspaceArchil" },
@@ -1035,7 +1041,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
   const attachHub = new AttachHub();
-  const attach = createAttachRoutes({ store, hub: attachHub, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
+  const attach = createAttachRoutes({ store, hub: attachHub, machinesOnly: options.apiOnly === true, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -3035,6 +3041,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
     // limited by source address before anything in the body is checked.
     if (found.name === "pairComputer") return send(res, 201, await attach.pair(await bodyOf(req), clientOf(req)), { "cache-control": "no-store" });
+    // A hosted machine fetching this server's computerd build: the token its create minted is its credential, never the
+    // owner's (computer-attach.ts daemon).
+    if (found.name === "getComputerDaemon") {
+      const file = await attach.daemon(req.headers.authorization, url.searchParams.get("arch")).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 401) authFailed(`/v2${path}`, "machine_token");
+        throw error;
+      });
+      const bytes = await readFile(file).catch(() => {
+        throw new ApiError("unavailable", `this server has no computerd build at ${file}: run npm run build:daemon -w @parcha/agentrun-computer where it runs`);
+      });
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length), "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      return void res.end(req.method === "HEAD" ? undefined : bytes);
+    }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
     if (found.name === "mcpOAuthCallback") {
@@ -4241,9 +4260,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings).
-    if (options.apiOnly) return deny("404 Not Found");
-    // A paired computer's driver dialing its attach socket (computer-attach.ts): its token, not the owner's, lets it in.
+    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings), whose tokens
+    // the attach socket takes as unknown there (machinesOnly). A run's hosted machine that dials still reaches it.
+    if (options.apiOnly && raw !== ATTACH_PATH) return deny("404 Not Found");
+    // A paired computer's driver or a hosted machine dialing the attach socket (computer-attach.ts): its token, not the
+    // owner's, lets it in.
     if (raw === ATTACH_PATH) {
       return attach.upgrade(req, socket, head, (status, words = "", headers = {}) => {
         if (status.startsWith("401")) authFailed(raw, "attach_token");
@@ -4597,6 +4618,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     attachHub,
+    dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

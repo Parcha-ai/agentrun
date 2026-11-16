@@ -31,7 +31,8 @@
     "startLearnedWorkflowReplay": "Replaying a learned workflow's revision takes the owner's password session, as making one an agent does; the server refuses every token on it.",
     "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command.",
     "pairComputer": "A computer's driver (Computerd) calls it with the pairing code the owner made, and no token: the owner's CLI and clients make the code (createPairing) and never pair.",
-    "attachComputer": "A paired computer's driver dials it, a WebSocket upgrade with the computer's own token: no request of the owner's CLI or clients is one."
+    "attachComputer": "A paired computer's driver dials it, a WebSocket upgrade with the computer's own token: no request of the owner's CLI or clients is one.",
+    "getComputerDaemon": "A hosted machine fetches it as it boots, with the token its create minted: the owner's token is not one, so the CLI and clients never call it."
   },
   "commands": {
     "getCapabilities": ["server", "capabilities"],

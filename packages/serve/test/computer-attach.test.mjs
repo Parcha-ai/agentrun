@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { closeReason, newAttachToken, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, PairTries } = await import("../dist/computer-attach.js");
+const { closeReason, newAttachToken, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, pairTries } = await import("../dist/computer-attach.js");
 const { helloLacks, pairedEntry, servesNoKind, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
 const { resolveComputer } = await import("../dist/workspace/resolve-computer.js");
 const { PAIRING_CODE_PATTERN, PROTOCOL_VERSION, PROVIDERS, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
@@ -24,7 +24,7 @@ test("a pairing code is eight characters of the alphabet in two groups of four; 
 
 test("the pair limit lets a source address try ten times a minute, then says how long to wait; another address is not held by it, an IPv6 one counted by its /64", () => {
   const clock = { now: 1_000_000 };
-  const tries = new PairTries(() => clock.now);
+  const tries = pairTries(() => clock.now);
   for (let i = 0; i < PAIR_TRIES_PER_MINUTE; i++) assert.deepEqual(tries.allow("192.0.2.7"), { ok: true });
   assert.deepEqual(tries.allow("192.0.2.7"), { ok: false, retryAfterMs: 60_000 });
   assert.deepEqual(tries.allow("192.0.2.8"), { ok: true }, "another address");
@@ -34,7 +34,7 @@ test("the pair limit lets a source address try ten times a minute, then says how
   assert.deepEqual(tries.allow("192.0.2.7"), { ok: true }, "a minute on");
   for (let i = 0; i < PAIR_TRIES_PER_MINUTE; i++) tries.allow(`2001:db8:1:2::${i + 1}`);
   assert.equal(tries.allow("2001:db8:1:2::ff").ok, false, "one /64");
-  const small = new PairTries(() => clock.now, 2);
+  const small = pairTries(() => clock.now, 2);
   small.allow("192.0.2.1");
   small.allow("192.0.2.2");
   assert.deepEqual(small.allow("192.0.2.3"), { ok: true }, "a full table still lets a new address try");

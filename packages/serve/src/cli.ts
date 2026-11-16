@@ -405,7 +405,7 @@ if (!values["no-runner"] && askedAt === undefined) {
     // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, mcpLoopback: serve.localInstall });
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
