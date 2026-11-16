@@ -352,12 +352,9 @@ you from a toolkit to a run that a Composio event starts:
      <img alt="The hackernews toolkit's six actions, two of them ticked, saved as the server hackernews" src="docs/assets/tutorials/composio-3-actions.png" width="100%">
    </p>
 
-4. In **Triggers → New webhook**, pick **Composio's** signature and the agent, subscribe its URL on Composio, then
-   paste Composio's secret with **Set secret**.
-
-   <p align="center">
-     <img alt="The trigger's page: its agent, URL, Composio's signature, Accepts GITHUB_ISSUE_CREATED_TRIGGER, and one firing that started a run" src="docs/assets/tutorials/composio-4-trigger.png" width="100%">
-   </p>
+4. In **Triggers → New app trigger**, pick the saved `github` server, an event such as a new issue and its repository,
+   and the agent. The server makes the trigger on Composio and its webhook subscription at this server's public
+   address (`AGENTRUN_PUBLIC_URL`).
 
 5. Open an issue in your repository and watch the run it starts on the **Timeline**.
 

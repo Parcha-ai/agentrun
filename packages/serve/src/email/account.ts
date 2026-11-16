@@ -52,7 +52,7 @@ export function securityOf(endpoint: Endpoint): "tls" | "starttls" | "plaintext"
 const MAX_TEXT = 320;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
-const ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
+export const ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 
 /** An endpoint as a body gives it, checked under `field`. */
 function endpointOf(value: unknown, field: string, issues: InputIssue[]): Endpoint | undefined {

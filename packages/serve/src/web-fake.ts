@@ -6,7 +6,7 @@
 // expression, case-insensitive) matches the query, else its default; each page by the answer for exactly its URL, else
 // its default, read through the guarded direct fetch's own path (its URL, port and status checks, its parts).
 //
-// Only the eval's own in-process runner binds it (runner/beside.ts `webFakes`, by the agent the eval made for the run):
+// Only the eval's own in-process runner binds it (runner/beside.ts `evalFakes`, by the agent the eval made for the run):
 // no package field, API field, setting or environment variable reaches it, so no other server's runs ever see a fake.
 import { RATE_LIMITED } from "./exa-keyless.js";
 import { clip, type Page, type Part, partProblem, TITLE_CAP, URL_MAX } from "./web-fetch-direct.js";
@@ -22,8 +22,6 @@ export type WebFixture = {
 };
 /** A case's web fake: every web call failing, or a fixture. */
 export type WebFake = "unavailable" | WebFixture;
-/** Which fake, if any, a run's web tools answer from, by the agent the run is of: the eval's own runner's alone. */
-export type WebFakes = (agentId: string) => WebFake | undefined;
 
 /** A public address the fake's lookup answers: the guard checks it is public, and no connection is ever made to it. */
 const PUBLIC_ADDRESS = "203.0.114.1";

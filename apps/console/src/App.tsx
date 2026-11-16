@@ -735,7 +735,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         : where.section === "templates"
         ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : where.template ?? ""} v2={v2} name={where.template} install={where.install} go={go} />
         : where.section === "triggers"
-        ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} />
+        ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} publicUrl={caps?.features?.triggers?.public_url} />
         : where.section === "playground"
         ? <section className="flex h-full min-h-0 flex-col">
             <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5"><Code className="size-4" aria-hidden /><h1 className="caps text-body font-semibold">API playground</h1></header>
