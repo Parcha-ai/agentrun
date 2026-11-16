@@ -44,7 +44,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const cap = run.cost?.cap_usd;
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
-  const waitsOnOther = !!run.pending && run.pending.kind !== "budget";
+  const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
   const raisable = !sdk && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;

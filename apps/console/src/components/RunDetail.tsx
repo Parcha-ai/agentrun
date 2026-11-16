@@ -258,7 +258,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
-          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" && machine ? keptUntilOf(rows, machine.kind) : undefined}
+          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" && run.pending?.kind !== "stopped" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" && machine ? keptUntilOf(rows, machine.kind) : undefined}
             onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}
         </div>
       </div>}
