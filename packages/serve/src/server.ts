@@ -412,6 +412,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
   localInstall: boolean;
+  /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
+   *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
+   *  never reach this server, as its own reads never do. */
+  own: readonly string[];
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -4560,6 +4564,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     attachHub,
     localInstall,
+    own: mcpServers.own,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
