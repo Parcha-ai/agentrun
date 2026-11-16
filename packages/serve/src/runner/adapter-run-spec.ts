@@ -34,6 +34,7 @@ import type { WebFake, WebFakes } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
+import { webCut } from "../timeline/web-calls.js";
 import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
@@ -991,14 +992,16 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer, claim: Cl
   };
 }
 
-/** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). */
+/** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). A web call's answer is cut
+ *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
+ *  its links whole for a grader's link check. */
 export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        return { ...answer, text: cut(answer.text) };
+        return { ...answer, text: webCut(tool.name, answer.text, cut) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
