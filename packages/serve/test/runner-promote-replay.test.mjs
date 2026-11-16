@@ -11,7 +11,8 @@
 //   - a guard is read at its serving threshold (a replay reads it record-only): an input it would hand back when serving
 //     is no answer alone, and no disagreement of its answer either;
 //   - a replay whose answers differ from the agent's holds the digest: the run after it is the agent's;
-//   - no completed run of the agent's it fits: promoted on its passing dry run, and the record says the check ran on none;
+//   - no completed run of the agent's it fits: never promoted; it stops, its record naming why ("nothing to check it on");
+//   - every reserved input counts: a replay run never created by the check's deadline is a failed input;
 //   - champion/challenger: a promoted digest (the champion) keeps serving while a newer revision of it is checked, and
 //     after that revision's check holds it; the revision serves only once its check promotes it;
 //   - one check at a time, and a running check finishes: a newer revision that comes while another is checked waits,
@@ -518,7 +519,7 @@ test("a check whose workflow fails on every input (a step failed: a credential o
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
   assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, alone: decided.check.alone, failed: decided.check.outcomes.failed }, { decided: "hold", source: "check", n: 6, alone: 0, failed: 6 });
-  assert.match(decided.reason, /answered 0 alone .*\(6 failed: a step failed\): held/);
+  assert.match(decided.reason, /answered 0 alone .*\(6 failed: a step failed, or it was still at work at the check's deadline\): held/);
 });
 
 test("a replay run its claim cannot lay at its digest ends failed: the agent is never asked", { timeout: 120_000 }, async (t) => {

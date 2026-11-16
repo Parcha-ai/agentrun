@@ -26,7 +26,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { checkedOf, landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -118,7 +118,7 @@ async function landNotes(data, agentId, notes) {
  *  or `submitted` when given; the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -145,8 +145,9 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // `notes`: active notes merged before the workflows land, `{ file, text }` each.
   if (learned && notes.length) await landNotes(dir, "agent-1", notes);
   const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
-  // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them.
-  for (const record of promotions) await recordPromotion(server.settings, "agent-1", record, () => true);
+  // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them; none given,
+  // each landed workflow as its check promoted it (no run of the agent's to check it on here, so it would stop unchecked).
+  for (const record of promotions ?? (learned ? checkedOf(flows) : [])) await recordPromotion(server.settings, "agent-1", record, () => true);
   // `saved`: keys saved on the server after the learning landed (a value in a workflow or a note that became a secret).
   for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
   // `beforeRun(dir)`: what changes on the agent's main after the run's seed was pinned, before the run starts.
@@ -1108,6 +1109,7 @@ async function cliRun(t, { sure = true } = {}) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say your thinking.", harness: HARNESS, tools: ["read"], learning: true } });
   const seed = await landWorkflows(dir, "agent-1", FLOWS);
+  await promoteChecked(server.settings, "agent-1", FLOWS);
   const launch = { input: { content: `${QUESTION}?`, question: QUESTION }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-6.1-terra" }, learning: startAt(seed) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
