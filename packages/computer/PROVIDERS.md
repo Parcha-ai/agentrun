@@ -468,7 +468,11 @@ async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag:
 		if (image === undefined) {
 			ctx.onWait?.("build", name); // only here: a second call finds the image and is told nothing
 			const box = (file: string) => readFile(new URL(`../box/${file}`, import.meta.url));
-			await vendor.build(name, { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") }, ctx);
+			const context = { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") };
+			await vendor.build(name, context, ctx).catch(async (error) => {
+				// refused because another server's build took the name since the list: wait on that one
+				if (!(await vendor.listImages(ctx)).some((one) => one.name === name)) throw error;
+			});
 		}
 		return ok(await vendor.ready(name, ctx)); // ready now, or once a build (this one, or another server's) is
 	} catch (error) {
