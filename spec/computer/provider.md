@@ -126,7 +126,10 @@ it and expects the same id refused `exists`. Both are Full.
 On the shared machine-host adapter, a host fixes two vendor timers (`packages/computer/src/host.ts`). A janitor's host
 whose vendor has a delete or stop timer of its own sets it to `MachineRequest.backstopAt`, five minutes past the most
 the deadline may reach (create + `maxLifetimeMs`), so a computer still ends when the server is gone. A host switches off
-every vendor timer that ends a quiet machine; where it can't be switched off, the vendor doesn't fit yet.
+every vendor timer that ends a quiet machine; where it can't be switched off, the vendor doesn't fit yet. A host's
+`get` answers `undefined` for a machine the vendor no longer has, and for a record the vendor keeps of one that is
+deleted and won't come back, which its `list` leaves out; `gone` is a machine still being destroyed, and release waits
+on it after the delete.
 
 ## The descriptor
 

@@ -811,6 +811,20 @@ test("release waits until get answers none: a machine the vendor still reads gon
 	assert.match(stuck.error.message, /read it gone/);
 });
 
+test("a vendor's record of a deleted machine (a tombstone: Hyperbrowser's closed, Blaxel's TERMINATED) is undefined from get and left out of list, so release ends at once; read gone, it holds release to goneMs", async () => {
+	// The vendor keeps the record for longer than goneMs. A host that reads it gone (lingers, state gone):
+	const kept = setup({}, { lingers: { reads: 10_000, lists: 10_000, state: "gone" } });
+	const waited = await kept.provider.release(made(await create(kept.provider)), "delete");
+	assert.equal(waited.error?.code, "timeout", "a tombstone read gone waits out goneMs on every delete");
+	// A host that reads it as the vendor no longer having the machine (the fake's get and list after a delete):
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+	const gets = fake.calls.slice(fake.calls.findIndex(([name]) => name === "delete")).filter(([name]) => name === "get");
+	assert.equal(gets.length, 2, "two reads of none, twice running, end the wait");
+	assert.deepEqual(made(await provider.list({})), []);
+});
+
 test("release never touches a machine that is not this provider's, and refuses stop and detach in words", async () => {
 	const { provider, fake } = setup();
 	const stranger = fake.add({ labels: { team: "x" } });
