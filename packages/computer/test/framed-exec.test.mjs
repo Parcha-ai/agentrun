@@ -6,14 +6,14 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as pause } from "node:timers/promises";
 import { runConformance } from "../dist/index.js";
 import { checkExecStream, formatExecStream } from "../dist/conformance/exec-stream.js";
-import { framedExec, ndjson, PID_KILL, PID_WRAPPER } from "../dist/hosted/framed-exec.js";
+import { framedExec, ndjson } from "../dist/hosted/framed-exec.js";
+import { PID_KILL, PID_WRAPPER } from "../dist/hosted/scripts.js";
 import { rest } from "../dist/hosted/rest.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -21,7 +21,7 @@ import { textExec, textVendor, withSh } from "./fake-text-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 
-const QUICK = { longMs: 2_000, stepMs: 5_000, largeBytes: 1024 * 1024, largeMs: 30_000, unreadMs: 1_000 };
+const QUICK = { longMs: 2_000, stepMs: 5_000, largeBytes: 1024 * 1024, largeMs: 30_000, unreadMs: 200 };
 const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 5_000, execMs: 2_000, helloMs: 1_000, probeMs: 1_000, listMs: 2_000, goneMs: 500, pollMs: 5, listedMs: 500, listedStableMs: 0, mountMs: 2_000 };
 /** The Core cases the adapter's fake host answers (its daemon is a stand-in): the ones a byte exec passes there too. */
 const HOSTED_CORE = ["health.hello", "health.kind-consistent", "health.kind-served", "exec.abort", "provider.check-refuses", "provider.list", "provider.stop", "provider.owner", "provider.detach", "provider.network-change", "drift.hello-matches", "drift.network"];
@@ -94,6 +94,7 @@ function memoryPieces({ kill = false, end = false } = {}) {
 					while (queue.length > 0) {
 						const event = queue.shift();
 						if (event === "close") return;
+						if (event instanceof Error) throw event;
 						yield event;
 					}
 					await new Promise((done) => (wake = done));
@@ -176,6 +177,17 @@ test("framedExec with the vendor's kill runs argv as given and kills through it;
 	await proc.kill();
 	assert.deepEqual(calls.at(-1), ["kill", 1]);
 	await assert.rejects(proc.write(Buffer.from("late")), /the process has ended/);
+});
+
+test("framedExec fails wait() in the words of an event stream that broke, its output ended, and a kill after it is still the vendor's", async () => {
+	const { pieces, calls, stream } = memoryPieces({ kill: true });
+	const proc = await framedExec(pieces, ["sleep", "600"], ctx);
+	stream(1).push({ stream: "stdout", text: "before\n" });
+	stream(1).push(new Error("reading the command's exit code failed (denied): 403"));
+	await assert.rejects(proc.wait(), /reading the command's exit code failed \(denied\): 403/);
+	assert.equal(text(await collect(proc.stdout)), "before\n");
+	await proc.kill();
+	assert.deepEqual(calls.at(-1), ["kill", 1]);
 });
 
 test("framedExec with no vendor kill starts argv under a pid wrapper, keeps its line off stderr, and kills that pid while it has that start time", async () => {
@@ -305,27 +317,26 @@ test("ndjson reads each line's JSON as it comes, a line or a character split acr
 });
 
 test("rest's stream hands back an accepted body as it comes, never cut by the call's bound; a refusal is a failure in words", async (t) => {
-	let finish = () => {};
-	const server = createServer((req, res) => {
-		if (req.url === "/refused") return res.writeHead(409).end("stdin is closed");
-		// Any other request (a stray connection to the port) is no stream of this test's.
-		if (req.url !== "/events") return res.writeHead(404).end();
-		res.writeHead(200, { "Content-Type": "application/x-ndjson" });
-		res.write('{"n":1}\n');
-		finish = () => res.end('{"n":2}\n');
-	});
-	await new Promise((done) => server.listen(0, "127.0.0.1", done));
-	t.after(() => {
-		server.closeAllConnections();
-		server.close();
-	});
-	const api = rest({ base: `http://127.0.0.1:${server.address().port}`, headers: () => ({}), vendor: "acme", timeoutMs: 200 });
+	// The call's bound is a timer: mocked, and moved past while the body is still coming.
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let body;
+	let signal;
+	const fetch = async (url, init) => {
+		if (new URL(url).pathname === "/refused") return new Response("stdin is closed", { status: 409 });
+		signal = init.signal;
+		const stream = new ReadableStream({ start: (controller) => (body = controller) });
+		body.enqueue(new TextEncoder().encode('{"n":1}\n'));
+		return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson" } });
+	};
+	const api = rest({ base: "https://vendor.example.test", headers: () => ({}), vendor: "acme", timeoutMs: 200, fetch });
 	const opened = await api.stream("GET", api.url("/events"));
 	assert.equal(opened.ok, true);
 	const lines = ndjson(opened.value.body)[Symbol.asyncIterator]();
 	assert.deepEqual((await lines.next()).value, { n: 1 }, "the first line comes before the body ends");
-	await new Promise((done) => setTimeout(done, 400));
-	finish();
+	t.mock.timers.tick(400);
+	assert.equal(signal.aborted, false, "the call's 200 ms bound let go once the answer was taken");
+	body.enqueue(new TextEncoder().encode('{"n":2}\n'));
+	body.close();
 	assert.deepEqual((await lines.next()).value, { n: 2 }, "a body read past the call's 200 ms bound is not cut by it");
 	assert.equal((await lines.next()).done, true);
 	assert.deepEqual(await api.stream("POST", api.url("/refused")), { ok: false, error: { code: "invalid", message: "POST /refused: 409 stdin is closed" } });

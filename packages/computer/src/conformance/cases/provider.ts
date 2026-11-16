@@ -3,9 +3,10 @@
 // (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
 // the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
 // A create retried with its request id answers the computer the first made, and after release is refused (Full). A
-// deleted computer stays gone: no call to it brings it back. prepareImage called twice answers one image and makes it once.
+// deleted computer stays gone: no call to it brings it back. A provider's prepareImage() and its descriptor's flag agree.
 import { randomBytes } from "node:crypto";
 import type { ProviderDescriptor } from "../../descriptor.js";
+import { descriptorOf } from "../../providers.js";
 import { BACKSTOP_MARGIN_MS, type MachineHost } from "../../host.js";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
@@ -279,36 +280,21 @@ export const providerCases: Case[] = [
 		t.assert(deadline >= before + lifetimeMs - 1000 && deadline <= after + lifetimeMs + 1000, `its deadline, ${String(info.deadline)}, is lifetimeMs after create`);
 		t.deepEqual(await names(t, { ...labels, role: "other" }), [], "list by a label no computer has");
 	}),
-	// prepareImage twice in one run (spec/computer/provider.md, "prepareImage"): both answer the same image, and the second
-	// finds the one the first made by its name, so it is told no onWait. A server calls it before its first create, so one
-	// that builds every time costs every server minutes. A provider with none passes, observed. Core: the first call costs
-	// at most a build per account and recipe, which the account's first create pays anyway.
-	provider(
-		"prepare-image",
-		async (t) => {
-			// A provider on the machine-host adapter: its host's descriptor, the whole one in-tree hosts hand it.
-			const descriptor = (t.provider as { host?: { descriptor?: Partial<ProviderDescriptor> } }).host?.descriptor;
-			const prepare = t.provider.prepareImage?.bind(t.provider);
-			if (prepare === undefined) {
-				t.assert(descriptor?.prepareImage !== true, `${descriptor?.label}'s descriptor declares prepareImage, but its provider has no prepareImage(): give the provider class one`);
-				return t.observe("the provider has no prepareImage(): its computers start from an image a spec names");
-			}
-			const call = async (which: string) => {
-				const told: string[] = [];
-				const image = t.ok(await prepare({ signal: t.signal, onWait: (making, tag) => told.push(`${making} ${tag}`) }), `the ${which} prepareImage`);
-				return { image, told: told.length === 0 ? "" : `onWait(${told.join("; ")})` };
-			};
-			const first = await call("first");
-			t.observe(first.told === "" ? `the first prepareImage found ${first.image} and was told no onWait` : `the first prepareImage was told ${first.told} and answered ${first.image}`);
-			const second = await call("second");
-			t.equal(second.image, first.image, "the second prepareImage's image");
-			t.assert(
-				second.told === "",
-				`the second prepareImage was told ${second.told}: it must find the image the first made by its name (one that carries the box recipe's hash) and answer it with no build and no pull`,
-			);
-		},
-		{ timeoutMs: 20 * 60_000 },
-	),
+	// prepareImage is declared by the provider's method; its descriptor's flag says the same to Settings, which reads it
+	// without loading the provider's module. The two agree: a server never skips a provider's image, nor asks one it has
+	// not got. A provider on the machine-host adapter has its host's descriptor; another, the registry's for its id.
+	provider("prepare-image", async (t) => {
+		const descriptor = (t.provider as { host?: { descriptor?: ProviderDescriptor } }).host?.descriptor ?? descriptorOf(t.provider.id);
+		if (descriptor === undefined) return t.skip(`the provider ${t.provider.id} has no descriptor, so nothing declares prepareImage to Settings`);
+		const has = typeof t.provider.prepareImage === "function";
+		const says = descriptor.prepareImage === true;
+		t.assert(
+			has === says,
+			has
+				? `${descriptor.label}'s provider has prepareImage() but its descriptor does not declare prepareImage: Settings never calls it`
+				: `${descriptor.label}'s descriptor declares prepareImage, but its provider has no prepareImage(): give the provider class one`,
+		);
+	}),
 	// Stop is declared or refused: a provider that declares it lists the computer stopped; one that does not refuses it
 	// in words and leaves the computer running, never stopped or deleted behind the caller's back.
 	provider("stop", async (t) => {

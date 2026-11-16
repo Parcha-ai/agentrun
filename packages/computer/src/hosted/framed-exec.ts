@@ -6,6 +6,7 @@
 import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "../host.js";
+import { PID_WRAPPER, pidKill, pidLine } from "./scripts.js";
 
 /** One event of a process: output on stdout or stderr, as text or as the base64 of its bytes; or its exit code. */
 export type FramedEvent = { stream: "stdout" | "stderr"; text: string } | { stream: "stdout" | "stderr"; base64: string } | { exit: number };
@@ -14,7 +15,11 @@ export type FramedEvent = { stream: "stdout" | "stderr"; text: string } | { stre
 export interface ExecPieces<P> {
 	/** Starts argv in the machine as root, within ctx, and answers once it has started. */
 	start(argv: readonly string[], ctx: HostCall): Promise<P>;
-	/** The process's events from its start, in order; an end with no exit event is an exit the vendor never read (-1). */
+	/**
+	 * The process's events from its start, in order; an end with no exit event is an exit the vendor never read (-1),
+	 * and one that throws fails wait() with its error. framedExec stops reading at the exit event, which returns the
+	 * iterator: a generator's finally lets go of what it holds.
+	 */
 	events(handle: P): AsyncIterable<FramedEvent>;
 	/** One call that hands text to the process's stdin, answered once the vendor took it. */
 	write(handle: P, text: string): Promise<void>;
@@ -25,51 +30,19 @@ export interface ExecPieces<P> {
 	 */
 	end?(handle: P): Promise<void>;
 	/**
-	 * Ends the process in the machine. Leave it out where the vendor has none: the process then starts under a sh that
-	 * writes its pid and its start time on stderr first (framedExec reads that line and passes on the rest), and kill()
-	 * starts a sh that kills that pid, and every process under it, only while that pid still has that start time.
+	 * Ends the process in the machine. Leave it out where the vendor has none: the process then starts under
+	 * PID_WRAPPER (./scripts.ts), which writes its pid and its start time on stderr first (framedExec takes that line off),
+	 * and kill() starts pidKill, which kills that pid, and every process under it, only while that pid has that start time.
 	 */
 	kill?(handle: P): Promise<void>;
 }
 
-/**
- * The sh a process starts under when the vendor has no kill: one line on stderr, its pid and its start time (field 22
- * of /proc/<pid>/stat, counted past the command's name in parentheses, which may hold spaces), then the command in its
- * place, which keeps both.
- */
-export const PID_WRAPPER = ["sh", "-c", 'echo "$$ $(s=$(cat /proc/$$/stat) && set -- ${s##*") "} && echo "${20}")" >&2; exec "$@"', "sh"];
-
-/**
- * The sh kill() starts, given the pid and start time: a pid whose process has ended, and may be another's now, is let
- * be. Otherwise it kills the process and every process under it (an upload's head and base64 would wait on the open
- * stdin, and hold stderr open, past their sh): each is stopped as it is found, so none forks away, by its parent pid
- * (field 4 of its stat) until a pass over /proc finds no more, and then all are killed.
- */
-export const PID_KILL = [
-	"pid=$1 start=$2",
-	'read -r s 2>/dev/null <"/proc/$pid/stat" || exit 0',
-	'set -- ${s##*") "}',
-	'[ "${20}" = "$start" ] || exit 0',
-	'kill -STOP "$pid" 2>/dev/null',
-	'all=" $pid " new=$pid',
-	'while [ -n "$new" ]; do',
-	"\tnew=",
-	"\tfor f in /proc/[0-9]*/stat; do",
-	'\t\tread -r s 2>/dev/null <"$f" || continue',
-	"\t\tp=${s%% *}",
-	'\t\tset -- ${s##*") "}',
-	'\t\tcase "$all" in *" $p "*) continue ;; esac',
-	'\t\tcase "$all" in *" $2 "*) all="$all$p " new="$new $p"; kill -STOP "$p" 2>/dev/null ;; esac',
-	"\tdone",
-	"done",
-	"kill -KILL $all 2>/dev/null",
-	"exit 0",
-].join("\n");
-
 /** argv started through a vendor's pieces, as the MachineProcess exec answers. */
 export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
-	const byPid = pieces.kill === undefined;
-	const handle = await pieces.start(byPid ? [...PID_WRAPPER, ...argv] : argv, ctx);
+	// With no vendor kill, stderr's first line is the pid and its start time (./scripts.ts, PID_WRAPPER): taken off, and
+	// the rest is the process's own.
+	const line = pieces.kill === undefined ? pidLine() : undefined;
+	const handle = await pieces.start(line ? [...PID_WRAPPER, ...argv] : argv, ctx);
 	const stdout = new PassThrough();
 	const stderr = new PassThrough();
 	// ended: the events stopped, so output and writes are done with. exitRead: the process's own exit came among them; a
@@ -89,23 +62,13 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 		await Promise.race([once(stream, "drain", { signal }), once(stream, "close", { signal })]).catch(() => {});
 		waited.abort();
 	};
-	// With no vendor kill, stderr's first line is the pid and its start time: held until it ends, then the rest is the
-	// process's own.
-	let pidLine: Buffer | undefined = byPid ? Buffer.alloc(0) : undefined;
-	let gotPid: (pid: string | undefined) => void = () => {};
-	const pid = new Promise<string | undefined>((done) => (gotPid = done));
 	const toStderr = async (bytes: Buffer) => {
-		if (pidLine === undefined) return push(stderr, bytes);
-		pidLine = Buffer.concat([pidLine, bytes]);
-		const at = pidLine.indexOf(0x0a);
-		if (at < 0) return;
-		gotPid(pidLine.subarray(0, at).toString("latin1").trim());
-		const rest = pidLine.subarray(at + 1);
-		pidLine = undefined;
-		if (rest.length > 0) await push(stderr, rest);
+		const own = line ? line.take(bytes) : bytes;
+		if (own.length > 0) await push(stderr, own);
 	};
 	const exited = (async () => {
 		let code = -1;
+		let broke: unknown;
 		try {
 			for await (const event of pieces.events(handle)) {
 				if ("exit" in event) {
@@ -117,15 +80,19 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 				if (event.stream === "stdout") await push(stdout, bytes);
 				else await toStderr(bytes);
 			}
-		} catch {
-			// A stream that broke: no exit code was read.
+		} catch (error) {
+			// A stream that broke: no exit code was read, and wait() fails in its words.
+			broke = error;
 		}
 		ended = true;
-		gotPid(undefined);
+		line?.end();
 		stdout.end();
 		stderr.end();
+		if (broke !== undefined) throw broke;
 		return code;
 	})();
+	// Nobody may wait (the bridge ends by kill): a broken stream is then no unhandled rejection.
+	exited.catch(() => {});
 	// The writes as one queue: each call starts once the one before it answered, and one that failed fails every one after.
 	// ignoreBOM: a U+FEFF that starts stdin is text like any other, never a mark to drop.
 	const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
@@ -136,16 +103,6 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 		sent.catch(() => {});
 		queue = sent;
 		return sent;
-	};
-	/** "<pid> <start time>", once stderr's first line gives it; undefined once the process ended, or past ctx's bound. */
-	const pidWithin = async () => {
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const late = new Promise<undefined>((done) => (timer = setTimeout(() => done(undefined), ctx.timeoutMs)));
-		try {
-			return await Promise.race([pid, late]);
-		} finally {
-			clearTimeout(timer);
-		}
 	};
 	return {
 		stdout,
@@ -162,12 +119,12 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 			killed.abort();
 			try {
 				if (pieces.kill) await pieces.kill(handle);
-				else {
+				else if (line) {
 					// Not once its exit was read; and after a stream that broke, only while the pid still has its start time: by
 					// then the pid may be another process's.
-					const target = /^([1-9][0-9]*) ([0-9]+)$/.exec((await pidWithin()) ?? "");
-					if (target !== null && !exitRead) {
-						const killer = await pieces.start(["sh", "-c", PID_KILL, "sh", target[1] as string, target[2] as string], { timeoutMs: ctx.timeoutMs });
+					const target = await line.pid(ctx.timeoutMs);
+					if (target !== undefined && !exitRead) {
+						const killer = await pieces.start(pidKill(target), { timeoutMs: ctx.timeoutMs });
 						for await (const event of pieces.events(killer)) if ("exit" in event) break;
 					}
 				}

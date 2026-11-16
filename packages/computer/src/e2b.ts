@@ -199,7 +199,7 @@ class E2BHost implements MachineHost {
 		maxLifetimeMs: PRO_MAX_MS,
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
-		// The box template has xfwm4 (box/Dockerfile), as E2B Desktop's has: the apps an agent opens are framed and focused.
+		// The box template has xfwm4 (box/install.sh's desktop step), as E2B Desktop's has: the apps an agent opens are framed and focused.
 		windowManager: true,
 		// System paths whose permissions E2B's template build sets wider than root's, on its templates and ours alike.
 		rootOnly: ROOT_ONLY,

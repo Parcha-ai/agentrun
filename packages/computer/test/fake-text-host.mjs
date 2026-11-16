@@ -8,7 +8,8 @@
 // for the exec pre-check; or fake-host.mjs's machines in memory, for the adapter's create, under withSh, which plays the
 // sh the pid wrapper and the kill need.
 import { createServer } from "node:http";
-import { framedExec, ndjson, PID_KILL, PID_WRAPPER } from "../dist/hosted/framed-exec.js";
+import { framedExec, ndjson } from "../dist/hosted/framed-exec.js";
+import { PID_KILL, PID_WRAPPER } from "../dist/hosted/scripts.js";
 import { orThrow } from "../dist/hosted/process.js";
 import { rest } from "../dist/hosted/rest.js";
 

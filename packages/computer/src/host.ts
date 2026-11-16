@@ -63,7 +63,10 @@ export interface MachineHost {
 	 *   the process writes them, while it runs. Not request and response, never held until the process exits.
 	 * - Text intact. UTF-8 text both ways, every code point as it was: long lines, \r and \r\n kept (no terminal, no
 	 *   newline translation), nothing added or dropped. Everything the adapter sends or reads is text (the bridge's JSON
-	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this.
+	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this. A
+	 *   vendor whose input call ends what it is given with a newline (Daytona's) holds a write's last partial line until
+	 *   its newline or end(), so the process reads its stdin as written: the bridge's lines end in one, and what is
+	 *   read by length is followed by end().
 	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
 	 *   on the stream, are off.
 	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
@@ -71,7 +74,7 @@ export interface MachineHost {
 	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
 	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload and its label file's write read a
 	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
-	 * this from them with framedExec (./hosted/framed-exec.ts). The exec pre-check (conformance --exec-stream,
+	 * this from them with framedExec (./hosted/framed-exec.ts), as Daytona's does. The exec pre-check (conformance --exec-stream,
 	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
 	 */
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
@@ -96,8 +99,8 @@ export interface MachineHost {
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
-	 * The vendor's cheapest call that restarts its idle timer (facts.idleMs) on the machine: Cube's or E2B's setTimeout,
-	 * Railway's heartbeat. The adapter calls it every idleMs / 3 from create, or attach, until release; one that fails is
+	 * The vendor's cheapest call that restarts its idle timer (facts.idleMs) on the machine: Cube's setTimeout, Railway's
+	 * heartbeat (E2B's setTimeout is its lifetime timer, which extend moves, not an idle timer). The adapter calls it every idleMs / 3 from create, or attach, until release; one that fails is
 	 * told through onNote and the next one tries again. Required with facts.idleMs; a host with no idle timer leaves it out.
 	 */
 	keepalive?(id: string, ctx: HostCall): Promise<void>;

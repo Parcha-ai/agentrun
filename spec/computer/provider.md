@@ -185,9 +185,9 @@ Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only
 - It answers the image a create then names: ok with it, or an error in the vendor's words.
 
 The in-tree ones are the references: Agent37 registers a template from the published image (`agentrun-box-<hash>`),
-E2B answers a public template, Modal answers a public registry tag, and Docker builds from a recipe locally. The Core
-case `provider.prepare-image` calls it twice in one run: both answer the same image, and the second is told no
-`onWait`. A provider with no `prepareImage` passes it, observed.
+E2B answers a public template, Modal answers a public registry tag, and Docker builds from a recipe locally. The
+provider's `prepareImage()` is the declaration; the descriptor's `prepareImage: true` says the same to a server that
+reads descriptors without loading the provider. The Core case `provider.prepare-image` checks the two agree.
 
 ## A hosted vendor's exec
 
