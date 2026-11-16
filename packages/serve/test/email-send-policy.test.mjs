@@ -3,7 +3,8 @@
 // too (the count is the run's record's, not the process's). On a run an email started (its thread), a send to anyone
 // outside the thread's participants (the account's own address and every From, To and Cc of the thread's messages)
 // asks even on allow, naming them. A run that reads the whole account (scope "mailbox"), or one no email started, is
-// held to the cap alone.
+// held to the cap alone. A template eval's run never reads a real account to list its thread's people: with another
+// account saved than its case's fake, a send asks nothing and is refused in the eval's words, no IMAP command sent.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, call, clientOwnerSession, follow, serve } from "./support.mjs";
@@ -24,10 +25,11 @@ async function settled(api, runId) {
   return { status: view.status, pending: view.pending, view };
 }
 
-/** The server with sign-in for a person's approval, and a fake trigger clock; `decide` answers an approval. */
-async function served(t) {
+/** The server with sign-in for a person's approval, and a fake trigger clock; `decide` answers an approval. `extra`:
+ *  more of serve's options (a template eval's fakes). */
+async function served(t, extra = {}) {
   const clock = fakeClock("2026-06-01T00:00:30Z");
-  const server = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock, accounts: true, openSetup: true });
+  const server = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock, accounts: true, openSetup: true, ...extra });
   const session = await clientOwnerSession(server);
   const decide = async (runId, approvalId, decision) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { "content-type": "application/json", cookie: session.cookie, origin: session.origin }, body: { decision } })).status;
   return { api: server.api, clock, decide };
@@ -131,4 +133,35 @@ test("a thread run whose agent reads the whole account (scope \"mailbox\") sends
   assert.equal(status, "completed", `no ask: ${JSON.stringify(pending)}`);
   assert.equal(sawOf(view.result?.final_answer)[0]?.sent, true);
   assert.deepEqual(faux.sent().map((m) => m.to), [["eve@example.com"]]);
+});
+
+test("a template eval's thread run with a real account saved, not its case's fake: a send outside the thread reads nothing of that account (no IMAP command), asks nothing, and is refused in the eval's words", { timeout: 150_000 }, async (t) => {
+  // The case's fake mailbox, which the eval's runner binds the run's agent to (runner/beside.ts evalFakes), and the
+  // server's real account, saved meanwhile: the account the trigger watches, and the one the run must never read.
+  const caseFake = await mailbox(t);
+  const server = await served(t, { evalFakes: (agentId) => (agentId === "evalcase" ? { email: { imap: caseFake.imap, smtp: caseFake.smtp, kind: "folders" } } : undefined) });
+  const real = await mailbox(t);
+  thread(real);
+  await saved(server.api, real);
+  const runId = await fired(server, real, "evalcase", [
+    // Asked first (its setting): the run waits, after the trigger's poll and before any send, so what the real account
+    // has been sent so far is the trigger's alone.
+    ["email_draft", { to: ["ana@example.com"], subject: "Re: Plan", text: "Draft.", in_reply_to: "<m3@example.com>" }],
+    ["email_send", { to: ["ana@example.com"], cc: ["eve@example.com"], subject: "Re: Plan", text: "Looping in Eve.", in_reply_to: "<m3@example.com>" }],
+  ], ANSWER, { tool_settings: { ...ALLOW, email_draft: { permission: "ask" } } });
+  const draft = await settled(server.api, runId);
+  assert.equal(draft.status, "input_required", JSON.stringify(draft.pending));
+  assert.deepEqual([draft.pending?.kind, draft.pending?.tool], ["approval", "email_draft"]);
+  const before = real.commands().length;
+  assert.equal(await server.decide(runId, draft.pending.id, "allow"), 204);
+  const { status, pending, view } = await until(async () => {
+    const now = await settled(server.api, runId);
+    // Settled: ended, or a new ask (the view can read "working", or the draft's ask still, a moment after the allow).
+    return now.status === "completed" || now.status === "failed" || (now.status === "input_required" && now.pending?.id !== draft.pending.id) ? now : undefined;
+  });
+  assert.equal(status, "completed", `the send to eve asks nothing: the thread's people were never read off the real account: ${JSON.stringify(pending)}`);
+  assert.deepEqual(real.commands().slice(before), [], "no IMAP command reached the real account from the run");
+  const saw = sawOf(view.result?.final_answer).map((one) => (typeof one === "string" ? one : JSON.stringify(one)));
+  assert.match(saw[1] ?? "", /^email_send: this eval run reads only its case's fake mailbox, and the server's email account is another\./, `the send refused in execute's words: ${saw.join(" | ")}`);
+  assert.deepEqual([real.sent().length, caseFake.sent().length, caseFake.commands().length], [0, 0, 0], "nothing sent, and the case's fake, not the account saved, never reached either");
 });
