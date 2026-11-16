@@ -68,8 +68,9 @@ your API offers.
 
 `framedExec` from `src/hosted/framed-exec.ts` takes your vendor's calls about one process and answers the
 `MachineProcess` that `exec` returns. Each `write` gets whole characters and starts once the one before it answered;
-a write that fails fails every one after it. Without `kill`, the process starts under a `sh` that writes its pid to
-stderr first, and `kill()` runs `kill -KILL <pid>`. Without `end`, `end()` does nothing, so a command that reads to end
+a write that fails fails every one after it. Output is read no faster than AgentRun reads it. Without `kill`, the
+process starts under a `sh` that writes its pid and start time to stderr first, and `kill()` sends `kill -KILL` to
+that pid only while it has that start time, so a reused pid is never hit. Without `end`, `end()` does nothing, so a command that reads to end
 of file never ends; AgentRun runs none. `rest`'s `stream` reads a response's body as it comes, with the call's
 timeout on its headers alone, and `ndjson` reads that body a line at a time. For an API whose output events are
 `{"stream":"stdout","text":"…"}` lines, then `{"exit":0}`:

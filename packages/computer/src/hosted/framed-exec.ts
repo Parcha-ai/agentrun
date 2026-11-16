@@ -26,14 +26,21 @@ export interface ExecPieces<P> {
 	end?(handle: P): Promise<void>;
 	/**
 	 * Ends the process in the machine. Leave it out where the vendor has none: the process then starts under a sh that
-	 * writes its pid on stderr first (framedExec reads that line and passes on the rest), and kill() starts
-	 * `kill -KILL <pid>`.
+	 * writes its pid and its start time on stderr first (framedExec reads that line and passes on the rest), and kill()
+	 * starts a sh that sends `kill -KILL <pid>` only while that pid still has that start time.
 	 */
 	kill?(handle: P): Promise<void>;
 }
 
-/** The sh a process starts under when the vendor has no kill: its pid on stderr, one line, then the command in its place. */
-const PID_WRAPPER = ["sh", "-c", 'echo "$$" >&2; exec "$@"', "sh"];
+/**
+ * The sh a process starts under when the vendor has no kill: one line on stderr, its pid and its start time (field 22
+ * of /proc/<pid>/stat, counted past the command's name in parentheses, which may hold spaces), then the command in its
+ * place, which keeps both.
+ */
+export const PID_WRAPPER = ["sh", "-c", 'echo "$$ $(s=$(cat /proc/$$/stat) && set -- ${s##*") "} && echo "${20}")" >&2; exec "$@"', "sh"];
+
+/** The sh kill() starts, given the pid and start time: a pid whose process has ended, and may be another's now, is let be. */
+export const PID_KILL = 's=$(cat "/proc/$1/stat" 2>/dev/null) || exit 0; pid=$1 start=$2; set -- ${s##*") "}; [ "${20}" = "$start" ] && kill -KILL "$pid"; exit 0';
 
 /** argv started through a vendor's pieces, as the MachineProcess exec answers. */
 export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
@@ -58,7 +65,8 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 		await Promise.race([once(stream, "drain", { signal }), once(stream, "close", { signal })]).catch(() => {});
 		waited.abort();
 	};
-	// With no vendor kill, stderr's first line is the pid: held until it ends, then the rest is the process's own.
+	// With no vendor kill, stderr's first line is the pid and its start time: held until it ends, then the rest is the
+	// process's own.
 	let pidLine: Buffer | undefined = byPid ? Buffer.alloc(0) : undefined;
 	let gotPid: (pid: string | undefined) => void = () => {};
 	const pid = new Promise<string | undefined>((done) => (gotPid = done));
@@ -105,7 +113,7 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 		queue = sent;
 		return sent;
 	};
-	/** The pid, once stderr's first line gives it; undefined once the process ended, or past ctx's bound. */
+	/** "<pid> <start time>", once stderr's first line gives it; undefined once the process ended, or past ctx's bound. */
 	const pidWithin = async () => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const late = new Promise<undefined>((done) => (timer = setTimeout(() => done(undefined), ctx.timeoutMs)));
@@ -131,10 +139,11 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 			try {
 				if (pieces.kill) await pieces.kill(handle);
 				else {
-					const target = await pidWithin();
-					// Not once its exit was read: the pid may be another process's by now.
-					if (target !== undefined && /^[1-9][0-9]*$/.test(target) && !exitRead) {
-						const killer = await pieces.start(["kill", "-KILL", target], { timeoutMs: ctx.timeoutMs });
+					// Not once its exit was read; and after a stream that broke, only while the pid still has its start time: by
+					// then the pid may be another process's.
+					const target = /^([1-9][0-9]*) ([0-9]+)$/.exec((await pidWithin()) ?? "");
+					if (target !== null && !exitRead) {
+						const killer = await pieces.start(["sh", "-c", PID_KILL, "sh", target[1] as string, target[2] as string], { timeoutMs: ctx.timeoutMs });
 						for await (const event of pieces.events(killer)) if ("exit" in event) break;
 					}
 				}

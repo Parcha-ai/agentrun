@@ -3,14 +3,16 @@
 // processes, and carries the shared adapter's create (the daemon's upload through exec, as base64) on the adapter's fake
 // host. Then framedExec's own rules, ndjson, and the REST client's streamed body.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runConformance } from "../dist/index.js";
 import { checkExecStream, formatExecStream } from "../dist/conformance/exec-stream.js";
-import { framedExec, ndjson } from "../dist/hosted/framed-exec.js";
+import { framedExec, ndjson, PID_KILL, PID_WRAPPER } from "../dist/hosted/framed-exec.js";
 import { rest } from "../dist/hosted/rest.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -170,16 +172,16 @@ test("framedExec with the vendor's kill runs argv as given and kills through it;
 	await assert.rejects(proc.write(Buffer.from("late")), /the process has ended/);
 });
 
-test("framedExec with no vendor kill starts argv under a pid wrapper, keeps the pid's line off stderr, and kills by that pid", async () => {
+test("framedExec with no vendor kill starts argv under a pid wrapper, keeps its line off stderr, and kills that pid while it has that start time", async () => {
 	const { pieces, calls, stream } = memoryPieces();
 	const proc = await framedExec(pieces, ["sleep", "600"], ctx);
-	assert.deepEqual(calls[0], ["start", 1, ["sh", "-c", 'echo "$$" >&2; exec "$@"', "sh", "sleep", "600"]]);
+	assert.deepEqual(calls[0], ["start", 1, [...PID_WRAPPER, "sleep", "600"]]);
 	const err = collect(proc.stderr);
 	stream(1).push({ stream: "stderr", text: "42" });
-	stream(1).push({ stream: "stderr", text: "17\nits own words" });
+	stream(1).push({ stream: "stderr", text: "17 9876\nits own words" });
 	const killing = proc.kill();
 	await tick();
-	assert.deepEqual(calls[1], ["start", 2, ["kill", "-KILL", "4217"]]);
+	assert.deepEqual(calls[1], ["start", 2, ["sh", "-c", PID_KILL, "sh", "4217", "9876"]]);
 	stream(2).push({ exit: 0 });
 	await killing;
 	stream(1).push({ exit: 137 });
@@ -190,22 +192,36 @@ test("framedExec with no vendor kill starts argv under a pid wrapper, keeps the 
 test("framedExec with no vendor kill still kills by pid when the event stream broke with no exit read, and never once the exit was read", async () => {
 	const lost = memoryPieces();
 	const proc = await framedExec(lost.pieces, ["sleep", "600"], ctx);
-	lost.stream(1).push({ stream: "stderr", text: "4217\n" });
+	lost.stream(1).push({ stream: "stderr", text: "4217 9876\n" });
 	lost.stream(1).push("close");
 	assert.equal(await proc.wait(), -1, "no exit was read");
 	const killing = proc.kill();
 	await tick();
-	assert.deepEqual(lost.calls[1], ["start", 2, ["kill", "-KILL", "4217"]], "the process may still run: it is killed");
+	assert.deepEqual(lost.calls[1], ["start", 2, ["sh", "-c", PID_KILL, "sh", "4217", "9876"]], "the process may still run: it is killed, if its pid still has its start time");
 	lost.stream(2).push({ exit: 0 });
 	await killing;
 
 	const done = memoryPieces();
 	const ran = await framedExec(done.pieces, ["true"], ctx);
-	done.stream(1).push({ stream: "stderr", text: "4218\n" });
+	done.stream(1).push({ stream: "stderr", text: "4218 9877\n" });
 	done.stream(1).push({ exit: 0 });
 	assert.equal(await ran.wait(), 0);
 	await ran.kill();
 	assert.equal(done.calls.length, 1, "an exit read: the pid may be another process's, so no kill starts");
+});
+
+test("the pid wrapper's line is the pid and its start time, and the kill script kills that pid only while the start time matches", async (t) => {
+	const child = spawn(PID_WRAPPER[0], [...PID_WRAPPER.slice(1), "sleep", "600"], { stdio: ["ignore", "ignore", "pipe"] });
+	t.after(() => child.kill("SIGKILL"));
+	const [line] = await once(child.stderr, "data");
+	const [pid, start] = line.toString().trim().split(" ");
+	assert.equal(pid, String(child.pid));
+	assert.equal(start, readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")[19], "field 22 of its stat");
+	const kill = (startTime) => spawnSync("sh", ["-c", PID_KILL, "sh", pid, startTime]).status;
+	assert.equal(kill(String(Number(start) + 1)), 0);
+	assert.equal(child.exitCode ?? child.signalCode, null, "another start time: another process, let be");
+	assert.equal(kill(start), 0);
+	assert.deepEqual(await once(child, "exit"), [null, "SIGKILL"]);
 });
 
 test("framedExec reads events no faster than stdout is read, and kill() lets a held reader go", async () => {
@@ -264,6 +280,8 @@ test("rest's stream hands back an accepted body as it comes, never cut by the ca
 	let finish = () => {};
 	const server = createServer((req, res) => {
 		if (req.url === "/refused") return res.writeHead(409).end("stdin is closed");
+		// Any other request (a stray connection to the port) is no stream of this test's.
+		if (req.url !== "/events") return res.writeHead(404).end();
 		res.writeHead(200, { "Content-Type": "application/x-ndjson" });
 		res.write('{"n":1}\n');
 		finish = () => res.end('{"n":2}\n');
