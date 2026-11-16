@@ -4,7 +4,9 @@
 // subscription's secret, and the trigger keeps "[sealed]" in its place with the field named in `sealed_config`. Composio
 // gets the real value at the upsert. No answer, stored row, Idempotency-Key record or log line holds it. A PATCH that
 // leaves it out or sends "[sealed]" keeps it; one that sends another value is refused, as any change to a composio
-// trigger's config is. A trigger saved with its key in the clear before this rule is sealed at the next start.
+// trigger's config is. A trigger saved with its key in the clear before this rule is answered masked all the same, and
+// sealed at the next start. An Idempotency-Key's record keeps a keyed digest of the body and the masked answer; one an
+// older server wrote is scrubbed at the start.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -305,4 +307,131 @@ test("a template's composio trigger whose key comes from a parameter: the apply'
   assert.deepEqual([...composio.instances.values()][0]?.trigger_config, { app_id: "4242", developer_api_key: key }, "Composio's instance watches with the key");
   assert.ok(!readFileSync(join(server.data, ".idempotency.json"), "utf8").includes(key), "the apply's Idempotency-Key record holds no key");
   assert.ok(!lines.some((l) => l.includes(key)), "no log line holds the key");
+});
+
+/** Trigger `id`'s row rewritten as a server before this rule kept it: the config whole, in the clear, no sealed_config. */
+async function keptInTheClear(store, trigger, key) {
+  const { sealed_config: _, ...source } = trigger.source;
+  await store.triggers.update(trigger.id, { source: { ...source, config: { app_id: "4242", developer_api_key: key } } });
+}
+
+test("a trigger kept in the clear is answered masked by the same rule before it is sealed: GET, the list and a PATCH's answer", async (t) => {
+  const s = await setup(t);
+  const key = fakeKey();
+  const made = await s.api("POST", "/triggers", dealTrigger(key));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  await keptInTheClear(s.server.store, made.body, key);
+  const one = await s.api("GET", `/triggers/${made.body.id}`);
+  assert.ok(!JSON.stringify(one.body).includes(key), "GET masks a key the row keeps in the clear");
+  assert.equal(one.body.source.config.developer_api_key, MASK);
+  assert.deepEqual(one.body.source.sealed_config, ["developer_api_key"], "the masked field is named, sealed yet or not");
+  const all = await s.api("GET", "/triggers");
+  assert.ok(!JSON.stringify(all.body).includes(key), "the list masks it too");
+  // The source sent back as read, [sealed] in place, is no change to the config.
+  const renamed = await s.api("PATCH", `/triggers/${made.body.id}`, { name: "renamed", source: one.body.source });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  assert.ok(!JSON.stringify(renamed.body).includes(key), "the PATCH's answer masks it");
+});
+
+test("the start's sealing: the sealed value is the real key under the server's seal key, its log names the trigger and field alone, and a second start seals nothing again", async (t) => {
+  const s = await setup(t);
+  const key = fakeKey();
+  const made = await s.api("POST", "/triggers", dealTrigger(key));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  await keptInTheClear(s.server.store, made.body, key);
+  await s.server.stop();
+  const lines = [];
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  const said = lines.filter((line) => line.includes("composio_config_sealed"));
+  assert.equal(said.length, 1, `one line says the trigger was sealed: ${JSON.stringify(lines.filter((l) => l.includes("composio")))}`);
+  assert.ok(said[0].includes(made.body.id) && said[0].includes("developer_api_key"), `the line names the trigger and the field: ${said[0]}`);
+  assert.ok(!lines.some((line) => line.includes(key)), "no log line holds the key");
+  // What Composio's instance watches with is the key the trigger keeps sealed: the real one, never the mask.
+  const { bootSealKey } = await import("../dist/seal-key.js");
+  const { sealedSettingsOverStore } = await import("../dist/sealed-settings-store.js");
+  const adapter = await import("../dist/trigger-composio.js");
+  const seal = await bootSealKey(again.store, again.data, { role: "runner" });
+  const settings = sealedSettingsOverStore(again.store, "composio", adapter.composio.settings, seal.key, () => undefined);
+  await settings.load();
+  assert.equal(settings.get(adapter.configScope(made.body.id, "developer_api_key"), adapter.CONFIG_SECRET), key, "the sealed value is the real key");
+  assert.deepEqual([...s.composio.instances.values()][0].trigger_config, { app_id: "4242", developer_api_key: key }, "Composio's instance still has the real key");
+  assert.equal(s.composio.instances.size, 1, "nothing new made on Composio");
+  await again.stop();
+  const third = [];
+  const once = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => third.push(line) });
+  assert.ok(!third.some((line) => line.includes("composio_config_sealed")), "a second start seals nothing again");
+  assert.equal((await sealedRowsOf(once.store, made.body.id)).length, 1, "one sealed row still");
+});
+
+test("a PATCH that sends another key is refused in the fixed words, which say to delete the trigger and make a new one", async (t) => {
+  const s = await setup(t);
+  const made = await s.api("POST", "/triggers", dealTrigger(fakeKey()));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  const res = await s.api("PATCH", `/triggers/${made.body.id}`, { source: { kind: "composio", server: "hs", event: DEAL_STAGE.slug, config: { app_id: "4242", developer_api_key: fakeKey() } } });
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.match(res.body.error.fields[0].message, /delete the trigger and make a new one/, "the fix text says how to change a key");
+});
+
+test("an Idempotency-Key's fingerprint is keyed (an HMAC under the server's seal key): no bare SHA-256 of the body, and the replay is the masked answer", async (t) => {
+  const s = await setup(t);
+  const key = fakeKey();
+  const body = dealTrigger(key);
+  const first = await s.api("POST", "/triggers", body, { "idempotency-key": "deal-keyed" });
+  assert.equal(first.status, 201, first.status === 201 ? "" : JSON.stringify(first.body));
+  const { stable } = await import("../dist/validate.js");
+  const { createHash } = await import("node:crypto");
+  const bare = createHash("sha256").update(stable(body)).digest("hex");
+  const record = readFileSync(join(s.server.data, ".idempotency.json"), "utf8");
+  assert.ok(!record.includes(bare), "the record keeps no bare SHA-256 of the body, which a guess could be checked against");
+  const [, kept] = JSON.parse(record).entries.find(([slot]) => slot.endsWith("\ndeal-keyed"));
+  assert.match(kept.fingerprint, /^[0-9a-f]{64}$/);
+  assert.equal(kept.answer.body.source.config.developer_api_key, MASK, "the record keeps the masked answer");
+  const again = await s.api("POST", "/triggers", body, { "idempotency-key": "deal-keyed" });
+  assert.equal(again.headers.get("idempotent-replayed"), "true");
+  assert.ok(!JSON.stringify(again.body).includes(key), "the replay holds no key");
+  assert.equal(again.body.source.config.developer_api_key, MASK);
+  const other = await s.api("POST", "/triggers", dealTrigger(fakeKey()), { "idempotency-key": "deal-keyed" });
+  assert.equal(other.status, 409, `another body under the key is a mismatch: ${JSON.stringify(other.body)}`);
+});
+
+test("an Idempotency-Key record an older server wrote, body and answer in the clear, is scrubbed at the start: the file holds no key, the replay is masked, and the log says a count alone", async (t) => {
+  const s = await setup(t);
+  const key = fakeKey();
+  const body = dealTrigger(key);
+  const made = await s.api("POST", "/triggers", body);
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  await keptInTheClear(s.server.store, made.body, key);
+  await s.server.stop();
+  // The record as a server before this fix wrote it: the body itself as the fingerprint, the answer in the clear.
+  const { stable } = await import("../dist/validate.js");
+  const { sealed_config: _, ...source } = made.body.source;
+  const answer = { status: 201, body: { ...made.body, source: { ...source, config: { app_id: "4242", developer_api_key: key } } }, headers: { location: `/v2/triggers/${made.body.id}` } };
+  writeFileSync(join(s.server.data, ".idempotency.json"), JSON.stringify({ version: 1, entries: [[`/triggers\nolder-key`, { fingerprint: stable(body), at: Date.now(), answer }]] }), { mode: 0o600 });
+  const lines = [];
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  assert.ok(!readFileSync(join(again.data, ".idempotency.json"), "utf8").includes(key), "the start rewrote the record: the file holds no key before any request");
+  const scrubbed = lines.filter((line) => line.includes("idempotency_records_scrubbed"));
+  assert.equal(scrubbed.length, 1, `one line says the records were scrubbed: ${JSON.stringify(lines.filter((l) => l.includes("idempotency")))}`);
+  assert.match(scrubbed[0], /count=1/);
+  assert.ok(!lines.some((line) => line.includes(key)), "no log line holds the key");
+  const replay = await again.api("POST", "/triggers", body, { "idempotency-key": "older-key" });
+  assert.equal(replay.status, 201, JSON.stringify(replay.body));
+  assert.equal(replay.headers.get("idempotent-replayed"), "true", "the older record still replays");
+  assert.ok(!JSON.stringify(replay.body).includes(key), "its replay holds no key");
+  const other = await again.api("POST", "/triggers", dealTrigger(fakeKey()), { "idempotency-key": "older-key" });
+  assert.equal(other.status, 409, "another body under the older key is still a mismatch");
+});
+
+test("a template's composio trigger whose key comes from a parameter: no file under the data directory holds the key", async (t) => {
+  const root = await keyPackage(t);
+  const composio = await startFakeComposio({ toolkits: { hubspot: { no_auth: false, tools: TOOLS } }, authConfigs: { hubspot: [{ id: "ac_managed", is_composio_managed: true }] }, active: ["hubspot"], triggerTypes: { hubspot: [DEAL_STAGE] } });
+  t.after(() => composio.close());
+  const server = await serve(t, { templates: root, publicUrl: PUBLIC, composioControl: { baseUrl: composio.baseUrl } });
+  const saved = await server.api("PUT", "/settings/mcp-servers/work-hubspot/composio", { api_key: composio.apiKey, toolkit: "hubspot", tools: ["HUBSPOT_LIST_DEALS"], user_id: "agentrun-qa" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const key = fakeKey();
+  const applied = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } }, { "idempotency-key": "deals-files" });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const holding = filesUnder(server.data).filter((path) => readFileSync(path).includes(key));
+  assert.deepEqual(holding, [], "no file under the data directory holds the key in the clear");
 });
