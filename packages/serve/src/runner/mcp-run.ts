@@ -59,6 +59,10 @@ export interface McpForClaimOptions {
   /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): only a runner
    *  beside a local-install server is. Absent, never. */
   readonly loopback?: boolean;
+  /** The own addresses of the local-install server beside this runner (AdapterSpecDeps.mcpOwn, Serve.own): a loopback
+   *  URL on one of their ports is refused, as the server refuses it, so a run never reaches that server through an MCP
+   *  server's address, its authorization server's or a pin's listing. */
+  readonly own?: readonly string[];
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -119,10 +123,11 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       sealKey: options.sealKey,
       signal: held.signal,
       // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
-      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, own: options.own ?? [], ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),
+      ...(options.own ? { own: options.own } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
@@ -145,9 +150,10 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
     // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
     // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
-    // one host's local install never opens loopback for another host's runner on a shared store.
+    // one host's local install never opens loopback for another host's runner on a shared store; and never at that
+    // server's own ports (options.own).
     reach: async (url, signal) => {
-      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true });
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },
     beforeCall: step.beforeCall,

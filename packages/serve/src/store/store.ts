@@ -151,6 +151,10 @@ export interface RunOrigin {
   readonly fingerprint?: string | null;
 }
 
+/** A run's labels: a small map of the caller's own strings, set once at its start, never read by the server (only
+ *  filtered on). Bounds: run-labels.ts. */
+export type RunLabels = Readonly<Record<string, string>>;
+
 export interface RunRow {
   readonly id: string;
   readonly agentId: string;
@@ -180,6 +184,8 @@ export interface RunRow {
   /** The SHA-256 hashes of the browser sign-in pointers handed to the run at its launch (never the pointers), or null when
    *  it was handed none. A sign-in whose pointer hashes to one of these cannot be forgotten while the run runs. */
   readonly signInHanded: readonly string[] | null;
+  /** The caller's labels, given at its start (RunLabels): opaque to the server, kept as given, {} when none. */
+  readonly labels: RunLabels;
   readonly startedAt: number;
   readonly endedAt: number | null;
 }
@@ -696,7 +702,7 @@ export interface Runs {
    *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
    *  or nothing). */
-  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin }, launch?: RunLaunchInput): Promise<RunRow>;
+  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -706,7 +712,7 @@ export interface Runs {
   createInline(input: {
     agent: { id: string; name: string; description?: string | null; ref: string };
     revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string; mcpPin?: unknown; monidPin?: MonidPinBody };
-    run: { id: string; origin?: RunOrigin };
+    run: { id: string; origin?: RunOrigin; labels?: RunLabels };
     launch: RunLaunchInput;
   }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
@@ -719,8 +725,8 @@ export interface Runs {
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
+   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner
@@ -1091,6 +1097,33 @@ export interface PairedComputers {
   revoke(id: string): Promise<boolean>;
 }
 
+/** A hosted machine's minted token (store schema `minted_tokens`): what the machine must say it is at hello, and the
+ *  token's life. The token is not here: the store keeps its SHA-256 alone. */
+export interface MintedTokenRow {
+  /** The machine's name (from its create's request id): its id in the attach hub. */
+  readonly machine: string;
+  readonly kind: string;
+  readonly os: string;
+  readonly arch: string;
+  /** When the token ends: the machine's backstop. */
+  readonly expiresAt: number;
+  /** When it was revoked (the machine's delete); null while it is good. */
+  readonly revokedAt: number | null;
+  readonly createdAt: number;
+}
+
+/** The tokens minted for hosted machines that dial this server (a dial provider's create, spec/computer/attach.md). */
+export interface MintedTokens {
+  /** Keeps the token's SHA-256 for `machine`, replacing one minted for it before. Rows past their end go in the same write. */
+  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string }): Promise<void>;
+  /** The row whose token has this SHA-256, while it is good: neither revoked nor past its end. */
+  byToken(tokenSha256: string): Promise<MintedTokenRow | undefined>;
+  /** The machine's row, good or not; undefined when it has none (never minted, or gone past its end). */
+  get(machine: string): Promise<MintedTokenRow | undefined>;
+  /** Revokes the machine's token. False when it had none good. */
+  revoke(machine: string): Promise<boolean>;
+}
+
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
  *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
  *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
@@ -1294,6 +1327,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
+  /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
+  readonly mintedTokens: MintedTokens;
   /** The template packages imported from GitHub, their files kept as read. */
   readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */

@@ -808,6 +808,7 @@ export interface components {
     revision: string;
     kind: "agentic" | "workflow";
     archived_at: string | null;
+    labels?: Record<string, string>;
     approvals?: "ask" | "never";
     last_progress_at?: string | null;
     input?: Record<string, unknown> | null;
@@ -933,6 +934,7 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
+    labels?: Record<string, string>;
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -955,6 +957,7 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
+    labels?: Record<string, string>;
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -1056,6 +1059,7 @@ export interface components {
     revision: string;
     kind: "agentic" | "workflow";
     archived_at: string | null;
+    labels?: Record<string, string>;
     effort?: components["Effort"];
     error?: components["RunError"] | null;
     learning?: {
@@ -2344,6 +2348,10 @@ export interface operations {
       expires_at?: string;
       models?: string[];
     };
+  };
+  getComputerDaemon: {
+    body: never;
+    answer: never;
   };
   getEmailAccount: {
     body: never;

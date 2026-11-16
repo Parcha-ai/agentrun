@@ -116,9 +116,9 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
 }
 
 /** The runner's own secrets, which a run never gets, not even in the runner's in-process environment: the server's
- *  token and API key, the seal key (the runner holds it as its sealKey), and the store's connection (its URL holds a
+ *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), and the store's connection (its URL holds a
  *  database password). */
-const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
+const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
  *  secrets, with every other secret the launcher's pipe handed it (a model key, a tool key, a box key) readable by name
@@ -141,7 +141,7 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  provider loader in place of the computer package's. Under --faux (the runs' environment names the faux model, as a
  *  --faux server's and a `runner --faux` give it), --faux's computers are beside them, as the server's start check
  *  reads them (server.ts computerReady): a run on the faux desktop is claimed, and its live view opened, the real way. */
-export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub"> = {}) =>
+export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub" | "dial"> = {}) =>
   // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
   computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...(envValue(env, FAUX_ENV) ? { faux: fauxComputers() } : {}), ...own });
 

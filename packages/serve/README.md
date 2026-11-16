@@ -91,6 +91,16 @@ address people open (a container's published port, or a proxy's URL): the printe
 use it. `AGENTRUN_FREE_MODEL_REQUESTS` (default 60) is the most requests on free models a run makes
 ([a limit on free requests](#a-limit-on-free-requests)).
 
+`AGENTRUN_TOKENS`, when set, is a list of more tokens, each with an id: `id:secret` entries separated by commas or
+whitespace (each secret follows the token's rules, and holds no comma). `AGENTRUN_TOKEN`'s token is the entry `default`;
+set alone, the list takes `DIR/.token`'s place, and its first entry is the server's token. Any token on the list opens
+every route the token opens (`/v2`, `/mcp`, the setup code's field), and each presented token is compared against every
+entry in constant time. Each request line names the id of the token used (`token=<id>`), or `session=owner` or
+`session=console` for the console's own requests, never a secret. The banner lists the ids when there is more than one.
+An id or a secret given twice, or an entry that is not `id:secret`, stops the start. The list is a secret like the token:
+the launcher hands it over its pipe, and no run's process or runner loop gets it. A rotation adds the new token, moves
+callers, then removes the old one ([deploy/README.md](../../deploy/README.md#rotating-the-api-token)).
+
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
@@ -1768,7 +1778,9 @@ every request to one) must be `https` and resolve to no private, loopback or lin
 refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
 by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
 alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
-and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does.
+and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does,
+and never at that server's own ports (where it listens, and its public address when that is on loopback), which the server
+tells it as it starts: an MCP server or a refresh's endpoint there is refused unsent, as at a save.
 An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
 the server itself, and sending the shown URL back for a saved server keeps the saved one. A loopback MCP server is a development-only exception: its
 authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
@@ -2370,8 +2382,8 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
-| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
-| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
+| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
+| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" | "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
@@ -3640,13 +3652,14 @@ carries no cost at all, as from a provider that does not price the model. The te
 - A run has no door of its own. The server and a run's runner meet in the store: a message, stop or approval is a
   command row the runner reads, so no port a run listens on takes a token.
 - A run's tools run under the runner's environment (the `AGENT_MODEL` variables among it) without the server's token or
-  any key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
+  any key: no `AGENTRUN_TOKEN`, no `AGENTRUN_TOKENS`, no `AGENTRUN_API_KEY`, no variable whose value is a token, and no variable named like a key
   (one of its `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`, `PAT`,
   `CREDENTIAL`, `CREDENTIALS` or `DSN`, or its last is `PWD` after another: `SERVICE_KEY`, `GITHUB_TOKEN_RO`, `DB_PASS`,
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
   `keyShaped` (`src/secret-cut.ts`), which an import's cut and a harness's log take too. The keys a
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
-  It gets none of the boxes' keys ([Sandbox](#sandbox)). A tool key reaches it only when its
+  It gets none of the computer providers' account keys ([Sandbox](#sandbox)) and not the Archil account key
+  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.
@@ -3683,7 +3696,8 @@ carries no cost at all, as from a provider that does not price the model. The te
 - The launcher hands the server every secret on its list that is set over one pipe, which holds 4,096 bytes for sure
   before the server reads it: each set secret costs its name, its value and two bytes. Past that it refuses to start,
   saying `the secrets come to N bytes, more than the 4096 a pipe is sure to hold`, and starts nothing. A long value adds up
-  fast (an AWS session token is often over 1,000 bytes): set only the keys the server needs where it starts.
+  fast (an AWS session token is often over 1,000 bytes, an RSA `AGENT37_SSH_KEY` over 3,000): set only the keys the
+  server needs where it starts, and save a long one in Settings instead.
 
 ### Known gaps
 

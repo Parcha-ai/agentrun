@@ -11,17 +11,17 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
-  type JournalReads, type LaunchSealedWrite, type UpdatedRun,
+  type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
-  type ImportedTemplates,
+  type ImportedTemplates, type MintedTokenRow, type MintedTokens,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -148,6 +148,18 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
+/** A UTF-16 surrogate standing alone (in `u` mode a whole pair is one code point, so only a lone half matches). */
+const LONE_SURROGATE = /[\ud800-\udfff]/u;
+/** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. A key or value
+ *  holding a lone surrogate is refused (TypeError), nothing written: JSON.stringify keeps it as a `\ud800` escape that
+ *  Postgres' json check takes but json_each_text cannot decode, so every later label search scanning the run would fail. */
+const labelsColumn = (labels: RunLabels | undefined): string | null => {
+  for (const [key, value] of Object.entries(labels ?? {})) {
+    if (LONE_SURROGATE.test(key) || LONE_SURROGATE.test(value)) throw new TypeError(`a run's label ${JSON.stringify(key)} holds a lone UTF-16 surrogate: a label is whole Unicode characters`);
+  }
+  const keys = Object.keys(labels ?? {}).sort();
+  return keys.length === 0 ? null : JSON.stringify(Object.fromEntries(keys.map((key) => [key, labels![key]])));
+};
 /** A revision's MCP pin as its column keeps it: JSON, or null for none. */
 const pinText = (pin: unknown): string | null => (pin === undefined || pin === null ? null : JSON.stringify(pin));
 
@@ -184,6 +196,8 @@ const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider:
 type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
+type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number };
+const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -298,10 +312,16 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     }
     // An earlier build of this version kept no bound beside a run's cost (schema.ts RUNS_COST_UPPER_BOUND): the server adds
     // it, every run it ended reading 0, and a runner, which writes it at each end, waits for that server.
-    const costBound = (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).some((column) => column.name === "cost_upper_bound");
-    if (!costBound) {
+    const runColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).map((column) => column.name));
+    if (!runColumns.has("cost_upper_bound")) {
       if (role === "runner") throw new Error("Start the AgentRun server to add the bound beside each run's cost before opening a runner. The runner does not upgrade this store.");
       await connection.write([{ sql: RUNS_COST_UPPER_BOUND }], { full: true });
+    }
+    // An earlier build of this version kept no labels on a run (schema.ts RUNS_LABELS): the server adds the column, nullable,
+    // every run it started reading as given none. A runner reads each run through it, so it waits for that server.
+    if (!runColumns.has("labels")) {
+      if (role === "runner") throw new Error("Start the AgentRun server to add each run's labels before opening a runner. The runner does not upgrade this store.");
+      await connection.write([{ sql: RUNS_LABELS }], { full: true });
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
@@ -324,6 +344,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMMANDS_ONE_ANSWER },
         // An earlier build of this version kept no imported template packages (schema.ts IMPORTED_TEMPLATES).
         { sql: IMPORTED_TEMPLATES },
+        // Nor any hosted machine's minted token (schema.ts MINTED_TOKENS).
+        { sql: MINTED_TOKENS },
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       await backfillNativeCommandOwners(connection);
@@ -423,6 +445,7 @@ class SqliteStore implements Store {
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
   readonly pairedComputers: PairedComputers;
+  readonly mintedTokens: MintedTokens;
   readonly importedTemplates: ImportedTemplates;
   readonly triggerSettings: TriggerSettings;
   readonly channels: Channels;
@@ -854,25 +877,26 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
+        const labelled = labelsColumn(labels);
         if (origin || launch) {
           // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
           // never lands, and a run never exists without the launch it was started with.
           return this.#queued(await db.transaction(async (tx) => {
             const at = now();
-            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
+            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
             if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
             if (launch) await writeLaunch(tx, id, launch, at);
             return runOf(row!);
           }));
         }
-        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
+        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, labelled, now()] }]);
         return this.#queued(runOf(result!.rows[0] as RunRecord));
       },
       createInline: async ({ agent, revision, run, launch }) => {
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const made = await db.transaction(async (tx) => {
           const at = now();
           // Hold the external reference, so two first uses of the same expert serialize (SQLite's one writer already does).
@@ -896,7 +920,7 @@ class SqliteStore implements Store {
             await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
           }
           // The run, its origin and its launch, in the same transaction as the agent and the revision.
-          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, at);
+          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, labelsColumn(run.labels), at);
           if (run.origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", run.origin.key, run.id, run.origin.fingerprint ?? null, at);
           await writeLaunch(tx, run.id, launch, at);
           return runOf(row!);
@@ -909,7 +933,7 @@ class SqliteStore implements Store {
       },
       launch: (runId) => readLaunch(db, runId),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
-      list: async ({ agentId, revisionId, state, archived, limit }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, limit }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it.
         const where: string[] = [NOT_A_LEARNING_RUN];
@@ -918,6 +942,8 @@ class SqliteStore implements Store {
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
         if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
+        // Each label, key and value bound as parameters (never spliced into a JSON path), all of them held.
+        for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("labels")), params.push(key, value));
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
@@ -1460,6 +1486,33 @@ class SqliteStore implements Store {
       },
       revoke: async (id) => {
         const [result] = await db.write([{ sql: "UPDATE paired_computers SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), id] }]);
+        return (result?.changes ?? 0) === 1;
+      },
+    };
+
+    const MINTED = "SELECT machine, kind, os, arch, expires_at, revoked_at, created_at FROM minted_tokens";
+    this.mintedTokens = {
+      // A mint for a machine that has one replaces it: its older token dials no more.
+      mint: async ({ machine, tokenSha256, kind, os, arch, expiresAt }) => {
+        const at = now();
+        await db.write([
+          { sql: "DELETE FROM minted_tokens WHERE expires_at <= ?", params: [at] },
+          {
+            sql: "INSERT INTO minted_tokens (machine, token_sha256, kind, os, arch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (machine) DO UPDATE SET token_sha256 = excluded.token_sha256, kind = excluded.kind, os = excluded.os, arch = excluded.arch, expires_at = excluded.expires_at, revoked_at = NULL, created_at = excluded.created_at",
+            params: [machine, tokenSha256, kind, os, arch, expiresAt, at],
+          },
+        ]);
+      },
+      byToken: async (tokenSha256) => {
+        const row = await db.get<MintedRecord>(`${MINTED} WHERE token_sha256 = ? AND revoked_at IS NULL AND expires_at > ?`, tokenSha256, now());
+        return row === undefined ? undefined : mintedOf(row);
+      },
+      get: async (machine) => {
+        const row = await db.get<MintedRecord>(`${MINTED} WHERE machine = ?`, machine);
+        return row === undefined ? undefined : mintedOf(row);
+      },
+      revoke: async (machine) => {
+        const [result] = await db.write([{ sql: "UPDATE minted_tokens SET revoked_at = ? WHERE machine = ? AND revoked_at IS NULL", params: [now(), machine] }]);
         return (result?.changes ?? 0) === 1;
       },
     };

@@ -98,6 +98,9 @@ export interface McpClaimOptions {
   /** Whether this runner may reach a loopback address (McpForClaimOptions.loopback): a refresh's request to a loopback
    *  authorization server is sent only then. Absent, never. */
   loopback?: boolean;
+  /** The own addresses of the local-install server beside this runner (McpForClaimOptions.own): a loopback authorization
+   *  server on one of their ports is refused, as the server refuses it. */
+  own?: readonly string[];
   /** For a github_app server (auth github_app, nothing sealed): the server's GitHub App mint and the run's repository
    *  (runner/mcp-github.ts). None: such a server's calls are refused in words. */
   githubApp?: GithubAppAccess;
@@ -185,7 +188,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const refresh = async (row: McpServerRow, set: TokenSet, stop: AbortSignal): Promise<{ set: TokenSet } | { refused: true } | { silent: true; held?: true } | { unsent: true } | { blocked: string }> => {
     if (!set.tokens.refresh_token) return { refused: true };
     const call = AbortSignal.timeout(callMs);
-    const reach = { allowed: await privateOAuthHosts(store), loopback: options.loopback === true };
+    const reach = { allowed: await privateOAuthHosts(store), loopback: options.loopback === true, own: options.own ?? [] };
     for (let tried = 0; tried < tries && !call.aborted; tried++) {
       // Every try before this one provably never left: nothing is spent.
       if (stop.aborted) return { unsent: true };

@@ -8,9 +8,11 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 
 /** The routes (server.ts ROUTES, by name) an API-only server serves: a run's launch, read, list, timeline, messages,
  *  stop, cancel, cap raise and grade; its files and the uploads a launch names; an agent's Archil disk, read and removed (the
- *  agent layer of a run's disk, archil-routes.ts); capabilities, health and usage. */
+ *  agent layer of a run's disk, archil-routes.ts); capabilities, health and usage; and a run's hosted machine that dials
+ *  fetching this server's computerd with its own token (computer-attach.ts), as it dials the attach socket, which the
+ *  upgrade takes for such a machine alone (a paired computer is the console's). */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
-  "createRun", "createInlineRun",
+  "createRun", "createInlineRun", "getComputerDaemon",
   "getAgentArchil", "deleteAgentArchil",
   "getRun", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",

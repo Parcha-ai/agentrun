@@ -3,9 +3,10 @@
 // call's result row as `learned_nodes`). Its own module, so the timeline's reader needs none of the tool's imports.
 import type { Skipped } from "./learn/replay-calls.js";
 
-/** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes, guards? }`, its call's id, the
- *  workflow's name, each of its nodes that ran (LearnedNode, at most LEARNED_NODES_MAX) and every guard check it made
- *  (GuardRow, never capped: a map over more items than the trace holds keeps each); on a replay run's call that a write
+/** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes, guards?, loops? }`, its call's
+ *  id, the workflow's name, each of its nodes that ran (LearnedNode, at most LEARNED_NODES_MAX), every guard check it made
+ *  (GuardRow) and every loop exit (LoopRow), these two never capped (a map over more items than the trace holds keeps
+ *  each); on a replay run's call that a write
  *  stopped (learn/replay-calls.ts: one the graded run's recording does not have), `replay_skipped: { tool, step }` too; and
  *  `ended`, how the workflow ended (LearnedEnded), on a call that ended (a replay run's call always keeps its entry). */
 export const LEARNED_NODES = "agentrun.learned_nodes";
@@ -29,10 +30,15 @@ export type LearnedNode = { readonly label: string; readonly kind: string; reado
  *  `escalate`: no guard but an escalate node a replay recorded instead of obeying (the DSL's softEscalates), on
  *  its label: p 0 when it fired, else 1, at SOFT_ESCALATE_THRESHOLD, never `escalated` (the run went on past it). */
 export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both" | "escalate"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean; readonly workflow?: string };
+/** One loop's exit (the DSL's `loop.exited`): its label, how many passes its body ran and whether its `until` held (false:
+ *  it reached maxIters). A compiled answer's quote re-pick (learn/check.ts) is a loop of 2 until its quote check passes:
+ *  `iterations` 2 is a re-pick, `met` whether it found its quotes. Rows, uncapped, are a run's metrics' `loops`, each
+ *  naming the workflow whose call ran it (`workflow`), as `guards` are. */
+export type LoopRow = { readonly node: string; readonly iterations: number; readonly met: boolean; readonly workflow?: string };
 
 /** The LEARNED_NODES entry that counts for each learned_workflow call in `entries`, by the call's id, as its index in
  *  `entries`. A call run again (after a park or a crash: it nests calls) keeps an entry each time; the one that counts is
- *  its last that ran a node or made a check, as it holds every node and check its rerun made again. A rerun refused before
+ *  its last that ran a node, made a check or exited a loop, as it holds every node and check its rerun made again. A rerun refused before
  *  any node ran (a replay run keeps that entry: `nodes: []`, ended `failed`) leaves the attempt before it standing; a call
  *  none of whose entries ran a node counts its last. What the run's guard rows (guardsOf) and its timeline rows'
  *  `learned_nodes` (store-reads/journal.ts) both read, so the two never pick apart. */
@@ -41,9 +47,10 @@ export function learnedCallEntries(entries: readonly { readonly kind: string; re
   const ran = new Set<string>();
   entries.forEach((entry, index) => {
     if (entry.kind !== LEARNED_NODES) return;
-    const data = entry.data as { call?: unknown; nodes?: unknown; guards?: unknown } | undefined;
+    const data = entry.data as { call?: unknown; nodes?: unknown; guards?: unknown; loops?: unknown } | undefined;
     if (typeof data?.call !== "string") return;
-    const made = (Array.isArray(data.nodes) && data.nodes.length > 0) || (Array.isArray(data.guards) && data.guards.length > 0);
+    // A loop's exit is a run's row as a check is (a loop over an empty map exits with no node ended).
+    const made = [data.nodes, data.guards, data.loops].some((rows) => Array.isArray(rows) && rows.length > 0);
     if (made) ran.add(data.call);
     if (made || !ran.has(data.call)) last.set(data.call, index);
   });
@@ -54,15 +61,28 @@ export function learnedCallEntries(entries: readonly { readonly kind: string; re
  *  never the capped trace's), in order, each with its call's workflow, from the entry that counts for each call
  *  (learnedCallEntries). What its metrics keep as `guards`. */
 export function guardsOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): GuardRow[] {
-  const rows: GuardRow[] = [];
+  return rowsOf<GuardRow>(entries, "guards");
+}
+
+/** A run's loop rows, from its root entries: every loop exit of every learned_workflow call (LEARNED_NODES `loops`), read
+ *  as guardsOf reads `guards`. What its metrics keep as `loops`. */
+export function loopsOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): LoopRow[] {
+  return rowsOf<LoopRow>(entries, "loops");
+}
+
+/** The rows at `key` of each LEARNED_NODES entry that counts for its call (learnedCallEntries), in order, each with its
+ *  call's workflow. */
+function rowsOf<Row extends { readonly workflow?: string }>(entries: readonly { readonly kind: string; readonly data?: unknown }[], key: "guards" | "loops"): Row[] {
+  const rows: Row[] = [];
   const last = learnedCallEntries(entries);
   for (const [index, entry] of entries.entries()) {
     if (entry.kind !== LEARNED_NODES) continue;
-    const data = entry.data as { guards?: unknown; workflow?: unknown; call?: unknown } | undefined;
+    const data = entry.data as { guards?: unknown; loops?: unknown; workflow?: unknown; call?: unknown } | undefined;
     if (typeof data?.call === "string" && last.get(data.call) !== index) continue;
-    if (!Array.isArray(data?.guards)) continue;
-    const workflow = typeof data.workflow === "string" ? data.workflow : undefined;
-    for (const row of data.guards) if (row && typeof row === "object") rows.push(workflow ? { ...(row as GuardRow), workflow } : (row as GuardRow));
+    const kept = data?.[key];
+    if (!Array.isArray(kept)) continue;
+    const workflow = typeof data?.workflow === "string" ? data.workflow : undefined;
+    for (const row of kept) if (row && typeof row === "object") rows.push(workflow ? { ...(row as Row), workflow } : (row as Row));
   }
   return rows;
 }

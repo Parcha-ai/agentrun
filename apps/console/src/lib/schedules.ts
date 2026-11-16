@@ -1,5 +1,5 @@
 import cronstrue from "cronstrue";
-import { type Accept, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
+import { type Accept, acceptFields, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
 import { ClientError } from "./client";
 import { clock } from "./format";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
@@ -456,9 +456,9 @@ export function configOf(fields: readonly ConfigField[], values: Record<string, 
 export type ComposioDraft = { name: string; server: string; event: string; config: Record<string, string>; where: ConditionDraft[]; agentId: string; content: string; maxCost: string };
 export const emptyComposio = (): ComposioDraft => ({ name: "", server: "", event: "", config: {}, where: [], agentId: "", content: "", maxCost: "" });
 
-/** A trigger from an app's filter: its one event's conditions, a rule of their own; none takes every delivery for its
- *  instance. */
-function composioAcceptOf(event: string, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { accept: Accept[]; issues: Record<string, string> } {
+/** A filter of one event (a trigger from an app's, a feed trigger's): its conditions, a rule of their own; none takes
+ *  every delivery. */
+function eventAcceptOf(event: string, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { accept: Accept[]; issues: Record<string, string> } {
   // The first rule as read goes back as it came while the person leaves it (one with no conditions too); emptied, it goes.
   const first = where.length || (read && !read.where?.length) ? [{ event, actions: "", where, ...(read ? { was: read } : {}) }] : [];
   return acceptOf([...first, ...others]);
@@ -469,7 +469,7 @@ function composioAcceptOf(event: string, where: readonly ConditionDraft[], other
  *  `read`: the first rule as read, so what the person left of it goes back exactly as it came (ruleOf). */
 export function composioSourceOf(was: ComposioSource, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { source: ComposioSource; issues: Record<string, string> } {
   const { accept: _was, ...rest } = was;
-  const { accept, issues } = composioAcceptOf(was.event, where, others, read);
+  const { accept, issues } = eventAcceptOf(was.event, where, others, read);
   return { source: { ...rest, ...(accept.length ? { accept } : {}) } as ComposioSource, issues };
 }
 
@@ -480,10 +480,93 @@ export function composioBodyOf(d: ComposioDraft, fields: readonly ConfigField[],
   if (!d.server) issues["source.server"] = "Pick a Composio server.";
   if (!d.event) issues["source.event"] = "Pick an event.";
   const config = d.event ? configOf(fields, d.config, issues) : {};
-  const { accept, issues: filter } = composioAcceptOf(d.event, d.where);
+  const { accept, issues: filter } = eventAcceptOf(d.event, d.where);
   Object.assign(issues, filter);
   const source = { kind: "composio", server: d.server, event: d.event, config, ...(accept.length ? { accept } : {}) } as TriggerCreate["source"];
   return createOf(d, source, issues, capOptional, "a trigger");
+}
+
+/** A feed trigger (serve's trigger-feed.ts): the feeds it reads, how often, a JSON list's pointers, and its filter. */
+export type FeedTrigger = Trigger & { source: FeedSource; target: TriggerTarget };
+export type FeedSource = Extract<TriggerSource, { kind: "feed" }>;
+export const isFeedTrigger = (t: Trigger): t is FeedTrigger => t.source.kind === "feed" && t.target.kind === "start_run";
+/** The most feeds one trigger reads, and how often it reads them when not told (serve's MAX_FEEDS, DEFAULT_EVERY_S). */
+export const MAX_FEEDS = 20;
+export const FEED_EVERY_S = 900;
+/** The one event a feed trigger's filter names. */
+const FEED_EVENT = "item";
+
+/** A feed trigger's fields as typed: its URLs a line, its interval as a count of `everyUnit`, a JSON list's pointers
+ *  (empty: the server's own, the whole document and /id), its filter's conditions on the item, then the run each item
+ *  starts. `others`: rules after the first, made through the API, kept as they are; `read`: the source as read, so a
+ *  pointer and a first rule the person left go back as they came. */
+export type FeedDraft = { name: string; urls: string; every: string; everyUnit: EveryUnit; items: string; id: string; where: ConditionDraft[]; others: RuleDraft[]; read?: FeedSource; agentId: string; content: string; maxCost: string };
+export const emptyFeed = (): FeedDraft => ({ name: "", urls: "", every: "15", everyUnit: "minutes", items: "", id: "", where: [], others: [], agentId: "", content: "", maxCost: "" });
+
+/** A feed trigger's source as its editor holds it. A first rule that names actions (none a feed takes) is kept with the
+ *  others. */
+export function feedDraftOf(t: FeedTrigger): FeedDraft {
+  const s = t.source;
+  const every = s.every_s ?? FEED_EVERY_S;
+  const unit: EveryUnit = every % 3600 === 0 ? "hours" : every % 60 === 0 ? "minutes" : "seconds";
+  const rules = (s.accept ?? []).map(ruleDraftOf);
+  const first = rules[0] && !rules[0].actions.trim() ? rules[0] : null;
+  return { ...emptyFeed(), urls: s.urls.join("\n"), every: String(every / UNIT_S[unit]), everyUnit: unit, items: s.items ?? "", id: s.id ?? "", where: first?.where ?? [], others: rules.slice(first ? 1 : 0), read: s };
+}
+
+const urlOf = (text: string): URL | null => {
+  try {
+    return new URL(text);
+  } catch {
+    return null;
+  }
+};
+
+/** The URLs a box holds, one a line: blank lines and the spaces around a URL dropped. Each issue is under the URL's
+ *  place in the list sent (`source.urls[i]`), as the server names it; too few or too many, under `source.urls`. */
+export function feedUrlsOf(text: string): { urls: string[]; issues: Record<string, string> } {
+  const urls = text.split(/\r\n|\r|\n/).map((l) => l.trim()).filter(Boolean);
+  const issues: Record<string, string> = {};
+  if (!urls.length) issues["source.urls"] = "Add a feed's URL, one a line.";
+  else if (urls.length > MAX_FEEDS) issues["source.urls"] = `${MAX_FEEDS} feeds at most: this has ${urls.length}.`;
+  else {
+    urls.forEach((url, i) => {
+      const at = urlOf(url);
+      if (!at || (at.protocol !== "http:" && at.protocol !== "https:") || !at.hostname) issues[`source.urls[${i}]`] = `${url} isn't an http or https URL.`;
+      else if (at.username || at.password) issues[`source.urls[${i}]`] = `${at.host}'s URL holds a user or password: leave it out.`;
+      else if (urls.indexOf(url) < i) issues[`source.urls[${i}]`] = `${url} is here twice: each feed is read once.`;
+    });
+  }
+  return { urls, issues };
+}
+
+/** A feed trigger's source, or what is wrong, by the field the server would name. `minEvery`: the shortest interval the
+ *  server takes, when it says. A pointer is sent as typed, spaces and all; one left empty is left out, unless the source as read had it empty too. */
+export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSource; issues: Record<string, string> } {
+  const { urls, issues } = feedUrlsOf(d.urls);
+  const n = numberOf(d.every);
+  const every = Math.round((n ?? 0) * UNIT_S[d.everyUnit]);
+  if (n === undefined) issues["source.every_s"] = NEEDED;
+  else if (minEvery && every < minEvery) issues["source.every_s"] = atLeast(minEvery);
+  const pointer = (name: "items" | "id") => {
+    // Sent as typed: a space in a JSON Pointer is part of its key ("/data " names "data ").
+    const typed = d[name];
+    return typed || d.read?.[name] === "" ? { [name]: typed } : {};
+  };
+  const { accept, issues: filter } = eventAcceptOf(FEED_EVENT, d.where, d.others, d.read?.accept?.[0] && !d.read.accept[0].actions?.length ? d.read.accept[0] : undefined);
+  Object.assign(issues, filter);
+  return { source: { kind: "feed", urls, every_s: every, ...pointer("items"), ...pointer("id"), ...(accept.length ? { accept } : {}) }, issues };
+}
+
+/** A new feed trigger's create body, or what is wrong: its source (feedSourceOf), and bodyOf's rules for the run it starts. */
+export function feedBodyOf(d: FeedDraft, minEvery?: number, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const { source, issues } = feedSourceOf(d, minEvery);
+  return createOf(d, source, issues, capOptional, "a feed trigger");
+}
+
+/** The fields a feed form says an issue under: its URLs (each by its place), its interval, its pointers and its filter's. */
+export function feedFields(urls: number, conditions: readonly number[]): Set<string> {
+  return new Set(["name", "source.urls", ...Array.from({ length: urls }, (_, i) => `source.urls[${i}]`), "source.every_s", "source.items", "source.id", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(conditions)]);
 }
 
 /** A new GitHub trigger's create body, or what is missing: its filter's shape, and bodyOf's rules for the run it starts. */
@@ -556,8 +639,9 @@ export function issuesOf(e: unknown): { fields: Record<string, string>; rest: st
   for (const f of e.fields) {
     const at = f.field.startsWith("target.input") ? "target.input" : f.field;
     // A filter's issues are kept by their field too: its editor shows each one it has a place for (acceptFields); so are a
-    // trigger from an app's server, event and config (the form shows each under its field).
-    if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept") || at === "source.server" || at === "source.event" || at === "source.config" || at.startsWith("source.config.")) && !fields[at]) fields[at] = f.message;
+    // trigger from an app's server, event and config, and a feed trigger's URLs (each by its place) and pointers (the
+    // form shows each under its field).
+    if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept") || at === "source.server" || at === "source.event" || at === "source.config" || at.startsWith("source.config.") || /^source\.urls(\[\d+\])?$/.test(at) || at === "source.items" || at === "source.id") && !fields[at]) fields[at] = f.message;
     else rest.push(f.message);
   }
   return { fields, rest };

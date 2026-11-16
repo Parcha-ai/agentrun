@@ -1,10 +1,11 @@
 // The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
 // and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
-// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
-// spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels (packed
-// where the host declares it), list and attach, the deadline and extend, the wait after a delete, the sweep of a lost
-// create, the Archil mount, and the words of every refusal. These doc comments are the contract a new vendor reads
-// (PROVIDERS.md, "The eleven members").
+// errorCode, extend, check). A host whose machines dial the server (facts.connect "dial") has no exec and no upload.
+// HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the spec's check, the daemon's
+// upload, install and start, the stdio bridge, the read-back and the probe, labels (packed where the host declares it),
+// list and attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and
+// the words of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven
+// members").
 import type { ProviderDescriptor } from "./descriptor.js";
 import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -83,8 +84,11 @@ export interface MachineHost {
 	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
 	 * this from them with framedExec (./hosted/framed-exec.ts), as Daytona's does. The exec pre-check (conformance --exec-stream,
 	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
+	 *
+	 * Every host has it but one whose facts.connect is "dial", which has none (and no upload): its machine's computerd
+	 * dials the server instead.
 	 */
-	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
+	exec?(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
 	/**
 	 * Puts bytes at path in the machine, as root. Optional: a vendor with no file API leaves it out, and the adapter
 	 * streams the file through exec's stdin as base64 text, which root decodes (`base64 -d`, in coreutils and busybox).
@@ -154,8 +158,9 @@ export interface MachineRequest {
 	backstopAt: string;
 	/**
 	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
-	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts). Its tools' own network
-	 * is init's, loopback alone, read from inside, either way.
+	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts), and for every dial
+	 * machine (boot), which fetches its daemon from the server and dials it. Its tools' own network is init's, loopback
+	 * alone, read from inside, either way.
 	 */
 	egress: boolean;
 	/** facts.daemon "pid1" alone: the machine's main process (the entrypoint that waits for the daemon, then becomes init). */
@@ -166,6 +171,13 @@ export interface MachineRequest {
 	memoryMb?: number;
 	/** With facts.user: the spec's user, uid:gid. */
 	user?: string;
+	/**
+	 * facts.connect "dial" alone: what the machine's environment holds, every name and value as given, in the vendor's
+	 * secret-env field where it has one. The box image's agentrun-dial reads it (spec/computer/attach.md, Hosted machines
+	 * that dial): AGENTRUN_ATTACH_URL, AGENTRUN_ATTACH_TOKEN, AGENTRUN_DAEMON_URL, AGENTRUN_DAEMON_SHA256 and
+	 * AGENTRUN_INIT_ARGS.
+	 */
+	boot?: { env: Record<string, string> };
 }
 
 /**
@@ -266,4 +278,12 @@ export interface HostFacts {
 	 * directory, before the daemon's upload, so the computer's user can change nothing root runs. Default none.
 	 */
 	rootOnly?: readonly string[];
+	/**
+	 * dial: the machine's computerd dials the server, and the host has no exec and no upload. The vendor boots the box
+	 * image with MachineRequest.boot.env, where agentrun-dial fetches the server's daemon, checks its sha256, starts init
+	 * and dials the attach route with the machine's own token; every connection goes over that socket
+	 * (HostedOptions.dial). Not with labels "machine", which are read through exec. Absent: the adapter connects through
+	 * exec.
+	 */
+	connect?: "dial";
 }

@@ -5,8 +5,12 @@
 // A create retried with its request id answers the computer the first made, and after release is refused (Full). A
 // deleted computer stays gone: no call to it brings it back. A provider's prepareImage() and its descriptor's flag agree, and
 // prepareImage called twice answers one image and makes it once.
+// A dial host's machine token is its machine's alone, and ends at delete and at backstopAt (Core).
 import { randomBytes } from "node:crypto";
+import { ATTACH_CLOSE } from "../../attach.js";
 import type { ProviderDescriptor } from "../../descriptor.js";
+import { BACKSTOP_MARGIN_MS, type MachineHost } from "../../host.js";
+import type { HelloResult } from "../../protocol.js";
 import { descriptorOf } from "../../providers.js";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
@@ -438,6 +442,29 @@ export const providerCases: Case[] = [
 		},
 		{ level: "full", needs: ["persistence", "files"] },
 	),
+	// A machine that dials holds a token of its own (spec/computer/attach.md, Hosted machines that dial): good for that
+	// machine's hello alone, refused past its backstop and after its delete; and a server no machine can reach makes none.
+	provider("dial-token", async (t) => {
+		if ((t.provider as { host?: MachineHost }).host?.facts?.connect !== "dial") return t.observe("the provider's machines do not dial the server, so they hold no machine token");
+		const kit = await t.dial();
+		const bare = kit.unreachable();
+		const refused = t.refused(await t.attempt(t.spec({ labels: own(t, "dial-token") }), bare.provider), "create on a server with no public address", ["refused"]);
+		t.match(refused.message, /public https address/, "create on a server with no public address: the refusal");
+		t.equal(bare.creates(), 0, "the vendor's creates asked for by a create on a server with no public address");
+		const ref = await t.create({ labels: own(t, "dial-token") });
+		const { hello } = await t.connect(ref);
+		const token = t.present(kit.token(ref), `the token ${ref.name}'s machine was given`);
+		t.equal(await kit.check(token, new Date()), ref.name, "the machine's token, now");
+		// Past the machine's backstop: create's time, the most it may live and the margin, and a minute.
+		const past = new Date(Date.now() + t.provider.capabilities().maxLifetimeMs + BACKSTOP_MARGIN_MS + 60_000);
+		t.equal(await kit.check(token, past), undefined, "the machine's token past its backstop");
+		const others = [{ kind: hello.kind === "linux" ? "desktop" : "linux" }, { os: hello.os === "linux" ? "windows" : "linux" }, { arch: hello.arch === "amd64" ? "arm64" : "amd64" }] as const;
+		for (const other of others) {
+			t.equal(await kit.dialAs(token, { ...hello, ...other } as HelloResult), ATTACH_CLOSE.mismatch, `the machine's token with a hello of ${JSON.stringify(other)}: the close code`);
+		}
+		t.ok(await t.provider.release(ref, "delete"), "release delete");
+		t.equal(await kit.check(token, new Date()), undefined, "the machine's token after its delete");
+	}),
 	provider("network-change", async (t) => {
 		const spec = t.spec({ labels: own(t, "network") });
 		const ref = await t.create(spec);
