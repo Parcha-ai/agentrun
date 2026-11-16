@@ -713,9 +713,11 @@ export interface Runs {
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
-  /** The launch rows of every run of agent `agentId` (no built-in learning run's), in one read: what an agent-wide read
-   *  (its cost per run, its learning view) reads of its runs at once, never a read a run. A run with none has no row. */
-  launches(agentId: string): Promise<RunLaunchRow[]>;
+  /** The learning start (the launch body's `learning` member, as stored: undefined when the body names none) of every run of
+   *  agent `agentId` (no built-in learning run's) that has a launch row, in one read: what an agent-wide read (its cost per
+   *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no
+   *  sealed bytes. A run with no launch row has no entry. */
+  learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;

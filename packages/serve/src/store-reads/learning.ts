@@ -9,7 +9,7 @@ import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
-import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
+import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { type CostReplay, costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
@@ -53,27 +53,31 @@ function answeredOf(row: KeptRow): Pick<Learning, "answered_at" | "job_cost_usd"
 
 /** The reads of a run's records a learning read makes: its launch, a round of its kept learning, a run's row (its
  *  learning run's). The store's own reads, one a run, or an agent's read at once (agentRecordsOf). */
-export type RunRecords = { readonly runs: Pick<Store["runs"], "launch" | "get">; readonly learning: Pick<Store["learning"], "proposal"> };
+export type RunRecords = {
+  /** `learningStart`: a run's learning start read from the agent's one narrow read (agentRecordsOf), when it was; absent, the run's launch is read. */
+  readonly runs: Pick<Store["runs"], "launch" | "get"> & { readonly learningStart?: (runId: string) => Promise<RunLaunch["learning"]> };
+  readonly learning: Pick<Store["learning"], "proposal">;
+};
 
 /** Agent `agentId`'s runs' records read at once, whatever their number: its runs' launches (Store.runs.launches) and every
  *  round its runs' learning kept with the learning runs they name (Store.learning.kept), two reads beside `listed` (its
  *  runs, as runs.list read them). Each answers as the store's per-run read does: a run of `listed` with no launch row is
  *  StoreLaunchMissing, one that kept no learning has no round. A run not of `listed` is read from the store. */
 export async function agentRecordsOf(store: Store, agentId: string, listed: readonly RunRecord[]): Promise<RunRecords> {
-  const [launches, kept] = await Promise.all([store.runs.launches(agentId), store.learning.kept(agentId)]);
+  const [starts, kept] = await Promise.all([store.runs.learningStarts(agentId), store.learning.kept(agentId)]);
   const ours = new Set(listed.map((run) => run.id));
-  const launchOf = new Map(launches.map((row) => [row.runId, row]));
+  const startOf = new Map(starts.map((row) => [row.runId, row.learning]));
   // Each run's rounds, oldest first (the store reads them so).
   const rounds = new Map<string, LearningProposal[]>();
   for (const one of kept.proposals) rounds.set(one.runId, [...(rounds.get(one.runId) ?? []), one]);
   const rows = new Map([...listed, ...kept.learningRuns].map((run) => [run.id, run]));
   return {
     runs: {
-      launch: async (runId) => {
-        if (!ours.has(runId)) return store.runs.launch(runId);
-        const row = launchOf.get(runId);
-        if (!row) throw new StoreLaunchMissing(runId);
-        return row;
+      launch: (runId) => store.runs.launch(runId),
+      learningStart: async (runId) => {
+        if (!ours.has(runId)) return learningStartOfRun(store, runId);
+        if (!startOf.has(runId)) throw new StoreLaunchMissing(runId);
+        return learningStartOfStored(startOf.get(runId));
       },
       get: async (id) => rows.get(id) ?? store.runs.get(id),
     },
@@ -694,6 +698,8 @@ export function withNotes(end: RunLearningEnd, started: RunLaunch["learning"], r
 /** Run `runId`'s learning start as its launch records it (run-launch.ts learningStartOf, the one reader): its given notes,
  *  its seed sha and its # Learned section; undefined when the run does not learn or has no launch. */
 async function learningStartOfRun(store: Pick<RunRecords, "runs">, runId: string): Promise<RunLaunch["learning"]> {
+  // The agent's narrow read (agentRecordsOf) answers when the run is in it; a missing launch reads as a run that does not learn.
+  if (store.runs.learningStart) return store.runs.learningStart(runId).catch(() => undefined);
   const row = await store.runs.launch(runId).catch(() => undefined);
   const launch = row ? readLaunchBody(row.body) : undefined;
   return launch ? learningStartOf(launch) : undefined;

@@ -207,6 +207,11 @@ describe("notes and the story", () => {
     expect([few.value, few.detail]).toEqual(["5 served runs so far", "$0.890 a run by the agent, $0.127 all-in over the 5 runs it served since; how many times cheaper shows after 20 runs"]);
     const unpriced = cheaper({ after: null, after_state: "cost_unknown", times_cheaper: null });
     expect([unpriced.value, unpriced.detail, unpriced.state]).toEqual(["No cost yet", "no served run's cost is known yet", "now"]);
+    // Served runs exist but no priced agent run came before the takeover: never "no served runs yet".
+    const noBase = cheaper({ before: null, after: { runs: 5, mean_usd: 0.127 }, times_cheaper: null });
+    expect([noBase.value, noBase.state]).toEqual(["5 served runs so far", "now"]);
+    expect(noBase.detail).toBe("$0.127 all-in over the 5 runs it served; no priced agent runs before takeover to compare with");
+    expect(noBase.detail).not.toContain("no served runs");
     const none = storyOf({ ...base, notes: 3, runs: 80, cost: cost({ before: { runs: 18, mean_usd: 0.89 } }) }).find((s) => s.key === "cheaper")!;
     expect([none.value, none.state]).toEqual(["Not yet", "later"]);
     expect(none.detail).toContain("no served runs yet");

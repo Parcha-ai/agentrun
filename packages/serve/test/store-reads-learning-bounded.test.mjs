@@ -87,3 +87,17 @@ test("the learning view reads the store's rows as often for 300 runs as for 30, 
   assert.deepEqual(again[300], [first[30], 0], "a second read: the same row reads, no journal read");
   assert.deepEqual(again[30], again[300]);
 });
+
+test("an agent's learning starts are read without any run's input or sealed bytes", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", tools: ["read"], learning: true } });
+  const input = { content: "SECRET-INPUT ".repeat(2000) };
+  await store.runs.create({ id: "run-a", agentId: "agent-1", revisionId: "rev-1" }, { body: { input, title: "a", place: { mode: "runner" }, learning: GIVEN }, sealed: new Uint8Array(4096).fill(7) });
+  await store.runs.create({ id: "run-b", agentId: "agent-1", revisionId: "rev-1" }, { body: { input, title: "b", place: { mode: "runner" } } });
+  const starts = await store.runs.learningStarts("agent-1");
+  assert.deepEqual(starts.map((row) => Object.keys(row).sort()), [["learning", "runId"], ["learning", "runId"]]);
+  const byRun = new Map(starts.map((row) => [row.runId, row.learning]));
+  assert.deepEqual(byRun.get("run-a"), GIVEN);
+  assert.equal(byRun.get("run-b"), undefined);
+  assert.ok(!JSON.stringify(starts).includes("SECRET-INPUT"), "no run's input is read");
+});

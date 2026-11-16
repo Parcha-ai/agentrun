@@ -32,7 +32,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
 import { type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { readLaunch, readLaunches, writeLaunch } from "./run-launch.js";
+import { readLaunch, readLearningStarts, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -900,7 +900,7 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
-      launches: (agentId) => readLaunches(db, agentId, NOT_A_LEARNING_RUN),
+      learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
       list: async ({ agentId, revisionId, state, archived, limit }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it.

@@ -255,6 +255,9 @@ export function storyOf(input: {
     else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
   } else if (s?.takeover && s.after_state === "cost_unknown") {
     stages.push({ key: "cheaper", title: "Cheaper", value: "No cost yet", detail: "no served run's cost is known yet", state: "now" });
+  } else if (s?.after) {
+    // Served runs exist; what is missing is the agent's own priced runs before the takeover to set them against.
+    stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${dollars(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served; no priced agent runs before takeover to compare with`, state: "now" });
   } else if (!notesOnly) {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "no served runs yet: once a workflow takes over, the all-in cost of the runs it serves against before (replays are checks, not served runs)", state: "later" });
   }
