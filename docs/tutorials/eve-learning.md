@@ -51,9 +51,62 @@ A deterministic key ties admission to the eve session and turn, so repeating adm
 
 Missing, unsupported or oversized evidence is not treated as a complete training trace. Failed and cancelled turns remain observable without silently promoting new learning. Usage that the native runtime does not report stays unknown. Evidence writes expire one hour after admission; an expired task is not replayed to recover telemetry.
 
-This initial extension supplies accepted notes and skill text. It does not install local skill files, import old eve history, replace eve memory providers, or expose the original native tools for learned workflow execution. The separate [SDK workflow MCP bridge](sdk-workflow-learning.md) requires explicit tool callback bindings; adding the eve extension does not implicitly grant those capabilities.
+The base extension supplies accepted notes and skill text. It does not install local skill files, import old eve history or replace eve memory providers. Executable workflows require the explicit callback bindings below; adding the base extension does not implicitly grant those capabilities.
 
 Turning learning Off stops delivery to future turns. It cannot erase learning already included in an open conversation. Use a fresh session for the Off comparison.
+
+## Execute accepted workflows with existing tools
+
+Optionally give the extension an interpreter and a catalog of the **same functions** your existing authored eve tools execute:
+
+Add `@parcha/agentrun-dsl` as an application dependency. In your existing root `defineAgent` configuration, merge `build: { externalDependencies: ['@parcha/agentrun-dsl'] }` with any existing external packages. The interpreter loads package-relative schema assets; eve must retain its normal Node package layout in development and deployed output. Restart eve after changing these packages.
+
+```ts
+import agentrun from '@parcha/agentrun-eve';
+import * as workflowEngine from '@parcha/agentrun-dsl';
+import { POLICY } from '../lib/policy.js';
+import { readReleaseStatus, statusSchema } from '../lib/release-tools.js';
+
+export default agentrun({
+  baseUrl: process.env.AGENTRUN_BASE_URL!,
+  apiKey: process.env.AGENTRUN_API_KEY!,
+  agentId: 'release-reporter',
+  instructions: POLICY,
+  learning: false,
+  workflows: {
+    engine: workflowEngine,
+    tools: [{
+      name: 'mcp:release/release_status',
+      nativeName: 'release_status', // Exact name eve records for the original tool.
+      description: 'Read current release status for a service.',
+      input_schema: {
+        type: 'object', required: ['service'], additionalProperties: false,
+        properties: { service: { type: 'string', enum: ['demo-api', 'demo-worker'] } },
+      },
+      output_schema: statusSchema,
+      permission: 'allow', price_usd: 0, readOnly: true,
+      execute: readReleaseStatus, // Also called by the original authored eve tool.
+    }],
+    policy: () => 'allow', // Replace with your application's current permission check.
+    maxToolCalls: 8,
+    maxDurationMs: 30_000,
+  },
+});
+```
+
+An `execute(args, ctx)` callback receives an abort signal, AgentRun run id, workflow name and idempotency key. Continue enforcing the application's authorization inside the callback or policy. Names, input/output schemas and read-only declarations must describe the actual original tool. `nativeName` explicitly maps eve's recorded tool name to the canonical workflow name; the extension does not infer permissions or tools from the model provider.
+
+Full workflow learning (`learning: true`) enables normal compilation of repeated successful patterns. Notes mode (`learning: 'notes'`) learns notes and skills without workflow compilation. For an SDK turn without explicit owner feedback, the server skips look-back reflection in full mode; the example first teaches a checked skill in notes mode, then switches to full mode for practice and compilation. Initial mount settings apply only when registering a new id. Change an existing agent through the version-checked Agents API or the console's available learning controls.
+
+On a later native turn, the extension pins the accepted workflow revision and advertises its name and input schema. Eve can call `agentrun__learned_workflow` with `{ name, input }`. Within that native tool execution the extension opens a short-lived local MCP bridge, invokes the accepted workflow through MCP, and closes it. The interpreter runs only the explicitly bound original callbacks with fresh arguments. No callback moves into the AgentRun server and no extra agent job starts there.
+
+The model sees the workflow's textual result. AgentRun records a workflow invocation and child tool metadata; private callback results, MCP credentials and signed evidence do not become model instructions. Original native tools remain available. A workflow is an optional execution path, not an automatic side effect of receiving learned context.
+
+The first eve workflow bridge supports **explicitly read-only callbacks**. It refuses model/judge adapters and does not grant shell or workflow code execution. A tool-only workflow needs no Jev key; ordinary eve model calls and AgentRun's independent learning calls still need their own configured routes. The extension permits at most one workflow invocation per turn and refuses duplicate or uncertain effects rather than silently replaying callbacks. Turning full learning Off also blocks a new workflow invocation in a turn admitted earlier; an invocation already running is not undone.
+
+Keep the mount named `agent/extensions/agentrun.ts`. If you intentionally use another name, set `workflows.toolName` to the exact namespaced eve runtime tool name. That name is used for evidence correlation as well as instructions.
+
+The [executable workflow example](../../examples/eve-learning/README.md#learn-and-execute-a-workflow-with-the-original-tools) proves normal independent promotion, changed-input reuse through the same two callbacks, and a fresh Off control on the same agent. It saves resumable evidence and stops on direct-tool fallback, pending review or incomplete history.
 
 ## Run the proof
 

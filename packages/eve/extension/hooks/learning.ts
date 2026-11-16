@@ -1,11 +1,18 @@
 import { defineHook, type HookContext, type HookEvent } from 'eve/hooks';
 import { position } from 'eve/events';
 import { reconcile } from '../lib/runtime.js';
-import { learningState, pendingEvidence } from '../lib/state.js';
+import { learningState, pendingEvidence, workflowInvocations } from '../lib/state.js';
+import { reserveWorkflowInvocation } from '../lib/workflows.js';
 import { emptyPendingEvidence, recordHookEvent } from '../lib/pending-evidence.js';
 
-async function recorded(event: HookEvent, ctx: Pick<HookContext, 'position' | 'now' | 'view'>) {
+async function recorded(event: HookEvent, ctx: Pick<HookContext, 'position' | 'now' | 'view' | 'session'>) {
   try {
+    if (event.type === 'call.requested') {
+      const record = learningState.get().turns.find(row => row.source.sessionId === ctx.session.id && row.source.turnId === ctx.session.turn.id);
+      if (record?.workflowBinding?.toolName === event.data.capability.name && event.data.input !== undefined && !event.data.inputRef) {
+        workflowInvocations.update(rows => reserveWorkflowInvocation(rows, record.receipt.run_id, event.data.callId, event.data.input));
+      }
+    }
     pendingEvidence.update(state => recordHookEvent(state, event, ctx.position, {
       at: ctx.now.toISOString(), committedThrough: position(ctx.view),
     }));

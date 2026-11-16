@@ -2,6 +2,7 @@ import type { SessionReader } from 'eve/sessions';
 import { createHash } from 'node:crypto';
 import { callOutputSource, calls, emptySessionView, foldEvents, parts, reply, runs, turn } from 'eve/events';
 import type { SdkLearningEvent, SdkLearningOutcome } from '@parcha/agentrun-client/learning';
+import { readWorkflowResult, type WorkflowEvidenceScope, type WorkflowToolResult } from './workflow-evidence.js';
 
 export interface TurnEvidence {
   settled: boolean;
@@ -15,7 +16,7 @@ const MAX_EVENTS = 10_000, MAX_HISTORY_BYTES = 4_000_000, MAX_TEXT = 128_000, RE
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
 
 /** Read recorded facts only; this never follows live work or launches an Eve task. */
-export async function collectTurn(reader: SessionReader, turnId: string, startIndex = 0): Promise<TurnEvidence> {
+export async function collectTurn(reader: SessionReader, turnId: string, startIndex = 0, workflow?: WorkflowEvidenceScope): Promise<TurnEvidence> {
   if (!identifier(reader.id) || !identifier(turnId) || !Number.isSafeInteger(startIndex) || startIndex < 0)
     return unavailable('invalid_history_request');
   const records: ReaderEvent[] = [];
@@ -80,6 +81,17 @@ export async function collectTurn(reader: SessionReader, turnId: string, startIn
   if (!settled) incomplete('missing_turn_settlement');
   const turnRuns = runs(view, { turnId }), runIds = new Set(turnRuns.map(run => run.runId));
   const turnCalls = calls(view, { turnId }), callById = new Map(turnCalls.map(call => [call.callId, call]));
+  const bridged = new Map<string, WorkflowToolResult>();
+  if (workflow) for (const call of turnCalls) {
+    try {
+      const result = readWorkflowResult(callOutputSource(view, call.callId)?.output, workflow, call.callId);
+      if (result) {
+        if (call.name !== workflow.toolName) throw new Error('invalid_workflow_evidence');
+        bridged.set(call.callId, result);
+        if (!result.agentrun.complete || result.isError || call.outcome !== 'completed') incomplete('workflow_incomplete');
+      } else if (call.name === workflow.toolName) incomplete('workflow_evidence_unavailable');
+    } catch { incomplete('workflow_evidence_invalid'); }
+  }
   const textById = new Map(parts(view, { turnId, kind: 'text' }).map(part => [part.partId, part]));
   const events: SdkLearningEvent[] = [{ type: 'session', session_id: reader.id }];
   const models = new Set<string>();
@@ -122,8 +134,17 @@ export async function collectTurn(reader: SessionReader, turnId: string, startIn
         const source = callOutputSource(view, call.callId);
         if (event.data.outputRef || event.data.outputOf && (!source || source.outcome !== 'completed' || source.outputRef)) incomplete('tool_payload_unavailable');
       }
-      events.push({ type: 'tool', id: call.callId, name: call.name,
-        status: event.type === 'call.started' ? 'started' : event.data.outcome === 'completed' ? 'completed' : 'failed' });
+      const bridge = bridged.get(call.callId);
+      if (bridge) {
+        // Keep the native interval, replacing only the positively attested bridge envelope with
+        // the original MCP parent/child lifecycle. Arguments/results remain in eve, not telemetry.
+        const trace = bridge.agentrun.events;
+        events.push(...(event.type === 'call.started' ? trace.slice(0, 1) : trace.slice(1)));
+      } else {
+        const name = workflow?.aliases.find(alias => alias.nativeName === call.name)?.name ?? call.name;
+        events.push({ type: 'tool', id: call.callId, name,
+          status: event.type === 'call.started' ? 'started' : event.data.outcome === 'completed' ? 'completed' : 'failed' });
+      }
     }
     if (event.type === 'content.completed' && textById.has(event.data.partId)) {
       const part = textById.get(event.data.partId)!;

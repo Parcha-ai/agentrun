@@ -3,12 +3,14 @@ import { AgentRun, AgentRunRefused, AgentRunUsage, type ClientOptions } from '@p
 import { renderLearningContext, type SdkLearningEvent } from '@parcha/agentrun-client/learning';
 import type { SessionReader } from 'eve/sessions';
 import { collectTurn } from './evidence.js';
+import { workflowBinding, workflowInstructions, workflowScope, type EveWorkflowOptions, type WorkflowBinding } from './workflows.js';
 
 export interface LearningConfig extends ClientOptions {
   agentId: string;
   name?: string;
   instructions: string;
   learning?: boolean;
+  workflows?: EveWorkflowOptions;
 }
 export interface TurnSource {
   sessionId: string;
@@ -30,6 +32,7 @@ export interface TurnRecord {
   expiresAt: number;
   submitted?: true;
   expired?: true;
+  workflowBinding?: WorkflowBinding;
 }
 export interface LearningState { turns: TurnRecord[] }
 
@@ -42,6 +45,7 @@ const safe = <T>(value: T, secrets: readonly string[]): T => JSON.parse(JSON.str
 export async function beginTurn(config: LearningConfig, source: TurnSource): Promise<TurnRecord> {
   if (!source.sessionId || !source.turnId || !source.input.trim()) throw new AgentRunUsage('The eve turn needs a session, turn id and text input.');
   const owner = new AgentRun(config);
+  const workflows = workflowBinding(config.workflows);
   let agent;
   try { agent = (await owner.agents.get(config.agentId)).body; }
   catch (error) {
@@ -49,7 +53,7 @@ export async function beginTurn(config: LearningConfig, source: TurnSource): Pro
     try {
       await owner.agents.create({ definition: {
         id: config.agentId, name: config.name ?? config.agentId, instructions: config.instructions,
-        sdk: { runtime: 'eve' }, learning: config.learning === true ? 'notes' : false,
+        sdk: { runtime: 'eve' }, learning: config.learning === true ? workflows ? true : 'notes' : false,
       } }, { 'Idempotency-Key': `eve:register:${hash(config.agentId)}` });
     } catch (conflict) {
       if (!(conflict instanceof AgentRunRefused) || conflict.status !== 409) throw conflict;
@@ -59,9 +63,11 @@ export async function beginTurn(config: LearningConfig, source: TurnSource): Pro
   if (agent.definition.sdk?.runtime !== 'eve') throw new AgentRunUsage('This AgentRun agent belongs to another runtime; use a separate eve agentId.');
   const receipt = await owner.sdkRuns.start(config.agentId, {
     runtime: 'eve', input: source.input, instructions: config.instructions, ...(source.model ? { model: source.model } : {}),
+    ...(workflows ? { workflow_tools: workflows.manifest, workflow_adapters: [] } : {}),
   }, { 'Idempotency-Key': key(config.agentId, source) });
   if (receipt.agent_id !== config.agentId || !receipt.run_id || !receipt.token || !receipt.learning) throw new AgentRunUsage('AgentRun did not return an eve run receipt.');
   return { version: 1, baseUrl: owner.baseUrl, agentId: config.agentId, source: structuredClone(source), receipt,
+    ...(workflows ? { workflowBinding: workflows } : {}),
     expiresAt: (source.startedAt ?? Date.now()) + 3_600_000 };
 }
 
@@ -69,6 +75,7 @@ export function learningInstructions(record: TurnRecord): string {
   const learning = record.receipt.learning;
   return renderLearningContext({
     learningEnabled: learning.enabled, revision: learning.revision, context: learning.context, skills: learning.skills,
+    workflowContext: workflowInstructions(record),
   });
 }
 
@@ -101,7 +108,7 @@ export async function submitTurn(config: LearningConfig, record: TurnRecord, rea
   if (record.version !== 1 || owner.baseUrl !== record.baseUrl || config.agentId !== record.agentId || reader.id !== record.source.sessionId) {
     throw new AgentRunUsage('The eve receipt belongs to another server, agent or session.');
   }
-  const evidence = await collectTurn(reader, record.source.turnId, record.source.startIndex);
+  const evidence = await collectTurn(reader, record.source.turnId, record.source.startIndex, workflowScope(record));
   if (!evidence.settled || !evidence.outcome) return false;
   const scoped = new AgentRun({ ...config, baseUrl: record.baseUrl, apiKey: record.receipt.token });
   const secrets = [config.apiKey ?? '', record.receipt.token];

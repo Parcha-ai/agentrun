@@ -21,11 +21,21 @@ export interface BackendWorkflowBinding {
   /** Consume one actual bridge completion with identical arguments, status and result. No match keeps native evidence. */
   claimNativeEnvelope?(name: string, input: unknown, status: 'completed' | 'failed', output: unknown): boolean;
 }
+/** The pinned run and evidence sink a workflow host must provide. Durable hosts can persist evidence in
+ * their native result instead of depending on an in-memory SDK session or HTTP connection. */
+export interface BackendWorkflowSession {
+  readonly runId: string;
+  readonly workflows: NonNullable<BackendLearningSnapshot['workflows']>;
+  protect(values: readonly string[]): void;
+  event(event: SdkLearningEvent): Promise<void>;
+  markEvidenceIncomplete(reason: string): void;
+}
+
 /** Structural seam: importing the base client does not load the optional workflow interpreter or MCP server. */
 export interface BackendWorkflowBridge {
   readonly catalog: readonly BackendWorkflowToolManifest[];
   readonly adapters: readonly ('runNode' | 'runJudge')[];
-  bind(session: BackendLearningSession): BackendWorkflowBinding;
+  bind(session: BackendWorkflowSession): BackendWorkflowBinding;
 }
 
 /** The learning loop's numbers an agent definition may set (`learning: {...}`); each one left out is the server's default. */

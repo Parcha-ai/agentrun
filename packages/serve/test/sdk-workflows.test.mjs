@@ -245,7 +245,7 @@ test("the SDK compiler's request carries the owner's standing corrections, a rul
   assert.ok(prompts[0].includes(rule), "the compiler is told the owner's correction");
 });
 
-for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true], ["claude-agent-sdk", false]]) test(`${runtime}${priced ? "" : " with an unpriced tool"} learns a workflow through the ordinary cadence and pins it for the next backend run`, { timeout: 90_000 }, async (t) => {
+for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true], ["eve", true], ["claude-agent-sdk", false]]) test(`${runtime}${priced ? "" : " with an unpriced tool"} learns a workflow through the ordinary cadence and pins it for the next backend run`, { timeout: 90_000 }, async (t) => {
   const { client, follow } = await import("./support.mjs");
   const { SdkRuns } = await import("../dist/sdk/runs.js");
   const server = await serve(t, { faux: new URL("./fixtures/sdk-workflow-model.mjs", import.meta.url).pathname });

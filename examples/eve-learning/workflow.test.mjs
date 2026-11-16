@@ -1,0 +1,183 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readReleaseStatus, formatReleaseBrief, readWorkflowAudit, releaseWorkflowTools } from './agent/lib/release-tools.ts';
+import { assertExecutableReuse, assertOriginalChain, demonstrateWorkflows, workflowTask } from './workflow-validate.mjs';
+
+async function journal(t) {
+  const dir = await mkdtemp(join(tmpdir(), 'eve-workflow-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return join(dir, 'callbacks.jsonl');
+}
+
+test('existing native callbacks keep exact fresh data across processes and reject another task or edited status', async t => {
+  const auditPath = await journal(t), native = { auditPath, sessionId: 'native-first' };
+  const status = await readReleaseStatus({ service: 'demo-api' }, native);
+  assert.equal((await formatReleaseBrief({ status }, native)).brief, 'Release brief: demo-api 2.4.0; tests passed; ready.');
+  await assert.rejects(formatReleaseBrief({ status: { ...status, version: 'invented' } }, native), /unchanged status/);
+  await assert.rejects(formatReleaseBrief({ status }, { ...native, sessionId: 'other-task' }), /unchanged status/);
+  await assert.rejects(formatReleaseBrief({ status }, { auditPath, runId: 'different', workflow: 'release' }), /unchanged status/);
+  const fresh = await readReleaseStatus({ service: 'demo-worker' }, { auditPath, runId: 'workflow-run', workflow: 'release' });
+  assert.notEqual(fresh.observation, status.observation);
+  assert.equal((await formatReleaseBrief({ status: fresh }, { auditPath, runId: 'workflow-run', workflow: 'release' })).brief,
+    'Release brief: demo-worker 3.1.2; tests passed; ready.');
+  assert.equal((await stat(auditPath)).mode & 0o777, 0o600);
+  assert.deepEqual((await readWorkflowAudit(auditPath)).map(row => row.source), ['native', 'native', 'workflow', 'workflow']);
+  assert.equal(releaseWorkflowTools[0].execute, readReleaseStatus);
+  assert.equal(releaseWorkflowTools[1].execute, formatReleaseBrief);
+  const { spawnSync } = await import('node:child_process');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import {formatReleaseBrief} from ${JSON.stringify(new URL('./agent/lib/release-tools.ts', import.meta.url).href)};
+    const result = await formatReleaseBrief({status: JSON.parse(process.argv[1])}, {auditPath: process.argv[2], sessionId: 'native-first'});
+    process.stdout.write(result.brief);
+  `, JSON.stringify(status), auditPath], { encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, 'Release brief: demo-api 2.4.0; tests passed; ready.');
+});
+
+test('a real local MCP workflow calls the original callback functions and emits only metadata', { timeout: 20_000 }, async t => {
+  const { createWorkflowMcpBridge } = await import('@parcha/agentrun-client/workflows');
+  const engine = await import('@parcha/agentrun-dsl');
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+  const auditPath = await journal(t), events = [], calls = [];
+  // Only the model/server receipt is scripted here. This unit fixture is never supplied to the live validator.
+  const tools = releaseWorkflowTools.map(tool => ({ ...tool, execute(input, ctx) {
+    calls.push(tool.execute); return tool.execute(input, { ...ctx, auditPath });
+  } }));
+  const doc = { v: 2, name: 'release-brief', schemas: { Input: tools[0].input_schema,
+    Status: tools[0].output_schema, Brief: tools[1].output_schema }, input: { schemaId: 'Input' },
+    output: { schemaId: 'Brief', path: 'brief' }, root: { node: 'chain', steps: [
+      { node: 'call', label: 'status', via: 'tool', tool: tools[0].name, args: { service: '{service}' }, out: 'Status', as: 'status', deadline_s: 5 },
+      { node: 'call', label: 'format', via: 'tool', tool: tools[1].name, args: { status: '{status}' }, out: 'Brief', as: 'brief', deadline_s: 5 },
+    ] } };
+  const bridge = await createWorkflowMcpBridge({ engine, tools, policy: () => 'allow' });
+  const client = new Client({ name: 'eve-workflow-example-test', version: '1.0.0' });
+  let incomplete = false;
+  const bound = bridge.bind({ runId: 'workflow-run', workflows: [{ name: 'release-brief', description: 'Read and format release data.', workflow: JSON.stringify(doc) }],
+    protect() {}, markEvidenceIncomplete() { incomplete = true; }, async event(event) { events.push(event); } });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(bridge.url), { requestInit: { headers: bridge.headers } }));
+    const args = bound.mcpArguments('release-brief', { service: 'demo-worker' });
+    const result = await client.callTool({ name: 'learned_workflow', arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.equal(result.content[0].text, 'Release brief: demo-worker 3.1.2; tests passed; ready.');
+    assert.equal(incomplete, false); assert.deepEqual(calls, [readReleaseStatus, formatReleaseBrief]);
+    const rows = await readWorkflowAudit(auditPath);
+    assert.deepEqual(rows[1].input.status, rows[0].result);
+    assert.ok(rows.every(row => row.source === 'workflow' && row.workflow === 'release-brief' && row.runId === 'workflow-run'));
+    const parent = events.find(event => event.name === 'learned_workflow' && event.status === 'completed');
+    assert.ok(parent);
+    assert.ok(events.filter(event => event.name !== 'learned_workflow').every(event => event.parent_tool_use_id === parent.id));
+    assert.ok(!JSON.stringify(events).includes(rows[0].result.observation), 'Private callback data must not appear in uploaded telemetry.');
+    await bound.close();
+    assert.equal((await client.callTool({ name: 'learned_workflow', arguments: args })).isError, true);
+  } finally { await client.close(); await bound.close(); await bridge.close(); }
+});
+
+async function proofFixture(t, { pending = false, fallback = false, uncertain = false, interrupt = false } = {}) {
+  const auditPath = await journal(t), agentId = 'eve-workflow-fixture', results = new Map(), runs = new Map(), prompts = [], reads = [], settings = [];
+  let learning = false, version = 1, enabledRuns = 0, taughtRun, workflowRun, checkpoint;
+  const accepted = () => Boolean(workflowRun);
+  const view = () => ({ main: accepted() ? 'revision-workflow' : taughtRun ? 'revision-skill' : 'revision-empty',
+    notes: { items: [] }, skills: taughtRun ? [{ status: 'active', run: taughtRun, name: 'release-brief', file: 'skills/release-brief/SKILL.md' }] : [],
+    workflows: accepted() ? [{ status: pending ? 'pending' : 'active', run: workflowRun, name: 'release-brief', file: 'workflows/release-brief/workflow.json' }] : [],
+    log: { items: [{ commit: 'revision-workflow' }] } });
+  const client = { agents: {
+    async get() { return { etag: `"${version}"`, body: { definition: { version, sdk: { runtime: 'eve' }, learning } } }; },
+    async update(id, { definition }, headers) {
+      assert.equal(id, agentId); assert.equal(headers['If-Match'], `"${version}"`); assert.equal(definition.version, undefined);
+      learning = definition.learning; settings.push(learning); version++;
+      return this.get();
+    },
+    async runs() { return { runs: [...runs.values()] }; },
+  }, runs: { async get(id) { assert.ok(runs.has(id)); return structuredClone(runs.get(id)); } },
+  learning: { async get() { return view(); }, async read() { return { body: '{"unit-test":"scripted checker document"}' }; } } };
+  const invokeNative = async (input, { onStarted }) => {
+    prompts.push(input);
+    if (uncertain) { uncertain = false; throw new Error('A connection closed before a session receipt was returned.'); }
+    const sessionId = `session-${prompts.length}`, runId = `run-${prompts.length}`;
+    await onStarted({ sessionId, deliveryId: `delivery-${prompts.length}` });
+    const service = input.includes('demo-worker') ? 'demo-worker' : 'demo-api';
+    const workflow = accepted() && learning === true && !fallback;
+    const revision = learning === false ? null : view().main;
+    const ctx = { auditPath, ...(workflow ? { runId, workflow: 'release-brief' } : { sessionId }) };
+    const status = await readReleaseStatus({ service }, ctx), brief = await formatReleaseBrief({ status }, ctx);
+    const parent = `parent-${runId}`;
+    const toolCalls = workflow ? [{ callId: `call-${runId}`, name: 'agentrun__learned_workflow', outcome: 'completed',
+      workflow: { name: 'release-brief', revision, runId, complete: true, events: [
+        { id: parent, name: 'learned_workflow', status: 'completed' },
+        ...releaseWorkflowTools.map((tool, index) => ({ id: `child-${index}-${runId}`, name: tool.name, status: 'completed', parent_tool_use_id: parent })),
+      ] } }] : ['release_status', 'format_release_brief'].map(name => ({ name, callId: `${runId}-${name}`, outcome: 'completed' }));
+    const result = { sessionId, turnId: 'turn-0', answer: brief.brief, toolCalls };
+    const run = { run_id: runId, status: 'completed', sdk: { runtime: 'eve', session_id: sessionId, learning_revision: revision },
+      ...(learning === false ? {} : { learning: { state: 'merged' } }) };
+    results.set(sessionId, { input, result }); runs.set(runId, run);
+    if (learning === 'notes') taughtRun = runId;
+    if (learning !== false && ++enabledRuns === 5) workflowRun = runId;
+    if (interrupt) { interrupt = false; throw new Error('A native delivery completed after the connection closed.'); }
+    return result;
+  };
+  const options = { agentId, eveBaseUrl: 'http://127.0.0.1:7443', auditPath, client, invokeNative, pollMs: 100, pollIntervalMs: 1,
+    checkpoint: async value => { checkpoint = structuredClone(value); },
+    async readNative(id, { expectedTask }) { reads.push(id); const saved = results.get(id); assert.ok(saved); assert.equal(saved.input, expectedTask); return structuredClone(saved.result); },
+  };
+  return { options, prompts, settings, runs, reads, results, proof: () => checkpoint };
+}
+
+test('live-proof orchestration teaches in notes mode, then compiles normally, proves fresh callback reuse, and switches the same agent Off', async t => {
+  const f = await proofFixture(t), proof = await demonstrateWorkflows(f.options);
+  assert.equal(proof.stage, 'passed'); assert.equal(f.prompts.length, 8);
+  assert.deepEqual(f.settings, ['notes', true, false]);
+  assert.equal(f.prompts.at(-2), workflowTask('demo-worker')); assert.equal(f.prompts.at(-1), workflowTask('demo-worker'));
+  assert.equal(proof.accepted.workflows[0].run, proof.sessions.practice_4.run.runId);
+  assert.equal(proof.sessions.reused.callbacks.read.source, 'workflow');
+  assert.equal(proof.sessions.control_off.callbacks.read.source, 'native');
+  assert.equal(new Set(Object.values(proof.sessions).map(row => row.callbacks.read.result.observation)).size, 8);
+  const settings = [...f.settings];
+  const resumed = await demonstrateWorkflows({ ...f.options, resume: proof });
+  assert.equal(resumed.stage, 'passed'); assert.equal(f.prompts.length, 8); assert.equal(f.reads.length, 8);
+  assert.deepEqual(f.settings, settings, 'A finished proof must not toggle settings or submit more paid work when resumed.');
+});
+
+test('workflow proof stops at independent review without auto-approving or invoking reuse', async t => {
+  const f = await proofFixture(t, { pending: true });
+  await assert.rejects(demonstrateWorkflows(f.options), /needs owner review/);
+  assert.equal(f.prompts.length, 6); assert.equal(f.proof().sessions.reused, undefined);
+});
+
+test('good direct-tool output is never counted as executable workflow reuse', async t => {
+  const f = await proofFixture(t, { fallback: true });
+  await assert.rejects(demonstrateWorkflows(f.options), /original formatter callback did not execute/);
+  assert.equal(f.prompts.length, 7); assert.equal(f.proof().sessions.control_off, undefined);
+  const result = f.results.get('session-7').result, run = f.runs.get('run-7');
+  const chain = assertOriginalChain(result, await readWorkflowAudit(f.options.auditPath), run, 'demo-worker');
+  assert.throws(() => assertExecutableReuse(result, run, f.proof().accepted, chain), /No accepted workflow completed/);
+});
+
+test('uncertain submissions cannot be retried by resume, but confirmed native sessions are read without resending', async t => {
+  const uncertain = await proofFixture(t, { uncertain: true });
+  await assert.rejects(demonstrateWorkflows(uncertain.options), /before a session receipt/);
+  await assert.rejects(demonstrateWorkflows({ ...uncertain.options, resume: uncertain.proof() }), /previous submission is uncertain/);
+  assert.equal(uncertain.prompts.length, 1);
+  const confirmed = await proofFixture(t, { interrupt: true });
+  await assert.rejects(demonstrateWorkflows(confirmed.options), /connection closed/);
+  const proof = await demonstrateWorkflows({ ...confirmed.options, resume: confirmed.proof() });
+  assert.equal(proof.stage, 'passed'); assert.equal(confirmed.prompts.length, 8);
+  assert.deepEqual(confirmed.reads, ['session-1']);
+});
+
+test('example source keeps workflows opt-in and binds explicit original native tool names', async () => {
+  const connect = await readFile(new URL('./connect.mjs', import.meta.url), 'utf8');
+  const formatter = await readFile(new URL('./agent/tools/format_release_brief.ts', import.meta.url), 'utf8');
+  const mount = await readFile(new URL('./connection/agentrun-workflows.ts', import.meta.url), 'utf8');
+  const agent = await readFile(new URL('./agent/agent.ts', import.meta.url), 'utf8');
+  assert.match(connect, /COPYFILE_EXCL/); assert.match(connect, /--workflows/);
+  assert.match(formatter, /EVE_WORKFLOW_AUDIT_PATH \? tool : null/);
+  assert.match(mount, /tools: releaseWorkflowTools/);
+  assert.match(agent, /externalDependencies: \['@parcha\/agentrun-dsl'\]/);
+  assert.deepEqual(releaseWorkflowTools.map(tool => tool.nativeName), ['release_status', 'format_release_brief']);
+  assert.ok(releaseWorkflowTools.every(tool => tool.readOnly && tool.permission === 'allow'));
+});

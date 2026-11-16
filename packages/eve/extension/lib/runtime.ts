@@ -45,7 +45,7 @@ export async function instructionsFor(ctx: DynamicContext): Promise<string> {
       sessionId: ctx.session.id, turnId: turn.id, input, model: ctx.model.id,
       startIndex: 0, startedAt: ctx.now.getTime(), complete: turn.input.every(part => part.kind === 'text'),
     });
-    learningState.update(current => ({ turns: [...current.turns.filter(item => !item.submitted && !item.expired).slice(-7), row] }));
+    learningState.update(current => ({ turns: [...current.turns.filter(item => !item.submitted && !item.expired && item.source.turnId !== row.source.turnId).slice(-7), row] }));
     return row;
   });
   const pinned = record as TurnRecord;

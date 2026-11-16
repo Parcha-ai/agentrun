@@ -1,5 +1,6 @@
 import { defineExtension } from 'eve/extension';
 import { z } from 'zod';
+import type { EveWorkflowOptions } from './lib/workflows.js';
 
 export default defineExtension({
   config: z.object({
@@ -11,5 +12,7 @@ export default defineExtension({
     instructions: z.string().min(1).max(64 * 1024),
     // Initial registration only. An existing agent's console setting always wins.
     learning: z.boolean().default(false),
+    // Host functions are runtime mount configuration, never serialized into an API request or model prompt.
+    workflows: z.custom<EveWorkflowOptions>(value => !!value && typeof value === 'object').optional(),
   }),
 });

@@ -85,3 +85,61 @@ npm run validate --prefix examples/eve-learning -- --live --resume /tmp/eve-lear
 Resume reads every saved native session's finite history and re-fetches its AgentRun run. It verifies one fresh turn, the exact original input, completed native tools and the recorded learning revision; saved answers alone are not trusted. Existing sessions are never resent or replaced. An unfinished session or uncertain submission without a confirmed session id stops the proof. Only stages that were never submitted may start a new task. The saved file is updated in place, preserving the earlier failure and resumption time; add `--output NEW_PATH` to save a separate continuation. A setting already at its intended value is left unchanged.
 
 For deployed eve applications, retain the original channel authentication and pass `EVE_BEARER_TOKEN` to the invocation script if that route requires a bearer credential. Never expose an unauthenticated local development server publicly.
+
+## Learn and execute a workflow with the original tools
+
+The optional workflow proof adds a read-only `format_release_brief` callback to the fictional application. Both native eve tools and learned workflows use the same exported functions in `agent/lib/release-tools.ts`. The formatter accepts only the complete, unchanged status object actually read in that task, including its fresh UUID. This distinguishes executing the original callbacks from repeating an old answer.
+
+Use a **separate clean copy of this example** and a new `AGENTRUN_AGENT_ID` so its skills and workflow have a verifiable origin. If another eve development server is running, give the copy its own working directory, `.eve` state, output directory and port; two eve servers must not build from the same directory. Install that copy against the same built AgentRun checkout. Do not copy an existing generated `agent/extensions/agentrun.ts` mount or prior `.eve` state.
+
+Set the same model and AgentRun connection variables as above, plus:
+
+```sh
+export AGENTRUN_AGENT_ID=eve-workflow-release
+export EVE_WORKFLOW_AUDIT_PATH=/tmp/eve-workflow-callbacks.jsonl
+export EVE_BASE_URL=http://127.0.0.1:7443
+```
+
+Choose a new, absolute audit path accessible to both eve and the validator. The example creates it with mode `0600`. It is a bounded local journal of **only fictional fixture callback data**; it contains no model prompts, API keys or workflow capabilities. The formatter uses it to verify dataflow across eve's separate worker processes. This is test instrumentation, not a requirement to journal real customers' tool payloads.
+
+From the separate example directory, mount workflow support and start eve:
+
+```sh
+node connect.mjs --workflows
+npm run dev -- --port 7443
+```
+
+The mount supplies the existing workflow interpreter, the exact two callback references, their schemas, explicit native tool names and a live allow policy. The example's `agent.ts` keeps `@parcha/agentrun-dsl` in `build.externalDependencies` so eve preserves its package-relative schema assets. It does not automatically expose any other eve tools. Keep the generated mount named `agentrun.ts`; other names require setting the extension's `workflows.toolName` to its actual namespaced eve tool name.
+
+In another terminal with the same connection variables and audit path:
+
+```sh
+npm run validate:workflows -- --live --output /tmp/eve-workflow-proof.json
+```
+
+This performs at most eight native model tasks, plus the server's independent learning calls:
+
+1. Run the original two-tool procedure with learning Off.
+2. Enable **notes and skills**, teach that reusable procedure, and wait for an independently accepted skill. SDK turns without owner feedback use this mode for look-back learning.
+3. Enable **full workflow learning** and run up to four ordinary practice tasks. The server's normal compilation cadence must produce an independently accepted executable workflow.
+4. Ask about `demo-worker` in a fresh session, without repeating the taught procedure. Require the accepted revision, a completed `agentrun__learned_workflow` invocation, both original callback bindings as its children, a fresh observation UUID and the changed version `3.1.2`.
+5. Turn the **same agent** Off and submit the same `demo-worker` task in another fresh session. Require direct native tools, no workflow invocation and no learning revision.
+
+The validator changes settings through the version-checked public API and leaves learning Off. A correct answer obtained through direct tools does **not** pass the workflow-reuse stage. A rejected candidate, pending owner review, missing skill or missing workflow stops the proof; it never seeds a workflow, force-approves one or raises the paid-task limit to get a pass.
+
+It checkpoints each session id as soon as eve returns it. To resume after inspecting an interruption:
+
+```sh
+npm run validate:workflows -- --live --resume /tmp/eve-workflow-proof.json
+```
+
+Resume re-reads actual native histories and AgentRun records; it never resubmits a recorded task. A submission without a confirmed session id is uncertain and stops. The proof contains native answers, fictional callback facts, accepted workflow documents and metadata for inspection; private workflow signatures and credentials are excluded.
+
+The tool-only workflow needs no Jev key or extra workflow-model credential. Eve still needs its original model route, and the AgentRun server needs its reflection, compilation and independent-checker routes. This first eve bridge accepts explicitly read-only callbacks only, with no model nodes, judge nodes, shell/code execution or implicit permissions. See the [workflow extension details](../../docs/tutorials/eve-learning.md#execute-accepted-workflows-with-existing-tools).
+
+Offline checks use scripted native/model receipts and a real local MCP bridge/interpreter, without model calls:
+
+```sh
+npm run test:workflows
+npm run typecheck
+```

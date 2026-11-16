@@ -2,7 +2,7 @@
 
 An additive extension for an existing [eve](https://github.com/vercel/eve) agent. eve keeps its
 model, tools, credentials, permissions, channels and durable execution. AgentRun records each
-turn and supplies independently checked notes and skills to later turns.
+turn and supplies independently checked notes, skills and opt-in workflows to later turns.
 
 This package currently builds from this repository and is held from npm publication. It targets
 **eve 1.0.0** and requires the matching AgentRun server with the `eve` SDK runtime contract.
@@ -44,13 +44,64 @@ Removing the extension restores the original eve integration; it does not delete
 Opening AgentRun does not relocate the eve process or let AgentRun start arbitrary eve jobs. Run
 and edit actions direct the coding agent back to the existing eve project.
 
+## Executable learned workflows
+
+Notes and skills work with the mount above. To enable executable workflows, add an explicit
+`workflows` configuration containing a trusted workflow engine, live policy and read-only
+callbacks. Bind the **same original functions** used by your eve tools; do not recreate their
+permissions, credentials or business logic in the extension.
+
+```ts
+import { inspectWorkflow, runWorkflow, resolveSchemaForWorkflow } from '@parcha/agentrun-dsl';
+import { releaseStatus, releaseInputSchema, releaseOutputSchema } from '../lib/release-tools.js';
+
+// Add this property to the existing agentrun({...}) mount:
+const workflows = {
+  engine: { inspectWorkflow, runWorkflow, resolveSchemaForWorkflow },
+  policy: () => 'allow' as const, // Replace with your existing live authorization policy.
+  tools: [{
+    name: 'mcp:release/status',       // Stable canonical identity in checked workflows.
+    nativeName: 'release_status',    // Exact eve runtime tool name, including any namespace.
+    description: 'Read the current release status.',
+    input_schema: releaseInputSchema,
+    output_schema: releaseOutputSchema,
+    permission: 'allow' as const,
+    readOnly: true as const,
+    execute: releaseStatus,          // The original callback, with its original authorization.
+  }],
+};
+```
+
+The optional `toolName` defaults to `agentrun__learned_workflow`, for a mount named
+`agent/extensions/agentrun.ts`. With a different mount name, set `toolName` to the exact resulting
+eve runtime name, for example `my_learning__learned_workflow`. Alias matching is explicit;
+similar-looking tool names are never inferred. The typed mount configuration carries callbacks
+locally; only schemas and permission metadata are sent to AgentRun.
+
+Enable **Self-improving** after connecting. The ordinary AgentRun reflection/checking process can
+learn a workflow from complete native traces. The next fresh turn receives only workflows pinned
+to that turn's accepted learning revision. When eve chooses `learned_workflow`, the extension
+creates a local MCP bridge inside that native tool step and invokes the original callbacks through
+the bridge's schema checks and live policy. No model-visible URL, auth token or capability is needed.
+Arguments and callback results stay with eve; signed, run-scoped lifecycle metadata survives durable
+replay and lets AgentRun distinguish actual workflow execution from an unverified claim.
+
+There is **one logical workflow invocation per eve turn**, including failed attempts. The first
+ordered native request reserves the turn before parallel tool steps run. A durably recorded result
+can be replayed without invoking its callbacks again. If eve retries before that checkpoint,
+read-only callbacks may repeat; this is not exactly-once execution. Consequently this adapter
+rejects mutating callbacks and host model/judge adapters, and never automatically retries an
+uncertain workflow. Existing callback permissions still apply: `ask` and `deny` refuse execution.
+Turning learning Off also refuses new workflow invocations in a turn admitted earlier; it does not
+cancel a callback already dispatched. Fresh Off turns expose no executable workflow tool.
+
 ## Boundaries and recovery
 
 - This initial adapter learns from complete, fresh, text-only turns. Conversation follow-ups,
   steering, missing or referenced evidence, and child work are not claimed as complete learning
   evidence. Accepted learning can still be supplied; original task and policy remain authoritative.
-- Notes and skills are reference text. This version does not install tools, rewrite the project,
-  or bind executable learned workflows to eve's tools.
+- Notes and skills are reference text. Workflow execution is opt-in through the explicit bindings
+  above; the extension does not install arbitrary tools or rewrite the project.
 - Admission requires AgentRun to be reachable. Once native work completes, a delivery failure
   is logged without replacing eve's answer. A pending receipt is retried on the next turn in the
   same eve session, with the same upload keys. A session that never resumes may need operator
