@@ -5,6 +5,8 @@
 // tags dropped, its entities decoded, a block a line).
 import { createHash } from "node:crypto";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { pointed } from "./pointer.js";
+export { pointed };
 
 /** The most characters of an item's summary its payload holds. */
 export const SUMMARY_CHARS = 4000;
@@ -34,7 +36,7 @@ export type FeedItem = {
  *  them. */
 export type ParsedFeed = { list: boolean; title: string | null; items: FeedItem[] };
 /** Where a JSON list's items are, and each one's id: JSON Pointers, the whole document and `/id` by default. */
-export type ListPointers = { items?: string; id?: string };
+export type ListPointers = { items?: string; id?: string; updated?: string };
 
 /** A body that is no feed this reads: its words. */
 export class FeedUnreadable extends Error {
@@ -292,20 +294,13 @@ function jsonFeedOf(doc: Record<string, unknown>): ParsedFeed {
   };
 }
 
-/** The value at JSON Pointer `pointer` in `doc`, or undefined. */
-export function pointed(doc: unknown, pointer: string): unknown {
-  if (pointer === "") return doc;
-  let at: unknown = doc;
-  for (const raw of pointer.split("/").slice(1)) {
-    const part = raw.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (Array.isArray(at) && /^(0|[1-9]\d*)$/.test(part)) at = at[Number(part)];
-    else if (at && typeof at === "object" && !Array.isArray(at) && Object.hasOwn(at, part)) at = (at as Record<string, unknown>)[part];
-    else return undefined;
-  }
-  return at;
-}
+/** The instant a JSON list's `updated` pointer reads, in ms: a date string it names; anything else, none. */
+const instantOf = (value: unknown): number | null => {
+  const at = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isNaN(at) ? null : at;
+};
 
-function jsonListOf(doc: unknown, { items: itemsAt = "", id: idAt = "/id" }: ListPointers): ParsedFeed {
+function jsonListOf(doc: unknown, { items: itemsAt = "", id: idAt = "/id", updated: updatedAt }: ListPointers): ParsedFeed {
   const items = pointed(doc, itemsAt);
   if (!Array.isArray(items)) throw new FeedUnreadable(itemsAt ? `nothing at ${itemsAt} in its JSON is a list` : "its JSON is no list, and the trigger names no items pointer to one");
   return {
@@ -316,7 +311,7 @@ function jsonListOf(doc: unknown, { items: itemsAt = "", id: idAt = "/id" }: Lis
       const id = str(pointed(object, idAt));
       const link = str(object.html_url) ?? str(object.url) ?? str(object.link);
       const title = str(object.title, TITLE_CHARS) ?? str(object.name, TITLE_CHARS);
-      return { key: id ?? link ?? `hash:${hash(title ?? JSON.stringify(one))}`, id, link, title, published: null, updated: null, author: null, summary: null, categories: [], raw: one };
+      return { key: id ?? link ?? `hash:${hash(title ?? JSON.stringify(one))}`, id, link, title, published: null, updated: updatedAt === undefined ? null : instantOf(pointed(object, updatedAt)), author: null, summary: null, categories: [], raw: one };
     }),
   };
 }

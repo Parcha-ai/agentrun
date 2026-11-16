@@ -450,8 +450,11 @@ test("M17: claims waiting on another claim's refresh read the server's row O(1) 
   const CLAIMS = 300;
   const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 }, timer }));
   await hold.granted;
-  // Every other claim waits on the holder's lease: its wait armed, before the holder answers.
-  for (let i = 0; i < 20_000 && waiting() < CLAIMS - 1; i++) await new Promise((resolve) => setImmediate(resolve));
+  // Every other claim waits on the holder's lease: its wait armed, before the holder answers. The wait is on that event,
+  // bounded in time only for a failing run: on Postgres a claim's reads go through the pool, so a count of event-loop
+  // turns could end with one claim still reading (298 of 299 armed, CI 11-16).
+  const armedBy = Date.now() + 20_000;
+  while (waiting() < CLAIMS - 1 && Date.now() < armedBy) await new Promise((resolve) => setTimeout(resolve, 2));
   assert.equal(waiting(), CLAIMS - 1, "every other claim waits on the lease");
   hold.answer();
   // Bounded only for a failing run: a waiter no let-go wakes would sleep on a timer that never fires.

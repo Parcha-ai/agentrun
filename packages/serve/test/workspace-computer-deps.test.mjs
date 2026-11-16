@@ -502,6 +502,17 @@ test("the local browser's provider is built with the server's Chrome lookup (CHR
   for (const [, options] of built) assert.deepEqual(options.env, { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin" });
 });
 
+test("the phone's provider is built with the server's PHONE_HARNESS_APKS, the APKs every phone installs, and no other variable", async () => {
+  const built = [];
+  const apks = `/srv/apks/wikipedia.apk@sha256:${"a".repeat(64)}`;
+  const env = { PHONE_HARNESS_APKS: apks, PATH: "/opt/bin:/usr/bin", PHONE_HARNESS_API_KEY: mark("phone-key") };
+  const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
+  await computerDeps.providers["phone-harness"]({}, { ledger: {} });
+  await factories["phone-harness"]({});
+  assert.deepEqual(built.map(([id]) => id), ["phone-harness", "phone-harness"], "the claim's and Settings → Computers' alike");
+  for (const [, options] of built) assert.deepEqual(options.env, { PHONE_HARNESS_APKS: apks });
+});
+
 test("every remote provider is built with the server's dial, the one the server holds, and a local one with none; a runner of its own process gives none", async () => {
   const dial = { url: "https://agentrun.example.com", tokens: { mint: async () => `art_${"0".repeat(64)}`, revoke: async () => undefined }, hub: {} };
   const built = new Map();

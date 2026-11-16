@@ -74,6 +74,12 @@ export function stubPhoned({ version = PHONED_VERSION, abi = "x86_64", release =
 		if (method === "ping") return send({ id, result: {} });
 		if (method === "apps.list") return send({ id, result: { apps: [{ id: SETTINGS, name: "Settings" }] } });
 		if (method === "exec.run") return void held.set(id, true);
+		// A 1080 × 2400 screen, its frame JPEG at maxWidth (phoned's default 1280), as phoned's watch gives it.
+		if (method === "screen.watch") {
+			const frameWidth = Math.min(1080, params?.maxWidth ?? 1280);
+			const data = Buffer.from(`jpeg ${frameWidth}`).toString("base64");
+			return send({ id, result: { seq: (params?.after ?? 0) + 1, changed: true, format: "jpeg", data, eof: true, size: Buffer.from(data, "base64").length, frameWidth, frameHeight: Math.round((2400 * frameWidth) / 1080), width: 1080, height: 2400 } });
+		}
 		send({ id, error: { code: -32601, message: `phoned has no method ${method}` } });
 	};
 	let buffer = "";

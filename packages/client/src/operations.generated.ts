@@ -4441,6 +4441,8 @@ export type CreateTriggerBody = {
     every_s?: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -4570,6 +4572,8 @@ export type CreateTriggerResponse = {
     every_s: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -4802,6 +4806,8 @@ export type GetTriggerResponse = {
     every_s: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -4981,6 +4987,8 @@ export type ListTriggersResponse = {
       every_s: number;
       items?: string;
       id?: string;
+      updated?: string;
+      fields?: Array<string>;
       accept?: Array<{
         event: string;
         actions?: Array<string>;
@@ -5165,6 +5173,8 @@ export type UpdateTriggerBody = {
     every_s?: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -5291,6 +5301,8 @@ export type UpdateTriggerResponse = {
     every_s: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;

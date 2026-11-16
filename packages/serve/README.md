@@ -703,6 +703,13 @@ They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, O
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
 
+**A phone's apps.** A phone has its stock apps. To give every phone more, the operator names APK files on the machine
+that drives the phones (the server's, or its runner's) in that machine's environment, each pinned by its sha256:
+`PHONE_HARNESS_APKS=/srv/apks/wikipedia.apk@sha256:<64 hex digits>`, a comma list. Only the operator sets it: no agent
+setting, API or Settings page names an APK, and the server downloads nothing. Each phone installs them
+(`pm install -r`) before the agent starts on it. A file that is not there, or whose bytes are not its pin, refuses the
+claim in words before a phone is rented; a value that is not such a list refuses every phone, naming the entry.
+
 **GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
 "count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
 most one computer gets, and where a GPU computer differs from its others. A provider whose GPU computers cannot hold
@@ -2466,7 +2473,9 @@ incident that is updated); items with no id are told apart by link, then by titl
 the items it has seen, the larger of 1,000 and twice the feed's length, so an item that drops off and comes back stays seen.
 One poll starts 20 runs at most across all its URLs, oldest first; the rest wait for the next poll, which the check says
 (`Read <feed>: 26 new, 6 more at the next check.`). Each read is conditional on the last ETag and Last-Modified, and a
-`304` reads nothing.
+`304` reads nothing. A JSON list's item has no feed date of its own: it fires once, and again with `update: true` only when
+the source names an `updated` pointer (`"/updated_at"`) and the date there moves on. An item first seen with no date there
+does not fire when it gains one.
 
 **When a feed fails.** A read that fails (no answer, an HTTP error, a body that isn't a feed) is said in the trigger's last
 check and read again at the next poll; nothing it saw is lost. A `410`, or a `404` three checks running, stops that URL:
@@ -2482,7 +2491,9 @@ A feed that declares an entity in a DTD is refused.
 **The payload.** An RSS, Atom or JSON Feed item: `{id, link, title, published, updated, author, summary, categories,
 feed: {title, url}, update}`, with `summary` as plain text of 4,000 characters at most and `update` true when the item
 was seen before and has been updated since. A JSON list item: `{id, link, title, item, update}`, `item` the raw object (cut down,
-with `item_truncated`, when it would pass 16 KB). A run it starts is titled `Feed <trigger name>: <item title>`, and its payload is marked untrusted.
+with `item_truncated`, when it would pass 16 KB). A JSON list's source may name `fields`, 1 to 50 JSON Pointers into an
+item (`["/number", "/title", "/html_url", "/user/login"]`): `item` then keeps only those, each at its own place, before the
+16 KB cap, so a pull request that is large whole fires without `item_truncated`. A run it starts is titled `Feed <trigger name>: <item title>`, and its payload is marked untrusted.
 
 ### API only
 
