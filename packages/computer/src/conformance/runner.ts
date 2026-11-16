@@ -99,7 +99,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu, long = false } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
 	// What the provider declares of itself: as given, else the kind registry's entry for its id (health.declared), its
 	// parked configurations with its offered ones: a parked one built for the suite is held to its own declaration.
@@ -451,6 +451,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					// A GPU bills by the second: the run names the one it pays for, never a default.
 					if (gpu === undefined) return t.skip("the run named no GPU: give --gpu <type>[:<count>] (or options.gpu), one the provider declares in capabilities().gpu");
 					return { type: gpu.type, count: gpu.count };
+				},
+				long(what) {
+					if (!long) t.skip(`a long case (${what}): run with --long (or options.long), as the live sweep does`);
 				},
 				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: ComputerClient = t.client): Promise<Ran> {
 					const ran = unwrap(await client.call("exec.run", { argv, timeoutMs: patience, ...extra }, { signal: caseSignal }), `exec.run ${show(argv)}`);

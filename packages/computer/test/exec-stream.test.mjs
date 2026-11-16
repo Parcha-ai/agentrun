@@ -6,16 +6,16 @@
 // createHost and calls nothing but exec.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { main } from "../dist/conformance/cli.js";
-import { bytesProblem, checkExecStream, EXEC_STREAM_CHECKS, formatExecStream, PID_STATE_SCRIPT } from "../dist/conformance/exec-stream.js";
+import { bytesProblem, checkExecStream, EXEC_STREAM_CHECKS, EXEC_STREAM_FACTS, formatExecStream, PID_STATE_SCRIPT, readFacts, tcpListeners } from "../dist/conformance/exec-stream.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
 
-/** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB. */
-const QUICK = { longMs: 2_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000 };
+/** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB, stdout is left unread 1 s. */
+const QUICK = { longMs: 2_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000, unreadMs: 1_000 };
 
 async function run(options = {}, checkOptions = {}) {
 	const host = fakeExecHost(options);
@@ -70,7 +70,7 @@ test("an exec that decodes stdout as UTF-8 fails the byte checks, and says byte 
 	assert.equal(report.pass, false);
 	assert.deepEqual(failed(report), ["stdout-bytes", "stdin-bytes", "large"]);
 	assert.match(byId["stdout-bytes"].words, /^byte 0x80 came back on stdout as ef bf bd: your exec decodes UTF-8/);
-	assert.match(formatExecStream(report), /exec FAIL: 3 of 9 checks failed/);
+	assert.match(formatExecStream(report), /exec FAIL: 3 of 10 checks failed/);
 });
 
 test("an exec that holds output until the process exits fails stdout-live in those words", async () => {
@@ -186,6 +186,95 @@ test("an exec that rejects fails every check with its own words, and one that th
 	};
 	const threw = await checkExecStream(throwing, "m", QUICK);
 	assert.ok(threw.checks.every((check) => check.status === "fail" && /threw: not written yet/.test(check.words)));
+});
+
+test("an exec whose stdin waits on stdout being read, and never goes on once it is, fails stdout-unread in those words", async () => {
+	const { byId } = await run({ stdinWaitsOnStdout: true });
+	assert.equal(byId["stdout-unread"].status, "fail");
+	assert.match(byId["stdout-unread"].words, /^write \d+ to cat, made while its stdout was left unread, still had no answer 3 s after stdout was read again \(\d+ bytes written\): your exec's stdin waits for stdout to be read and does not go on once it is/);
+	assert.equal(byId["stdin-live"].status, "pass", "a reader that keeps up never stalls it");
+});
+
+/** A directory holding stand-ins for the probe's programs, each a sh script, put first on PATH for every exec. */
+function shadowed(host, programs) {
+	const dir = mkdtempSync(join(tmpdir(), "computer-exec-probe-"));
+	for (const [name, body] of Object.entries(programs)) {
+		writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`);
+		chmodSync(join(dir, name), 0o755);
+	}
+	const exec = host.exec.bind(host);
+	host.exec = (id, argv, ctx) => exec(id, ["env", `PATH=${dir}:${process.env.PATH}`, ...argv], ctx);
+	return () => rmSync(dir, { recursive: true, force: true });
+}
+
+const factsOf = (report) => Object.fromEntries(report.facts.map((fact) => [fact.id, fact]));
+
+test("after the checks, the report carries what the machine offers, read through exec: this machine's uid, arch, kernel and listeners", async () => {
+	const { report } = await run();
+	assert.equal(report.pass, true);
+	assert.equal(report.factsProblem, undefined);
+	assert.deepEqual(
+		report.facts.map((fact) => fact.id),
+		[...EXEC_STREAM_FACTS],
+	);
+	const facts = factsOf(report);
+	const local = (argv) => spawnSync(argv[0], argv.slice(1), { encoding: "utf8" }).stdout.trim();
+	assert.equal(facts.root.value, `uid ${process.getuid()}`);
+	assert.equal(facts.arch.value, local(["uname", "-m"]));
+	assert.match(facts.arch.means, /^facts\.arch "(amd64|arm64)"$/);
+	assert.ok(facts.kernel.value.startsWith(local(["uname", "-sr"])), facts.kernel.value);
+	assert.equal(facts.fuse.value === "no /dev/fuse", !existsSync("/dev/fuse"), facts.fuse.value);
+	assert.notEqual(facts.listeners.value, "", "a listener line, or none");
+	const text = formatExecStream(report);
+	assert.match(text, /what the machine offers \(facts for the rest of your host, not checks of exec\):\n· root /);
+	assert.match(text, /\n· arch +\S+: facts\.arch "(amd64|arm64)"\n/);
+	assert.match(text, /\nexec PASS: .*\n$/, "the verdict is still the last line");
+});
+
+test("an exec whose unshare fails, both ways, says no netns and what it means; gVisor in dmesg is named; the facts never fail exec", async () => {
+	const host = fakeExecHost();
+	const restore = shadowed(host, { unshare: 'echo "unshare: unshare failed: Operation not permitted" >&2; exit 1', dmesg: 'echo "[    0.000000] Starting gVisor..."' });
+	try {
+		const report = await checkExecStream(host, "machine-1", QUICK);
+		assert.equal(report.pass, true, formatExecStream(report));
+		const facts = factsOf(report);
+		assert.equal(facts.netns.value, "unshare -n failed (unshare: unshare failed: Operation not permitted); unshare -Urn failed (unshare: unshare failed: Operation not permitted)");
+		assert.equal(facts.netns.means, "no netns: network none, open and allow can't be held by our fence on this vendor");
+		assert.match(facts.kernel.value, /^gVisor \(.* as it reports; dmesg: \[ +0\.000000\] Starting gVisor\.\.\.\)$/);
+		assert.match(formatExecStream(report), /\n· netns +unshare -n failed .*: no netns: network none, open and allow can't be held by our fence on this vendor\n/);
+	} finally {
+		restore();
+		host.stopAll();
+	}
+	const working = fakeExecHost();
+	const back = shadowed(working, { unshare: "exit 0" });
+	try {
+		const facts = factsOf(await checkExecStream(working, "machine-1", QUICK));
+		assert.deepEqual([facts.netns.value, facts.netns.means], ["unshare -n works", "root makes a network namespace: our fence holds network none, open and allow (netns)"]);
+	} finally {
+		back();
+		working.stopAll();
+	}
+});
+
+test("readFacts and tcpListeners: listeners from the kernel's tables, v4 and v6, LISTEN alone; a machine with no unshare or /dev/fuse says so", () => {
+	const tables = [
+		"sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+		"0: 0100007F:C383 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1",
+		"1: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2 1",
+		"2: 0100007F:C383 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0        0 3 1",
+		"0: 00000000000000000000000001000000:0277 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 4 1",
+		"1: 00000000000000000000000000000000:0016 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 5 1",
+	];
+	assert.deepEqual(tcpListeners(tables), ["127.0.0.1:50051", "0.0.0.0:22", "[::1]:631", "[::]:22"]);
+	const facts = Object.fromEntries(readFacts(["uid\t0", "arch\taarch64", "kernel\tLinux 6.1.0", "gvisor\t", "netns\tnone", "fuse\tabsent", ...tables.map((l) => `tcp\t${l}`)].join("\n")).map((f) => [f.id, f]));
+	assert.equal(facts.root.value, "uid 0");
+	assert.equal(facts.arch.means, 'facts.arch "arm64"');
+	assert.match(facts.netns.means, /^not read: the machine has no unshare/);
+	assert.equal(facts.fuse.means, "no Archil mount (mount:archil) on this vendor: the Archil client needs /dev/fuse");
+	assert.equal(facts.kernel.value, "Linux 6.1.0 (no gVisor marker in dmesg)");
+	assert.equal(facts.listeners.value, "127.0.0.1:50051, 0.0.0.0:22, [::1]:631, [::]:22");
+	assert.equal(Object.fromEntries(readFacts("uid\t0").map((f) => [f.id, f])).listeners.means, "no TCP listener before AgentRun runs anything: facts.vendorAgentPorts may be []");
 });
 
 test("bytesProblem names the usual manglings: Latin-1 read as UTF-8, \\n to \\r\\n, a short read, bytes added", () => {
