@@ -1478,7 +1478,7 @@ export type ListLearningPromotionsResponse = {
     workflow: string;
     digest: string;
     at: string;
-    decided: "promote" | "hold" | "replaying" | "superseded";
+    decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
     source: "replay" | "dry_run" | "refit" | "graded";
     reason: string;
     replay?: {
@@ -1519,7 +1519,7 @@ export type ListLearningPromotionsResponse = {
     since?: number;
     held_on?: Array<string>;
     commit?: string;
-    superseded_by?: string;
+    skipped_by?: string;
   }>;
   serving: Array<{
     workflow: string;
@@ -2409,7 +2409,7 @@ export type GetLearnedWorkflowReplayResponse = {
     handed_back: number;
   };
   cost_usd: number | null;
-  decided?: "promote" | "hold" | "superseded";
+  decided?: "promote" | "hold";
   reason?: string;
 };
 

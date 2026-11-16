@@ -15,7 +15,7 @@ import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
-import { answersAlone, championOf, LABEL_MAX, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
+import { answersAlone, championOf, LABEL_MAX, PROMOTE_BAR, type PromotionRecord, promotionOf, replayingOf } from "./promote.js";
 import { redactSecrets } from "./secrets.js";
 
 /** How many active notes an agent keeps before its look-back compiles its job. */
@@ -114,21 +114,22 @@ export type CompiledRecord = { readonly workflow: string; readonly from_notes: r
 
 /** Whether the draft a compile kept at `digest` serves (learn/promote.ts records, newest wins): true once promoted, or
  *  once a threshold refit of it was (its new revision serves in its place); false while held, or once a newer revision
- *  superseded it; undefined while it is replayed or before its first claim decides it. */
+ *  was skipped for a newer one; undefined while it is queued or replayed, or before its first claim decides it. */
 export function promotedOf(records: readonly PromotionRecord[], workflow: string, digest: string): boolean | undefined {
   const own = promotionOf(records, workflow, digest);
   if (own?.decided === "promote") return true;
   if (records.some((one) => one.workflow === workflow && one.decided === "promote" && one.source === "refit" && one.refit?.from === digest)) return true;
-  return own?.decided === "hold" || own?.decided === "superseded" ? false : undefined;
+  return own?.decided === "hold" || own?.decided === "skipped" ? false : undefined;
 }
 
 /** The learned workflows whose newest revision other than their champion (learn/promote.ts championOf, which serves while
  *  that revision is held) is held: each one's compile turn is asked for a revision (once per hold). A champion's own
- *  graded hold counts: with it held there is no champion. */
+ *  graded hold counts: with it held there is no champion. One with a revision queued is not: that newer revision replays
+ *  next (a replay ahead of it held meanwhile asks for nothing). */
 export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
   return new Set([...new Set(records.map(({ workflow }) => workflow))].filter((name) => {
     const champion = championOf(records, name)?.digest;
-    return records.findLast((one) => one.workflow === name && one.digest !== champion)?.decided === "hold";
+    return records.findLast((one) => one.workflow === name && one.digest !== champion)?.decided === "hold" && !replayingOf(records, name, null, "queued").length;
   }));
 }
 

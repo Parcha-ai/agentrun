@@ -39,9 +39,9 @@ const text = (host: HTMLElement, id: string) => host.querySelector(`[data-testid
 const mountOne = (v2: Client, extra: Partial<Parameters<typeof ReplayRevision>[0]> = {}) => mount(createElement(ReplayRevision, { v2, agentId: "a", workflow: "sorter", digest: DIGEST, offered: true, pollMs: 1000, ...extra }));
 
 describe("who is offered Replay", () => {
-  it("a held, edited (not decided) or superseded revision; never one serving, served, refit, stopped or replaying", () => {
-    for (const word of ["Held", "Not decided", "Superseded"] as const) expect(replayable({ word })).toBe(true);
-    for (const word of ["Serving", "Served", "Refit", "Stopped", "Replaying"] as const) expect(replayable({ word })).toBe(false);
+  it("a held, edited (not decided) or skipped revision; never one serving, served, refit, stopped, replaying or queued (it replays next on its own)", () => {
+    for (const word of ["Held", "Not decided", "Skipped"] as const) expect(replayable({ word })).toBe(true);
+    for (const word of ["Serving", "Served", "Refit", "Stopped", "Replaying", "Queued"] as const) expect(replayable({ word })).toBe(false);
   });
   it("shows no button when it is not offered", () => {
     expect(mountOne(fake(async () => ({ replay: "rp_1", inputs: 5 }), []), { offered: false }).textContent).toBe("");

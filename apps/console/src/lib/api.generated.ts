@@ -2358,7 +2358,7 @@ export interface operations {
         handed_back: number;
       };
       cost_usd: number | null;
-      decided?: "promote" | "hold" | "superseded";
+      decided?: "promote" | "hold";
       reason?: string;
     };
   };
@@ -3842,7 +3842,7 @@ export interface operations {
         workflow: string;
         digest: string;
         at: string;
-        decided: "promote" | "hold" | "replaying" | "superseded";
+        decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
         source: "replay" | "dry_run" | "refit" | "graded";
         reason: string;
         replay?: {
@@ -3883,7 +3883,7 @@ export interface operations {
         since?: number;
         held_on?: string[];
         commit?: string;
-        superseded_by?: string;
+        skipped_by?: string;
       }[];
       serving: {
         workflow: string;

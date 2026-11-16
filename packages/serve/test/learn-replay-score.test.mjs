@@ -297,7 +297,7 @@ test("the promotion history trim never changes the champion: an older revision's
   let seed = 7;
   const next = (n) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
   for (let round = 0; round < 40; round++) {
-    items = Array.from({ length: PROMOTIONS_KEPT + 1 + next(60) }, () => rec(next(4) ? "answer" : "other", `d${next(6)}`, ["promote", "promote", "hold", "replaying", "superseded"][next(5)], { checked: next(9) }));
+    items = Array.from({ length: PROMOTIONS_KEPT + 1 + next(60) }, () => rec(next(4) ? "answer" : "other", `d${next(6)}`, ["promote", "promote", "hold", "replaying", "queued", "skipped"][next(6)], { checked: next(9) }));
     const kept = trimPromotions(items);
     assert.ok(kept.length <= PROMOTIONS_KEPT, `round ${round}: ${kept.length} kept`);
     for (const workflow of ["answer", "other"]) assert.equal(championOf(kept, workflow)?.digest, championOf(items, workflow)?.digest, `round ${round} ${workflow}`);

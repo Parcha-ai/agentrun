@@ -364,13 +364,14 @@ test("a held revision asks its compile turn for a revision while its champion se
   const rec = (digest, decided, source = "replay", extra = {}) => ({ workflow: "answer", digest, at: "t", decided, source, reason: "r", ...extra });
   const champion = rec("c1", "promote", "dry_run");
   assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying")])], [], "replaying: nothing to revise yet");
-  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c2", "superseded", "replay", { superseded_by: "c3" }), rec("c3", "replaying")])], [], "superseded by a newer revision replaying: nothing to revise yet");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c3", "queued"), rec("c4", "queued"), rec("c3", "skipped", "replay", { skipped_by: "c4" })])], [], "skipped for a newer revision queued: nothing to revise yet");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c3", "queued"), rec("c2", "hold")])], [], "the replay ahead of a queued revision held: the queued one replays next, nothing to revise yet");
   assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c2", "hold"), { ...champion, checked: 20 }])], ["answer"], "held behind a champion checked after it");
   assert.deepEqual([...compile.heldNamesOf([champion, rec("c1", "hold", "graded")])], ["answer"], "the champion's own graded hold");
   assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c2", "promote")])], [], "promoted: the new champion");
 });
 
-test("a kept compile records its draft's digest, and promotedOf reads it against the promotion records: promote, refit from it, hold or superseded, or not decided yet", async () => {
+test("a kept compile records its draft's digest, and promotedOf reads it against the promotion records: promote, refit from it, hold or skipped, or not decided yet (queued included)", async () => {
   const { workflowDigest } = await import("../dist/runner/workflow-first.js");
   const text = JSON.stringify(compile.compileExample(false));
   const result = await compile.compileTurn({
@@ -386,7 +387,8 @@ test("a kept compile records its draft's digest, and promotedOf reads it against
   assert.equal(compile.promotedOf([rec({ decided: "replaying" })], "refund-request", digest), undefined);
   assert.equal(compile.promotedOf([rec({ decided: "replaying" }), rec({ decided: "promote" })], "refund-request", digest), true);
   assert.equal(compile.promotedOf([rec({ decided: "promote" }), rec({ decided: "hold", source: "graded" })], "refund-request", digest), false);
-  assert.equal(compile.promotedOf([rec({ decided: "replaying" }), rec({ decided: "superseded", superseded_by: "fedcba9876543210" })], "refund-request", digest), false, "superseded by a newer revision: it never serves");
+  assert.equal(compile.promotedOf([rec({ decided: "queued" })], "refund-request", digest), undefined, "queued: not decided yet");
+  assert.equal(compile.promotedOf([rec({ decided: "queued" }), rec({ decided: "skipped", skipped_by: "fedcba9876543210" })], "refund-request", digest), false, "skipped for a newer revision: it never serves");
   assert.equal(compile.promotedOf([rec({ decided: "hold" }), rec({ digest: "fedcba9876543210", decided: "promote", source: "refit", refit: { from: digest, guards: [] } })], "refund-request", digest), true, "a refit of it serves");
   assert.equal(compile.promotedOf([rec({ decided: "promote", workflow: "other" })], "refund-request", digest), undefined);
 });

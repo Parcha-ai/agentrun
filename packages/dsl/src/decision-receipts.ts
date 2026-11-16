@@ -24,6 +24,13 @@ export const DECISION_ERROR_MAX = 64 * 1024;
  *  request that failed before its images were read). */
 export type DecisionImageDigest = { token: string; ref: string; sha256: string | null; mime: string | null; bytes: number | null };
 
+/** A state value a provider cut to fit its model's context before it sent the request: where it sits in the state (a JSON
+ *  Pointer, RFC 6901), and its UTF-8 bytes as asked and as sent (its start and the provider's cut mark). */
+export type DecisionStateCut = { path: string; bytes: number; sent_bytes: number };
+
+/** The state a provider sent when it sent other than it was asked (values cut to fit its context), and the values it cut. */
+export type DecisionStateSent = { state: unknown; cut: DecisionStateCut[] };
+
 /** The typed questions the interpreter asks: the five question nodes and predicates, and a generative
  *  node's `verify` clause. */
 export type DecisionKind = "judge" | "pick" | "sift" | "route" | "ask" | "verify";
@@ -69,7 +76,8 @@ export type DecisionReceipt = {
    *  were refused. `cancelled`: the request's signal was aborted before it settled, so whether it was
    *  served is not known. */
   status: "answered" | "failed" | "cancelled";
-  /** SHA-256 of the canonical JSON of the state the judge was given. */
+  /** SHA-256 of the canonical JSON of the state the judge was asked with: part of the request's identity (`id`). What
+   *  the provider sent is `state` and `request_sha256`, which differ when it cut values to fit (`state_cut`). */
   state_sha256: string;
   questions: Record<string, SystemOneQuestion>;
   /** What came back, as it came back; empty when nothing did. */
@@ -98,10 +106,13 @@ export type DecisionReceipt = {
   cost_basis?: CostBasis;
   /** The images the request carried, by digest; absent when it carried none. */
   images?: DecisionImageDigest[];
-  /** The state the judge saw: the value itself, or, past `DECISION_STATE_MAX_BYTES` of JSON, the first that many bytes of
-   *  its JSON text (a string) with `state_truncated: true`. Absent on a receipt recorded before it was kept. */
+  /** The state the judge saw, as its provider sent it (with any value it cut, cut): the value itself, or, past
+   *  `DECISION_STATE_MAX_BYTES` of JSON, the first that many bytes of its JSON text (a string) with `state_truncated: true`.
+   *  Absent on a receipt recorded before it was kept. */
   state?: unknown;
   state_truncated?: boolean;
+  /** The state values the provider cut to fit its model's context before sending; absent when it sent the state as asked. */
+  state_cut?: DecisionStateCut[];
   /** The request's error, whole up to `DECISION_ERROR_MAX` characters: a host redacts it before it cuts it for a person.
    *  A longer one is kept to that many with `error_truncated: true`; one recorded before was cut at 2000. */
   error?: string;
