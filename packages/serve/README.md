@@ -651,8 +651,8 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -687,7 +687,8 @@ the owner's signed-in session only (the API token is 403), and `POST /v2/compute
 the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`, `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, and
-`KERNEL_API_KEY`; Docker takes none. The vendors bill their computers by time on their own pages: this server meters no
+`KERNEL_API_KEY`, and `BOXD_API_KEY` (with `BOXD_ORG` and `BOXD_REGION` optional); Docker takes none.
+The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
 
@@ -699,6 +700,13 @@ and the Docker provider runs the container with them (`--cpu-quota`, `--memory` 
 They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
+
+**A phone's apps.** A phone has its stock apps. To give every phone more, the operator names APK files on the machine
+that drives the phones (the server's, or its runner's) in that machine's environment, each pinned by its sha256:
+`PHONE_HARNESS_APKS=/srv/apks/wikipedia.apk@sha256:<64 hex digits>`, a comma list. Only the operator sets it: no agent
+setting, API or Settings page names an APK, and the server downloads nothing. Each phone installs them
+(`pm install -r`) before the agent starts on it. A file that is not there, or whose bytes are not its pin, refuses the
+claim in words before a phone is rented; a value that is not such a list refuses every phone, naming the entry.
 
 **GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
 "count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
@@ -790,7 +798,8 @@ passes the binding's conformance cases (below) needs no change here.
   client hangs on its sandboxes. On a self-hosted Daytona target whose sandboxes reach Archil through an Archil egress
   relay, save the relay's address as `DAYTONA_ARCHIL_EGRESS` (Settings → Computers, beside `DAYTONA_API_KEY`) and name
   a snapshot of `box/Dockerfile` in `AGENTRUN_DAYTONA_SNAPSHOT` (below): the Daytona sandbox then mounts the run's
-  folder and is ready. With the relay but no snapshot named, it is refused, saying to name one.
+  folder and is ready. With the relay but no snapshot named, it is refused, saying to name one. A boxd sandbox takes no
+  mount yet, so it is refused in both modes; a boxd desktop runs in either.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -1785,7 +1794,7 @@ by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a l
 alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
 and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does,
 and never at that server's own ports (where it listens, and its public address when that is on loopback), which the server
-tells it as it starts: an MCP server or a refresh's endpoint there is refused unsent, as at a save.
+tells it as it starts: an MCP server, a refresh's endpoint or a calendar there is refused unsent, as at a save.
 An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
 the server itself, and sending the shown URL back for a saved server keeps the saved one. A loopback MCP server is a development-only exception: its
 authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
@@ -2440,7 +2449,9 @@ incident that is updated); items with no id are told apart by link, then by titl
 the items it has seen, the larger of 1,000 and twice the feed's length, so an item that drops off and comes back stays seen.
 One poll starts 20 runs at most across all its URLs, oldest first; the rest wait for the next poll, which the check says
 (`Read <feed>: 26 new, 6 more at the next check.`). Each read is conditional on the last ETag and Last-Modified, and a
-`304` reads nothing.
+`304` reads nothing. A JSON list's item has no feed date of its own: it fires once, and again with `update: true` only when
+the source names an `updated` pointer (`"/updated_at"`) and the date there moves on. An item first seen with no date there
+does not fire when it gains one.
 
 **When a feed fails.** A read that fails (no answer, an HTTP error, a body that isn't a feed) is said in the trigger's last
 check and read again at the next poll; nothing it saw is lost. A `410`, or a `404` three checks running, stops that URL:
@@ -2456,7 +2467,9 @@ A feed that declares an entity in a DTD is refused.
 **The payload.** An RSS, Atom or JSON Feed item: `{id, link, title, published, updated, author, summary, categories,
 feed: {title, url}, update}`, with `summary` as plain text of 4,000 characters at most and `update` true when the item
 was seen before and has been updated since. A JSON list item: `{id, link, title, item, update}`, `item` the raw object (cut down,
-with `item_truncated`, when it would pass 16 KB). A run it starts is titled `Feed <trigger name>: <item title>`, and its payload is marked untrusted.
+with `item_truncated`, when it would pass 16 KB). A JSON list's source may name `fields`, 1 to 50 JSON Pointers into an
+item (`["/number", "/title", "/html_url", "/user/login"]`): `item` then keeps only those, each at its own place, before the
+16 KB cap, so a pull request that is large whole fires without `item_truncated`. A run it starts is titled `Feed <trigger name>: <item title>`, and its payload is marked untrusted.
 
 ### API only
 

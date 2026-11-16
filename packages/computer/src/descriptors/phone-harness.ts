@@ -23,5 +23,7 @@ export const PHONE_HARNESS = defineProvider({
 	// The phone is driven by adb from the server's machine (the module's adb option, adb on PATH by default). Google
 	// builds platform-tools for x86-64 Linux, macOS and x86-64 Windows alone.
 	hostCommand: { command: "adb", from: "Android platform-tools", builds: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"] },
+	// The APKs every phone installs, files on this machine each pinned by its sha256: the operator's setting alone.
+	hostEnv: ["PHONE_HARNESS_APKS"],
 	load: () => import("../phone-harness.js"),
 });

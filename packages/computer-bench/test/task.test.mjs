@@ -110,6 +110,20 @@ test("a linux-desktop teardown stops only the apps its run started, and git-emai
 	assert.ok(git.spec.checks.some((check) => check.id === "global-email-kept"), "git-email passes an agent that also sets the global user.email");
 });
 
+test("a phone task that denies exec has an oracle, and the oracle drives only the screen: ui, input, screen and apps", () => {
+	const ui = /^(ui|input|screen|apps)\./;
+	let denied = 0;
+	for (const suite of ["android-dev", "mobileworld"]) {
+		for (const task of loadSuite(join(SUITES, suite))) {
+			if (task.spec.exec !== "deny") continue;
+			denied += 1;
+			assert.ok(task.spec.oracle?.length, `${task.spec.id} denies exec but has no oracle`);
+			for (const call of task.spec.oracle) assert.match(call.method, ui, `${task.spec.id}'s oracle calls ${call.method}`);
+		}
+	}
+	assert.equal(denied, 22);
+});
+
 test("a good task loads; its bench groups come from its setup and checks", () => {
 	const task = loadTask(writeTask({ ...GOOD, setup: [{ method: "apps.launch", params: { id: "x" } }], checks: [...GOOD.checks, { id: "f", kind: "file", why: "w", path: "/x", exists: true }] }));
 	assert.deepEqual([...task.benchGroups].sort(), ["apps", "exec", "files"]);

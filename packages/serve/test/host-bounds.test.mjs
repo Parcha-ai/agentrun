@@ -39,6 +39,7 @@ import * as web from "../dist/web-fetch.js";
 import * as search from "../dist/web-search.js";
 import { emailError, emailText } from "../dist/email/answer.js";
 import { emailRegistrations } from "../dist/email/tools.js";
+import { calendarError, calendarRegistrations, calendarText } from "../dist/calendar/tools.js";
 
 const PUBLIC = "http://public.example/";
 /** The background tools: the computer's, run by the kernel's registry (workspace/run-tools.ts), not by a host tool here. */
@@ -106,6 +107,18 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(JSON.parse(mails[0]).omitted > 0, "a search's messages that do not fit are counted");
   for (const tool of ["email_search", "email_read", "email_draft", "email_send", "email_file"]) keep(tool, ...mails);
 
+  // calendar_events: a window's most events (200), every field at or past its cut, in quotes, in three-byte text and in
+  // control characters; its own fields far past theirs; an error's words.
+  const person = (fill) => ({ name: fill.repeat(200), email: fill.repeat(320) });
+  const eventOf = (fill) => ({ title: fill.repeat(300), start: "2026-11-02T09:30:00-05:00", end: "2026-11-02T10:00:00-05:00", all_day: false, location: fill.repeat(300), description: fill.repeat(500), status: "confirmed", recurring: true, organizer: person(fill), attendees: Array.from({ length: 25 }, () => person(fill)), attendees_omitted: 1_000 });
+  const calendars = [
+    ...fills.map((fill) => calendarText({ calendar: fill.repeat(50_000), time_zone: fill.repeat(1_000), from: fill.repeat(1_000), to: fill.repeat(1_000), events: Array.from({ length: 200 }, () => eventOf(fill)), truncated: false })),
+    ...fills.map((fill) => calendarError(`calendar_events: ${fill.repeat(50_000)}`)),
+  ];
+  const widestCalendar = JSON.parse(calendars[0]);
+  assert.ok(widestCalendar.truncated === true && widestCalendar.events.length > 0 && widestCalendar.events.length < 200, "the events that do not fit are dropped from the end, and the answer says truncated");
+  keep("calendar_events", ...calendars);
+
   // A monid endpoint (one host tool per pinned endpoint, runner/monid-run.ts): one answer far past CLIP, the whole filed
   // under work/, by the longest run id it files by.
   const work = join(dir, "work");
@@ -164,7 +177,7 @@ test("every host tool's largest result is within the host's result bound, which 
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
   // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow.
   const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) }, policy: () => "allow", denyFrom: () => "default" });
-  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), learned, askPerson, ...emailRegistrations({})];
+  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), learned, askPerson, ...emailRegistrations({}), ...calendarRegistrations({})];
   const endpoints = monidForClaim({ [MONID_ENDPOINT]: { description: "Enrich a person.", input: { type: "object", properties: {} }, usd: 0.003 } }, {}, () => ws).tools;
   const all = [...hostToolsOf(run, HOSTED, ctx, new Map(), registrations), ...endpoints];
   assert.deepEqual(all.map((tool) => tool.name).sort(), [...HOSTED, "monid__faux__person__enrich"].sort(), "every host tool, and a monid endpoint, under its wire name");

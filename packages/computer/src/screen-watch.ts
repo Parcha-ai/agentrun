@@ -13,8 +13,8 @@
 // once, by daemonWatch, as an adapter over watchScreen: each frame goes to handlers.frame(frame, ack), and the next is
 // given only once ack() is called; a computer that goes ends it once with handlers.ended(error), its code gone,
 // unreachable, refused or unsupported; close() and the signal end it with no ended(). Every computerd provider and the
-// phone answer watch() through daemonWatch, on a connection of the watch's own: computerd gives JPEG frames, the phone
-// client PNG ones. No error in either layer holds a URL or a secret.
+// phone answer watch() through daemonWatch, on a connection of the watch's own: computerd and phoned both give JPEG
+// frames. No error in either layer holds a URL or a secret.
 // The most characters one typed text holds, on every kind: computerd's MaxTypeRunes, which checkActions enforces too.
 import { MAX_TYPE_CHARACTERS } from "./actions.js";
 import type { Button, InputAction, InputActionsResult, Point, ScreenWatchResult } from "./protocol.js";

@@ -32,8 +32,7 @@ export interface MachineHost {
 	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. A native name
 	 * the vendor already has throws exists (a REST host's named call: hosted/rest.ts), and the adapter adopts the machine
 	 * the name lists, as a retry does. An answer that never comes is not a machine the adapter forgets: it lists by
-	 * req.labels and deletes what it finds. A host with facts.labels "machine" keeps neither: req.name is its native
-	 * name where it has one (Machine.name), and the adapter writes req.labels into the machine itself.
+	 * req.labels and deletes what it finds.
 	 */
 	create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }>;
 	/**
@@ -50,10 +49,7 @@ export interface MachineHost {
 	 * timer moved: E2B's). It may answer more machines than carry all the labels (a vendor that filters by some, or
 	 * none): the adapter keeps those whose get does. A listing may lag a create: two creates of one request on two
 	 * provider instances can then both make a machine, and the adapter deletes every one but the oldest (createdAt), so
-	 * a vendor may see a second create deleted. With facts.labels "machine" it lists by req.name where the vendor lists by
-	 * name, else every machine: the adapter keeps those of the name and of our image (Machine.image), then reads each
-	 * one's labels from inside it; one whose read fails or does not end is left out of that listing, in words, except
-	 * from a listing by a request's name, which that read fails.
+	 * a vendor may see a second create deleted.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
 	/**
@@ -80,7 +76,7 @@ export interface MachineHost {
 	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
 	 *   machine, not only its streams.
 	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
-	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload and its label file's write read a
+	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload reads a
 	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
 	 * this from them with framedExec (./hosted/framed-exec.ts), as Daytona's does. The exec pre-check (conformance --exec-stream,
 	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
@@ -106,7 +102,7 @@ export interface MachineHost {
 	 * (a HostError limit, in words) when no end the vendor takes lands there without moving it earlier than it is or past
 	 * the most: nothing moves then. The adapter reads the end back with get (deadlineOf, the deadline label: a vendor that
 	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. Optional: a host without
-	 * it has no extend, and a host with facts.labels "machine" is refused one.
+	 * it has no extend.
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
@@ -186,19 +182,8 @@ export interface MachineRequest {
  */
 export interface Machine {
 	id: string;
-	/** Every label it carries, the adapter's own included; with facts.labels "machine", none (the adapter reads them). */
+	/** Every label it carries, the adapter's own included. */
 	labels: Record<string, string>;
-	/**
-	 * With facts.labels "machine": the vendor's native name, the MachineRequest.name create gave it, where the vendor
-	 * keeps one. A machine of a request's name whose labels are not written yet is the request's (provider.md).
-	 */
-	name?: string;
-	/**
-	 * The image the vendor reads back for this machine. Required in practice with facts.labels "machine": list runs the
-	 * label read only in a machine of the provider's image option or a box image (isBoxImage), and leaves one with none
-	 * out, in words.
-	 */
-	image?: string;
 	/**
 	 * starting: not yet running; stopped: there, not running, and not being deleted (paused, asleep): listed, so the
 	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
@@ -264,14 +249,9 @@ export interface HostFacts {
 	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
 	 * Absent: no bound. packed: the adapter packs the labels it gives create (packLabels, ./hosted/values.ts: one name to
 	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
-	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. "machine":
-	 * the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in the machine (LABEL_FILE,
-	 * ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as JSON, what a run's output
-	 * keeps (OUTPUT_MAX, ./hosted/process.ts). Only with lifetime "vendor", since a machine whose labels were never
-	 * written is ended by the vendor's timer alone, and no extend. get and list answer each machine's image
-	 * (Machine.image): the labels are read only in one of ours.
+	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'.
 	 */
-	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } };
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a
@@ -282,7 +262,7 @@ export interface HostFacts {
 	 * dial: the machine's computerd dials the server, and the host has no exec and no upload. The vendor boots the box
 	 * image with MachineRequest.boot.env, where agentrun-dial fetches the server's daemon, checks its sha256, starts init
 	 * and dials the attach route with the machine's own token; every connection goes over that socket
-	 * (HostedOptions.dial). Not with labels "machine", which are read through exec. Absent: the adapter connects through
+	 * (HostedOptions.dial). Absent: the adapter connects through
 	 * exec.
 	 */
 	connect?: "dial";

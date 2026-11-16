@@ -28,6 +28,7 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
+import { BoxdProvider } from "../dist/boxd.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -101,7 +102,12 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
 	// the ledgers the server keeps: the phone harness's sessions, and Orgo's agents' computers.
 	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }]));
-	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
+	assert.deepEqual(extra.modal.settings, [
+		{ name: "modalApp", option: "app", default: "agentrun" },
+		{ name: "modalConnect", option: "connect" },
+	]);
+	// How E2B's and Modal's machines are reached: the provider's exec unless a server's settings say dial.
+	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	// Agent37 registers the published box image in the key's workspace before the first create; its computers are remote.
 	assert.deepEqual([extra.agent37.prepareImage, extra.agent37.local], [true, undefined]);
@@ -119,16 +125,18 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
+	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
 	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
 	for (const [id, fields] of Object.entries(extra)) {
-		if (id !== "modal") assert.equal(fields.settings, undefined, id);
+		if (id !== "modal" && id !== "e2b") assert.equal(fields.settings, undefined, id);
 		if (!["docker", "agent37", "modal", "e2b"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.
@@ -138,7 +146,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "boxd"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -165,6 +173,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
 		"local-chrome": { browser: browser.BROWSER_IMAGE },
+		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE, desktop: all.BOXD_DEFAULT_IMAGE },
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -174,6 +183,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		[daytona.DAYTONA_DEFAULT_SNAPSHOT, all.AGENT37_BASE_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
 		["default", "agent37-base", "linux", "android", "chromium"],
 	);
+	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
 	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal and E2B have none: each
 	// prepares the box image (prepareImage).
 	for (const id of ["docker", "agent37", "modal", "e2b"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
@@ -264,6 +274,10 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
+/** boxd's SDK slice: a client whose every machines call fails the test. */
+const BOXD_SDK = class {
+	machines = { ...Object.fromEntries(["create", "get", "list", "delete", "streamExec", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout", "updateLabels"].map((name) => [name, () => assert.fail(`machines.${name} was called`)])), files: { upload: () => assert.fail("machines.files.upload was called") } };
+};
 /** ssh2's Client slice for Agent37, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
 	Client: class {
@@ -299,6 +313,7 @@ const BUILT = {
 		},
 	],
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

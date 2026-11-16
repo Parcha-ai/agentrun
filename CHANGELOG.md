@@ -4,6 +4,29 @@
 
 ## 0.1.0-beta.41 (2026-11-16)
 
+**Upgrading and going back:**
+
+- Keep the same data folder and start command, and change only the image. Upgrade the server first, then the runners: a beta.41 runner opening a data folder its server has not opened yet is refused ("Start the AgentRun server to add each run's labels before opening a runner") and changes nothing, and on Postgres a beta.41 runner on a schema its server has not migrated stops with "run a runner of the same release as the server": start the beta.41 server, never take the runners back.
+- SQLite keeps schema version 11: the server adds the nullable `runs.labels` column and the `minted_tokens` table at its open. Going back is setting the image back to `v0.1.0-beta.40`; beta.40 opens the folder beta.41 left.
+- Postgres goes from schema version 14 to 16 at the server's start (`0015_run_labels`, `0016_minted_tokens`), and beta.40 refuses a schema at 16 ("set up by a later release than this one"). Before the first beta.41 start, with the server and runners stopped, take `pg_dump --schema="${AGENTRUN_STORE_SCHEMA:-agentrun}" <url> > dump.sql`, in a shell where `AGENTRUN_STORE_SCHEMA` is what the server is given, if anything (the schema is `agentrun` when it is unset). Going back is `psql <url> -c "DROP SCHEMA \"${AGENTRUN_STORE_SCHEMA:-agentrun}\" CASCADE"`, then `psql <url> < dump.sql` with `psql` from the same Postgres release as `pg_dump`, and setting the image back; it drops everything done on beta.41 since.
+- Going back to beta.40 turns every feed trigger off (`source_unreadable`, "this server has no feed source"), and it stays off when you return to beta.41: turn each on again (`PATCH /v2/triggers/{id}` with `{"enabled": true}`). It watches from that poll, so items that arrived meanwhile start no run.
+
+**Breaking:**
+
+- `@parcha/agentrun-computer`: `MachineHost.exec` is optional. A host with `connect: "dial"` has no `exec` and no `upload`, so code that calls a host's `exec` itself checks it is there first.
+- `@parcha/agentrun-computer`: the machine-host label and lifetime mechanisms are cut back (`HostFacts.backstop`, `provider.backstop`, `HostFacts.idleMs` and `keepalive` are gone; the adapter packs labels itself). Its entry below says who breaks and what to do.
+- API: a Composio server's `DELETE /v2/settings/mcp-servers/{name}` answers `200 {deleted: true, composio: {removed, note}}` where a full removal answered `204`. While Composio triggers use the server, a save as another `user_id` or auth config is refused `409 composio_in_use`, and a save over a server a concurrent Composio save moved is refused `412 precondition_failed`.
+
+**Known issues:**
+
+- Mode 2 (the run folder on your Archil disk):
+  - Works: sandboxes on Agent37, Modal and E2B, and desktops on Agent37 and E2B, in any account. The first computer in an account starts from AgentRun's public box image: Agent37 registers it once ("pulling" for about 15 s), Modal pulls it once (about 35 s), E2B starts from a public template in about 5-10 s. Shell commands start in /workspace, the run folder.
+  - Not yet: Modal sandboxes with GPUs (the Archil mount isn't proven on Modal's GPU runtime), and Daytona's hosted cloud (no Archil mount there). A self-hosted Daytona target takes Mode 2 once its operator sets `DAYTONA_ARCHIL_EGRESS` and `AGENTRUN_DAYTONA_SNAPSHOT` names a snapshot of `box/Dockerfile`.
+  - What to do: for those two, use another provider for Mode 2, or set the computer to none.
+- Spend caps: a cap below what the model needs for one step and an answer wraps up early; saving such an agent now warns.
+
+**Changes:**
+
 - `MachineHost.exec` is optional: a host whose facts say `connect: "dial"` has no `exec` and no `upload`, so code that calls a host's `exec` itself checks it is there first. Such a host's create boots the box image with `MachineRequest.boot.env`, and the machine dials the server's attach route with a token minted for it alone (`MachineTokens`, `MemoryMachineTokens`, `mintedComputer`), which ends at delete or at the machine's `backstopAt`. `HostedProvider` takes `dial: { url, tokens, hub }`; without a public https address, or for an Archil mount or a desktop, it refuses in words before the vendor is called. The Core case `provider.dial-token` checks the token, given `ConformanceOptions.dial`. `spec/computer/attach.md`, `spec/computer/provider.md` and `PROVIDERS.md` ("Machines that dial in") say how.
 - The machine-host label and lifetime mechanisms are cut back to what the reference providers use: `HostFacts.backstop`, the Core case `provider.backstop`, `HostFacts.idleMs` and the host member `keepalive` are gone, the shared adapter now packs labels itself, and a host with `labels: "machine"` must declare `lifetime: "vendor"` and have no `extend`. Who breaks: a host that declares any of these, or packs its own labels. What to do:
   - `backstop: true`: delete it. A janitor host still sets its vendor's delete timer from `req.backstopAt`, which stays, and `get` still reads it as `Machine.endsAt`.
@@ -50,6 +73,8 @@
 - `packages/computer/SCORECARD.md` is re-scored against main as of `1fcb4d34cd`: its links to the host members point at "The eleven members", and its rows follow the trimmed contract and the shared pieces that landed since it was written. DigitalOcean is blocked (its auto-pause can't be switched off); Hyperbrowser and Render are blocked (`labels: "machine"` needs each machine's image, and their sandbox records carry none); Together fits if its unverified facts hold (`sse` reads its output). The counts are 0 clean, 5 fit if, 13 need a workaround, 10 blocked.
   - `scripts/check-doc-anchors.mjs`, run in CI through its test with the other scripts tests, reads each tracked Markdown file with marked's lexer (`marked` 18.0.11, now a root dev dependency at the version the root lockfile already held for pi-tui; the console pins its own 15.0.6) and fails on a relative link whose path is no tracked file or directory, or whose `#fragment` no heading (by GitHub's slug rule) or `<a id>` anchor outside an HTML comment in the target makes.
 - `packages/computer/SCORECARD.md` reads 25 sandbox vendors against the provider contract: for each, whether a provider fits the shared machine-host adapter, what it would take, the shared pieces it would use and what is still open, each vendor fact linked to the vendor's own docs. PROVIDERS.md links it from its top. The source export takes the page's links to Northflank's public docs as reviewed citations; Northflank's domain anywhere else still stops the export.
+- `GET /v2/computers` never lists a paired computer as online with `seen_at: null`. The attach hub has a socket live before the store keeps its hello, and a list between the two read online and never seen. `seen_at` is now the live socket's hello time while the computer is attached (`AttachHub.since(id)`), else the last one kept.
+  - The probe's diagnose test holds its closed UDP port for the whole test (a socket connected elsewhere, so the kernel refuses the probe's datagram) instead of binding and freeing one, which another process on a CI runner bound and answered from.
 
 ## 0.1.0-beta.40 (2026-11-16)
 

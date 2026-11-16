@@ -16,6 +16,7 @@
 // disk's object API (the shared archilRunFolder, ./archil.ts: the host's disk SDK with COMPUTER_ARCHIL_API_KEY and
 // COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
 // are skipped.
+import { boxImageRef } from "../box-image.js";
 import type { MachineHost } from "../host.js";
 import { create, MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type ModalCreateOptions, type ModalProvider } from "../modal.js";
 import type { MountKind } from "../mount.js";
@@ -37,13 +38,15 @@ export const MODAL_ENV = {
 	app: "COMPUTER_MODAL_APP",
 	/** serverUrl: the server the token goes to; the SDK's default when unset. */
 	serverUrl: "COMPUTER_MODAL_SERVER_URL",
+	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
+	connect: "COMPUTER_MODAL_CONNECT",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
 export const ENV = MODAL_ENV;
 
 /** What this module reads from the environment: the token, the app, and the server when set. */
-export type ModalSettings = Pick<ModalCreateOptions, "tokenId" | "tokenSecret" | "app" | "serverUrl">;
+export type ModalSettings = Pick<ModalCreateOptions, "tokenId" | "tokenSecret" | "app" | "serverUrl" | "connect">;
 
 /**
  * The provider's options this module reads from env; throws in words without the token or the app, or while
@@ -61,7 +64,9 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const app = env[MODAL_ENV.app];
 	if (!app) throw new Error(`the Modal conformance module needs ${MODAL_ENV.app}: the app the run's sandboxes live in`);
 	const serverUrl = env[MODAL_ENV.serverUrl];
-	return { tokenId, tokenSecret, app, ...(serverUrl ? { serverUrl } : {}) };
+	// create() refuses any other value in words.
+	const connect = env[MODAL_ENV.connect] as "exec" | "dial" | undefined;
+	return { tokenId, tokenSecret, app, ...(serverUrl ? { serverUrl } : {}), ...(connect ? { connect } : {}) };
 }
 
 /** The longest lifetime a computer of a run may ask for: Modal ends each sandbox at its timeout, the lifetime. */
@@ -80,6 +85,8 @@ export interface ModalModuleOptions {
 	archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl">;
 	/** What the provider says that is no failure: the CLI gives it and puts it in the report. */
 	onNote?: ProviderNote;
+	/** The public server a dial machine dials (COMPUTER_MODAL_CONNECT=dial): its process alone gives it (dialKit). */
+	dial?: ModalCreateOptions["dial"];
 }
 
 function live(env: Record<string, string | undefined>): void {
@@ -89,9 +96,26 @@ function live(env: Record<string, string | undefined>): void {
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */
-export async function createProvider({ env = process.env, ModalClient, daemonPath, onNote }: ModalModuleOptions = {}): Promise<ModalProvider> {
+export async function createProvider({ env = process.env, ModalClient, daemonPath, onNote, dial }: ModalModuleOptions = {}): Promise<ModalProvider> {
 	live(env);
-	return create({ ...settingsFromEnv(env), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), ...(onNote ? { onNote } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	return create({ ...settingsFromEnv(env), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), ...(onNote ? { onNote } : {}), ...(dial ? { dial } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+}
+
+/**
+ * The image every computer of the run starts from: on dial the box image, since only it holds agentrun-dial; on exec
+ * debian:bookworm-slim, the CLI's own default.
+ */
+export function conformanceImage({ env = process.env }: Pick<ModalModuleOptions, "env"> = {}): string {
+	return env[MODAL_ENV.connect] === "dial" ? boxImageRef() : "debian:bookworm-slim";
+}
+
+/**
+ * A dial machine (COMPUTER_MODAL_CONNECT=dial) dials the server that minted its token, so its Core run happens inside
+ * the public server's process (packages/serve/scripts/dial-conformance.mjs, which gives createProvider its dial), never
+ * from this CLI, which has no public server: refused in words.
+ */
+export function dialKit(): never {
+	throw new Error(`a Modal machine on dial dials the server that minted its token, and this process is no public server: run its Core suite from the public server's process (packages/serve/scripts/dial-conformance.mjs --provider modal with ${MODAL_ENV.connect}=dial)`);
 }
 
 /**

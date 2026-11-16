@@ -379,6 +379,9 @@ export interface components {
         permission?: "allow" | "ask" | "deny";
         scope?: "thread" | "mailbox";
       };
+      calendar_events?: {
+        permission?: "allow" | "ask" | "deny";
+      };
       browser?: {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "deny";
@@ -1731,6 +1734,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -1857,6 +1862,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -1952,6 +1959,10 @@ export interface operations {
         disk_id: string;
       } | null;
     };
+  };
+  deleteCalendar: {
+    body: never;
+    answer: never;
   };
   deleteComposioSubscription: {
     body: never;
@@ -2316,6 +2327,15 @@ export interface operations {
       setup_code?: boolean;
       secrets_writable: boolean;
       secrets_reason?: "sign_in" | "no_accounts" | "token";
+    };
+  };
+  getCalendar: {
+    body: never;
+    answer: {
+      configured: boolean;
+      host: string | null;
+      name: string | null;
+      time_zone: string | null;
     };
   };
   getCapabilities: {
@@ -3221,6 +3241,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -4303,6 +4325,8 @@ export interface operations {
           every_s: number;
           items?: string;
           id?: string;
+          updated?: string;
+          fields?: string[];
           accept?: {
             event: string;
             actions?: string[];
@@ -4537,6 +4561,9 @@ export interface operations {
         permission?: "allow" | "ask" | "deny";
       };
       email_file?: {
+        permission?: "allow" | "ask" | "deny";
+      };
+      calendar_events?: {
         permission?: "allow" | "ask" | "deny";
       };
       browser?: {
@@ -4984,6 +5011,17 @@ export interface operations {
       signing_secret?: string;
     };
   };
+  saveCalendar: {
+    body: {
+      url: string;
+    };
+    answer: {
+      configured: boolean;
+      host: string | null;
+      name: string | null;
+      time_zone: string | null;
+    };
+  };
   saveComposioServer: {
     body: {
       api_key: string;
@@ -5341,6 +5379,15 @@ export interface operations {
       outcome?: "done" | "cancelled" | "expired";
     };
   };
+  testCalendar: {
+    body: {
+      url?: string;
+    };
+    answer: {
+      ok: boolean;
+      message: string;
+    };
+  };
   testComputer: {
     body: never;
     answer: {
@@ -5508,6 +5555,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -5634,6 +5683,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
