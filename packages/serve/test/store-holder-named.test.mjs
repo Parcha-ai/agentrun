@@ -133,8 +133,9 @@ async function microtasksUntil(done, what) {
 }
 
 /** `connection`'s answer to its next `op` request read only once `other` has read an answer of its own (the next turn
- *  after it). Two workers' answers that both came while the process was held up are read in no order Node sets. */
-function answeredAfter(connection, op, other) {
+ *  after it): any answer, or with `otherOp`, its answer to its next `otherOp` request. Two workers' answers that both
+ *  came while the process was held up are read in no order Node sets. */
+function answeredAfter(connection, op, other, otherOp) {
   const worker = Connection.workerOf(connection);
   const post = worker.postMessage.bind(worker);
   const emit = worker.emit.bind(worker);
@@ -153,10 +154,16 @@ function answeredAfter(connection, op, other) {
     return emit(event, ...args);
   };
   const otherWorker = Connection.workerOf(other);
+  const otherPost = otherWorker.postMessage.bind(otherWorker);
   const otherEmit = otherWorker.emit.bind(otherWorker);
+  let otherId;
+  otherWorker.postMessage = (message, ...rest) => {
+    if (otherId === undefined && message.request.op === otherOp) otherId = message.id;
+    otherPost(message, ...rest);
+  };
   otherWorker.emit = (event, ...args) => {
     const result = otherEmit(event, ...args);
-    if (!released && event === "message") {
+    if (!released && event === "message" && (otherOp === undefined || (otherId !== undefined && args[0]?.id === otherId))) {
       released = true;
       if (heldBack) setImmediate(() => emit("message", ...heldBack));
     }
@@ -197,6 +204,46 @@ for (const [name, op, write] of [
     await microtasksUntil(() => waiterPosted, "the waiter's request is posted in the same turn");
     // Held up past the waiter's busy wait: its worker's wait runs out meanwhile, the holder's begin answer unread.
     heldUp(HELD_UP_MS);
+    await holding;
+    await waited;
+    assert.deepEqual((await holder.all("SELECT text FROM notes ORDER BY rowid")).map((row) => row.text), ["held", "after the hold-up", "waited"]);
+  });
+}
+
+// The first cases, with the wait's busy answer read only once the holder's commit was answered and read: two workers'
+// answers come back in no set order, and on a loaded machine the waiter's worker may end its wait as the holder commits.
+// The holder it waited on is no longer open when its answer is read, yet it held the lock through the wait.
+for (const [name, op, write] of [
+  ["a begin", "begin", (waiter) => waiter.transaction(async (tx) => tx.run("INSERT INTO notes (text) VALUES (?)", "waited"))],
+  ["a write", "write", (waiter) => waiter.write([{ sql: "INSERT INTO notes (text) VALUES (?)", params: ["waited"] }])],
+  ["a statement outside a transaction", "stmt", (waiter) => waiter.run("INSERT INTO notes (text) VALUES (?)", "waited")],
+]) {
+  test(`${name} whose busy wait ran out on a transaction of this process while the process was held up, its answer read only after that transaction committed, lands, never StoreBusy`, async (t) => {
+    const path = await file(t);
+    const holder = await Connection.open(path);
+    const waiter = await Connection.open(path, { busyTimeoutMs: WAITER_BUSY_MS });
+    let go;
+    const going = new Promise((resolve) => { go = resolve; });
+    t.after(() => go());
+    t.after(async () => { await waiter.close(); await holder.close(); });
+    await holder.exec("CREATE TABLE notes (text TEXT)");
+    let began;
+    const begun = new Promise((resolve) => { began = resolve; });
+    const holding = holder.transaction(async (tx) => {
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "held");
+      began();
+      await going;
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "after the hold-up");
+    });
+    await begun;
+    answeredAfter(waiter, op, holder, "commit");
+    let waiterPosted = false;
+    onPost(waiter, op, () => { waiterPosted = true; });
+    const waited = write(waiter);
+    await microtasksUntil(() => waiterPosted, "the waiter's request is with its worker");
+    // Held up past the waiter's busy wait: its worker's wait runs out meanwhile, the holder's next statement waits.
+    heldUp(HELD_UP_MS);
+    go();
     await holding;
     await waited;
     assert.deepEqual((await holder.all("SELECT text FROM notes ORDER BY rowid")).map((row) => row.text), ["held", "after the hold-up", "waited"]);
