@@ -127,7 +127,8 @@ class FlyHost implements MachineHost {
 		// Unverified: Fly's init runs hallpass, the SSH server `fly ssh console` reaches, on port 22 of the machine's private
 		// address. Declared, so isolation.vendor-agent checks the computer's programs reach none of it.
 		vendorAgentPorts: [22],
-		// M names no bound on metadata: none is declared (unverified).
+		// The machine dials the server: Fly's exec answers once the command ends (docs.machines.dev, Machines_exec), so
+		// there is no exec and no upload here.
 		connect: "dial",
 	};
 	readonly #client: Rest;
@@ -183,7 +184,8 @@ class FlyHost implements MachineHost {
 	 * at its deadline (daemon internal/attach). Unverified: that a public ghcr.io image pulls with no registry login (M's
 	 * example is Docker Hub's), and that Fly's init runs the image's CMD when config.init sets none. No service: Fly's proxy
 	 * routes nothing to the machine. No region: Fly picks one (M: "near your WireGuard peer"; unverified from outside one).
-	 * Unverified: whether Fly refuses a taken name, and with what status; a 409 reads exists.
+	 * Unverified: whether Fly refuses a taken name, and with what status; a 409 reads exists. Unverified: any bound on
+	 * metadata keys or values (M names none).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		if (req.boot === undefined) throw new HostError("invalid", "a Fly machine dials the server, and the request has no boot env for it");
