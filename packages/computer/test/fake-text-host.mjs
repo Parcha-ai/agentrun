@@ -1,16 +1,43 @@
-// A text-only vendor whose exec comes in pieces, as a REST API's does, and the host a vendor writes over it with
+// A text-only vendor whose exec comes in pieces, as a REST API's does, and the hosts a vendor writes over it with
 // framedExec (src/hosted/framed-exec.ts) and the REST client (src/hosted/rest.ts). The vendor is an HTTP server on
 // loopback: POST /machines/:id/processes {argv} starts a process and answers {id}; GET /processes/:id/events streams its
 // events as NDJSON, {stream, text} then {exit}, from its start; POST /processes/:id/stdin {text} is one write. Output
 // is text in JSON strings (decoded as UTF-8, as a vendor's are), and there is no end of stdin and no kill.
+// The same events come as server-sent events two more ways:
+//  - GET /processes/:id/sse, as Together's: `id: <n>` and `data: {type, output}`, then `event: exit` with
+//    `data: {exitCode}`, a `retry:` first and a `: keep-alive` comment each 500 ms;
+//  - POST /machines/:id/runs {argv}, as Render's: the process starts and the answer is its stream, `event: output` with
+//    `data: {stream, data}`, then `event: exit` with `data: {exit_code}`. Such a process has no id, so no write reaches it.
 //
 // The processes behind the server are another MachineHost's exec: fake-exec-host.mjs's, real processes on this machine,
 // for the exec pre-check; or fake-host.mjs's machines in memory, for the adapter's create, under withSh, which plays the
 // sh the pid wrapper and the kill need.
 import { createServer } from "node:http";
-import { framedExec, ndjson, PID_KILL, PID_WRAPPER } from "../dist/hosted/framed-exec.js";
+import { fifoStdin, framedExec, PID_KILL, PID_WRAPPER } from "../dist/hosted/framed-exec.js";
 import { orThrow } from "../dist/hosted/process.js";
-import { rest } from "../dist/hosted/rest.js";
+import { ndjson, rest, sse } from "../dist/hosted/rest.js";
+
+/** A process's events written to res as they come, each by `line`, until its exit; `idle` is written each 500 ms of none. */
+async function streamTo(res, record, line, idle) {
+	const timer = idle === undefined ? undefined : setInterval(() => record.wake(), 500);
+	try {
+		for (let at = 0; ; ) {
+			if (at === record.events.length && idle !== undefined) res.write(idle);
+			while (at < record.events.length) res.write(line(record.events[at], at++));
+			if (record.ended || res.destroyed) break;
+			await new Promise((done) => (record.wake = done));
+		}
+	} finally {
+		clearInterval(timer);
+	}
+	res.end();
+}
+
+/** One server-sent event of a Together-shaped stream, numbered. */
+const togetherEvent = (event, at) =>
+	"exit" in event ? `id: ${at}\nevent: exit\ndata: ${JSON.stringify({ exitCode: event.exit })}\n\n` : `id: ${at}\ndata: ${JSON.stringify({ type: event.stream, output: event.text })}\n\n`;
+/** One server-sent event of a Render-shaped stream. */
+const renderEvent = (event) => ("exit" in event ? `event: exit\ndata: ${JSON.stringify({ exit_code: event.exit })}\n\n` : `event: output\ndata: ${JSON.stringify({ stream: event.stream, data: event.text })}\n\n`);
 
 /** The vendor: a server over backend.exec. Answers its base URL, the requests it took, and close(). */
 export async function textVendor(backend) {
@@ -51,7 +78,8 @@ export async function textVendor(backend) {
 		const { pathname } = new URL(req.url, "http://vendor");
 		requests.push(`${req.method} ${pathname}`);
 		const started = /^\/machines\/([^/]+)\/processes$/.exec(pathname);
-		const events = /^\/processes\/(\d+)\/events$/.exec(pathname);
+		const run = /^\/machines\/([^/]+)\/runs$/.exec(pathname);
+		const events = /^\/processes\/(\d+)\/(events|sse)$/.exec(pathname);
 		const stdin = /^\/processes\/(\d+)\/stdin$/.exec(pathname);
 		try {
 			if (req.method === "POST" && started) {
@@ -60,15 +88,20 @@ export async function textVendor(backend) {
 				const id = String(++next);
 				processes.set(id, recordOf(proc));
 				res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ id }));
+			} else if (req.method === "POST" && run) {
+				const { argv } = await body(req);
+				const record = recordOf(await backend.exec(run[1], argv, { timeoutMs: 10_000 }));
+				res.writeHead(200, { "Content-Type": "text/event-stream" });
+				await streamTo(res, record, renderEvent);
 			} else if (req.method === "GET" && events && processes.has(events[1])) {
 				const record = processes.get(events[1]);
-				res.writeHead(200, { "Content-Type": "application/x-ndjson" });
-				for (let at = 0; ; ) {
-					while (at < record.events.length) res.write(`${JSON.stringify(record.events[at++])}\n`);
-					if (record.ended || res.destroyed) break;
-					await new Promise((done) => (record.wake = done));
+				if (events[2] === "events") {
+					res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+					await streamTo(res, record, (event) => `${JSON.stringify(event)}\n`);
+				} else {
+					res.writeHead(200, { "Content-Type": "text/event-stream" }).write("retry: 3000\n\n");
+					await streamTo(res, record, togetherEvent, ": keep-alive\n\n");
 				}
-				res.end();
 			} else if (req.method === "POST" && stdin && processes.has(stdin[1])) {
 				const { text } = await body(req);
 				const record = processes.get(stdin[1]);
@@ -106,6 +139,45 @@ export function textExec(base) {
 				},
 				write: async (pid, text) => void orThrow(await api.call("POST", api.url(`/processes/${pid}/stdin`), { json: { text } })),
 			},
+			argv,
+			ctx,
+		);
+}
+
+/** The host's exec over the vendor's Together-shaped server-sent events: the same calls, with `sse` reading the events. */
+export function sseExec(base) {
+	const api = rest({ base, headers: () => ({}), vendor: "fake-sse", timeoutMs: 10_000 });
+	return (id, argv, ctx) =>
+		framedExec(
+			{
+				start: async (argv, ctx) => orThrow(await api.json("POST", api.url(`/machines/${id}/processes`), { json: { argv }, timeoutMs: ctx.timeoutMs }, ctx.signal)).id,
+				events: async function* (pid) {
+					for await (const { event, data } of sse(orThrow(await api.stream("GET", api.url(`/processes/${pid}/sse`))).body)) {
+						const value = JSON.parse(data);
+						yield event === "exit" ? { exit: value.exitCode } : { stream: value.type, text: value.output };
+					}
+				},
+				write: async (pid, text) => void orThrow(await api.call("POST", api.url(`/processes/${pid}/stdin`), { json: { text } })),
+			},
+			argv,
+			ctx,
+		);
+}
+
+/** The host's exec over the vendor's Render-shaped runs, which take no stdin: one call starts and streams, fifoStdin writes. */
+export function fifoExec(base) {
+	const api = rest({ base, headers: () => ({}), vendor: "fake-render", timeoutMs: 10_000 });
+	return (id, argv, ctx) =>
+		framedExec(
+			fifoStdin({
+				start: async (argv, ctx) => orThrow(await api.stream("POST", api.url(`/machines/${id}/runs`), { json: { argv }, timeoutMs: ctx.timeoutMs }, ctx.signal)).body,
+				events: async function* (body) {
+					for await (const { event, data } of sse(body)) {
+						const value = JSON.parse(data);
+						yield event === "exit" ? { exit: value.exit_code } : { stream: value.stream, text: value.data };
+					}
+				},
+			}),
 			argv,
 			ctx,
 		);

@@ -45,7 +45,8 @@ Whatever carries it, your `exec` keeps five rules, and the [exec pre-check](#ste
 it by them alone:
 
 - **Text intact both ways, live.** UTF-8 text in and out while the process runs: every code point, lines of any
-  length, `\r` and `\r\n` as they were, and no terminal (a tty turns `\n` into `\r\n`). Decode output as one stream,
+  length, `\r` and `\r\n` as they were, and no terminal (a tty turns `\n` into `\r\n`; where a terminal is all your
+  vendor gives, `ptyPieces` runs the process off it, [below](#one-terminal)). Decode output as one stream,
   so a character split across two pieces comes back whole. Bytes that aren't UTF-8 needn't pass: AgentRun sends its
   daemon as base64 text.
 - **stdin needn't end.** Where your API has no end of file, `end()` may do nothing: nothing AgentRun runs waits for
@@ -60,9 +61,12 @@ it by them alone:
 | --- | --- | --- |
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
 | Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | none yet; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
+| The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Together's and Runloop's shape, the same fake |
+| A start whose output streams, with no call that writes to a running process | the start and its events, handed to `fifoStdin`, which feeds stdin through a fifo, one short exec per write ([below](#no-call-for-stdin)) | none yet; Render's shape, the same fake |
+| One terminal: a console or PTY socket, echo on, stdout and stderr merged | an `open` that answers one terminal, handed to `ptyPieces`, which sets it raw and frames the three streams in base64 ([below](#one-terminal)) | none yet; DigitalOcean's console and OpenSandbox's PTY socket, [`test/fake-terminal.mjs`](test/fake-terminal.mjs) |
 | SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` only closes stdin and fails the pre-check's kill check: copy its shape, and kill with a pid wrapper |
-| Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
+| Any other binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
 
 One shape can't carry the daemon today. A request and response exec (one call runs a command and answers its output
@@ -100,6 +104,70 @@ const exec = (id: string, argv: readonly string[], ctx: HostCall) =>
 An event may carry `base64` in place of `text` for output that isn't text. The tests run this host against a
 loopback vendor ([`test/fake-text-host.mjs`](test/fake-text-host.mjs)) through the pre-check and the shared adapter's
 create.
+
+#### Output as server-sent events
+
+`sse` from `src/hosted/rest.ts` reads a `text/event-stream` body as the HTML standard says: comments (a keep-alive)
+are skipped, `data:` lines are joined, and each event carries the last `id:` and `retry:` the stream set, which a host
+that resumes a dropped stream asks from. For an API whose events are `data: {"type":"stdout","output":"…"}`, then
+`event: exit` with `data: {"exitCode":0}`, the `events` piece above becomes:
+
+```ts
+events: async function* (pid) {
+	for await (const { event, data } of sse(orThrow(await api.stream("GET", api.url(`/processes/${pid}/sse`))).body)) {
+		const value = JSON.parse(data);
+		yield event === "exit" ? { exit: value.exitCode } : { stream: value.type, text: value.output };
+	}
+},
+```
+
+#### No call for stdin
+
+`fifoStdin` from `src/hosted/framed-exec.ts` takes your `start` and `events` and answers the pieces `framedExec` takes,
+with `write` and `end` made of more starts. The process starts under a `sh` that makes a fifo in `/tmp` and feeds the
+process what comes into it. Each write is a second, short exec that hands the fifo its text (up to 64 KiB of it, in
+its argv), one after another, and `end()` is one more. Each write costs an exec, so a limit on your vendor's execs is
+spent there. For an API whose one call starts a process and answers its events as server-sent events, `event: output`
+with `data: {"stream":"stdout","data":"…"}`, then `event: exit` with `data: {"exit_code":0}`:
+
+```ts
+const exec = (id: string, argv: readonly string[], ctx: HostCall) =>
+	framedExec(
+		fifoStdin<AsyncIterable<Uint8Array>>({
+			start: async (argv, ctx) => orThrow(await api.stream("POST", api.url(`/machines/${id}/runs`), { json: { argv }, timeoutMs: ctx.timeoutMs })).body,
+			events: async function* (body) {
+				for await (const { event, data } of sse(body)) {
+					const value = JSON.parse(data);
+					yield event === "exit" ? { exit: value.exit_code } : { stream: value.stream, text: value.data };
+				}
+			},
+		}),
+		argv,
+		ctx,
+	);
+```
+
+#### One terminal
+
+`ptyPieces` from `src/hosted/pty-exec.ts` takes an `open` that answers one terminal (`send` types text, `output` is
+what comes back, `close` hangs it up) and answers the pieces `framedExec` takes. Each process gets a terminal of its
+own. ptyPieces types one short line that runs `stty raw -echo` and reads a script; the script runs the process on
+fifos, off the terminal, and writes its stdout and stderr back as base64 lines with a marker, then its exit code.
+stdin goes the other way as a length line and that much base64. framedExec kills by pid, over a second terminal. The
+machine needs `stty`, `mktemp`, `mkfifo`, `dd`, `base64` and `head`, which coreutils and busybox both have. Here
+`open` is a local pty, as the tests' fake opens one; yours opens your vendor's socket:
+
+```ts
+const open = async (): Promise<Terminal> => {
+	const child = spawn("script", ["-qfc", "sh", "/dev/null"], { stdio: ["pipe", "pipe", "ignore"] });
+	return {
+		send: (text) => new Promise((done, fail) => child.stdin.write(text, (error) => (error ? fail(error) : done()))),
+		output: child.stdout,
+		close: async () => void child.kill("SIGKILL"),
+	};
+};
+const exec = (id: string, argv: readonly string[], ctx: HostCall) => framedExec(ptyPieces(open), argv, ctx);
+```
 
 ### Step one: run the exec pre-check
 
