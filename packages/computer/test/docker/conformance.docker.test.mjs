@@ -65,7 +65,10 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 
 	it("is a linux computer with computerd as PID 1, and skips each screen, input, touch, apps and lifetime case in words", () => {
 		assert.deepEqual([report.kind, report.daemonMode], ["linux", "pid1"]);
-		const extension = report.results.filter((r) => ["screen", "input", "touch", "apps", "lifetime"].includes(r.group));
+		// lifetime.idle is a long case: a run without long skips it for that, whatever the provider declares.
+		const idle = report.results.find((r) => r.id === "lifetime.idle");
+		assert.deepEqual([idle?.status, idle?.reason], ["skip", "a long case (it leaves a computer quiet 6 min): run with --long (or options.long), as the live sweep does"]);
+		const extension = report.results.filter((r) => ["screen", "input", "touch", "apps", "lifetime"].includes(r.group) && r !== idle);
 		assert.ok(extension.length > 0, "the extension's cases ran");
 		for (const r of extension) {
 			assert.equal(r.status, "skip", `${r.id}: ${r.reason}`);

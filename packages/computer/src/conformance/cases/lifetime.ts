@@ -1,8 +1,14 @@
 // Lifetime: extend moves a computer's deadline, so it outlives the lifetime it was made with, with what ran in it still
 // running. An extend that would move the deadline earlier, past maxLifetimeMs, or past create + maxLifetimeMs is refused
-// in words, with the deadline unchanged.
+// in words, with the deadline unchanged. A computer left quiet past a vendor's idle timer is still running, its daemon
+// answering (a long case: --long).
 import type { Case } from "../types.js";
 import { CASE_LABEL } from "./util.js";
+
+/** How long lifetime.idle leaves its computer quiet: past the shortest vendor idle timer known (Alibaba's 5 min). */
+const IDLE_MS = 6 * 60_000;
+/** Its computer's lifetime: the quiet, and four minutes to make it, connect and read it. */
+const IDLE_LIFETIME_MS = IDLE_MS + 4 * 60_000;
 
 /** A deadline read back may be a second off the one extend returned: a label or a vendor timer can round. */
 const SLACK_MS = 1000;
@@ -67,6 +73,35 @@ export const lifetimeCases: Case[] = [
 			// from now is at least 30 s past create + maxLifetimeMs, though within maxLifetimeMs on its own.
 			const underCap = maxLifetimeMs - UNDER_CAP_MS;
 			await refused(underCap, `extend to ${underCap / 1000} s, past create + maxLifetimeMs (${maxLifetimeMs} ms)`);
+		},
+	},
+	{
+		id: "lifetime.idle",
+		level: "full",
+		group: "lifetime",
+		needs: [],
+		computer: "none",
+		timeoutMs: IDLE_LIFETIME_MS + 60_000,
+		async run(t) {
+			const minutes = IDLE_MS / 60_000;
+			t.long(`it leaves a computer quiet ${minutes} min`);
+			const { maxLifetimeMs } = t.provider.capabilities();
+			if (!(maxLifetimeMs >= IDLE_LIFETIME_MS)) return t.skip(`lifetime.idle needs a maxLifetimeMs of ${IDLE_LIFETIME_MS / 60_000} min or more, not ${maxLifetimeMs} ms`);
+			const labels = { ...t.runLabels, [CASE_LABEL]: "idle" };
+			const ref = await t.create({ lifetimeMs: IDLE_LIFETIME_MS, labels });
+			const first = await t.connect(ref);
+			t.deepEqual(t.ok(await first.client.call("ping", {}), "ping"), {}, "ping after create");
+			await first.close();
+			// No call and no connection: a vendor's idle timer (Alibaba's 5 min, Azure's, Cloudflare's inactivity) would end it.
+			await t.clock.sleep(IDLE_MS);
+			const quiet = `after ${minutes} min with no call, well inside its lifetime`;
+			t.deepEqual(
+				t.ok(await t.provider.list(labels), "list").map((info) => [info.ref.name, info.state]),
+				[[ref.name, "running"]],
+				`${quiet}: still listed, running (a vendor's idle timer ends a quiet computer under the run: turn it off, or keep the computer busy)`,
+			);
+			const back = await t.connect(ref);
+			t.deepEqual(t.ok(await back.client.call("ping", {}), "ping"), {}, `${quiet}: its daemon answers ping`);
 		},
 	},
 ];
