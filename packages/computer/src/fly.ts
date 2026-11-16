@@ -24,12 +24,11 @@ import { ok, type Result } from "./result.js";
 /** One machine as the Machines API answers it (M, "Machine properties"; fly-go Machine), as far as this host reads it. */
 export interface FlyMachine {
 	id: string;
-	name?: string;
 	state: string;
 	created_at?: string;
-	config?: { image?: string; metadata?: Record<string, string> | null } | null;
+	config?: { metadata?: Record<string, string> | null } | null;
 	/** fly-go: the config rebuilt in part while host_status isn't "ok". */
-	incomplete_config?: { image?: string; metadata?: Record<string, string> | null } | null;
+	incomplete_config?: { metadata?: Record<string, string> | null } | null;
 }
 
 /** The Fly provider's options: the token and the app, then the shared adapter's (HostedOptions). */
@@ -96,8 +95,6 @@ function machineOf(found: FlyMachine): Machine | undefined {
 	return {
 		id: found.id,
 		labels: { ...(config.metadata ?? {}) },
-		...(found.name ? { name: found.name } : {}),
-		...(typeof config.image === "string" ? { image: config.image } : {}),
 		state: state ?? "gone",
 		...(created ? { createdAt: created } : {}),
 		...(why ? { why } : {}),

@@ -5,7 +5,10 @@
 // on an HTTP server bound to $PORT that answers GET /v2/health 200, and builds the provider with the dial that server
 // gives: AGENTRUN_PUBLIC_URL, the tokens it mints and its attach hub. Then it runs Core, provider.deadline and drift.arch
 // among it, and prints the report as JSON between two marker lines, DIAL-CONFORMANCE-REPORT-BEGIN and
-// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. It exits 0 when Core passes, else 1.
+// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. Then it idles, /v2/health still
+// answered, until SIGTERM or SIGINT ends it with the run's status: a host that restarts an exited process (Render's)
+// would start a second run. With --exit it exits instead: 0 when Core passes, else 1. A refusal before the server
+// listens (a usage error, no AGENTRUN_PUBLIC_URL or PORT) exits 1 either way.
 //
 //   node packages/serve/scripts/dial-conformance.mjs --provider fly
 //
@@ -17,10 +20,13 @@
 // token, is taken out of what it writes.
 //
 // drift.version under dial: a machine runs the computerd this server serves, and the image holds no Go to build one of
-// another version, so the drifted twin's machines are served a copy of the daemon with its version string changed in
-// place (same length): the copy's sha256 is the twin's, and only the twin's tokens are served it.
+// another version, so the drifted twin's machines are served a copy of the daemon with its version string, found exactly
+// once, changed in place (same length, printable): the copy's sha256 is the twin's, and only the twin's tokens are
+// served it. A fixture of this script alone: no serve route knows of it. The report names the copy's sha256 and version,
+// and the versions the twin's refused hellos reported (driftedDaemon), which must be the copy's.
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -34,7 +40,7 @@ import { createAttachRoutes, sha256Hex } from "../dist/computer-attach.js";
 
 const BEGIN = "DIAL-CONFORMANCE-REPORT-BEGIN";
 const END = "DIAL-CONFORMANCE-REPORT-END";
-const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>], with AGENTRUN_PUBLIC_URL and PORT set";
+const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set";
 /** A name of a module's ENV that holds a secret (the conformance CLI's rule). */
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
 /** A token serve mints for a machine (computer-attach.ts newMintedToken). */
@@ -42,11 +48,16 @@ const MINTED_TOKEN = /art_[0-9a-f]{64}/g;
 
 const say = (line) => process.stderr.write(`dial-conformance: ${line}\n`);
 
-/** --provider's value, and --only's groups and case ids when it is given; anything else is a usage error. */
+/** --provider's value, --only's groups and case ids when it is given, and --exit; anything else is a usage error. */
 function argsOf(argv) {
 	const args = {};
-	for (let i = 0; i < argv.length; i += 2) {
-		const [flag, value] = [argv[i], argv[i + 1]];
+	for (let i = 0; i < argv.length; i++) {
+		const flag = argv[i];
+		if (flag === "--exit" && args.exit === undefined) {
+			args.exit = true;
+			continue;
+		}
+		const value = argv[++i];
 		if (!value || (flag !== "--provider" && flag !== "--only") || args[flag.slice(2)] !== undefined) throw new Error(USAGE);
 		args[flag.slice(2)] = flag === "--only" ? value.split(",").map((part) => part.trim()).filter(Boolean) : value;
 	}
@@ -113,25 +124,36 @@ const NO_PAIRING = new Proxy(
 );
 
 /** The version a drifted daemon reports: the provider's, its last character changed, so the bytes keep their length. */
-const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
+export const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
 
 /** Go's name for this process's architecture: the daemon builds this machine can run. */
 const HERE = { x64: "amd64", arm64: "arm64" }[process.arch];
 
+/** The drift check's words for a hello of another version (computer src/drift.ts helloDrift): the daemon's version. */
+const VERSION_DRIFT = /hello: the daemon reports version (\S+), expected (\S+)/;
+
 /**
- * A copy of the daemon for `arch` at `path` in a directory of its own, every `from` in it written over with `to`; its
- * path. A copy this machine can run is run once (`computerd version`), and must say `to`: one that does not start, or
- * says another version, fails the drift case here rather than in a machine.
+ * `bytes` with the one `from` in them written over with `to`: the same length, printable ASCII. Refused unless `from`
+ * occurs exactly once, so nothing but the version string the build stamped (-X main.version) changes.
+ */
+export function patchVersion(bytes, from, to) {
+	if (to.length !== from.length || !/^[\x21-\x7e]+$/.test(to)) throw new Error(`the drifted version ${JSON.stringify(to)} is not ${from.length} printable characters, as ${from} is`);
+	const was = Buffer.from(from);
+	const at = bytes.indexOf(was);
+	const again = at === -1 ? -1 : bytes.indexOf(was, at + 1);
+	if (at === -1 || again !== -1) throw new Error(`the daemon holds the version string ${from} ${at === -1 ? "nowhere" : "more than once"}: the drift case changes it only where it occurs exactly once`);
+	const patched = Buffer.from(bytes);
+	Buffer.from(to).copy(patched, at);
+	return patched;
+}
+
+/**
+ * A copy of the daemon for `arch` at `path` in a directory of its own, its version string `from` written over with `to`:
+ * its path and sha256. A copy this machine can run is run once (`computerd version`), and must say `to`: one that does
+ * not start, or says another version, fails the drift case here rather than in a machine.
  */
 function driftedDaemon(arch, path, from, to) {
-	const bytes = readFileSync(path);
-	const was = Buffer.from(from);
-	let found = 0;
-	for (let at = bytes.indexOf(was); at !== -1; at = bytes.indexOf(was, at + was.length)) {
-		Buffer.from(to).copy(bytes, at);
-		found++;
-	}
-	if (found === 0) throw new Error(`the daemon at ${path} holds no version string ${from} to change for the drift case`);
+	const bytes = patchVersion(readFileSync(path), from, to);
 	const dir = mkdtempSync(join(tmpdir(), "dial-conformance-drift-"));
 	process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
 	const out = join(dir, "computerd");
@@ -141,7 +163,7 @@ function driftedDaemon(arch, path, from, to) {
 		const said = execFileSync(out, ["version"], { encoding: "utf8", env: {}, timeout: 10_000 }).trim();
 		if (said !== to) throw new Error(`the drift case's copy of ${path} says version ${said}, not ${to}`);
 	}
-	return out;
+	return { path: out, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
 /** A JSON answer. */
@@ -151,8 +173,8 @@ function answer(res, status, body, headers = {}) {
 	res.end(text);
 }
 
-async function main(argv, env) {
-	const { provider: name, only } = argsOf(argv);
+/** The run: its exit status. `state.listening` is set once the server listens, from which point a run may have begun. */
+async function main({ provider: name, only, exit }, env, state) {
 	const publicUrl = env.AGENTRUN_PUBLIC_URL;
 	if (!publicUrl) throw new Error(`AGENTRUN_PUBLIC_URL is not set: the provider's machines dial it, so it is the https address the internet reaches this process at\n${USAGE}`);
 	const port = Number(env.PORT);
@@ -167,9 +189,12 @@ async function main(argv, env) {
 		machinesOnly: true,
 		log: (event, fields) => say(`${event} ${JSON.stringify(fields)}`),
 	});
-	/** Each machine's token, by its name (DialKit.token), and the drifted twin's machines with the daemon copy they are served. */
+	/**
+	 * Each machine's token, by its name (DialKit.token); the drifted twin's machines, the daemon copy each arch's are
+	 * served ({ path, sha256, version }), and the version each refused hello of the twin's reported.
+	 */
 	const tokens = new Map();
-	const drift = { machines: new Set(), paths: new Map() };
+	const drift = { machines: new Set(), copies: new Map(), hellos: [] };
 	const minting = (into) => ({
 		async mint(machine, mint) {
 			const token = await attach.machineTokens.mint(machine, mint);
@@ -199,7 +224,7 @@ async function main(argv, env) {
 				const arch = query.get("arch");
 				const file = await attach.daemon(req.headers.authorization, arch);
 				const machine = await machineOf(req.headers.authorization);
-				const bytes = await readFile(drift.machines.has(machine) ? (drift.paths.get(arch) ?? file) : file);
+				const bytes = await readFile(drift.machines.has(machine) ? (drift.copies.get(arch)?.path ?? file) : file);
 				res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length), "cache-control": "no-store" });
 				return void res.end(req.method === "HEAD" ? undefined : bytes);
 			}
@@ -220,6 +245,7 @@ async function main(argv, env) {
 		attach.upgrade(req, socket, head, deny);
 	});
 	await new Promise((done, fail) => server.once("error", fail).listen(port, () => done()));
+	state.listening = true;
 	const local = `ws://127.0.0.1:${server.address().port}${ATTACH_PATH}`;
 	say(`listening on port ${server.address().port}; the machines dial ${publicUrl}`);
 
@@ -284,8 +310,20 @@ async function main(argv, env) {
 			dial: () => kit,
 			drifted: async () => {
 				const arch = provider.host?.facts?.arch ?? "amd64";
-				if (!drift.paths.has(arch)) drift.paths.set(arch, driftedDaemon(arch, hostedDaemonPath(arch), provider.version, driftedVersion(provider.version)));
-				return module.createProvider({ ...options, dial: { url: publicUrl, tokens: minting(drift.machines), hub }, daemonPath: drift.paths.get(arch) });
+				const version = driftedVersion(provider.version);
+				if (!drift.copies.has(arch)) drift.copies.set(arch, { ...driftedDaemon(arch, hostedDaemonPath(arch), provider.version, version), version });
+				const twin = await module.createProvider({ ...options, dial: { url: publicUrl, tokens: minting(drift.machines), hub }, daemonPath: drift.copies.get(arch).path });
+				// The version each of the twin's refused hellos reported, read from the drift check's words: the patched daemon's.
+				for (const method of ["create", "connect"]) {
+					const call = twin[method].bind(twin);
+					twin[method] = async (...args) => {
+						const result = await call(...args);
+						const said = result?.ok === false ? VERSION_DRIFT.exec(result.error?.message ?? "") : null;
+						if (said) drift.hellos.push(said[1]);
+						return result;
+					};
+				}
+				return twin;
 			},
 			...(declared === undefined ? {} : { declared }),
 			...(secretNames.length === 0
@@ -301,24 +339,52 @@ async function main(argv, env) {
 			onResult: (result) => say(scrub(`${result.status} ${result.id}${result.reason ? `: ${result.reason}` : ""}`)),
 		});
 		if (notes.length > 0) report.providerNotes = notes;
+		// The daemon copy the drifted twin's machines were served, by its sha256 and the version it reports, and the
+		// version their refused hellos reported: drift.version's pass counts only when every one is the copy's.
+		const copies = [...drift.copies].map(([arch, { sha256, version }]) => ({ arch, sha256, version }));
+		const hellos = [...new Set(drift.hellos)];
+		const helloOk = hellos.every((said) => copies.some((copy) => copy.version === said));
+		if (copies.length > 0) report.driftedDaemon = { copies, hellos, matches: helloOk };
 		process.stdout.write(`${BEGIN}\n${scrub(JSON.stringify(report, null, 2))}\n${END}\n`);
 		say(`Core ${report.core}`);
+		if (!helloOk) say(`the drifted twin's hellos reported ${hellos.join(", ")}, not the daemon copy's ${copies.map((copy) => copy.version).join(", ")}`);
 		// A run --only narrowed is partial at best: it passes when every case it ran passed (the runner's "partial"), and
 		// one did.
 		const narrowed = only !== undefined && report.core === "partial" && report.results.some((result) => result.status === "pass");
-		return report.core === "pass" || narrowed ? 0 : 1;
+		return (report.core === "pass" || narrowed) && helloOk ? 0 : 1;
 	} finally {
 		process.off("SIGINT", stop);
 		process.off("SIGTERM", stop);
 		await attach.close();
-		await new Promise((done) => server.close(() => done()));
+		// Idling, the server stays up and answers /v2/health, so a host that checks it keeps the process as it is.
+		if (exit) await new Promise((done) => server.close(() => done()));
 	}
 }
 
-process.exitCode = await main(process.argv.slice(2), process.env).catch((error) => {
-	say(error instanceof Error ? error.message : String(error));
-	return 1;
-});
-// The report is written. A provider call the runner stopped waiting for may still hold the event loop: the process ends
-// after a grace period, without holding it open itself.
-setTimeout(() => process.exit(), 5000).unref();
+/** Imported (by its test, for patchVersion) rather than run: nothing starts. */
+const RUN = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+if (RUN) {
+	const state = { listening: false };
+	let args;
+	const code = await (async () => {
+		args = argsOf(process.argv.slice(2));
+		return main(args, process.env, state);
+	})().catch((error) => {
+		say(error instanceof Error ? error.message : String(error));
+		return 1;
+	});
+	if (args?.exit || !state.listening) {
+		process.exitCode = code;
+		// The report is written. A provider call the runner stopped waiting for may still hold the event loop: the process
+		// ends after a grace period, without holding it open itself.
+		setTimeout(() => process.exit(), 5000).unref();
+	} else {
+		// A host that restarts an exited process (Render's) would start a second run: once a run may have begun, the process
+		// idles until it is stopped, and then exits with the run's status.
+		say(`the run is over (exit status ${code}); idling until stopped, as a restart would start another run`);
+		const end = () => process.exit(code);
+		process.once("SIGINT", end);
+		process.once("SIGTERM", end);
+		setInterval(() => undefined, 2 ** 30);
+	}
+}

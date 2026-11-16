@@ -86,15 +86,14 @@ test("a size with CPUs and no memory gets the default memory, or the most its sh
 	assert.deepEqual(host.check({ cpus: 1 }), []);
 });
 
-test("get reads each Fly state as the adapter's, the labels from metadata, the image from config.image; a destroyed machine is none", async () => {
+test("get reads each Fly state as the adapter's and the labels from metadata, and nothing of the machine's name or image; a destroyed machine is none", async () => {
 	const states = { started: "running", created: "starting", starting: "starting", replacing: "starting", stopped: "stopped", suspended: "stopped", archived: "stopped", destroying: "gone", failed: "gone", launch_failed: "gone" };
 	for (const [state, want] of Object.entries(states)) {
 		const fly = fakeFly((method, url) => (method === "GET" && url.href === `${BASE}/3d8d9e3a5e4d89` ? { json: flyMachine("3d8d9e3a5e4d89", state) } : undefined));
 		const machine = await provider(fly).host.get("3d8d9e3a5e4d89", CTX);
 		assert.equal(machine.state, want, state);
 		assert.deepEqual(machine.labels, LABELS);
-		assert.equal(machine.image, "ghcr.io/parcha-ai/agentrun-box:0123456789ab");
-		assert.equal(machine.name, NAME);
+		assert.deepEqual(Object.keys(machine).filter((key) => key === "name" || key === "image"), []);
 		assert.equal(machine.createdAt.toISOString(), "2026-11-16T10:00:00.000Z");
 		if (state === "failed") assert.match(machine.why, /could not start/);
 	}
