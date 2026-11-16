@@ -261,8 +261,10 @@ with `labels: "machine"` (read through exec), or for kind `desktop` (the machine
 
 - `create` refuses `refused`, before the vendor is called, when the url is missing or not `https` (`http` only on
   `127.0.0.1`), and an Archil mount, in words. It mints the machine's token, expiring at `backstopAt`, and calls the
-  host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names the five); the host puts it
-  in the machine's env and runs nothing. Then it waits up to `createMs` for the machine's socket in the hub; one that
+  host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names the five) and `egress`
+  true, since the machine's root reaches the server (its tools' network is init's); the host puts the env in the
+  machine's env and runs nothing. Creates of one request take turns on one server, so two machines of a request never
+  dial at once. Then it waits up to `createMs` for the machine's socket in the hub; one that
   never dials is deleted, its token revoked, and create fails `timeout`, naming the address.
 - Nothing is installed, uploaded or started through the host: the machine's `agentrun-dial` does it. The drift check
   holds by the daemon's SHA-256, which the machine checks before it runs it.
