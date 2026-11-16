@@ -27,7 +27,7 @@ export {
 } from "./screen-watch.js";
 // The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and HostedProvider makes it a provider.
 export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-export { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
+export { HostedProvider, type HostedDial, type HostedOptions, type HostedTimeouts, hostedDaemonPath } from "./hosted/provider.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
 // (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /kubernetes, /modal, /e2b, /agent37, /orgo,
 // /phone-harness, /browserbase, /kernel, /local: each the provider file's name).

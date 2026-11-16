@@ -13,7 +13,7 @@
 // for the provider, never a pass or a fail of exec.
 import { createHash, randomBytes } from "node:crypto";
 import type { MachineHost, MachineProcess } from "../host.js";
-import { words } from "../hosted/process.js";
+import { execOf, words } from "../hosted/process.js";
 
 /** The checks, in the order they run. */
 export const EXEC_STREAM_CHECKS = ["stdout-text", "stdin-text", "large", "stdout-live", "stdin-live", "stdout-unread", "stderr", "exit-code", "kill", "no-timeout"] as const;
@@ -309,7 +309,7 @@ class Session {
 		const what = `exec of ${shown(argv)}`;
 		let answer: Promise<MachineProcess>;
 		try {
-			answer = Promise.resolve(this.#host.exec(this.#machine, argv, { timeoutMs: this.#stepMs, ...(this.#signal ? { signal: this.#signal } : {}) }));
+			answer = Promise.resolve(execOf(this.#host)(this.#machine, argv, { timeoutMs: this.#stepMs, ...(this.#signal ? { signal: this.#signal } : {}) }));
 		} catch (error) {
 			throw new Problem(`${what} threw: ${words(error)}`);
 		}

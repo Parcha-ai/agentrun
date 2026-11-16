@@ -80,3 +80,19 @@ test("only the template evals reach the fake mail account: email-faux by eval-ma
   assert.equal(branch?.[1], "eval-template", "the import is in the eval-template command's branch");
   assert.ok(!/^\}$/m.test(cli.code.slice(branch.index, at)), "and that branch has not closed before it");
 });
+
+test("only the template evals reach the fake feed: feed-faux by eval-feed and template-eval, eval-feed by template-eval, never the server", () => {
+  const graph = importGraph();
+  const may = { "feed/feed-faux.ts": ["eval-feed.ts", "template-eval.ts"], "eval-feed.ts": ["template-eval.ts"] };
+  const importersOf = (target) => [...graph].filter(([, { imported }]) => imported.some((one) => one.file === target)).map(([name]) => name).sort();
+  for (const [module, allowed] of Object.entries(may)) {
+    assert.ok(graph.has(module), `${module} is a server file`);
+    assert.deepEqual(importersOf(module).filter((name) => !allowed.includes(name)), [], `only ${allowed.join(" and ")} import ${module}`);
+  }
+  const reaching = new Set(["feed/feed-faux.ts"]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, { imported }] of graph) if (!reaching.has(name) && imported.some((one) => reaching.has(one.file))) grew = reaching.add(name) && true;
+  }
+  assert.deepEqual([...reaching].sort(), ["cli.ts", "eval-feed.ts", "feed/feed-faux.ts", "template-eval.ts"]);
+});

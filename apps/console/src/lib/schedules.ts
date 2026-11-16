@@ -208,7 +208,7 @@ export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
-export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event", composio: "On an app event", email: "On an email" };
+export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event", composio: "On an app event", email: "On an email", feed: "On a feed item" };
 
 /** When a trigger from an app fires, in one line: its event, from the saved Composio server it names. */
 export const composioWhen = (source: Extract<TriggerSource, { kind: "composio" }>): string => `On ${source.event} from ${source.server}`;
@@ -216,6 +216,19 @@ export const composioWhen = (source: Extract<TriggerSource, { kind: "composio" }
 /** When an email trigger fires, in one line: each new message in its mailbox (or, with `accept`, each its filter takes). */
 export const emailWhen = (source: Extract<TriggerSource, { kind: "email" }>): string =>
   source.accept?.length ? `On email in ${source.mailbox} for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : `On each email in ${source.mailbox}`;
+
+/** When a feed trigger fires, in one line: each new or updated item in its feed (its host), or in its N feeds. */
+export const feedWhen = (source: Extract<TriggerSource, { kind: "feed" }>): string => {
+  const where = source.urls.length === 1 ? hostOf(source.urls[0]!) : `${source.urls.length} feeds`;
+  return source.accept?.length ? `On items in ${where} for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : `On each new item in ${where}`;
+};
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
 
 /** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
 export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;

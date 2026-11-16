@@ -3,15 +3,17 @@
 // with the token it got by pairing, and the same JSON-RPC messages travel as text frames, one message per frame. Serve
 // is the caller: it sends hello first, then the run's calls. The AttachHub keeps one live connection per paired
 // computer; attachedProvider hands that computer to a run as a provider, one run at a time.
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PassThrough, type Readable, Writable } from "node:stream";
 import { DaemonClient } from "./client.js";
 import { kindServed } from "./kinds.js";
-import { type ComputerClient, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
+import { type ComputerClient, type ComputerKind, type ComputerOs, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, type ComputerRef, checkLifetime, kindRefusals, runLifetimeMs } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
 export const ATTACH_PATH = "/v2/computers/attach";
+/** Where a hosted machine that dials fetches the server's computerd for its arch (?arch=amd64|arm64), with its token. */
+export const DAEMON_PATH = "/v2/computers/daemon";
 /** The WebSocket subprotocol a driver asks for: the protocol version it speaks. Serve answers with it or refuses. */
 export const ATTACH_SUBPROTOCOL = `agentrun.computer.${PROTOCOL_VERSION}`;
 /** Each side pings this often (WebSocket ping frames, not JSON-RPC), so a NAT keeps the path open. */
@@ -128,6 +130,73 @@ export interface PairedComputer {
 	/** What it paired as: its hello at pairing. A later hello of another kind or os is refused (ATTACH_CLOSE.mismatch). */
 	hello: HelloResult;
 	labels: Record<string, string>;
+	/** A hosted machine that dials with a minted token (mintedComputer), not a person's: its hello keeps its arch too. */
+	minted?: true;
+}
+
+/** What a hosted machine's token is minted for: the computer its hello must say it is, and when the token stops. */
+export interface MachineMint {
+	kind: ComputerKind;
+	os: ComputerOs;
+	/** Go's name, as hello says it: amd64, arm64. */
+	arch: string;
+	/** The machine's backstopAt: past it the token is refused, whatever else holds. */
+	expiresAt: Date;
+}
+
+/**
+ * The tokens of hosted machines that dial (spec/computer/attach.md, Hosted machines that dial), as the server's store
+ * keeps them: HostedProvider mints one at each dial create and revokes it at the delete. A token is `art_` and 64 hex
+ * digits (32 random bytes); the store keeps only its sha256, bound to the machine and its mint, and never logs it. The
+ * server's attach upgrade and its daemon route take it while it is neither revoked nor past expiresAt, and hand its
+ * socket to the AttachHub as mintedComputer(machine, mint). machine is the computer's name, computer-<12 hex digits>,
+ * from its create's request id (computerNameFor): what the provider's connect and release are given.
+ */
+export interface MachineTokens {
+	/** A new token for the machine, replacing any it had. */
+	mint(machine: string, mint: MachineMint): Promise<string>;
+	/** The machine's token refused from now on; a machine with none is done. */
+	revoke(machine: string): Promise<void>;
+}
+
+const sha256 = (token: string) => createHash("sha256").update(token).digest("hex");
+
+/**
+ * MachineTokens in one process's memory, as serve's store keeps them (the sha256 alone): for tests and a conformance
+ * kit. check is what the server's attach and daemon routes ask of a token.
+ */
+export class MemoryMachineTokens implements MachineTokens {
+	readonly #held = new Map<string, { machine: string; mint: MachineMint }>();
+	readonly #hashOf = new Map<string, string>();
+
+	// No await in either: a mint replaces the machine's token at once, so two of one machine leave one token, not two.
+	async mint(machine: string, mint: MachineMint): Promise<string> {
+		this.#drop(machine);
+		const token = `art_${randomBytes(32).toString("hex")}`;
+		this.#held.set(sha256(token), { machine, mint: { ...mint } });
+		this.#hashOf.set(machine, sha256(token));
+		return token;
+	}
+
+	async revoke(machine: string): Promise<void> {
+		this.#drop(machine);
+	}
+
+	#drop(machine: string): void {
+		this.#held.delete(this.#hashOf.get(machine) ?? "");
+		this.#hashOf.delete(machine);
+	}
+
+	/** The machine and mint a token is good for at `at`: undefined for one unknown, revoked, or past its expiresAt. */
+	check(token: string, at = new Date()): { machine: string; mint: MachineMint } | undefined {
+		const held = this.#held.get(sha256(token));
+		return held === undefined || at.getTime() > held.mint.expiresAt.getTime() ? undefined : held;
+	}
+}
+
+/** A minted machine as the AttachHub takes its socket: under the machine's name, its hello held to the mint. */
+export function mintedComputer(machine: string, { kind, os, arch }: Pick<MachineMint, "kind" | "os" | "arch">): PairedComputer {
+	return { id: machine, name: machine, hello: { protocol: PROTOCOL_VERSION, version: "", os, kind, arch, groups: [] }, labels: {}, minted: true };
 }
 
 /** Whether protocol version a ("0.3") comes after b ("0.2"), part by part as numbers. */
@@ -143,8 +212,9 @@ function laterProtocol(a: string, b: string): boolean {
  * replace it the way a provider replaces a copied daemon.
  */
 export function helloMismatch(paired: PairedComputer, hello: HelloResult): { code: number; message: string } | undefined {
-	// Serve names no OS and no driver app: one way to update, in the same words for every computer.
-	const update = `update the driver on ${paired.name} (the download is on the console's Computers page)`;
+	// Serve names no OS and no driver app: one way to update, in the same words for every computer. A minted machine
+	// fetched this server's own computerd at boot, so another build there is not one this server gave it.
+	const update = paired.minted ? `${paired.name} runs a computerd that is not this server's build: create the computer again` : `update the driver on ${paired.name} (the download is on the console's Computers page)`;
 	const said = hello as Partial<Record<keyof HelloResult, unknown>> | null;
 	if (typeof said !== "object" || said === null || typeof said.protocol !== "string" || typeof said.version !== "string") {
 		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver answered hello without its protocol and version: ${update}` };
@@ -163,6 +233,10 @@ export function helloMismatch(paired: PairedComputer, hello: HelloResult): { cod
 	];
 	if (missing.length > 0) {
 		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} answered a protocol ${PROTOCOL_VERSION} hello without ${missing.join(", ")}: ${update}` };
+	}
+	if (paired.minted && (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os || hello.arch !== paired.hello.arch)) {
+		const was = paired.hello;
+		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} was made a ${was.os} ${was.kind} on ${was.arch} and says ${hello.os} ${hello.kind} on ${hello.arch}: its token is that machine's alone` };
 	}
 	if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
 		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };

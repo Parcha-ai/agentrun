@@ -1767,7 +1767,9 @@ Serve's keys, every one optional: `KUBERNETES_AUTH`, `KUBERNETES_API_URL`, `KUBE
 `KUBERNETES_WARM_POOL`, `KUBERNETES_RUNTIME_CLASS`, `KUBERNETES_NODE_SELECTOR` and `KUBERNETES_TOLERATIONS` (JSON),
 `KUBERNETES_ADD_CAPABILITIES`, `KUBERNETES_GOOGLE_CREDENTIALS`. `AGENTRUN_KUBERNETES_IMAGE` names the image (pod) or
 warm pool (claim) every Kubernetes computer starts from. The server passes its own `KUBERNETES_SERVICE_HOST`,
-`KUBERNETES_SERVICE_PORT` and `GOOGLE_APPLICATION_CREDENTIALS` (the descriptor's `hostEnv`).
+`KUBERNETES_SERVICE_PORT` and `GOOGLE_APPLICATION_CREDENTIALS` (the descriptor's `hostEnv`). Serve's launcher holds `KUBERNETES_TOKEN`, `KUBERNETES_TOKEN_FILE`,
+`KUBERNETES_KUBECONFIG` and `KUBERNETES_GOOGLE_CREDENTIALS` as secrets, off the server's environment; a kubeconfig with a
+client certificate often exceeds the launcher's 4,096-byte pipe, so save that one in Settings → Computers.
 
 What the provider's identity needs in its namespace: `create`, `get`, `list`, `delete` and `patch` on `pods` (pod model)
 or `sandboxclaims` (claim model); `get` on `sandboxes` and `pods` (claim model); `create` on `pods/exec`. The namespace

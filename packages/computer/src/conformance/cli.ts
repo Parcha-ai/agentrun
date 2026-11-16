@@ -181,6 +181,8 @@ interface Target {
 	planted?: ConformanceOptions["planted"];
 	/** The module's run folders for the mount cases: mountFor(kind). */
 	mountFor?: ConformanceOptions["mountFor"];
+	/** The module's server for a dial host's machines: dialKit(). */
+	dial?: ConformanceOptions["dial"];
 	/** The module's image for a run that names none. */
 	image?: string;
 	/** The module's notes for the report. */
@@ -269,7 +271,7 @@ export function plantSecrets(names: readonly string[]): { values: string[]; secr
  * register its image, so it is given the run's signal), and conformanceNotes, strings for the report.
  */
 async function load(label: string, module: Partial<ConformanceModule>, options: object, { imageNamed, signal }: { imageNamed: boolean; signal?: AbortSignal }, declared?: readonly KindCapabilities[]): Promise<Target> {
-	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
+	const { createProvider, createDriftedProvider, conformanceImage, mountFor, dialKit } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
 	const lacks = PROVIDER_METHODS.filter((name) => typeof provider?.[name] !== "function");
@@ -291,6 +293,7 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 		};
 	}
 	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
+	if (typeof dialKit === "function") target.dial = () => dialKit(options);
 	if (conformanceImage !== undefined && !imageNamed) {
 		const image = typeof conformanceImage === "function" ? await conformanceImage(options, signal ? { signal } : {}) : undefined;
 		if (typeof image !== "string" || image === "") throw new Usage(`${label}: conformanceImage() did not return an image`);
@@ -384,6 +387,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(target.declared ? { declared: target.declared } : {}),
 		...(target.planted ? { planted: target.planted } : {}),
 		...(target.mountFor ? { mountFor: target.mountFor } : {}),
+		...(target.dial ? { dial: target.dial } : {}),
 		...(onResult ? { onResult } : {}),
 		...(io.cdp ? { cdp: io.cdp } : {}),
 	});
