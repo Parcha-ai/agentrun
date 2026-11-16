@@ -172,19 +172,19 @@ isn't the JSON, then says unknown.
 `computer-bench report <out>` writes `report.md` and `report.json`. Arms are in bench.json's order (the arms file's): the
 first is the baseline every other is compared against, in every table.
 
-For a reader first, one table per platform (the tasks' os and kind: android phone, linux desktop, macos desktop), a row
-per arm: passed / scored, success, the paired difference against the first arm with its 95% CI and the tasks it pairs
-over, median computer steps, median model turns, median wall seconds, and $ per pass; then that platform's tasks (exec
-allow or deny, passed / scored per arm). Then "How we measured", a paragraph made from the run: how many tasks on which
-platforms, the seeds, the grader, what counts as infra and how often it is re-run, and which tasks deny exec.
+An arm has one summary, stated for the whole run and for each platform (the tasks' os and kind: android phone, linux
+desktop, macos desktop): passed / scored, success with a 95% interval clustered by task (the task is the unit; never
+narrower than Wilson's at the task count), the paired difference against the first arm over the task × seed pairs both
+arms scored, tasks passed on every seed (pass^k), median computer steps, median model turns, median wall seconds, $ per
+pass, budget stops, infra re-runs and final, refusals, the queue, the route mix (semantic, page, background,
+foreground, raw input, error), stale steps per run, no-op acts and verified steps, the passes that ran a program
+(exec.run, a process, a shell tool, counted once it started: a command its timeout cut or a shell call that failed ran
+one, a call refused or stopped before it started did not), and the failure loci.
 
-Then per arm: success with a 95% interval clustered by task (the task is the unit; never narrower than Wilson's at the
-task count), tasks passed on every seed (pass^k), mean steps and turns, $ per run and per success, wall time, budget
-stops, infra re-runs and final, refusals, the queue, the route mix (semantic, page, background, foreground, raw input,
-error), stale steps per run, no-op acts and verified steps; the passes that ran a program (exec.run, a process, a
-shell tool, counted once it started: a command its timeout cut or a shell call that failed ran one, a call refused or
-stopped before it started did not); each arm's paired difference against the first, over the task × seed pairs both arms scored; the failure
-loci; and a table per task.
+For a reader first, one table per platform, a row per arm, then that platform's tasks (exec allow or deny, passed /
+scored per arm). Then "How we measured", a paragraph made from the run: how many tasks on which platforms, the seeds,
+the grader, what counts as infra and how often it is re-run, and which tasks deny exec. Then the same table over every
+arm, the route mix, the passes that ran a program, the failure loci, and what was out of budget, not scored or queued.
 
 ## Suites
 
@@ -194,6 +194,7 @@ loci; and a table per task.
 | [ui-fixture](suites/ui-fixture) | 4 | the protocol's ui fixture app (`ai.agentrun.uifixture`; its canvas counts the clicks that reach it), run by its fake ui driver (`@parcha/agentrun-computer/fake-ui-driver`) in the tests, and by a real driver wherever the fixture app is installed |
 | [mac-dev](suites/mac-dev/README.md) | 20 (10 dev, 10 held out) | Notes, Calendar, Finder, Safari, TextEdit, System Settings, Reminders on macOS 26; four tasks cross two apps |
 | [android-dev](suites/android-dev/README.md) | 20 (10 dev, 10 held out) | Settings, Clock, Contacts, Files, Chrome, and two tasks through Chrome's share sheet, on an unrooted phone, checked through `settings get`, `content query` and the ui tree |
+| [linux-desktop](suites/linux-desktop/README.md) | 10 (5 dev, 5 held out) | Mousepad, xfce4-terminal, Thunar, Firefox, and two tasks across two apps, on a Linux desktop, with or without a window manager; all ten verified live on E2B Desktop for seeds 1-3, and the eight without Thunar on Agent37 |
 | [macosworld](suites/macosworld/PORT.md) | 10 | ported from macOSWorld (CC BY-NC 4.0: by reference, none of its text) |
 | [mobileworld](suites/mobileworld/PORT.md) | 8 | ported from MobileWorld (Apache-2.0): the 8 of its 201 that port faithfully to an unrooted phone |
 
@@ -206,8 +207,8 @@ first is the baseline. On serve, the arm is an agent definition: `harness` and `
 `thinking` level, `computer: {kind, provider?, surface, exec?}` (`kind` from the task, `provider` from
 `options.provider`, `surface` the arm's: "code", the harness's script tool alone; "tools", the per-step computer tools
 alone; and `exec: false` for a task that denies exec), and `options.definition` any other field of the definition as it
-is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec (and step budget, on pi): its id is
-`<bench>-<arm>-<kind>-<surface>[-ui][-s<steps>]`, `-ui` where exec is denied.
+is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec: its id is
+`<bench>-<arm>-<kind>-<surface>[-ui]`, `-ui` where exec is denied.
 
 ```json
 [
@@ -245,8 +246,7 @@ missing.
    answer the checks read is the Timeline's `final_answer` row, there once the agent ends, before the release.
 6. Budgets: the money budget is the run's `max_cost_usd`. The step budget is computer calls: on every harness the bench
    counts the computer calls on the Timeline's tool rows and cancels the run past it, which lets the computer go, so the
-   checks after a cancel find it gone. On pi the agent's `max_tool_calls` is the budget too, a backstop (one agent per
-   budget there). Labels are gone: the bench's agent ids say which bench run made them.
+   checks after a cancel find it gone. Labels are gone: the bench's agent ids say which bench run made them.
 7. An agent's computer takes `surface` ("code" or "tools") and `exec: false` (no exec or processes group, no shell),
    which the bench sets from the arm and the task.
 

@@ -1,6 +1,6 @@
 // A provider's descriptor: everything a server, Settings and the conformance kit need to know of a vendor before any
 // of its code loads. Each vendor declares one, once, in its descriptor module (src/descriptors/<id>.ts, data and a lazy
-// load() alone), and its provider module takes its MOUNT and CAPABILITIES from it. The kind registry's PROVIDERS and
+// load() alone), and its provider module reads its mounts and capabilities from it. The kind registry's PROVIDERS and
 // the provider registry are derived from the descriptors; nothing beside them repeats what a descriptor says.
 import type { ComputerSettingKind, KindCapabilities } from "./kinds.js";
 import type { MountKind, Unmounted } from "./mount.js";
@@ -72,9 +72,19 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 */
 	readonly unmounted?: Unmounted;
 	/**
-	 * The network forms its computers make, as its providers' capabilities().network declare them: ["none"], a remote
-	 * computer whose programs run in a network of their own; ["open"], the vendor's own network, which no allowlist of
-	 * this server reaches; Docker's makes all three. A provider of several configurations declares every form they make.
+	 * Mount kinds its computers take only where the operator sets one of its keys, each by that key's name: the provider
+	 * that key fills declares the kind, and one made without it refuses the kind in its unmounted words (Daytona's archil,
+	 * with DAYTONA_ARCHIL_EGRESS: a self-hosted Daytona target reaches Archil through an egress relay, and Archil's client
+	 * hangs on Daytona's hosted cloud). Each kind is in unmounted and never in mounts; each key is one of keys, not
+	 * required. mountsOf gives a provider's mounts with the keys set.
+	 */
+	readonly mountsWith?: Readonly<Partial<Record<MountKind, string>>>;
+	/**
+	 * The network forms its computers make and enforce, as its providers' capabilities().network declare them: ["none"],
+	 * a remote computer whose programs run in a network of their own and nothing else; ["open"], the vendor's own network,
+	 * which no allowlist of this server reaches; a hosted computer through init's egress proxy (hosted/network.ts) makes
+	 * all three, as Docker's does. A form not declared is refused at check, never widened or narrowed to another. A
+	 * provider of several configurations declares every form they make.
 	 */
 	readonly network: readonly NetworkForm[];
 	/**
@@ -88,7 +98,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 * default, and the caller refuses the setting in words (Docker's sandbox: the server builds its image, prepareImage).
 	 */
 	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
-	/** Its built providers have prepareImage(): the image a computer starts from is made or pulled before the first create. */
+	/**
+	 * Its built providers have prepareImage(), the declaration: the image a computer starts from is made or pulled before
+	 * the first create. Settings reads this without loading the provider; the Core case provider.prepare-image holds the
+	 * two to agree.
+	 */
 	readonly prepareImage?: boolean;
 	/**
 	 * The server's environment variable that, when its operator sets it, names the image every computer of this provider
@@ -149,6 +163,12 @@ export function descriptorProblems(value: unknown): string[] {
 		if (entries === undefined || entries.some(([kind, why]) => (kind !== "bind" && kind !== "archil") || typeof why !== "string" || why.trim() === "")) problems.push("unmounted maps mount kinds (bind, archil) to why, in words");
 		else if (Array.isArray(d.mounts) && entries.some(([kind]) => d.mounts?.includes(kind as MountKind))) problems.push("unmounted names a mount kind that mounts declares");
 	}
+	if (d.mountsWith !== undefined) {
+		const entries = typeof d.mountsWith === "object" && d.mountsWith !== null && !Array.isArray(d.mountsWith) ? Object.entries(d.mountsWith) : undefined;
+		const optional = (name: unknown) => Array.isArray(d.keys) && d.keys.some((key) => key?.name === name && key.required === false);
+		if (entries === undefined || entries.some(([kind, key]) => (kind !== "bind" && kind !== "archil") || typeof key !== "string" || !optional(key))) problems.push("mountsWith maps mount kinds (bind, archil) to the name of one of its keys that is not required");
+		else if (entries.some(([kind]) => typeof d.unmounted?.[kind as MountKind] !== "string")) problems.push("each kind of mountsWith is in unmounted too, with why while its key is unset");
+	}
 	if (!Array.isArray(d.network) || d.network.length === 0 || d.network.some((form) => form !== "none" && form !== "open" && form !== "allow")) problems.push("network is not a list of the network forms its computers make (none, open, allow)");
 	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
 	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");
@@ -191,4 +211,15 @@ export function descriptorProblems(value: unknown): string[] {
 		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");
 	}
 	return problems;
+}
+
+/**
+ * The mount kinds a provider's computers take, and why not the others, with the keys `set` says the operator has set: its
+ * mounts, and each kind of its mountsWith whose key is set, which leaves its unmounted. What a provider made with those
+ * keys declares (capabilities().mount), and what a server reads to know whether that provider can mount a run's folder.
+ */
+export function mountsOf(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted" | "mountsWith">, set: (name: string) => boolean): { mounts: MountKind[]; unmounted: Unmounted } {
+	const taken = Object.entries(descriptor.mountsWith ?? {}).flatMap(([kind, key]) => (typeof key === "string" && set(key) ? [kind as MountKind] : []));
+	const unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
+	return { mounts: [...descriptor.mounts, ...taken.filter((kind) => !descriptor.mounts.includes(kind))], unmounted };
 }

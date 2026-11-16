@@ -10,7 +10,7 @@
 // file within CAPS.file, a README within CAPS.readme), and the standing instructions cut to GRADE_CAPS.instructions.
 // Whatever the folder holds, it stays under GRADE_CAPS.prompt, well below what a completion takes.
 import { createHash } from "node:crypto";
-import { CAPS, checkNote } from "./check.js";
+import { CAPS, checkNote, noteBytes } from "./check.js";
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, indexLine, type LearnedNote, NOTE_FILE, parseNoteFile, runMarkedRisky, withoutRiskyMark } from "./notes.js";
 import { draftMcpTools, learnedFront, learnedName, learnedPlace } from "./skills.js";
@@ -109,6 +109,9 @@ export type GradeInput = {
   /** The agent's standing instructions, as the host keeps them: the prompt holds their first GRADE_CAPS.instructions
    *  characters. */
   readonly instructions?: string;
+  /** Native source policy must be supplied whole. A fixed larger bound accommodates layered project configuration;
+   * it does not change the managed instruction cap or the overall grader prompt bound. */
+  readonly nativeInstructions?: true;
   /** Every active note on main, as the index lists it: the prompt holds each one's index line, cut to
    *  GRADE_CAPS.indexLine. */
   readonly active: readonly IndexEntry[];
@@ -141,9 +144,10 @@ export type GradeInput = {
 /** What bounds the grader's prompt, in UTF-16 units, as a completion counts them. `prompt` is the most it ever is:
  *  the fixed text, the instructions cut to `instructions`, INDEX_LINES + CAPS.supersedes index lines cut to
  *  `indexLine`, the user's messages (each cut to `askedMessage`, `askedTotal` in all), and CAPS.supersedes superseded and
- *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is forty messages at the
+ *  CAPS.newNotes new notes of at most CAPS.note bytes each (and the host's compiled_into line), fenced, come to less. `askedTotal` is forty messages at the
  *  cap: a run's messages are its input and each follow-up, a handful in a real run, so all of them are shown. */
 export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000 });
+export const NATIVE_GRADE_INSTRUCTION_BYTES = 65_536;
 
 /** The grader's judgment of one new note: `keep` (true for a pending one too), `pending` when it waits for the user's
  *  OK (a risky note, whoever's idea it was), and
@@ -234,10 +238,10 @@ function checkText(value: unknown, what: string): string {
   return value;
 }
 
-/** A note's text, checked and within the note cap. */
+/** A note's text, checked and within the note cap (the host's compiled_into line on top, check.ts noteBytes). */
 function noteText(note: NoteText, what: string): string {
   const text = checkText(note.text, `${note.file}'s text`);
-  if (Buffer.byteLength(text) > CAPS.note) throw new Error(`${note.file}, ${what}, is over ${CAPS.note} bytes`);
+  if (noteBytes(text) > CAPS.note) throw new Error(`${note.file}, ${what}, is over ${CAPS.note} bytes`);
   return text;
 }
 
@@ -409,7 +413,8 @@ function promptWithin(input: GradeInput, budget: number): string {
   const sent = triggered ?? [];
   const fromTriggers = askedOf(sent.map(({ text }) => text), Math.max(0, budget - messages.reduce((n, { text }) => n + text.length, 0)), false);
 
-  const told = instructions === undefined ? undefined : cut(instructions, GRADE_CAPS.instructions);
+  if(input.nativeInstructions && instructions!==undefined && Buffer.byteLength(instructions,'utf8')>NATIVE_GRADE_INSTRUCTION_BYTES)throw new Error('Native standing instructions exceed the 64 KiB grading evidence limit.');
+  const told = instructions === undefined ? undefined : input.nativeInstructions ? instructions : cut(instructions, GRADE_CAPS.instructions);
   const index = lines.map((line) => `${line}\n`).join("");
   const said = messages.map(({ at, text }) => `${at}. ${text}`).join("\n\n");
   // The file names are in the fence lines' labels; each is checked with the texts so the token is nowhere but in its own lines.

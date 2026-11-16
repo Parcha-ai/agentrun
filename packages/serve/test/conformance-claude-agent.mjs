@@ -31,7 +31,7 @@ function hostTools(tools) {
     description: `The suite's ${tool.name} tool.`,
     inputSchema: { type: "object", properties: {} },
     replay: tool.replaySafe ? "safe" : "never",
-    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)) }),
+    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}), ...(tool.structured !== undefined ? { structured: tool.structured } : {}) }),
   }));
 }
 

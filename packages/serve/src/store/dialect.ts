@@ -16,6 +16,9 @@ export interface Dialect {
   jsonNotFalse(column: string, path: readonly string[]): string;
   /** True when the JSON array in TEXT column `column` holds the string parameter that follows (one `?`). */
   jsonArrayHas(column: string): string;
+  /** True when the JSON object of strings in TEXT column `column` holds the key and the value of the two string parameters
+   *  that follow (two `?`): bound, never spliced, so any key reads safely. False when the column is NULL. */
+  jsonObjectHas(column: string): string;
   /** The length of the JSON array in TEXT column `column`. */
   jsonArrayLength(column: string): string;
   /** The JSON object in TEXT column `column` without its top-level `key`. */
@@ -56,6 +59,9 @@ export interface Dialect {
    *  trigger's firings, an agent's current revision) is not interleaved with another. `"update"`: the run row of a write
    *  that moves its epoch (a release, a run's end), held against every write under the claim (`shareLock`) as well. */
   lockRow(tx: LockExecutor, table: string, column: string, value: string, mode?: "update"): Promise<void>;
+  /** lockRow (its first form) of every row whose `column` is one of `values`, in one statement and in `column`'s order, so
+   *  two transactions holding overlapping sets never wait on each other in a cycle. */
+  lockRows(tx: LockExecutor, table: string, column: string, values: readonly string[]): Promise<void>;
   /** Holds the named lock until the transaction ends: two transactions that each check, then write what the other checks. */
   lockKey(tx: LockExecutor, key: string): Promise<void>;
 }
@@ -75,6 +81,7 @@ export const SQLITE: Dialect = {
   jsonText: (column, path) => `json_extract(${column}, ${jsonPath(path)})`,
   jsonNotFalse: (column, path) => `json_extract(${column}, ${jsonPath(path)}) IS NOT 0`,
   jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ?)`,
+  jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) AS entry WHERE entry.key = ? AND entry.value = ?)`,
   jsonArrayLength: (column) => `json_array_length(${column})`,
   jsonWithout: (column, key) => `json_remove(${column}, ${jsonPath([key])})`,
   firingOrder: "rowid",
@@ -89,6 +96,7 @@ export const SQLITE: Dialect = {
   claimOneLock: "",
   shareLock: "",
   lockRow: async () => undefined,
+  lockRows: async () => undefined,
   lockKey: async () => undefined,
 };
 

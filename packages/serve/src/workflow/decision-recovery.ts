@@ -22,12 +22,14 @@ export type DecisionRecovery = {
 };
 
 /** What a receipt says of its provider beside its answers, each only when present: who answered, the sources, the
- *  questions refused, where each confidence came from, the images it carried and the state the judge saw. A replay gives the run all of it again. */
-const kept = (from: Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source" | "images" | "state" | "state_truncated" | "cost_basis"> | DecisionRow) => ({
+ *  questions refused, where each confidence came from, the images it carried, the state the judge saw and the values its
+ *  provider cut from it. A replay gives the run all of it again. */
+const kept = (from: Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source" | "images" | "state" | "state_truncated" | "state_cut" | "cost_basis"> | DecisionRow) => ({
   ...(from.provider !== undefined ? { provider: from.provider } : {}),
   ...(from.images !== undefined ? { images: from.images } : {}),
   ...(from.cost_basis !== undefined ? { cost_basis: from.cost_basis } : {}),
   ...(from.state !== undefined ? { state: from.state, state_truncated: from.state_truncated === true } : {}),
+  ...(from.state_cut !== undefined ? { state_cut: from.state_cut } : {}),
   ...(from.evidence !== undefined ? { evidence: from.evidence } : {}),
   ...(from.refused !== undefined ? { refused: from.refused } : {}),
   ...(from.confidence_source !== undefined ? { confidence_source: from.confidence_source } : {}),
@@ -38,7 +40,8 @@ function rowOf(receipt: DecisionReceipt, exchange: DecisionExchange, key: string
   return {
     v: DECISION_ROW_VERSION, at: receipt.at, node: receipt.node, kind: receipt.kind, item: receipt.item, execution_path: receipt.execution_path,
     request_sha256: receipt.request_sha256,
-    request_bytes: Buffer.byteLength(JSON.stringify({ state: exchange.request.state, questions: exchange.request.questions })),
+    // The request as sent: a state its provider cut to fit is counted cut.
+    request_bytes: Buffer.byteLength(JSON.stringify({ state: exchange.result?.state_sent ? exchange.result.state_sent.state : exchange.request.state, questions: exchange.request.questions })),
     model: receipt.model, questions: receipt.questions, answers: receipt.answers, rule: receipt.rule, action: receipt.action,
     usage: receipt.usage, cost_usd: receipt.cost_usd, latency_ms: receipt.latency_ms,
     // An error the receipt kept cut says so, and the row keeps saying it: a host holds its tail back (serve graph-served.ts).
@@ -59,7 +62,7 @@ function answeredReceipt(rows: DecisionRow[], id: string, key: string): Decision
     request: row.request!, status: "answered", state_sha256: row.state_sha256!,
     questions: row.questions as DecisionReceipt["questions"], answers: row.answers as DecisionReceipt["answers"], rule: row.rule as DecisionRule, action: row.action,
     model: row.model, usage: row.usage, cost_usd: row.cost_usd, request_sha256: row.request_sha256, latency_ms: row.latency_ms,
-    ...(kept(row) as Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source" | "images" | "state" | "state_truncated" | "cost_basis">),
+    ...(kept(row) as Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source" | "images" | "state" | "state_truncated" | "state_cut" | "cost_basis">),
   };
 }
 

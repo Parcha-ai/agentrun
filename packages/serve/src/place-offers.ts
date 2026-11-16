@@ -15,19 +15,13 @@ import { userInfo } from "node:os";
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import { withoutSecrets } from "./secrets.js";
 
-/** Why a remote box (Daytona's, Modal's) has no network, said in capabilities whenever the server's host list is set:
- *  its computer is made with no network (Daytona) or no network or an open one (Modal), never with a host list, so a
- *  list is narrowed to none (workspace/computer-deps.ts networkOf). */
-export const remoteNoList = (id: "daytona" | "modal"): string => `a ${id === "daytona" ? "Daytona" : "Modal"} computer is never made with a host list, so a ${id} box has no network`;
-
 /** Every box a place may name, in the order capabilities lists them. */
 export const BOX_IDS = ["docker", "modal", "daytona"] as const;
 export type BoxId = (typeof BOX_IDS)[number];
 
 /** A box as capabilities show it: whether this server has it, and why when not (or how it was checked); `state`, which
  *  capabilities derive from it (place.ts stated). `network`: what an available box reaches (BOX_NETWORKS), with
- *  `network_reason` when it is available and has none for a cause of its own (a daemon elsewhere; a remote box, whose
- *  computer is never made with a host list). `host_addresses`: for Docker from a container (compose.yaml), the Docker host's own addresses
+ *  `network_reason` when it is available and has none for a cause of its own (a daemon elsewhere). `host_addresses`: for Docker from a container (compose.yaml), the Docker host's own addresses
  *  its computers' egress proxy refuses as the host's (docker-host-addresses.ts: the read through the socket and
  *  AGENTRUN_DOCKER_HOST_ADDRESSES). */
 export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetwork; network_reason?: string; host_addresses?: string[] };
@@ -209,8 +203,9 @@ export async function placeOffers(env: NodeJS.ProcessEnv, options: PlaceOffersOp
 /** What each available box reaches, from the server's host list (`allow`, box-settings.ts boxAllowOf): Docker's
  *  computers through their egress proxy (an allowlist), with the Docker host's own addresses it refuses when the server
  *  runs in a container (`hostAddresses`), or unavailable where `dockerRefused` says Docker can't run a computer here
- *  (box-paths.ts dockerComputerRefusal, docker-host-addresses.ts noHostAddresses); Daytona's and Modal's none
- *  (remoteNoList). With `allow` none, none has a network. */
+ *  (box-paths.ts dockerComputerRefusal, docker-host-addresses.ts noHostAddresses); Daytona's and Modal's through the
+ *  egress proxy their computer's init starts (an allowlist too: @parcha/agentrun-computer's hosted/network.ts). With
+ *  `allow` none, none has a network. */
 export function withNetworks(offers: readonly BoxOffer[], allow: readonly string[] | "none", docker: { refused?: string; hostAddresses?: readonly string[]; faux?: boolean } = {}): BoxOffer[] {
   return offers.map((offer): BoxOffer => {
     if (!offer.available) return offer;
@@ -220,7 +215,6 @@ export function withNetworks(offers: readonly BoxOffer[], allow: readonly string
       if (allow === "none") return { ...offer, network: "none", network_reason: "AGENTRUN_BOX_ALLOW is none" };
       return { ...offer, network: "allowlist", ...(docker.hostAddresses?.length ? { host_addresses: [...docker.hostAddresses] } : {}) };
     }
-    if (allow === "none" || (offer.id !== "daytona" && offer.id !== "modal")) return { ...offer, network: "none" };
-    return { ...offer, network: "none", network_reason: remoteNoList(offer.id) };
+    return { ...offer, network: allow === "none" ? "none" : "allowlist" };
   });
 }

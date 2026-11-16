@@ -2,13 +2,20 @@
 // module reads the run's settings from its own COMPUTER_DAYTONA_* names (never a bare DAYTONA_ variable, which may hold
 // another organization's key on a host that runs other Daytona work) and passes each to create() as its option, the key
 // read only when createProvider() runs. Every sandbox of a run has a bounded life besides its TTL: Daytona stops one
-// after 30 minutes with no outside activity and deletes it as soon as it stops, so a stop deletes, and the provider
-// declares it (stopDeletes; see conformanceNotes). The live sweep (sweep.ts, --provider daytona) reads the same names
-// through createHost: it makes nothing.
+// after 30 minutes with no outside activity and deletes it as soon as it stops (see conformanceNotes). The live sweep
+// (sweep.ts, --provider daytona) reads the same names through createHost: it makes nothing. The mount cases run on a
+// self-hosted Daytona target alone: COMPUTER_DAYTONA_ARCHIL_EGRESS names its Archil egress relay, and the
+// COMPUTER_ARCHIL_* settings the disk (mountFor).
 import { create, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
 import { DAYTONA_DEFAULT_SNAPSHOT } from "../descriptors/daytona.js";
 import type { MachineHost } from "../host.js";
+import type { MountKind } from "../mount.js";
+import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import type { RunFolder } from "./types.js";
+
+/** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
+export { ARCHIL_ENV } from "./archil.js";
 
 /** The environment this module reads, by name, each for the option its comment names. */
 export const DAYTONA_ENV = {
@@ -30,6 +37,11 @@ export const DAYTONA_ENV = {
 	snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
 	/** gpuSnapshot: the GPU snapshot of box/Dockerfile GPU computers are made from (box/build-daytona.py --gpu); default daytona-gpu. */
 	gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
+	/**
+	 * archilEgress: a self-hosted Daytona target's Archil egress relay, <IPv4 gateway>:<mount lane>:<data lane>. Set, the
+	 * provider takes an Archil mount; unset, it refuses one (Archil's client hangs on Daytona's hosted cloud).
+	 */
+	archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -50,6 +62,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const sandboxClass = named(DAYTONA_ENV.sandboxClass);
 	const user = named(DAYTONA_ENV.user);
 	const gpuSnapshot = named(DAYTONA_ENV.gpuSnapshot);
+	const archilEgress = named(DAYTONA_ENV.archilEgress);
 	return {
 		apiKey,
 		...(url ? { apiUrl: url.value } : {}),
@@ -62,6 +75,8 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 		...(user ? { daemonUser: user.value } : {}),
 		// create() refuses a name that is not one of ours in words.
 		...(gpuSnapshot ? { gpuSnapshot: gpuSnapshot.value } : {}),
+		// create() refuses one of another shape in words.
+		...(archilEgress ? { archilEgress: archilEgress.value } : {}),
 	};
 }
 
@@ -70,12 +85,9 @@ export const CONFORMANCE_AUTO_STOP_MINUTES = 30;
 /** Minutes a run's sandbox may stay stopped: 0, Daytona deletes it as soon as it stops. */
 export const CONFORMANCE_AUTO_DELETE_MINUTES = 0;
 
-/**
- * For the run's report: what this configuration means for the suite. The provider declares it (stopDeletes), and the
- * note says it in words.
- */
+/** For the run's report: what this configuration means for the suite, in words. */
 export const conformanceNotes: string[] = [
-	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer, and the provider declares stopDeletes. Core provider.stop holds it to that: a stopped computer is gone, neither listed nor attachable. Full provider.janitor, which needs a stopped computer kept, is skipped (the lifetime being vendor).`,
+	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer. A computer here is deleted, never stopped: release stop is refused. Full provider.janitor, which needs a stopped computer kept, is skipped (the lifetime being vendor).`,
 ];
 
 export interface DaytonaModuleOptions {
@@ -105,6 +117,21 @@ function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote }: Da
 /** The image every computer of the run starts from: COMPUTER_DAYTONA_SNAPSHOT, or Daytona's default snapshot. */
 export function conformanceImage({ env = process.env }: Pick<DaytonaModuleOptions, "env"> = {}): string {
 	return env[DAYTONA_ENV.snapshot] || DAYTONA_DEFAULT_SNAPSHOT;
+}
+
+/**
+ * A fresh run folder for the mount cases: an Archil one on the disk the COMPUTER_ARCHIL_* settings name (the shared
+ * archilRunFolder; the run's snapshot is then one of box/Dockerfile, and COMPUTER_DAYTONA_USER is 2510:2510), only where
+ * COMPUTER_DAYTONA_ARCHIL_EGRESS names the target's relay, since the provider takes an Archil mount only then; none
+ * otherwise, and none for a bind, which a remote computer cannot take.
+ */
+export async function mountFor(
+	kind: MountKind,
+	{ env = process.env, archil = {} }: { env?: Record<string, string | undefined>; archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl"> } = {},
+): Promise<RunFolder | undefined> {
+	if (kind !== "archil" || !env[DAYTONA_ENV.archilEgress]) return undefined;
+	const settings = archilSettings(env);
+	return settings === undefined ? undefined : archilRunFolder({ ...settings, ...archil });
 }
 
 /** The provider the CLI runs; throws in words when a setting is missing or wrong. */

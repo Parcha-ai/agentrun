@@ -104,9 +104,14 @@ test("(c) a command() that answers only after finish's wait ran out and the rele
   await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 5 } });
   await until(() => control.commands.length === 1, "the raise reaches the loop");
 
+  // The store answers the release only once the test lets it (a loaded Postgres's slow release): the runner says
+  // released after that answer, so the late answer below is let go only once the run's release is said.
+  let letRelease;
+  record.holdRelease = new Promise((resolve) => (letRelease = resolve));
   control.end();
-  await until(() => releasedAt(record) !== undefined, "the release, once the wait ran out", 5_000);
-  await sleep(50);
+  await until(() => releasedAt(record) !== undefined, "the release asked, once the wait ran out", 5_000);
+  letRelease();
+  await until(() => events.some((event) => event.type === "released"), "the release said", 5_000);
   const calls = record.calls.length;
   const said = events.length;
   control.answer({ refused: "an answer after the release" });

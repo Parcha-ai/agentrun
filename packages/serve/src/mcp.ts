@@ -92,12 +92,12 @@ export const TOOLS: Tool[] = [
     run: async (_args, context) => {
       const answer = await context.call({ method: "GET", path: "/capabilities" });
       if (answer.status >= 400) return resultOf(answer);
-      const caps = json(answer) as { harnesses?: { id: string; available: boolean }[]; tools?: { name: string; available: boolean }[]; models?: Json; features?: { efforts?: string[]; thinking?: string[] } };
+      const caps = json(answer) as { harnesses?: { id: string; available: boolean }[]; tools?: { name: string; available: boolean; meta?: true }[]; models?: Json; features?: { efforts?: string[]; thinking?: string[] } };
       const me = {
         authenticated: true, credential: "token", server: "agentrun-serve", version: context.version,
         base_url: `${context.origin}/v2`, console_url: `${context.origin}/`,
         harnesses: (caps.harnesses ?? []).filter((h) => h.available).map((h) => h.id),
-        tools: (caps.tools ?? []).filter((t) => t.available).map((t) => t.name),
+        tools: (caps.tools ?? []).filter((t) => t.available && !t.meta).map((t) => t.name),
         efforts: caps.features?.efforts ?? [], thinking: caps.features?.thinking ?? [], models: caps.models ?? {},
       };
       return resultOf({ ...answer, bytes: Buffer.from(JSON.stringify(me)) });
@@ -267,8 +267,8 @@ export async function answerLlms(req: IncomingMessage, res: ServerResponse): Pro
   res.end(req.method === "HEAD" ? undefined : body);
 }
 
-/** The endpoint: `route` serves each tool, `authorized` checks an Authorization header against the token. */
-export function mcpEndpoint({ route, authorized, authFailed, version }: { route: Route; authorized: (header: string) => boolean; authFailed: (route: string, reason: string) => void; version: string }) {
+/** The endpoint: `route` serves each tool, `authorized` checks an Authorization header against the server's tokens (and keeps which one opened `req`). */
+export function mcpEndpoint({ route, authorized, authFailed, version }: { route: Route; authorized: (header: string, req: IncomingMessage) => boolean; authFailed: (route: string, reason: string) => void; version: string }) {
   function reply(res: ServerResponse, status: number, body?: unknown, headers: Record<string, string> = {}): void {
     res.writeHead(status, { ...(body === undefined ? {} : { "content-type": "application/json" }), "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
     res.end(body === undefined ? undefined : JSON.stringify(body));
@@ -345,7 +345,7 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     if (origin !== undefined && origin.toLowerCase() !== ownOrigin(req)) return reply(res, 403, rpcError(null, -32600, "this Origin may not call this server's MCP endpoint"));
     // The token only: the page's session cookie is not taken here (server.ts answers this path before the page).
     const authorization = req.headers.authorization;
-    if (authorization === undefined || !authorized(authorization)) {
+    if (authorization === undefined || !authorized(authorization, req)) {
       authFailed(MCP_PATH, authorization === undefined ? "no_credential" : "wrong_token");
       return reply(res, 401, rpcError(null, -32001, "the MCP endpoint needs Authorization: Bearer <the token in the data directory>"), { "www-authenticate": "Bearer" });
     }

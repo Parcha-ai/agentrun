@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { asOwner, serve, withEnv } from "./support.mjs";
 import { queued, storeOn } from "./store-helpers.mjs";
 
@@ -169,7 +170,8 @@ test("on the runner, a pinned server whose name resolves to a private address at
   const { store, dir } = await storeOn(t);
   const url = "https://mcp.example.test/mcp";
   await store.mcp.put({ name: "corp", url, auth: "none", tools: [{ name: "add", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }], sealed: null });
-  await queued(store, "run-1");
+  // The revision as its save pinned it: the granted tool, the server's URL then.
+  await queued(store, "run-1", { mcpPin: { corp: { url, tools: [{ name: "add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }] } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:corp/add"], harness: { commit: async () => undefined }, work: () => dir, network });
   t.after(() => mcp.release());
@@ -194,20 +196,114 @@ test("on the runner, a pinned server whose name resolves to a private address at
   assert.deepEqual(await call("call-4"), { text: `The MCP server corp's address is refused here: the MCP server at mcp.example.test is a private address; refused. Nothing was sent.`, isError: true });
 });
 
-test("on the runner, a server whose saved URL carries a credential in its query ends the claim before it is pinned or anything sent, its URL never named", async (t) => {
+test("on the runner, a server whose saved URL carries a credential in its query ends the claim before anything is sent, its URL never named", async (t) => {
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   const { store, dir } = await storeOn(t);
   const secret =`not-a-secret-${"pinned-query"}`;
   await store.mcp.put({ name: "old", url: `${fake.url}?api_key=${secret}`, auth: "none", tools: [{ name: "add", input_schema: { type: "object" } }], sealed: null });
-  await queued(store, "run-1");
+  // A revision saved before a save refused such a URL: its pin holds it.
+  await queued(store, "run-1", { mcpPin: { old: { url: `${fake.url}?api_key=${secret}`, tools: [{ name: "add", inputSchema: { type: "object" } }] } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await assert.rejects(mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: ["mcp:old/add"], harness: { commit: async () => undefined }, work: () => dir }), (error) => {
     assert.equal(error.message, "The MCP server old can't be used: api_key in the URL's query looks like a credential; send it as a header instead (Headers). Nothing was sent.");
     return true;
   });
-  assert.ok(!(await store.mcp.pin("run-1")), "nothing pinned");
   assert.equal(fake.log.length, 0, "nothing sent");
+});
+
+test("on the runner beside a local install, a server saved on loopback at that server's own port (where it listens, or its public address on loopback) is refused unsent, in words; another loopback port is still reached", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const { store, dir } = await storeOn(t);
+  const tools = { add: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } };
+  await store.mcp.put({ name: "inward", url: fake.url, auth: "none", tools: [{ name: "add", input_schema: tools.add }], sealed: null });
+  /** run `runId`'s add on a runner beside a local install whose own addresses are `own`. */
+  const addOn = async (runId, own) => {
+    await queued(store, runId, { mcpPin: { inward: { url: fake.url, tools: [{ name: "add", inputSchema: tools.add }] } } });
+    const claim = await store.claim(runId, "runner-local", { leaseMs: 60_000 });
+    const mcp = await mcpForClaim({ loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:inward/add"], harness: { commit: async () => undefined }, work: () => dir });
+    t.after(() => mcp.release());
+    const add = mcp.tools.find((tool) => tool.name === "mcp__inward__add");
+    return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
+  };
+  const at = new URL(fake.url);
+  const elsewhere = `http://127.0.0.1:${at.port === "1" ? 2 : 1}`;
+  // The fake stands where the server beside the runner listens, then where its public address (a local proxy) is.
+  for (const [runId, own] of [["run-1", [at.origin]], ["run-2", [elsewhere, `https://localhost:${at.port}`]]]) {
+    const call = await addOn(runId, own);
+    const sent = fake.log.length;
+    assert.deepEqual(await call(`call-${runId}`), { text: `The MCP server inward's address is refused here: the MCP server at ${at.host} is a private address; refused. Nothing was sent.`, isError: true }, runId);
+    assert.equal(fake.log.length, sent, `${runId}: the server heard nothing`);
+  }
+  assert.deepEqual(await (await addOn("run-3", [elsewhere]))("call-3"), { text: "5" }, "a loopback port that isn't the server's own is reached");
+});
+
+test("on the runner beside a local install, a token refresh whose authorization server sits at that server's own port is refused unsent, in words, and the call with it; at another loopback port the refresh goes and the call answers", async (t) => {
+  const { store, clock, dir } = await storeOn(t);
+  const registry = mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
+  registry.attach("http://127.0.0.1:9", "http://127.0.0.1:9", true); // key-gate: loopback-rule a local install's own address in a test, never an endpoint
+  t.after(() => registry.close());
+  const oauth = await startFakeOAuth();
+  const fake = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer });
+  t.after(() => Promise.all([fake.close(), oauth.close()]));
+  const started = await registry.oauthStart("docs", { url: fake.url });
+  const back = new URL((await fetch(started.authorization_url, { redirect: "manual" })).headers.get("location"));
+  await registry.oauthCallback(new URLSearchParams({ code: back.searchParams.get("code"), state: back.searchParams.get("state") }));
+  const row = await store.mcp.server("docs");
+  const pin = { docs: { url: row.url, tools: row.tools.map(({ input_schema, ...tool }) => ({ ...tool, inputSchema: input_schema })) } };
+  const refreshes = () => oauth.log.filter((entry) => entry.path === "/token" && entry.form.grant_type === "refresh_token").length;
+  /** run `runId`'s add on a runner beside a local install whose own addresses are `own`, once the access token ran out. */
+  const addOn = async (runId, own) => {
+    await queued(store, runId, { mcpPin: pin });
+    const claim = await store.claim(runId, "runner-local", { leaseMs: 10 * 3_600_000 });
+    const mcp = await mcpForClaim({ loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:docs/add"], harness: { commit: async () => undefined }, work: () => dir });
+    t.after(() => mcp.release());
+    const add = mcp.tools.find((tool) => tool.name === "mcp__docs__add");
+    return add.call({ a: 2, b: 3 }, { callId: `call-${runId}`, signal: new AbortController().signal });
+  };
+  clock.now += 3_600_000 + 1_000;
+  oauth.expire();
+  const issuer = new URL(oauth.issuer);
+  const heard = { oauth: oauth.log.length, mcp: fake.log.length };
+  const refused = await addOn("run-1", [issuer.origin]);
+  // The words a sign-in's start says of such an endpoint (mcp-oauth.ts checked), after the claim's for a blocked refresh.
+  assert.deepEqual(refused, { text: `The MCP server docs's credential can't be used right now: its sign-in server's address is refused here: the authorization server's endpoint ${issuer.origin}/token is a private address; refused.`, isError: true });
+  assert.equal(oauth.log.length, heard.oauth, "the authorization server heard nothing");
+  assert.equal(refreshes(), 0, "no refresh sent");
+  const sent = fake.log.length;
+  assert.deepEqual(await addOn("run-2", [`http://127.0.0.1:${issuer.port === "1" ? 2 : 1}`]), { text: "5" }, "an authorization server at a loopback port that isn't the server's own is reached");
+  assert.equal(refreshes(), 1, "refreshed once there");
+  assert.ok(fake.log.length > sent, "and the call went");
+});
+
+test("on the runner beside a local install, a run whose revision has no pin is pinned at its claim by listing its servers; one saved at that server's own port is never listed: nothing sent, nothing pinned, the claim refused in its words for a server it can't list; at another loopback port it is listed, pinned and called", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const { store, dir } = await storeOn(t);
+  const tools = { add: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } };
+  await store.mcp.put({ name: "inward", url: fake.url, auth: "none", tools: [{ name: "add", input_schema: tools.add }], sealed: null });
+  /** a run of a revision saved with no pin, granting inward's add, claimed on a runner beside a local install whose own
+   *  addresses are `own`. */
+  const claimOn = async (runId, own) => {
+    await store.agents.create({ id: `agent-${runId}`, name: `agent-${runId}` }, { id: `rev-${runId}`, kind: "agentic", body: { instructions: "Answer.", tools: ["mcp:inward/add"] } });
+    await store.runs.create({ id: runId, agentId: `agent-${runId}`, revisionId: `rev-${runId}` });
+    const claim = await store.claim(runId, "runner-local", { leaseMs: 60_000 });
+    return mcpForClaim({ loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:inward/add"], harness: { commit: async () => undefined }, work: () => dir });
+  };
+  const at = new URL(fake.url);
+  const sent = fake.log.length;
+  await assert.rejects(claimOn("run-1", [at.origin]), (error) => {
+    assert.equal(error.message, "The MCP tool mcp:inward/add was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.");
+    return true;
+  });
+  assert.equal(fake.log.length, sent, "the server heard nothing: no listing");
+  assert.equal((await store.agents.revision("rev-run-1"))?.mcpPin ?? null, null, "nothing pinned");
+  const mcp = await claimOn("run-2", [`http://127.0.0.1:${at.port === "1" ? 2 : 1}`]);
+  t.after(() => mcp.release());
+  assert.ok((await store.agents.revision("rev-run-2"))?.mcpPin?.inward, "listed and pinned");
+  const add = mcp.tools.find((tool) => tool.name === "mcp__inward__add");
+  assert.deepEqual(await add.call({ a: 2, b: 3 }, { callId: "call-2", signal: new AbortController().signal }), { text: "5" }, "a loopback port that isn't the server's own is reached");
 });
 
 test("two runners on one store, one beside a local install and one not: a server saved on loopback is reached by the first alone, the other's runs send it nothing, whatever order they start in", async (t) => {
@@ -217,7 +313,7 @@ test("two runners on one store, one beside a local install and one not: a server
   await store.mcp.put({ name: "local", url: fake.url, auth: "none", tools: [{ name: "add", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }], sealed: null });
   /** run `runId`'s add, on a runner told (or not) that the server beside it is a local install. */
   const addOn = async (runId, runner, loopback) => {
-    await queued(store, runId);
+    await queued(store, runId, { mcpPin: { local: { url: fake.url, tools: [{ name: "add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }] } } });
     const claim = await store.claim(runId, runner, { leaseMs: 60_000 });
     const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:local/add"], harness: { commit: async () => undefined }, work: () => dir, ...(loopback === undefined ? {} : { loopback }) });
     t.after(() => mcp.release());

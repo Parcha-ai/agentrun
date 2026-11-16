@@ -46,12 +46,26 @@ const spentOf = (spent: number, held: number, cap: number): string => {
 };
 
 /** A model request what is left cannot buy the least of. */
-export function roomRefusal(cap: number, spent: number, held: number, least: number, boundUsd?: number): { text: string; figures: RefusalFigures } {
+export function roomRefusal(cap: number, spent: number, held: number, least: number): { text: string; figures: RefusalFigures } {
   const leastCapUsd = raiseFigure(cap, spent + held + least);
-  const figures: RefusalFigures = { spentUsd: spent + held, needsUsd: least, leastCapUsd, ...(boundUsd && boundUsd > 0 ? { boundUsd } : {}) };
+  const figures: RefusalFigures = { spentUsd: spent, heldUsd: held, needsUsd: least, leastCapUsd };
   const [need, raise] = [leastMoney(least), `$${leastCapUsd.toFixed(2)}`];
   if (spent === 0 && held === 0) return { text: `${CAP_REFUSAL_CODE}Not sent: the next step needs at least ${need}, and this run's cap is ${money(cap)}. Raise the cap to at least ${raise} to continue.`, figures };
   return { text: `${CAP_REFUSAL_CODE}Not sent: this run has ${spentOf(spent, held, cap)}, and the next step needs at least ${need}. Raise the cap to at least ${raise} to continue.`, figures };
+}
+
+/** A step that does not fit even once the steps in flight settle, so no wait sends it (`figures`, the refusal's as if none
+ *  were in flight, with what they hold, `heldUsd`): what the run has spent, what it is holding for steps still running
+ *  (never called spent: they settle at what they cost), and what the step needs, more than the cap leaves beside what is
+ *  spent. A model request's least; a paid call's hold, by name (figures.step). Raise to `leastCapUsd`, the least cap that
+ *  sends it once they settle. */
+export function aloneRefusal(cap: number, figures: RefusalFigures): string {
+  const holds = centsMoney(figures.heldUsd ?? 0);
+  const holding = holds !== "$0" ? ` and is holding ${holds} for steps still running` : "";
+  const [code, needs] = figures.step
+    ? [`${SPEND_CAP_REACHED}: `, `the next step, ${figures.step.name}, could cost up to ${money(figures.step.holdUsd)} (${figures.step.basis})`]
+    : [CAP_REFUSAL_CODE, `the next step needs at least ${leastMoney(figures.needsUsd)}`];
+  return `${code}Not sent: this run has spent ${spentMoney(figures.spentUsd)} of its ${money(cap)} cap${holding}; ${needs}, more than the cap leaves even once the steps still running settle. Raise the cap to at least $${figures.leastCapUsd.toFixed(2)} to continue.`;
 }
 
 /** A paid call what is left cannot hold. */
@@ -59,28 +73,25 @@ export function paidRefusal(cap: number, spent: number, held: number, name: stri
   const leastCapUsd = raiseFigure(cap, spent + held + holdUsd);
   return {
     text: `${SPEND_CAP_REACHED}: Not sent: this run has ${spentOf(spent, held, cap)}, and the next step, ${name}, could cost up to ${money(holdUsd)} (${basis}). Raise the cap to at least $${leastCapUsd.toFixed(2)} to continue.`,
-    figures: { spentUsd: spent + held, needsUsd: holdUsd, leastCapUsd, step: { name, holdUsd, basis } },
+    figures: { spentUsd: spent, heldUsd: held, needsUsd: holdUsd, leastCapUsd, step: { name, holdUsd, basis } },
   };
 }
 
 /** An amount rounded up to the cent, so "at most" holds. */
 const centsUp = (usd: number): string => money(Math.ceil(usd * 100 - 1e-9) / 100);
 
-/** The over-cap row's words, after the usage row whose booked cost `spentUsd` passed `capUsd`: by how much; when it passed
- *  by no more than `boundUsd` (the bound of the requests since the cost last fit), a cache miss did it, and the most it
- *  could have. None at or under the cap, with no cap, or with no known cost. */
-export function overCapWords(spentUsd: number | null, capUsd: number | undefined, boundUsd = 0): string | undefined {
+/** The over-cap row's words, after the usage row whose booked cost `spentUsd` passed `capUsd`: by how much. A request is
+ *  held at its worst case, so only a cost its admission never priced passes the cap (an owed charge, a provider that bills
+ *  past its list price). None at or under the cap, with no cap, or with no known cost. */
+export function overCapWords(spentUsd: number | null, capUsd: number | undefined): string | undefined {
   if (capUsd === undefined || typeof spentUsd !== "number" || spentUsd <= capUsd + FIT_TOLERANCE) return undefined;
-  const byMiss = boundUsd > 0 && spentUsd - capUsd <= boundUsd + FIT_TOLERANCE;
-  return byMiss ? `Went ${centsUp(spentUsd - capUsd)} over its cap on a cache miss (at most ${centsUp(boundUsd)}).` : `Spent ${centsMoney(spentUsd)}, ${centsUp(spentUsd - capUsd)} over the run's cap of ${centsMoney(capUsd)}`;
+  return `Spent ${centsMoney(spentUsd)}, ${centsUp(spentUsd - capUsd)} over the run's cap of ${centsMoney(capUsd)}`;
 }
 
 /** How a run ends whose booked cost `spentUsd` passed `capUsd`: failed, in these words (main's run end), the answer that
- *  crossed it booked. None at or under the cap, with no cap, with no known cost, or when it passed by no more than
- *  `boundUsd` (a cache miss within the bound it was admitted at: the run pauses at its next request instead). */
-export function overCapEnd(spentUsd: number | null, capUsd: number | undefined, boundUsd = 0): string | undefined {
+ *  crossed it booked. None at or under the cap, with no cap, or with no known cost. */
+export function overCapEnd(spentUsd: number | null, capUsd: number | undefined): string | undefined {
   if (capUsd === undefined || typeof spentUsd !== "number" || spentUsd <= capUsd + FIT_TOLERANCE) return undefined;
-  if (boundUsd > 0 && spentUsd - capUsd <= boundUsd + FIT_TOLERANCE) return undefined;
   return `${OVER_CAP_END}${centsMoney(spentUsd)}, ${centsUp(spentUsd - capUsd)} over its cap of ${centsMoney(capUsd)}.`;
 }
 

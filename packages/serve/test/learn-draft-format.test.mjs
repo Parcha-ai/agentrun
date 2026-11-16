@@ -1,4 +1,4 @@
-// #2412: a workflow draft kept for a skill's job keeps the output format the skill gives. The ask says so; the run's
+// #2412: a workflow draft kept for a skill's job keeps the output format the skill gives. The compile ask says so; the run's
 // proposal carries the skill of the draft's name as the folder holds it (proposeRun `drafted`); the grader is shown it
 // beside the draft, and its rubric drops a draft whose output cannot give that format (Format).
 import assert from "node:assert/strict";
@@ -7,12 +7,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { GRADE_RUBRIC, gradePrompt } from "../dist/learn/grade.js";
-import { reflectPrompt } from "../dist/learn/reflect.js";
+import { compilePrompt, OUTPUT_FORMAT } from "../dist/learn/compile.js";
 import { agentFolderOf } from "../dist/files.js";
 import { PROPOSAL, seedOf } from "../dist/learning.js";
 import { proposeRun } from "../dist/propose.js";
 import { learningWorkspace } from "../dist/workspace/index.js";
-import { ended, git, made, repoOf, resnap, savedOf, started, learner, LEARN } from "./learn-support.mjs";
+import { ended, fedBack, git, made, repoOf, resnap, savedOf, started, learner, LEARN } from "./learn-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
 const AGENT = "agent-1";
@@ -56,12 +56,13 @@ async function folderWith(data, id, files) {
   await resnap(data, id);
 }
 
-test("the draft ask says the draft's output is the job's answer in the skill's own output format, written by its last node (#2412)", () => {
-  const asked = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"], draftFor: ["card-report"] });
-  const line = asked.split("\n").find((one) => one.includes("has now served"));
-  assert.match(line, /Its output is the job's answer in the output format the skill gives: its last node writes it, and `output` names that node's text\./, line);
-  const two = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"], draftFor: ["card-report", "weekly-report"] });
-  assert.match(two.split("\n").find((one) => one.includes("have each served")), /in the output format its skill gives: its last node writes it/);
+test("the compile ask says the draft's output is the job's answer in the runs' and the skill's own output format, written by its last node (#2412)", () => {
+  const base = { reference: "(the DSL reference)", notes: [], traces: [], tools: ["read"], judges: false };
+  for (const ask of [{ mode: "new", ...base }, { mode: "revise", workflow: "card-report", current: "{}", handedBack: true, ...base }]) {
+    const prompt = compilePrompt(ask);
+    assert.ok(prompt.includes(OUTPUT_FORMAT), ask.mode);
+  }
+  assert.match(OUTPUT_FORMAT, /output format your runs gave it, and your skill's when one gives a format: its last node writes it, and `output` names that node's state\./);
 });
 
 test("a run's proposal carries the skill of its draft's name as the folder holds it at the seed, for the grader (#2412)", async (t) => {
@@ -96,9 +97,9 @@ test("end to end on the faux grader: a draft of a skill's job that drops the ski
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   for (const [id, json, kept] of [["drops", cardDraft(DROPS), false], ["keeps", cardDraft(KEEPS), true]]) {
-    await made(api, learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(`${block(json)}\n\nReflected.`)}`, "Grade: format."].join("\n") }));
+    await made(api, learner(id, { learning: true, instructions: ["Answer the question.", `Answer: ${JSON.stringify(`${block(json)}\n\nReflected.`)}`, "Grade: format."].join("\n") }));
     await folderWith(data, id, { "skills/card-report/SKILL.md": CARD_SKILL });
-    const { view } = await ended(api, await started(api, id));
+    const { view } = await fedBack(api, id);
     const saved = await savedOf(data, view.run_id);
     const item = saved.learning.verdict?.items?.find((one) => one.file === "workflows/card-report/workflow.json");
     assert.equal(item?.keep, kept, `${id}: ${JSON.stringify(saved.learning)}`);

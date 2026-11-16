@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
 import { shownUrl, Webhooks } from "../dist/webhooks.js";
 import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 /** A place for one store, opened and closed by the test as a server's starts and stops would: a schema of its own on
  *  Postgres, a data directory of its own on SQLite; removed after the test. */
@@ -40,6 +41,7 @@ async function receiver(t) {
   const got = [];
   const waiting = [];
   const server = createServer((req, res) => {
+    if (stranger(req, res)) return;
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {

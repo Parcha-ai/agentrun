@@ -1,7 +1,8 @@
-// The SQLite store opened by a Node started as the server's launcher starts it (`node --input-type=module -e '…'`, the
-// code given on the command line): its worker thread must run. A worker from a file refuses the flags that apply only to
-// command-line code ("--input-type can only be used with string input via --eval"), so the store's worker takes this
-// process's flags less those (connection.ts workerExecArgv), and a store opens under the launcher as anywhere else.
+// The SQLite store opened by a Node started with module code on its command line (`node --input-type=module -e '…'`, as
+// a test or a server's own `--` command may be): its worker thread must run. A worker from a file refuses the flags that
+// apply only to command-line code ("--input-type can only be used with string input via --eval"), so the store's worker
+// takes this process's flags less those (connection.ts workerExecArgv), and a store opens there as anywhere else. (The
+// launcher itself starts the server with no --input-type: launcher-worker.test.mjs.)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -12,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 const STORE = fileURLToPath(new URL("../dist/store/index.js", import.meta.url));
 
-test("a store opens, writes and reads under Node started with --input-type=module -e, as the launcher starts it", (t) => {
+test("a store opens, writes and reads under Node started with --input-type=module -e", (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "store-launcher-flags-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const code = `
@@ -25,7 +26,7 @@ test("a store opens, writes and reads under Node started with --input-type=modul
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   const ran = spawnSync(process.execPath, ["--input-type=module", "-e", code], { env, encoding: "utf8", timeout: 60_000 });
-  assert.equal(ran.status, 0, `the store opened under the launcher's flags: ${ran.stderr.slice(0, 400)}`);
+  assert.equal(ran.status, 0, `the store opened under those flags: ${ran.stderr.slice(0, 400)}`);
   assert.equal(ran.stdout.trim(), '"Agent"', "and wrote and read through its worker");
 });
 

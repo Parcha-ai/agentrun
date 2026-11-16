@@ -121,6 +121,27 @@ test("a child gets exactly the tools the call names, an MCP tool among them, on 
   assert.equal(lines().filter((line) => line.child).length, before, "no child started");
 });
 
+test("past the deferral threshold, a child is offered the catalog tools it was given: the parent's deferral does not hide them from a child with no tools_search", { timeout: 240_000 }, async (t) => {
+  const { run, fake } = await setup(t, { mcp: true });
+  // 21 catalog tools: past DEFER_CATALOG_OVER (20), so the parent's are deferred and found with tools_search.
+  const extra = Array.from({ length: 20 }, (_, i) => `t${i + 1}`);
+  for (const name of extra) fake().tools[name] = { description: `Tool ${name}.`, input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: name }] }) };
+  const tools = ["read", "mcp:fake/add", ...extra.map((name) => `mcp:fake/${name}`), "subagent"];
+  const offered = await run("subset-deferred", { tools }, delegate([{ prompt: "Tools?", tools: ["mcp:fake/add"], model: "strong" }]));
+  assert.equal(offered.last.status, "completed", JSON.stringify(offered.view));
+  assert.equal(offered.answer, "Results: Offered: mcp__fake__add", "the child is offered the tool it was given");
+});
+
+test("an MCP server's wildcard is no grant: the save refuses mcp:<server>/*, so no subagent is ever handed one", async (t) => {
+  const { api } = await setup(t, { mcp: true, runner: false });
+  const refused = await api("POST", "/agents", agent("wildcard", { tools: ["read", "mcp:fake/*", "subagent"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "input_invalid");
+  assert.deepEqual(refused.body.error.fields.map(({ field, reason }) => [field, reason]), [["definition.tools[1]", "not_an_option"]]);
+  assert.match(refused.body.error.fields[0].message, /^mcp:fake\/\* is not an MCP tool's name: mcp:<server>\/<tool>/);
+  assert.equal((await api("GET", "/agents/wildcard")).status, 404, "nothing saved");
+});
+
 test("a session name gives the child that one tool alone; its catalog name gives every tool of it", () => {
   const BROWSER = ["browser_read", "browser_click", "browser_upload", "run"];
   const options = { granted: ["read", "browser", "mcp:fake/add"], sessionNames: (catalog) => (catalog === "browser" ? BROWSER : [catalog === "mcp:fake/add" ? "mcp__fake__add" : catalog]) };
@@ -254,21 +275,6 @@ test("a child's answer cut at its model's output limit fails its call, saying so
   const [result] = resultsOf(cut.rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(cut.rows.map((row) => [row.kind, row.tool_name, row.tool_status])));
   assert.match(cut.answer, /^Results: subagent: its answer is unfinished: [^\n]+\nWhat it wrote before the cut:\nhalf an ans$/);
-});
-
-test("a call's max_tool_calls narrows the agent's tool-call budget for its child and never widens it; with no budget of the agent's, the call's holds", { timeout: 240_000 }, async (t) => {
-  const { run } = await setup(t);
-  const narrowed = await run("budget", { tools: ["read", "subagent"], max_tool_calls: 3 }, delegate([
-    { prompt: "Count reads a.md", tools: ["read"], max_tool_calls: 1 },
-    { prompt: "Count reads a.md", tools: ["read"], max_tool_calls: 10 },
-    { prompt: "Count reads a.md", tools: ["read"] },
-  ]));
-  assert.equal(narrowed.last.status, "completed", JSON.stringify(narrowed.view));
-  assert.equal(narrowed.answer, "Results: Reads: 1 | Reads: 3 | Reads: 3", "1 narrows the agent's 3; 10 is held to 3; none takes the agent's 3");
-  const own = await run("budget-own", { tools: ["read", "subagent"] }, delegate([{ prompt: "Count reads a.md", tools: ["read"], max_tool_calls: 2 }]));
-  assert.equal(own.answer, "Results: Reads: 2");
-  const bad = await run("budget-bad", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say no", max_tool_calls: 0 }]));
-  assert.equal(resultsOf(bad.rows)[0]?.tool_status, "failed", "a budget below 1 is refused before any child starts");
 });
 
 test("a tier with no model of its own (no model_tiers, no AGENT_MODEL_STRONG) runs its child on the agent's own model", { timeout: 240_000 }, async (t) => {

@@ -5,7 +5,7 @@ import { ClientError } from "@/lib/client";
 import { METERED } from "@/lib/computers";
 import { httpHref } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
-import type { ComputerHold, RunComputer, RunMachine } from "@/lib/v2";
+import type { ComputerHold, RunComputer, RunMachine, TimelineRow } from "@/lib/v2";
 
 /** The run page's tab body keeps this much padding below its content (its py-8). */
 const PANE_BELOW = 32;
@@ -44,7 +44,7 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  opened (none, opening), a take-over waiting for the agent's step (pending), and for HURRY_MS after the page's own
  *  take-over or hand-back, whose answer is read right after its row is written, before the run applies it. So the first
  *  frame and who drives show when they happen, not up to a whole `every` later. */
-export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS), starting = false): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
+export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS), anew = false): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
   const [now, setNow] = useState<ScreenView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
@@ -63,10 +63,13 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   const hurry = useRef<(() => void) | null>(null);
   // The desktop or phone this page saw live while the run goes. Its claim holds it from the run's start to its end, so
   // once it was live, an answer of opening (its viewer gone, the run not yet read as ended) is the one that was let go:
-  // released, never one to wait for. A new turn opens a new one, which is waited for: the memory goes when the run ends,
-  // and when a turn's claim is `starting` it (the run queued: a follow-up after the run completed or was stopped).
+  // released, never one to wait for. A new turn opens its screen anew, which is waited for: the memory goes when the run
+  // ends, and while `anew` says so (the run queued: a follow-up after the run completed or was stopped, its claim starting
+  // a new one; or its desktop or phone kept at a park, whose resume opens it again), when a live read isn't remembered.
   const wasLive = useRef<RunMachine["kind"] | null>(null);
-  useEffect(() => { if (starting) wasLive.current = null; }, [starting]);
+  const opensAnew = useRef(anew);
+  opensAnew.current = anew;
+  useEffect(() => { if (anew) wasLive.current = null; }, [anew]);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
@@ -82,7 +85,7 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
         const read = await reader.current!();
         if (!alive) return;
         answered.current = true;
-        if (read.state === "live") wasLive.current = read.kind;
+        if (read.state === "live" && !opensAnew.current) wasLive.current = read.kind;
         const next: RunComputer = read.state === "none" && read.session === "opening" && read.kind !== "browser" && read.kind === wasLive.current ? { ...read, session: "closed" } : read;
         unopened.current = next.state === "none" && next.session === "unopened";
         onItsWay = (next.state === "none" && next.session === "opening") || (next.state === "live" && next.hold === "pending");
@@ -135,7 +138,7 @@ const DRIVES: Record<ComputerHold, string> = { agent: "The agent drives", pendin
  *  viewer: the iframe is made again for it. A browser is taken over and handed back in its own viewer; a desktop or a
  *  phone here, with Take over and Hand back (`onTake`, `onHand`: each resolves with the refusal to say, or null). A
  *  metered provider's line shows for every kind but the browser. */
-export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, onTake, onHand }: {
+export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand }: {
   /** The run whose screen this is: only a viewer under its own path is framed. */
   runId: string;
   screen: ScreenView | null;
@@ -148,6 +151,10 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   followUp: boolean;
   /** Whether the run's computer's provider is metered (GET /computers). */
   metered: boolean;
+  /** What a waiting run waits on its person for (its pending's kind): said with a desktop or phone kept at its park. */
+  waitsFor?: WaitsFor;
+  /** Until when a waiting run's desktop or phone is kept for its resume, from its park's row on the timeline (keptUntilOf). */
+  keptUntil?: string;
   onTake?: () => Promise<string | null>;
   onHand?: () => Promise<string | null>;
 }) {
@@ -251,8 +258,8 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
         {/* Who drives, for a desktop or a phone: GET /computer's hold is theirs. A browser is taken over in its own viewer,
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
         <span className="flex-1 font-mono text-small text-muted-foreground">{who}</span>
-        {!full && hands}
         {!full && fill}
+        {!full && hands}
       </header>
       {metered && kind !== "browser" && <p className="border-b px-4 py-2 text-small text-muted-foreground">{METERED}</p>}
       {!full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
@@ -264,29 +271,64 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             {full && (
               <div className="flex items-center gap-3 border-b bg-background px-4 py-2 text-foreground">
                 <span className="flex-1 font-mono text-small">{who}</span>
-                {hands}
                 {fill}
+                {hands}
               </div>
             )}
             {/* A refused Take over or Hand back, said where the person is looking. */}
             {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
             <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background"} style={!full && kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined} />
           </div>
-        : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp)}</p>}
+        : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp, waitsFor, keptUntil)}</p>}
     </section>
   );
 }
 
+/** What a waiting run waits on its person for: its pending's kind. */
+export type WaitsFor = "approval" | "question" | "budget" | "browser" | "computer";
+const WAITING: Record<WaitsFor, string> = {
+  approval: "Waiting for your approval.",
+  question: "Waiting for your answer.",
+  budget: "Waiting for you to raise the spend cap.",
+  browser: "Waiting for you.",
+  computer: "Waiting for you.",
+};
+
+/** The row a park writes on the run's timeline when it keeps its desktop or phone for the resume (the server's
+ *  computerKeptWords): its kind and how many minutes. */
+const KEPT_ROW = /^The (desktop|phone) is kept for (\d+) minutes while you decide\.$/;
+
+/** Until when a run's desktop or phone of `kind` is kept for its resume, from its newest park's row (`rows`, the run's
+ *  timeline): that row's time and the minutes it says; undefined with none, or with the computer ready again after it. */
+export function keptUntilOf(rows: readonly TimelineRow[], kind: Kind): string | undefined {
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (row.kind !== "phase") continue;
+    const text = row.summary ?? row.text ?? "";
+    if (text.startsWith(`The ${kind} is ready`)) return undefined;
+    const kept = KEPT_ROW.exec(text);
+    if (!kept || kept[1] !== kind) continue;
+    const at = Date.parse(row.timestamp);
+    return Number.isNaN(at) ? undefined : new Date(at + Number(kept[2]) * 60_000).toISOString();
+  }
+  return undefined;
+}
+
 /** What the Screen tab says with nothing to frame. */
-function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | undefined, opens: boolean, followUp: boolean): string {
+function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | undefined, opens: boolean, followUp: boolean, waitsFor?: WaitsFor, keptUntil?: string): string {
   // A viewer that is not this run's own on this origin: said, never framed, and its value not shown.
   if (screen?.state === "live") return "The live view can't be shown here.";
   if (screen?.state === "signed_out") return "Signed out: sign in to watch.";
   if (kind === "sandbox") return "A sandbox has no screen. What the agent runs in it is on the timeline.";
   if (machine?.state === "failed") return `The ${kind} didn't start.${machine.why ? ` ${machine.why}` : ""}`;
+  // Parked with its desktop or phone kept for the resume (its park's row on the timeline): what the run waits for, and
+  // until when it is kept. Never "ended" or "released": an answer in time goes on on the same one. A page that never saw
+  // it live reads it opening (held to the run's end), and says the same.
+  if (opens && waitsFor && keptUntil && screen?.state === "none" && !screen.ended) return `${WAITING[waitsFor]} The ${kind} is kept until ${clock(keptUntil).replace(/^at /, "")}.`;
   // Let go while the run waited for its person: said, with when, and that a new one opens when the run goes on. Never
-  // "waiting for the browser" here: nothing is opening one until the person answers.
-  if (opens && screen?.state === "none" && screen.ended) return `${screen.ended.why} (${clock(screen.ended.at)}). A new browser opens when the run goes on.`;
+  // "waiting for the browser" here: nothing is opening one until the person answers. A desktop's or a phone's words say
+  // that themselves (its keep's time passed).
+  if (opens && screen?.state === "none" && screen.ended) return kind === "browser" ? `${screen.ended.why} (${clock(screen.ended.at)}). A new browser opens when the run goes on.` : screen.ended.why;
   const session = screen?.state === "none" ? screen.session : undefined;
   // None asked for so far (a run that only fetched pages, say): said plainly, never "waiting", since the agent may never
   // open one.

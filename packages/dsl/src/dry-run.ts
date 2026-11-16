@@ -197,6 +197,9 @@ export type DryRunOptions = {
    *  ask anything, before the dry run stops, as not run: a loop whose body asks nothing is no step, so maxSteps alone
    *  never ends it. Ten times maxSteps by default. */
   maxVisits?: number;
+  /** Handed the workflow's output when the dry run passed (on synthetic values): what a host holds to a shape of its own
+   *  (the answer it serves) before it calls the draft good. The result keeps its shape either way. */
+  onOutput?: (output: unknown) => void;
 };
 
 
@@ -306,6 +309,8 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
         return { answers, model: "synthetic", usage: null, cost_usd: null, request_sha256: "",
           ...(evidence === "required" ? { evidence: [{ url: "https://example.invalid/dry-run", title: null, excerpts: [], scope: "dry_run" }] } : {}) };
       },
+      // A guard never hands back on synthetic values: the dry run proves the path, not the step's answer.
+      guardStep: async () => ({ p: 1 }),
       syntheticEffects: true,
       decisionProviders: syntheticProviders(workflow),
       runEffect: async ({ node, schema }) => { await step(); return node.via === "shell"
@@ -316,6 +321,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
       // Synthetic values tripping an escalate predicate proves nothing about real cases.
       return { ok: true, status: "not_run", skipped: [`escalated:${result.escalation.kind}@${result.escalation.stage} on synthetic values`] };
     }
+    opts.onOutput?.(result.output);
     return { ok: true, status: "passed" };
   } catch (error) {
     if (stopped) return { ok: true, status: "not_run", skipped: [stopped] };

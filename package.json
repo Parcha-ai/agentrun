@@ -1,7 +1,7 @@
 {
   "name": "agentrun-dsl-workspace",
   "private": true,
-  "version": "0.1.0-beta.37",
+  "version": "0.1.0-beta.41",
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -38,6 +38,7 @@
     "@types/node": "^22.0.0",
     "ajv": "^8.18.0",
     "e2b": "2.63.0",
+    "marked": "18.0.11",
     "modal": "0.11.1",
     "playwright-core": "1.64.1",
     "pyright": "1.1.414",

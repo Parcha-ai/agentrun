@@ -9,6 +9,7 @@
 // a read-back or an error. Whatever a computer prints is scrubbed of it before it reaches an error's words.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { unanswered } from "./client.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL, runProblem } from "./labels.js";
 import { type MountReadBack, type MountSpec, readBackOf, WORKSPACE } from "./mount.js";
 import type { ComputerClient, DaemonMethod, DaemonMethods } from "./protocol.js";
@@ -26,7 +27,7 @@ export const ARCHIL_TOOL_UID = 2510;
 export const ARCHIL_SYNC_SOCKET = "/run/agentrun-archil/archil.sock";
 /** The archil client the image pins, the version the live checks ran. */
 export const ARCHIL_VERSION = "0.10.1-1793222256";
-/** The label (Daytona) or metadata (E2B) an Archil computer carries its mount in: kind and source, never the token. */
+/** The label (Daytona) or metadata (E2B) an Archil computer carries its mount in: never the token (archilLabels). */
 export const ARCHIL_MOUNT_LABEL = "agentrun.mount";
 
 /** An Archil mount, as a spec gives it. */
@@ -57,21 +58,21 @@ const DISK = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-
  */
 export const ARCHIL_REGION = "[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}";
 const REGION = new RegExp(`^${ARCHIL_REGION}$`);
-const FOLDER = /^agents\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/work$/;
+const FOLDER = /^agents\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/work$/;
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 
 /**
- * The Archil rule every provider's check() adds to checkMount's, with no vendor call: network "none" (the tools have no
- * network: init's own namespace, loopback alone), the run's agentrun.run and agentrun.epoch labels (the claim the mount is made
- * under), a disk, region and folder of the helper's shapes, the folder of the labelled run, and a token of a disk
- * token's shape. No word holds a value of the mount but the folder's run, and only once the folder has the folder's shape.
+ * The Archil rule every provider's check() adds to checkMount's, with no vendor call: the run's agentrun.run and
+ * agentrun.epoch labels (the claim the mount is made under), a disk, region and folder of the helper's shapes, the folder
+ * of the labelled run, and a token of a disk token's shape. No word holds a value of the mount but the folder's run, and
+ * only once the folder has the folder's shape. The tools' network is the provider's descriptor's to take (none, or open
+ * and a list through init's egress proxy): the mount is root's, outside their network either way.
  */
 export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	const mount = spec.mount as Record<string, unknown> | undefined;
 	if (mount?.kind !== "archil") return [];
 	const found: Refusal[] = [];
 	const refuse = (field: string, message: string) => found.push({ field, message });
-	if (spec.network !== "none") refuse("network", 'a computer with an Archil mount takes network "none": its tools have no network, only loopback in init\'s own namespace');
 	const labels = spec.labels ?? {};
 	const run = labels[RUN_LABEL];
 	const runWrong = runProblem(run);
@@ -83,7 +84,7 @@ export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	if (!REGION.test(text(mount.region))) refuse("mount", "mount.region is a provider, a dash and its region, such as aws-us-east-1");
 	const folder = FOLDER.exec(text(mount.folder));
 	if (folder === null) refuse("mount", "mount.folder is agents/<agent>/runs/<run>/work, nothing else");
-	else if (runWrong === undefined && folder[1] !== run) refuse("mount", `mount.folder is run ${folder[1]}'s folder, not the run this computer is labelled for (${RUN_LABEL})`);
+	else if (runWrong === undefined && folder[2] !== run) refuse("mount", `mount.folder is run ${folder[2]}'s folder, not the run this computer is labelled for (${RUN_LABEL})`);
 	if (!TOKEN.test(text(mount.token))) refuse("mount", "mount.token is not a disk token: 16 to 4096 of letters, digits and ._~+/=-");
 	return found;
 }
@@ -305,7 +306,8 @@ const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remo
  * process.start, which makes its log and the folders above it; process.write and signal; a process seen
  * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
  * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
- * failed still syncs, and answers its own error. A caller whose signal fires stops waiting, answered "aborted" in words
+ * failed still syncs, and answers its own error (one the client timed out with no answer from the daemon does so at
+ * once, not waiting for the sync, which rides the same transport; a timeout the daemon answered waits). A caller whose signal fires stops waiting, answered "aborted" in words
  * (or its own error), while the shared sync goes on for every other caller. A tar.push.begin answered with such an error
  * instead of its id first ends the push it began, so no push slot is held by a push its caller cannot name.
  */
@@ -367,6 +369,10 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 				return fail("aborted", `${method} ran, but its caller stopped waiting for the sync that makes the run's folder durable; the sync goes on`);
 			};
 			if (signal?.aborted) return result.ok ? stopped() : result;
+			// A call the client gave up on at its own timeoutMs got no answer over the transport, and a sync rides that same
+			// transport: the caller gets its timeout now, and the sync it asked for goes on for the others. A timeout the
+			// daemon answered came over a live transport, after the call may have run in part: that one waits for the sync.
+			if (!result.ok && unanswered(result.error)) return result;
 			const synced = signal === undefined ? await shared : await new Promise<Result<void> | "stopped">((resolve) => {
 				const onAbort = () => resolve("stopped");
 				signal.addEventListener("abort", onAbort, { once: true });
@@ -384,19 +390,23 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 	};
 }
 
-/** The label an Archil computer carries its mount in: kind and source as JSON, never the token. */
+/**
+ * The label an Archil computer carries its mount in: kind, disk, region and the folder's agent as JSON, never the token.
+ * The folder's run is the computer's agentrun.run label (check holds them equal), so the label does not repeat it.
+ */
 export function archilLabels(mount: ArchilMount): Record<string, string> {
-	return { [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: mount.disk, region: mount.region, folder: mount.folder }) };
+	return { [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: mount.disk, region: mount.region, agent: FOLDER.exec(mount.folder)?.[1] ?? "" }) };
 }
 
-/** The mount a computer's label records, as written; undefined when there is none, or it is not one. */
+/** The mount a computer's labels record, its folder from the agent and agentrun.run; undefined when there is none, or it is not one. */
 export function recordedMount(labels: Record<string, string> | undefined): Omit<ArchilMount, "token"> | undefined {
 	const text = labels?.[ARCHIL_MOUNT_LABEL];
 	if (text === undefined) return undefined;
 	try {
-		const value = JSON.parse(text) as Record<string, unknown> | null;
-		const { kind, disk, region, folder } = value ?? {};
-		if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof folder !== "string") return undefined;
+		const { kind, disk, region, agent, ...rest } = (JSON.parse(text) ?? {}) as Record<string, unknown>;
+		const run = labels?.[RUN_LABEL];
+		const folder = `agents/${String(agent)}/runs/${String(run)}/work`;
+		if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof agent !== "string" || typeof run !== "string" || Object.keys(rest).length > 0 || !FOLDER.test(folder)) return undefined;
 		return { kind, disk, region, folder };
 	} catch {
 		return undefined;

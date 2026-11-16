@@ -21,6 +21,7 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     // SQLite's json_extract(...) IS NOT 0: true unless the value is false or the number 0 (absent and null are true).
     jsonNotFalse: (column, keys) => `COALESCE((${column}::json #> ${path(keys)})::text NOT IN ('false', '0'), TRUE)`,
     jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_array_elements_text(${column}::json) AS element(value) WHERE element.value = ?)`,
+    jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each_text(${column}::json) AS entry(key, value) WHERE entry.key = ? AND entry.value = ?)`,
     jsonArrayLength: (column) => `json_array_length(${column}::json)`,
     // Through jsonb, the one place: a body that loses a key is never read for its key order. Every Postgres JSON function
     // decodes the whole document's strings, so a body holding a string jsonb refuses (an escaped NUL, a lone surrogate)
@@ -44,6 +45,10 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     // write that moves a run's epoch, which waits for every write under the claim holding the row shared.
     lockRow: async (tx: LockExecutor, table: string, column: string, value: string, mode?: "update") => {
       await tx.run(`SELECT 1 FROM ${table} WHERE ${column} = ? FOR ${mode === "update" ? "UPDATE" : "NO KEY UPDATE"}`, value);
+    },
+    lockRows: async (tx: LockExecutor, table: string, column: string, values: readonly string[]) => {
+      if (values.length === 0) return;
+      await tx.run(`SELECT 1 FROM ${table} WHERE ${column} IN (${values.map(() => "?").join(", ")}) ORDER BY ${column} FOR NO KEY UPDATE`, ...values);
     },
     lockKey: async (tx: LockExecutor, key: string) => {
       await tx.run("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))", schema, key);

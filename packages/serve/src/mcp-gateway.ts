@@ -1,7 +1,8 @@
 // A run's remote MCP servers: the one place every harness's MCP call goes through. A claimed run's spec builds one per
 // claim from its MCP claim step (runner/mcp-run.ts mcpForClaim); every harness calls it through the runner's host tools.
-//  - What a run may call is pinned (mcpPinOf): each granted tool as the server listed it when its owner saved it, and
-//    the server's URL then. A later refresh of the server never changes a running agent's tools.
+//  - What a run may call is pinned (mcpPinOf) when its agent's revision is saved: each granted tool as its server listed
+//    it then, and the server's URL then. A later change or refresh of the server never changes the revision's tools;
+//    saving the agent again pins them anew.
 //  - Its credentials come from the claim step, only for the servers it grants, with each server's URL now, read at every
 //    call and every request: one whose URL is not the pinned one is never sent anything.
 //  - One upstream client per server (the official SDK), connected at its first call; no redirect is followed, so a
@@ -22,14 +23,13 @@ import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
+import { capped, mcpClient, scrub } from "./mcp-wire.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
 import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
 /** The longest answer the model reads whole; past it, the rest is filed in the run's work/ as lines read pages through
  *  (filed-answer.ts). Within the host's result bound (HOST_RESULT_MAX_CHARS), so every harness passes it whole. */
 export const MCP_CLIP = 60_000;
-/** The most of one upstream answer read. */
-export const MAX_RESPONSE = 4 * 1024 * 1024;
 /** The longest one upstream call may take, and its first connection. */
 export const CALL_MS = 120_000;
 export const CONNECT_MS = 30_000;
@@ -39,7 +39,7 @@ export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Re
 /** Each granted server's URL now, and its credential's headers when that URL is the pinned one (the claim step's). */
 export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string; /** When its credential ends (ms): a token minted for the run's launch (a github_app server's), whose calls past it are refused unsent, in words. */ expires_at?: number }>;
 
-/** The servers saved on this server, as a claim's pin reads them. */
+/** The servers a save pins from: each one's URL, its tools as it lists them now, and its owner's prices. */
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
 }
@@ -99,10 +99,10 @@ export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
   return undefined;
 }
 
-/** The pin of a run granted `names`: each MCP tool among them, as its server's snapshot holds it. Keyed by server name
- *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. A granted
- *  tool that cannot be pinned (its server no longer saved, the tool gone since a refresh, a header declaration it cannot
- *  send) throws, naming it and why: the run is refused, never started without it. */
+/** The pin of a revision granted `names`: each MCP tool among them, as its server lists it (the save's listing). Keyed by
+ *  server name with no prototype, as every map of names here is: a server named `constructor` is a server like any
+ *  other. A granted tool that cannot be pinned (its server not saved, a tool it does not list, a header declaration it
+ *  cannot send) throws, naming it and why: the save is refused, never kept without it. */
 export function mcpPinOf(names: readonly string[], source: McpServerSource): McpPin {
   const pin: McpPin = Object.create(null);
   for (const name of names) {
@@ -110,9 +110,9 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
     if (!parsed) continue;
-    // Gone since the run's check (deleted, or a refresh removed the tool): the run is refused, never started without it.
-    if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} is no longer saved.`);
-    if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: ${parsed.tool} is no longer one of its tools since the last refresh.`);
+    // Gone since the save's check (deleted, or the server stopped listing the tool): the save is refused.
+    if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: no MCP server ${parsed.server} is saved.`);
+    if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} does not list ${parsed.tool}.`);
     // A meta tool granted before the rule (mcp-meta.ts): refused here, never run.
     const meta = metaToolOf(saved.url, tool.name);
     if (meta) throw new Error(`${name} can't be granted: ${meta.reason}`);
@@ -165,12 +165,6 @@ function unreachable(error: unknown): string {
 }
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
-
-/** `text` with every credential value in `values` replaced, whole and as its bare token (with any one-word scheme, such
- *  as `Bearer ` or `Basic `, taken off): an upstream answer or error that echoes a header, or only its token, never shows
- *  it to the model, the harness or the run's files. */
-const scrub = (text: string, values: Iterable<string>) =>
-  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
 
 /** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
 const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
@@ -273,16 +267,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const response = await through(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
-    if (!response.body) return response;
-    let read = 0;
-    const capped = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        read += chunk.byteLength;
-        if (read > MAX_RESPONSE) controller.error(new Error(`its answer is longer than ${MAX_RESPONSE} bytes`));
-        else controller.enqueue(chunk);
-      },
-    }));
-    return new Response(capped, { status: response.status, statusText: response.statusText, headers: response.headers });
+    return capped(response);
   };
 
   const connect = (server: string, url: string, headers: Record<string, string>): Promise<Upstream> => {
@@ -291,10 +276,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const status: { last?: number } = {};
       statuses.set(server, status);
       upstream = (async () => {
-        const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
-        // The 2026-07-28 revision first, a 2025-era server through its initialize, as a preview connects.
-        const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
-        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
+        const { client, transport } = mcpClient(await import("@modelcontextprotocol/client"), { name: "agentrun", version: "1.0.0", url: new URL(url), fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status) as never });
+        await client.connect(transport, { timeout: options.bounds?.connectMs ?? CONNECT_MS });
         return client as unknown as Upstream;
       })();
       clients.set(server, upstream);

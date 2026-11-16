@@ -15,8 +15,9 @@
 // was read at; a later page is read at that main while this server still holds its snapshot, else as the first page of
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
-import type { DraftAsk } from "./learn/skills.js";
+import { noteBytes } from "./learn/check.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, textsAt, writeLearning } from "./learn/folder.js";
@@ -259,7 +260,7 @@ const REVISIONS_MAX = 50;
 const REVISIONS_DEFAULT = 20;
 /** One revision of a learned workflow: a commit on main that changed its workflow.json, with that commit's text (null
  *  when the commit holds no such file: it was deleted there), cut of the host's secrets. */
-type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: string; text: string | null };
+type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: string; text: string | null; digest: string | null };
 
 /** GET /agents/{id}/learning/workflows/{name}/revisions?limit=: the latest revisions of learned workflow `name` (the
  *  commits on main's log that changed `workflows/<name>/workflow.json`), oldest first, each with the workflow's text at
@@ -279,7 +280,10 @@ export async function workflowRevisions(data: string, agentId: string, name: str
     const revisions: WorkflowRevision[] = [];
     for (const change of latest) {
       const texts = await textsAt(ws, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
-      revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: texts?.[path] === undefined ? null : shown.text(texts[path]!) });
+      const raw = texts?.[path];
+      // Its digest, read from the text as it is (workflow-first.ts workflowDigest's): the one a run's metrics and the
+      // promotion records name, so a revision's runs, guards and promotion are found by it.
+      revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: raw === undefined ? null : shown.text(raw), digest: raw === undefined ? null : createHash("sha256").update(raw).digest("hex").slice(0, 16) });
     }
     return { revisions, total: touched.length, truncated: snapshot.log_more };
   }, () => undefined);
@@ -395,7 +399,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
  *  of a note that is not active, and an edit that changes nothing, commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -479,9 +483,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             // a restore never brings back a draft no run could run.
             const draft = changes.find(({ path }) => path === `${folder}workflow.json`);
             if (learned.kind !== "skill" && draft && input.draftTools) {
-              const { tools, gated, deniedBy, ask, decisions } = await input.draftTools();
+              const { tools, gated, deniedBy, decisions } = await input.draftTools();
               const dsl = await import("@parcha/agentrun-dsl");
-              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, ask, decisions)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
+              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, decisions)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
             }
             if (problems.length) throw refused(problems);
           } else {
@@ -523,8 +527,8 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
           text = retire(current!.text, note.status === "pending" ? "pending" : "active");
           const retired = parseNoteFile(file, text);
           if (Array.isArray(retired)) throw refused(retired.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
-          const size = Buffer.byteLength(text);
-          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds` }, input.refuse)]);
+          const size = noteBytes(text);
+          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds (a compiled_into line on top)` }, input.refuse)]);
         }
         if (current && text === current.text) return { result: { status: 200, file, text, etag: etagOf(current.oid) } };
         const after = learned ? [...notes.values()] : [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text!) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];
@@ -589,7 +593,7 @@ export async function promotable(data: string, agentId: string, raw: string, inp
   if (json && !problems.length) {
     // A learned workflow's decision nodes (LS-07) are checked on this server's decision providers, as a restore checks them.
     const { tools, gated, deniedBy, decisions } = await input.draftTools();
-    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {}, undefined, decisions)) problems.push(printable({ rule, path: file, detail }, input.refuse));
+    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {}, decisions)) problems.push(printable({ rule, path: file, detail }, input.refuse));
   }
   if (problems.length) throw new ApiError("bad_request", `The workflow does not pass the checks: ${[...new Set(problems.map((problem) => problem.rule))].join(", ")}.`, { problems });
   const workflow = JSON.parse(json!.text) as Record<string, unknown>;
@@ -615,6 +619,12 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, pending: waits, origin, question, why }) => ({ file: shown.name(file), keep, ...(waits ? { pending: true } : {}), ...(origin ? { origin: shown.text(origin) as typeof origin } : {}), ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
     // Each cut of the host's secrets (printable), then as every served text is (`shown`: no loopback address).
     problems: (problems ?? []).map((problem) => printable(problem, secrets)).map(({ rule, path, detail }) => ({ rule: shown.text(rule) as typeof rule, ...(path === undefined ? {} : { path: shown.text(path) }), detail: shown.text(detail) })),
+    // The compile turn's record (learn/compile.ts): the workflow it wrote, the notes it absorbed and each attempt with
+    // what the checks refused, its kept draft's digest and whether that serves (its promotion: true, held false, null
+    // while undecided); null when the run compiled nothing. A draft that never passed is never silent: its
+    // errors are `draft_errors`. Each text cut of the host's secrets.
+    compiled: learning.compiled ? { workflow: shown.name(learning.compiled.workflow), from_notes: learning.compiled.from_notes.map(shown.name), attempts: learning.compiled.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map((error) => shown.text(printable({ rule: "workflow", detail: error }, secrets).detail)) })), digest: learning.compiled.digest ?? null, promoted: learning.compiled.promoted ?? null } : null,
+    draft_errors: (learning.draft_errors ?? []).map((error) => shown.text(printable({ rule: "workflow", detail: error }, secrets).detail)),
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },

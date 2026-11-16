@@ -2,19 +2,22 @@
 //
 // watchScreen(connection, options) is the internal seam: the screen as pull-paced frames and an input sink on one
 // connection. screen.watch asks for the frame after the last one given, and the next ask is made only when the caller
-// calls next() again, so each next() is the ack of the frame before it. act() sends input.actions on the same
+// calls next() again, so each next() is the ack of the frame before it. A computer that lists screen.ahead (computerd
+// on a desktop) is asked one frame ahead: two asks are kept in flight, the second for the frame after the first's, so
+// its frames come at its own pace and not one each round trip; next() still gives one frame at a time, the newest
+// answered, and a frame bettered before next() asked for it is dropped. act() sends input.actions on the same
 // connection. close() and the caller's signal end both: the waiting ask is cancelled, the frames end, and act()
 // refuses in words. A computer that fails makes next() reject with a ScreenWatchError.
 //
 // provider.watch(ref, handlers, options) is what the runner's viewer calls (tl-browser's handler shape, final), built
 // once, by daemonWatch, as an adapter over watchScreen: each frame goes to handlers.frame(frame, ack), and the next is
-// asked for only once ack() is called; a computer that goes ends it once with handlers.ended(error), its code gone,
+// given only once ack() is called; a computer that goes ends it once with handlers.ended(error), its code gone,
 // unreachable, refused or unsupported; close() and the signal end it with no ended(). Every computerd provider and the
 // phone answer watch() through daemonWatch, on a connection of the watch's own: computerd gives JPEG frames, the phone
 // client PNG ones. No error in either layer holds a URL or a secret.
 // The most characters one typed text holds, on every kind: computerd's MaxTypeRunes, which checkActions enforces too.
 import { MAX_TYPE_CHARACTERS } from "./actions.js";
-import type { Button, InputAction, InputActionsResult, Point } from "./protocol.js";
+import type { Button, InputAction, InputActionsResult, Point, ScreenWatchResult } from "./protocol.js";
 import type { ComputerConnection, ComputerRef, Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
 
@@ -145,15 +148,38 @@ export function watchScreen(connection: ComputerConnection, options: WatchOption
 		...(options.quality === undefined ? {} : { quality: options.quality }),
 	};
 
+	// A computer that lists screen.ahead takes a second ask while the first waits (after one past the newest frame): two
+	// are kept in flight, so its frames come at its own pace, not one each round trip. Else one, after each ack.
+	// Why it exists: with one ask in flight each frame waits a full round trip, about 7 fps (kit-10, 5-run medians:
+	// E2B 7.00 one ask vs 12.96 two, Agent37 6.15 vs 14.53).
+	const depth = connection.hello?.features?.["screen.ahead"] === true ? 2 : 1;
+	type Ask = { promise: Promise<Result<ScreenWatchResult>>; answer?: Result<ScreenWatchResult> };
+
 	async function* frames(): AsyncGenerator<ScreenFrame, void, undefined> {
-		let after = 0;
+		/** The seq of the newest frame given. */
+		let last = 0;
+		/** The asks in flight, oldest first. */
+		const asks: Ask[] = [];
+		const newer = (answer: Result<ScreenWatchResult> | undefined) => answer?.ok === true && answer.value.changed && answer.value.seq > last;
+		const ask = () => {
+			while (asks.length < depth) {
+				// The ask after one in flight is ahead by one: it waits for the frame after the one the first answers.
+				const asked: Ask = { promise: client.call("screen.watch", { after: last + asks.length, ...params }, { signal: stop.signal }) };
+				void asked.promise.then((answer) => (asked.answer = answer));
+				asks.push(asked);
+			}
+		};
 		for (;;) {
 			if (ended) return;
-			const asked = await client.call("screen.watch", { after, ...params }, { signal: stop.signal });
+			ask();
+			// A frame the ask after it has already bettered is dropped: the viewer wants the newest.
+			while (asks.length > 1 && asks[0].answer !== undefined && newer(asks[1].answer)) asks.shift();
+			const asked = await (asks.shift() as Ask).promise;
 			if (ended) return;
 			if (!asked.ok) throw new ScreenWatchError(asked.error.code, redactWords(asked.error.message));
 			const answer = asked.value;
-			if (!answer.changed) {
+			if (!answer.changed || answer.seq <= last) {
+				// No change within the wait, or a frame given already (two asks may answer the same newest frame).
 				// The computer waited its waitMs; one that answers at once must not spin: timers and the signal run first.
 				await new Promise((resolve) => setImmediate(resolve));
 				continue;
@@ -179,7 +205,9 @@ export function watchScreen(connection: ComputerConnection, options: WatchOption
 				eof = read.value.eof;
 			}
 			if (sized && size !== said) throw new ScreenWatchError("invalid", `frame ${answer.seq} ended at ${size} bytes of the ${said} it said`);
-			after = answer.seq;
+			last = answer.seq;
+			// Asked ahead, the next asks go out before this frame is drawn: the computer makes the next one meanwhile.
+			if (depth > 1) ask();
 			yield {
 				seq: answer.seq,
 				format: answer.format ?? "jpeg",

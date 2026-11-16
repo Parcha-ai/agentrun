@@ -1,14 +1,14 @@
 // The host tools of a run on a harness other than pi: its coding tools, from the run's coding source (coding-tools.ts:
 // pi's own read, write and edit on the run's environment, or in a box those, bash and the background tools on the
 // box's), so their arguments, their confinement and their refusals are pi's, word for word, pi's web_fetch, the public-host
-// guard included, web_search, and monid's three (monid.ts), which stay on this machine.
+// guard included, and web_search, which stay on this machine.
 // pi's tools take only the environment, their output and their diagnostics from a call's API, and a paid one its call's
 // id and the run's store, so that is all a call here gives them: the output's tail or head as the tool keeps it (pi's
-// limits), then the diagnostics, also when the tool failed. read, the web tools, monid.discover, monid.inspect,
-// bash_output and bash_list may run again after a crash; write, edit, bash, monid.run, bash_background, bash_input and
-// bash_signal never: the kernel records each one's intent before it runs, and a call a crash cut off is answered
-// interrupted, not run again. A tool is named by its catalog name here and goes to the harness under its wire name
-// (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A refusal, an error and a write's or
+// limits), then the diagnostics, also when the tool failed. read, the web tools, bash_output and bash_list may run again
+// after a crash; write, edit, bash, bash_background, bash_input and bash_signal never: the kernel records each one's
+// intent before it runs, and a call a crash cut off is answered interrupted, not run again. A tool is named by its
+// catalog name here and goes to the harness under its wire name (catalog.ts wireName), which the harness calls and
+// journals. A refusal, an error and a write's or
 // edit's result name a path in the workspace relative to it (`hello.md`), never by the server's data directory
 // (`workspaceRelative`); in a box they name the box's paths. The runner's adapter loop gates each call before its intent
 // (tool-gate.ts RunGate.decide), so a call that reaches a host tool here was allowed.
@@ -102,7 +102,7 @@ export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCt
       const out = bounded(tool.outputLimits);
       const notes: string[] = [];
       const env = await ctx.env();
-      // The call's id and the run's store, as pi's: a paid call marks and books its charge there (monid.ts).
+      // The call's id and the run's store, as pi's: a paid call marks and books its charge there.
       const api = hostApi({
         env, callId,
         commit: ctx.commit,
@@ -114,7 +114,7 @@ export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCt
         snapshot: ctx.snapshot, waitForTask: ctx.waitForTask,
       });
       // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
-      // monid's answer a failure as an error result, which is kept as it is.
+      // one that answers a failure as an error result is kept as it is.
       const result = await tool.execute(args as never, api, withAbortSignal(signal, ctx.context)).catch((error: Error) => ({ failed: error.message, isError: true }));
       // pi names a result's blocks `output`; its bash answers its exit as a result's diagnostic.
       const given = result as unknown as { output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };

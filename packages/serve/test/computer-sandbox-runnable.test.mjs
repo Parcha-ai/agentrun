@@ -30,7 +30,7 @@ const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", ke
 /** The words runnable.ts says of a place this server can't run as a box. */
 const PLACE_WORDS = /This agent's place is sandbox on [a-z0-9-]+, and this server cannot run it there/;
 /** No provider key comes from this process's environment: each is the one saved here, or none. */
-const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "E2B_API_KEY", "DAYTONA_API_KEY", "ARCHIL_API_KEY"];
+const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "E2B_API_KEY", "DAYTONA_API_KEY", "DAYTONA_ARCHIL_EGRESS", "AGENTRUN_DAYTONA_SNAPSHOT", "ARCHIL_API_KEY"];
 
 /** A fake `docker` first on PATH, so the server's start-time probe of the Docker box (boxes.ts: `docker version`) never
  *  reaches a real one: it names a daemon's version when `answers`, else fails as a CLI with no daemon does. Every other
@@ -50,8 +50,8 @@ async function fakeDocker(t, answers, adb = true) {
 /** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not), and an `adb` on PATH
  *  unless `adb` is false; on the real models (no --faux) unless `faux`; in Mode 2 when `archil`; with the template
  *  packages in `templates`, when given; its client sends every request from the owner's session when `owner`. */
-async function server(t, { archil, docker = false, faux = false, adb = true, templates, owner = false }) {
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker, adb) }, UNSET);
+async function server(t, { archil, docker = false, faux = false, adb = true, templates, owner = false, env = {} }) {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker, adb), ...env }, UNSET);
   const started = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}) });
   const api = owner ? asOwner(started) : started.api;
   if (archil) {
@@ -74,19 +74,29 @@ async function saveAndStart(api, id, setting) {
   };
 }
 
-for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["modal", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" }]]) {
-  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset)`, async (t) => {
+for (const kind of ["sandbox", "desktop"]) {
+  test(`Mode 2: an agent whose computer is an E2B ${kind}, its key saved, is ready, warned of nothing at its save and never refused for its computer or its place at its run's start: E2B starts from the box template its prepareImage() answers`, async (t) => {
     const api = await server(t, { archil: true });
-    const saved = await api("PUT", `/computers/${provider}/keys`, keys);
+    const saved = await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.equal(saved.body.ready, true, `${provider} is ready with its key saved: ${JSON.stringify(saved.body)}`);
-
-    const said = await saveAndStart(api, `remote-${provider}`, { computer: { kind: "sandbox", provider } });
-    assert.deepEqual(said.saved, [], `the agent is saved with a warning on its computer or place: ${JSON.stringify(said)}`);
-    assert.deepEqual(said.refused, [], `the run is refused for its computer or place: ${JSON.stringify(said)}`);
-    assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, `the run is refused for its place: ${JSON.stringify(said)}`);
+    assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+    const said = await saveAndStart(api, `remote-e2b-${kind}`, { computer: { kind, provider: "e2b" } });
+    assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+    assert.doesNotMatch(said.started[2] ?? "", /E2B (sandbox|desktop) can't/, JSON.stringify(said));
+    assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, JSON.stringify(said));
   });
 }
+
+test("Mode 2: an agent whose computer is a Modal sandbox, its keys saved, is ready, warned of nothing at its save and never refused for its computer at its run's start: Modal starts from the box image its prepareImage() answers", async (t) => {
+  const api = await server(t, { archil: true });
+  const saved = await api("PUT", "/computers/modal/keys", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+  const said = await saveAndStart(api, "remote-modal", { computer: { kind: "sandbox", provider: "modal" } });
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", /Modal sandbox can't/, JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, JSON.stringify(said));
+});
 
 test("an agent whose computer is an e2b sandbox with no key saved is refused in Mode 2 in words that name Settings → Computers", async (t) => {
   const api = await server(t, { archil: true });
@@ -107,7 +117,7 @@ test("Mode 2: a Daytona sandbox, with GPUs or without, is refused at the save an
   const api = await server(t, { archil: true });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
   // Mode 2's folder is an Archil mount, which Daytona doesn't take: the reason comes before any GPU's.
-  const words = /^A Daytona sandbox can't mount the run's folder from Archil \(Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes\): pick another sandbox for this agent's computer in Settings → Computers\.$/;
+  const words = /^A Daytona sandbox can't mount the run's folder from Archil \(Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS\): pick another sandbox for this agent's computer in Settings → Computers\.$/;
   for (const [name, gpu] of [["no-gpu", undefined], ["gpu", { type: "H100", count: 1 }]]) {
     const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) } });
     assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
@@ -116,6 +126,63 @@ test("Mode 2: a Daytona sandbox, with GPUs or without, is refused at the save an
     assert.match(said.refused[0][2], words);
     assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
   }
+});
+
+// A self-hosted Daytona target with an Archil egress relay mounts Archil (a run on one completed in Mode 2, 11-14). With
+// DAYTONA_ARCHIL_EGRESS saved, a Daytona sandbox mounts the run's folder; it starts from the operator's snapshot of
+// box/Dockerfile, which AGENTRUN_DAYTONA_SNAPSHOT names, so with it named the sandbox is ready in Mode 2, and without it
+// it is refused in words naming that setting. A GPU sandbox still takes no mount.
+const DAYTONA_KEY = "daytona-fake-key-must-never-be-echoed";
+const EGRESS = "192.0.2.40:18100:42050";
+const SNAPSHOT = "agentrun-archil-0123456789ab";
+
+test("Mode 2: with DAYTONA_ARCHIL_EGRESS saved and AGENTRUN_DAYTONA_SNAPSHOT named, a Daytona sandbox is ready, warned of nothing at its save and never refused for its computer at its run's start; a GPU one is still refused", async (t) => {
+  const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
+  const saved = await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY, DAYTONA_ARCHIL_EGRESS: EGRESS });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+  const said = await saveAndStart(api, "daytona-egress", { computer: { kind: "sandbox", provider: "daytona" } });
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", /Daytona sandbox can't/, JSON.stringify(said));
+  // Daytona's GPU host gives no /dev/fuse, so its GPU computers take no mount, egress or not.
+  const gpu = await saveAndStart(api, "daytona-egress-gpu", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
+  assert.deepEqual(gpu.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(gpu));
+  assert.doesNotMatch(gpu.refused[0][2], /hosted cloud/, "a GPU sandbox is refused by its GPU's words");
+  for (const text of [JSON.stringify(said), JSON.stringify(gpu), JSON.stringify(saved.body)]) assert.ok(!text.includes(DAYTONA_KEY), "no key in a save's, a start's or the view's words");
+});
+
+test("Mode 2: with DAYTONA_ARCHIL_EGRESS saved but no AGENTRUN_DAYTONA_SNAPSHOT, a Daytona sandbox is refused at the save and the run's start (409), saying to name a snapshot of box/Dockerfile there", async (t) => {
+  const api = await server(t, { archil: true });
+  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY, DAYTONA_ARCHIL_EGRESS: EGRESS })).status, 200);
+  const words = /^A Daytona sandbox can't start in Mode 2 until this server names Archil's image in your Daytona account: build one from the computer package's box\/Dockerfile and name it in AGENTRUN_DAYTONA_SNAPSHOT, or set this agent's computer to none \(Settings → Computers\)\.?$/;
+  const said = await saveAndStart(api, "daytona-egress-no-snapshot", { computer: { kind: "sandbox", provider: "daytona" } });
+  assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+  assert.match(said.saved[0][2], words);
+  assert.match(said.refused[0][2], words);
+  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  assert.ok(!JSON.stringify(said).includes(DAYTONA_KEY));
+});
+
+test("Mode 2: a DAYTONA_ARCHIL_EGRESS of whitespace alone is refused at its save, so Settings never shows a Daytona sandbox ready that its run's start refuses", async (t) => {
+  const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
+  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY })).status, 200);
+  const blank = await api("PUT", "/computers/daytona/keys", { DAYTONA_ARCHIL_EGRESS: "   " });
+  assert.equal(blank.status, 422, JSON.stringify(blank.body));
+  assert.match(JSON.stringify(blank.body), /DAYTONA_ARCHIL_EGRESS is a non-empty string/);
+  const view = await api("GET", "/computers");
+  const daytona = view.body.kinds.find((one) => one.kind === "sandbox").providers.find((one) => one.id === "daytona");
+  assert.deepEqual([daytona.ready, /hosted cloud/.test(daytona.why ?? "")], [false, true], JSON.stringify(daytona));
+  const said = await saveAndStart(api, "daytona-blank-egress", { computer: { kind: "sandbox", provider: "daytona" } });
+  assert.match(said.refused[0]?.[2] ?? "", /hosted cloud/, JSON.stringify(said));
+});
+
+test("Mode 2: AGENTRUN_DAYTONA_SNAPSHOT named but no DAYTONA_ARCHIL_EGRESS (hosted Daytona): a Daytona sandbox is still refused, saying Archil's client hangs on its sandboxes", async (t) => {
+  const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
+  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY })).status, 200);
+  const said = await saveAndStart(api, "daytona-hosted", { computer: { kind: "sandbox", provider: "daytona" } });
+  assert.equal(said.refused.length, 1, JSON.stringify(said));
+  assert.match(said.refused[0][2], /Archil mounts don't work on Daytona's hosted cloud/);
+  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
 });
 
 // A computer that runs only on the vendor's own network (the cloud phone's provider declares network "open" alone): on a
@@ -185,7 +252,7 @@ test("Mode 1: an e2b sandbox is refused, as a sandbox there needs a bind mount o
   const saved = await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const said = await saveAndStart(api, "remote-mode1", { computer: { kind: "sandbox", provider: "e2b" } });
-  const words = /^Mode 1 runs a sandbox only on Docker: a E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
+  const words = /^Mode 1 runs a sandbox only on Docker: an E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
   assert.equal(said.refused.length, 1, JSON.stringify(said));
   assert.deepEqual(said.refused[0].slice(0, 2), ["definition.computer", "not_set_up_here"], JSON.stringify(said));
   assert.match(said.refused[0][2], words);

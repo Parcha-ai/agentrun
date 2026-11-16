@@ -49,6 +49,12 @@ type Display struct {
 	remapped *x11.Conn
 
 	shots atomic.Int64
+
+	// dmu guards damage, the watches' view of where the screen changed (damage.go), and damageStarting, closed once
+	// the start a watch is making ends.
+	dmu            sync.Mutex
+	damage         *damages
+	damageStarting chan struct{}
 }
 
 // New is the display DISPLAY named when computerd started; "" is none.
@@ -60,11 +66,16 @@ func New(name string) *Display {
 // unsupported. It does not wait for a dial.
 func (d *Display) Close() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.closed = true
 	if d.conn != nil {
 		_ = d.conn.Close()
 		d.conn = nil
+	}
+	d.mu.Unlock()
+	d.dmu.Lock()
+	defer d.dmu.Unlock()
+	if d.damage != nil {
+		d.damage.close()
 	}
 }
 
@@ -335,8 +346,8 @@ func (d *Display) read(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	// A shot held is served from what computerd keeps, with no display: the X server may have exited since screen.shot.
 	// Only a shot not held asks for the display, so a computer without one answers unsupported, not not_found.
-	// A watch's frame is held apart (watchHeldOf), so neither evicts the other.
-	for _, h := range []*held{heldOf(ctx), watchHeldOf(ctx)} {
+	// A watch's frames are held apart (watchHeldOf), so neither evicts the other.
+	for _, h := range append([]*held{heldOf(ctx)}, watchHeldOf(ctx)...) {
 		result, ok, err := h.read(params.ID, *params.Offset)
 		switch {
 		case err != nil:

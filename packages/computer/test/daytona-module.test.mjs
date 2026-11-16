@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import * as daytonaModule from "../dist/conformance/daytona.js";
+import { fakeObjects } from "./fake-archil.mjs";
 
 const { createProvider, DAYTONA_ENV } = daytonaModule;
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -56,6 +57,7 @@ test("createProvider() names the variable it needs, and makes no request without
 		user: "COMPUTER_DAYTONA_USER",
 		snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
 		gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
+		archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
 	});
 	for (const name of Object.values(DAYTONA_ENV)) assert.match(name, /^COMPUTER_DAYTONA_/, `${name} is not a bare DAYTONA_ name`);
 });
@@ -129,21 +131,20 @@ test("createProvider() bounds every sandbox's life besides the TTL: autoStopMinu
 	assert.equal(post.body.autoDeleteInterval, 0);
 	assert.equal(post.body.ttlMinutes, 10);
 	assert.equal(Object.hasOwn(post.body, "snapshot"), false, "the default snapshot: no snapshot field");
-	assert.equal(provider.capabilities().stopDeletes, true, "a stop deletes it, and the provider declares that");
+	assert.deepEqual(provider.capabilities().release, ["delete"], "a Daytona computer is deleted, never stopped");
 });
 
-test("the module's note for the run's report says a stop deletes, that the provider declares it, and what each case does with it", () => {
+test("the module's note for the run's report says a stop deletes, that release stop is refused, and what each case does with it", () => {
 	const notes = daytonaModule.conformanceNotes;
 	assert.ok(Array.isArray(notes) && notes.length > 0 && notes.every((note) => typeof note === "string"), "the module exports conformanceNotes, strings");
 	const text = notes.join(" ");
 	assert.match(text, /autoStopMinutes 30/);
 	assert.match(text, /autoDeleteMinutes 0/);
-	assert.match(text, /stopDeletes/);
-	assert.match(text, /provider\.stop/);
+	assert.match(text, /release stop is refused/);
 	assert.match(text, /provider\.janitor/);
 	assert.doesNotMatch(text, /expected to fail|fails/, "no case is expected to fail by design");
 	const provider = createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON } });
-	assert.deepEqual([provider.capabilities().release, provider.capabilities().stopDeletes], [["stop", "delete"], true], "the run's provider declares that its stop deletes");
+	assert.deepEqual([provider.capabilities().release, provider.capabilities().stopDeletes], [["delete"], undefined], "the run's provider is delete-only");
 });
 
 test("the CLI loads the Daytona module, by path or by its registry id, and fails in words, exit 1, without a key", async () => {
@@ -207,7 +208,7 @@ test("the provider's create() reads no environment: the key, the API URL and the
 		assert.equal(post.body.target, "eu", "options.target, not DAYTONA_TARGET or COMPUTER_DAYTONA_TARGET");
 		assert.equal(post.body.autoStopInterval, 0, "the run's 30-minute bound is the conformance module's, not the provider's");
 		assert.equal(post.body.autoDeleteInterval, -1);
-		assert.equal(provider.capabilities().stopDeletes, false);
+		assert.deepEqual(provider.capabilities().release, ["delete"]);
 		for (const request of fake.requests) {
 			assert.equal(request.headers.authorization, `Bearer ${KEY}`);
 			assert.match(request.host, /\.daytona\.test$/, "options.apiUrl, not DAYTONA_API_URL or COMPUTER_DAYTONA_API_URL");
@@ -244,9 +245,9 @@ test("createHost(): the live sweep's host, from the same COMPUTER_DAYTONA_* name
 	await assert.rejects(daytonaModule.createHost({ env: { DAYTONA_API_KEY: PROD_KEY } }), /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/);
 	const fake = recorder();
 	const host = await daytonaModule.createHost({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, DAYTONA_API_KEY: PROD_KEY }, fetch: fake.fetch });
-	assert.equal(host.id, "daytona");
+	assert.equal(host.descriptor.id, "daytona");
 	assert.deepEqual(fake.requests, []);
-	assert.deepEqual(await host.list({ "agentrun.computer": "1" }, { timeoutMs: 1_000 }), { ok: true, value: [] });
+	assert.deepEqual(await host.list({ "agentrun.computer": "1" }, { timeoutMs: 1_000 }), []);
 	assert.deepEqual(fake.requests.map((r) => `${r.method} ${r.host}${r.path}`), ["GET api.daytona.test/api/sandbox"]);
 	assert.equal(fake.requests[0].headers.authorization, `Bearer ${KEY}`);
 });
@@ -272,4 +273,35 @@ test("the live suite on real Daytona skips unless both AGENTRUN_COMPUTER_LIVE_DA
 		assert.match(tap, /# pass 0/);
 		assert.match(tap, /# fail 0/);
 	}
+});
+
+const EGRESS = "192.0.2.40:18100:42050";
+const ARCHIL = {
+	COMPUTER_ARCHIL_DISK: "dsk-00000000000baf76",
+	COMPUTER_ARCHIL_REGION: "aws-us-east-1",
+	COMPUTER_ARCHIL_TOKEN: "tok-daytona-module-0123456789abcdef",
+	COMPUTER_ARCHIL_API_KEY: "fake-test-key",
+	COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+};
+
+test("COMPUTER_DAYTONA_ARCHIL_EGRESS is the provider's archilEgress: set, it takes an Archil mount; unset, it refuses one; a malformed one is refused at createProvider()", () => {
+	const fetch = async () => assert.fail("no request");
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY }, fetch }).capabilities().mount, []);
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.archilEgress]: EGRESS }, fetch }).capabilities().mount, ["archil"]);
+	assert.throws(() => createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.archilEgress]: "192.0.2.40:8100:42050" }, fetch }), /the Archil egress is/);
+	assert.throws(() => createProvider({ env: { DAYTONA_ARCHIL_EGRESS: EGRESS } }), /COMPUTER_DAYTONA_API_KEY/, "a bare DAYTONA_ name is never read");
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, DAYTONA_ARCHIL_EGRESS: EGRESS }, fetch }).capabilities().mount, [], "the bare name is not the module's");
+});
+
+test('mountFor("archil") gives a fresh run folder on the COMPUTER_ARCHIL_* disk only with COMPUTER_DAYTONA_ARCHIL_EGRESS set (the provider takes the mount only then), and none for a bind', async () => {
+	const { mountFor } = daytonaModule;
+	assert.equal(await mountFor("archil", { env: { ...ARCHIL } }), undefined, "no egress: hosted Daytona, so the mount cases are skipped");
+	assert.equal(await mountFor("archil", { env: { [DAYTONA_ENV.archilEgress]: EGRESS } }), undefined, "no disk named");
+	assert.equal(await mountFor("bind", { env: { ...ARCHIL, [DAYTONA_ENV.archilEgress]: EGRESS } }), undefined, "a Daytona computer takes no bind");
+	const objects = fakeObjects();
+	const folder = await mountFor("archil", { env: { ...ARCHIL, [DAYTONA_ENV.archilEgress]: EGRESS }, archil: { objects } });
+	assert.equal(folder.mount.kind, "archil");
+	assert.equal(folder.mount.disk, ARCHIL.COMPUTER_ARCHIL_DISK);
+	assert.match(folder.mount.folder, /^agents\/conformance\/runs\/[A-Za-z0-9][A-Za-z0-9_-]*\/work$/);
+	await folder.close();
 });

@@ -44,7 +44,7 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   assert.equal(spentFrom(rowsOf([started, answer({ total: 0.001 }), refused])), 0.001, "a request the cap refused never left: it costs nothing");
   // A run with no journal yet (nothing spent) is store-reads-cap.test.mjs's "a run with no journal spends 0".
   assert.equal(spentFrom(rowsOf([])), 0, "an empty journal: nothing spent");
-  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", usd } });
+  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid:faux/person/enrich", charged_by: "monid", usd } });
   assert.equal(Math.round(spentFrom(rowsOf([started, answer({ total: 0.001 }), charged(0.003)])) * 1e6) / 1e6, 0.004, "a paid tool's charge is spent too");
   assert.equal(spentFrom(rowsOf([started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
 });
@@ -59,10 +59,10 @@ test("a Parallel request whose settle record could not be written: the cap, and 
 });
 
 test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
-  const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
-  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });
+  const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid:faux/person/enrich", charged_by: "monid", call: "c1", heldUsd } });
+  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid:faux/person/enrich", charged_by: "monid", call: "c1", usd } });
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
-  // A monid call held at the $1 allowance, cut, beside a model request of $0.002.
+  // A monid call held at its $1 price, cut, beside a model request of $0.002.
   const cut = [started, answer({ total: 0.002 }), marked(1)];
   assert.equal(round(spentFrom(rowsOf(cut))), 1.002, "the cap counts the held figure");
   assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");
@@ -387,11 +387,13 @@ test("a capped pi run refused for room with no stop pauses at its cap: its cost 
   await follow(api, probe, ["input_required"]);
   const first = (await view(api, probe)).cost.usd;
   assert.ok(first > 0, "the ask was paid for");
-  // The cap sits above the wrap-up line at step 0 (a bit over three times a request's least, 1,024 tokens at $0.0001, with
-  // the note's own bytes: under it the run is told to finish and never asks), so the ask goes. The answer is a long message, input priced: its input alone, about
-  // 5,700 tokens ($0.57), is more than what the cap leaves after the ask, so it cannot be bought.
+  // The cap sits above the wrap-up line at step 0 (twice a request's least, its input read by its bytes at $100 a million
+  // with the host's tools_search, tools_call and codemode among its tools, and a 1,024-token answer: about $0.52, so the
+  // line is near $1.05; under it the run is told to finish), so the ask goes with no note. The answer is a long message,
+  // input priced: its least, its 20,000 bytes read as tokens (about $2), is more than what the cap leaves after the ask,
+  // so it cannot be bought.
   assert.equal((await api("POST", "/agents", agent("plain", { tools: ["ask_person"] }))).status, 201);
-  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: 0.5 })).body.run_id;
+  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: 1.2 })).body.run_id;
   await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
   // Its next pause, past the question it answered: the answer is taken once the run reads as no longer asking.

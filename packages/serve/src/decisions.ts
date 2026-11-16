@@ -16,6 +16,7 @@
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
+import { openRouterApp } from "@parcha/agentrun-kernel/host";
 import { FAUX_ENV } from "./model.js";
 import { keyNeeded } from "./key-words.js";
 
@@ -56,6 +57,13 @@ const isSet = (value: string | undefined) => typeof value === "string" && value.
 
 /** The model gateway's key (model.ts), Jev's on the OpenRouter route when that gateway is OpenRouter. */
 export const JEV_GATEWAY_KEY_ENV = "AGENT_MODEL_API_KEY";
+
+/** AgentRun's OpenRouter app attribution for a Decisions provider on OpenRouter (the kernel's one helper names the app), or
+ *  none where AGENTRUN_OPENROUTER_ATTRIBUTION=off. */
+const appOf = (env: NodeJS.ProcessEnv): { app?: { url: string; title: string; categories: string } } => {
+  const app = openRouterApp(env);
+  return app ? { app: { ...app } } : {};
+};
 
 /** The variable Jev's OpenRouter key is in: OPENROUTER_API_KEY, else the model gateway's key when AGENT_MODEL_BASE_URL's
  *  host is exactly openrouter.ai. Jev sends it to openrouter.ai, so another host's key never goes there. */
@@ -158,6 +166,9 @@ export function providersNamed(nodes: readonly Record<string, unknown>[]): strin
       if ((predicate as { predicate?: unknown } | undefined)?.predicate === "ask") add(predicate);
     }
     if (node.verify) ids.add(DEFAULT_DECISION_PROVIDER);
+    // A step guard that reads Jev (runner/step-guard.ts) asks Jev, whatever provider its node names.
+    const signal = (node.guard as { signal?: unknown } | undefined)?.signal;
+    if (signal === "jev" || signal === "both") ids.add("jev");
   }
   return [...ids];
 }
@@ -245,11 +256,11 @@ async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS
   } else if (handed[JEV_OPENROUTER_KEY_ENV] !== undefined) {
     // No Parallel key handed: Parallel's model through OpenRouter, on the OpenRouter key (parallelRoute chose it).
     const [{ parallelProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(env, FAUX_OPENROUTER_ENV)]);
-    providers.parallel = parallelProvider({ openrouter: { apiKey: handed[JEV_OPENROUTER_KEY_ENV], app: { title: "AgentRun Server" } }, ...(faux ? { fetch: faux } : {}) });
+    providers.parallel = parallelProvider({ openrouter: { apiKey: handed[JEV_OPENROUTER_KEY_ENV], ...appOf(env) }, ...(faux ? { fetch: faux } : {}) });
   }
   if (handed[JEV_OPENROUTER_KEY_ENV] !== undefined) {
     const [{ openrouterProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(env, FAUX_OPENROUTER_ENV)]);
-    providers.openrouter = openrouterProvider({ apiKey: handed[JEV_OPENROUTER_KEY_ENV], ...(faux ? { fetch: faux } : {}), app: { title: "AgentRun Server" } });
+    providers.openrouter = openrouterProvider({ apiKey: handed[JEV_OPENROUTER_KEY_ENV], ...(faux ? { fetch: faux } : {}), ...appOf(env) });
   }
   return Object.keys(providers).length ? { providers, default: DEFAULT_DECISION_PROVIDER } : undefined;
 }

@@ -82,16 +82,18 @@ async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof
 describe("a GitHub trigger's page", () => {
   const PRS: Trigger = { ...HOOK, id: "trg_g", name: "review PRs", source: { kind: "github", accept: [{ event: "pull_request", actions: ["opened", "synchronize"], where: [{ pointer: "/pull_request/base/ref", in: ["main"] }] }] } };
 
-  it("opens: the events it takes, its firings, Pause and Delete; no URL, no secret, no Edit", async () => {
+  it("opens: the events it takes, its firings, Pause, Edit filter and Delete; no URL, no secret", async () => {
     const s = server({ triggers: [NIGHTLY, PRS] });
     const t = await open(s.v2, { trigger: "trg_g" });
     expect(t.text()).not.toContain("this page doesn't open it");
     expect(t.host.querySelector("h1")!.textContent).toContain("review PRs");
-    expect(t.text()).toContain('pull_request (opened, synchronize) where /pull_request/base/ref is one of "main"');
+    // A condition reads as its editor writes it: an is-one-of list's text as typed.
+    expect(t.text()).toContain("pull_request (opened, synchronize) where /pull_request/base/ref is one of main");
     expect(t.host.querySelector("[data-firing]")!.textContent).toContain("On a GitHub event");
     expect(t.text()).not.toContain("/v2/hooks/");
     expect(t.button(/^Rotate secret$/)).toBeUndefined();
     expect(t.button(/^Edit$/)).toBeUndefined();
+    expect(t.button(/^Edit filter$/)).toBeDefined();
     await t.click(/^Pause$/);
     expect(s.calls.find((c) => c.method === "PATCH")!.body).toEqual({ enabled: false });
     await t.click(/^Delete$/);

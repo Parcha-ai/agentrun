@@ -2,7 +2,9 @@
 // this machine, on pipes, so the pre-check's sh, printf, cat, sleep and kill -0 run as they would in a vendor's box. The
 // machine id is ignored. Options break exec the ways a vendor's can, each as one flag, so a test shows the pre-check
 // catches it and says what is wrong:
-//  - decodeUtf8: stdout is decoded as UTF-8 text and encoded again (a vendor SDK's onStdout(string));
+//  - tty: stdout's \n comes back as \r\n, as a terminal's output does;
+//  - decodePieces: each piece of stdout is decoded as UTF-8 text on its own and encoded again, so a character split
+//    across two pieces comes back as U+FFFD (a vendor SDK's onStdout(string) without a streaming decoder);
 //  - bufferOutput: stdout and stderr come only once the process has exited;
 //  - holdStdin: writes are kept until end(), then given all at once;
 //  - mergeStderr: stderr comes back on stdout;
@@ -11,27 +13,50 @@
 //  - killDetaches: kill() lets go of the streams and leaves the process running;
 //  - closeStdoutEarly: stdout ends after its first chunk, while the process still runs;
 //  - slowWriteMs: each write() answers this many ms late.
+//  - stdinWaitsOnStdout: once 64 KiB of stdout sits unread, write() never answers again, read or not (a stdin window
+//    that a stalled reader deadlocks).
+//  - stdinWaitsForReader: while 64 KiB of stdout sits unread, write() waits, and goes on once the reader drains it (a
+//    stdin window with backpressure, as it should be).
 import { spawn } from "node:child_process";
 
-/** A stream fed by a process, read as an async iterable until it ends. */
+/**
+ * A stream fed by a process, read as an async iterable until it ends; `unread` is the bytes not yet taken from it, and
+ * taken() answers once the reader takes the next piece, or the stream ends.
+ */
 function feed() {
 	const queue = [];
 	let ended = false;
 	let wake;
+	let unread = 0;
+	const took = [];
+	const tookOne = () => {
+		for (const done of took.splice(0)) done();
+	};
 	return {
+		get unread() {
+			return unread;
+		},
+		taken: () => (ended ? Promise.resolve() : new Promise((done) => took.push(done))),
 		push(bytes) {
 			if (ended) return;
 			queue.push(bytes);
+			unread += bytes.byteLength;
 			wake?.();
 		},
 		end() {
 			ended = true;
 			wake?.();
+			tookOne();
 		},
 		iterable: {
 			async *[Symbol.asyncIterator]() {
 				for (;;) {
-					if (queue.length > 0) yield queue.shift();
+					if (queue.length > 0) {
+						const bytes = queue.shift();
+						unread -= bytes.byteLength;
+						tookOne();
+						yield bytes;
+					}
 					else if (ended) return;
 					else await new Promise((done) => (wake = done));
 				}
@@ -41,21 +66,23 @@ function feed() {
 }
 
 export function fakeExecHost(options = {}) {
-	const { decodeUtf8 = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0 } = options;
+	const { tty = false, decodePieces = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0, stdinWaitsOnStdout = false, stdinWaitsForReader = false } = options;
 	const children = new Set();
 	const host = {
-		id: "fake-exec",
+		descriptor: { id: "fake-exec" },
 		calls: [],
-		async exec(id, argv, { stdin }) {
-			host.calls.push({ id, argv, stdin });
-			const child = spawn(argv[0], argv.slice(1), { stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+		async exec(id, argv, ctx) {
+			host.calls.push({ id, argv, ctx });
+			const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
 			children.add(child);
+			// A write or end after the command exited is a closed pipe: the write's own callback says so.
+			child.stdin.on("error", () => {});
 			const out = feed();
 			const err = feed();
-			const decoder = new TextDecoder();
 			const held = { out: [], err: [] };
 			const toOut = (chunk) => {
-				const bytes = decodeUtf8 ? new Uint8Array(Buffer.from(decoder.decode(chunk, { stream: true }), "utf8")) : new Uint8Array(chunk);
+				const text = decodePieces ? new TextDecoder().decode(chunk) : undefined;
+				const bytes = tty ? new Uint8Array(Buffer.from(chunk.toString("latin1").replaceAll("\n", "\r\n"), "latin1")) : text !== undefined ? new Uint8Array(Buffer.from(text, "utf8")) : new Uint8Array(chunk);
 				if (bufferOutput) held.out.push(bytes);
 				else out.push(bytes);
 				if (closeStdoutEarly) out.end();
@@ -85,26 +112,27 @@ export function fakeExecHost(options = {}) {
 				child.once("error", failed);
 			});
 			const pending = [];
+			let stalled = false;
 			return {
-				ok: true,
-				value: {
-					stdout: out.iterable,
-					stderr: err.iterable,
-					async write(bytes) {
-						if (slowWriteMs > 0) await new Promise((done) => setTimeout(done, slowWriteMs));
-						if (holdStdin) pending.push(Buffer.from(bytes));
-						else await new Promise((done, fail) => child.stdin.write(Buffer.from(bytes), (error) => (error ? fail(error) : done())));
-					},
-					async end() {
-						if (pending.length > 0) child.stdin.write(Buffer.concat(pending.splice(0)));
-						child.stdin.end();
-					},
-					wait: () => exited,
-					async kill() {
-						if (!killDetaches) child.kill("SIGKILL");
-						out.end();
-						err.end();
-					},
+				stdout: out.iterable,
+				stderr: err.iterable,
+				async write(bytes) {
+					stalled ||= stdinWaitsOnStdout && out.unread >= 64 * 1024;
+					if (stalled) return new Promise(() => {});
+					while (stdinWaitsForReader && out.unread >= 64 * 1024 && children.has(child)) await Promise.race([out.taken(), exited]);
+					if (slowWriteMs > 0) await new Promise((done) => setTimeout(done, slowWriteMs));
+					if (holdStdin) pending.push(Buffer.from(bytes));
+					else await new Promise((done, fail) => child.stdin.write(Buffer.from(bytes), (error) => (error ? fail(error) : done())));
+				},
+				async end() {
+					if (pending.length > 0) child.stdin.write(Buffer.concat(pending.splice(0)));
+					child.stdin.end();
+				},
+				wait: () => exited,
+				async kill() {
+					if (!killDetaches) child.kill("SIGKILL");
+					out.end();
+					err.end();
 				},
 			};
 		},

@@ -5,9 +5,11 @@
 // function answering it, read at each request, for a server that moves to another), and `token`
 // may be a check of the Authorization header (fake-oauth-server.mjs `accepts`). Every request is logged: method, tool, and
 // whether an Authorization header came, never its value; a tool call whose client closed its request before the answer is
-// logged again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it).
+// logged again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it). A stranger's bare
+// `GET /` is answered 404 and not logged (fixtures/stranger.mjs).
 import { createServer } from "node:http";
 import { createMcpHandler, fromJsonSchema, legacyStatelessFallback, McpServer } from "@modelcontextprotocol/server";
+import { stranger } from "./stranger.mjs";
 
 const number = { type: "number" };
 const text = { type: "string" };
@@ -36,6 +38,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
   };
   const handle = era === "legacy" ? legacyStatelessFallback(factory) : createMcpHandler(factory).fetch;
   const http = createServer(async (req, res) => {
+    if (stranger(req, res)) return;
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
@@ -53,8 +56,10 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
       res.writeHead(200, { "content-type": "application/json" });
       return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
-    // Its endpoint is `path` (/mcp unless a test names another), with any query of its own (?version=2).
-    if (new URL(req.url, base).pathname !== path) return void res.writeHead(404).end();
+    // Its endpoint is `path` (/mcp unless a test names another; a function: each path it holds), with any query of its own
+    // (?version=2).
+    const pathname = new URL(req.url, base).pathname;
+    if (typeof path === "function" ? !path(pathname) : pathname !== path) return void res.writeHead(404).end();
     inspect?.(req.headers);
     // `hold`: awaited before a request to /mcp is answered, for a test that keeps a listing waiting at a point it chooses.
     if (hold) await hold(req.headers);
@@ -70,7 +75,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     res.end();
   });
   await new Promise((resolve) => http.listen(port, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${http.address().port}${path}`;
+  const url = `http://127.0.0.1:${http.address().port}${typeof path === "function" ? "/mcp" : path}`;
   return { url, log, tools, close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
 }
 

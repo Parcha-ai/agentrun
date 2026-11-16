@@ -34,8 +34,9 @@ KEY = f"test-key-{secrets.token_hex(12)}"
 JSON_HEADERS = {"content-type": "application/json"}
 
 # Writes the file the first message names (`write NAME.md`); asks its person first when told to ask, and writes what
-# they said; then answers. Priced on output only, $100 a million, as the server's cap tests price it.
-FAUX = r"""const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+# they said (the server's notes, its <system-reminder> blocks, are not their words: an answered run resumes on a new
+# computer, and is told so); then answers. Priced on output only, $100 a million, as the server's cap tests price it.
+FAUX = r"""const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join("")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "");
 export default (context, faux) => {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const wrote = context.messages.some((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((c) => c.type === "toolCall" && c.name === "write"));

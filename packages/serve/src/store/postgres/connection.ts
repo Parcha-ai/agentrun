@@ -8,7 +8,7 @@ import pg from "pg";
 import { type RunnableDeadline, runnableDeadline } from "../deadline.js";
 import { cleanText } from "../dialect.js";
 import { ONE_ANSWER_INDEX } from "../schema.js";
-import { AnswerTaken, type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned } from "../store.js";
+import { AnswerTaken, type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, STORE_WRITE_DEADLINE_MS } from "../store.js";
 import { DEFAULT_TRANSACTION_DEADLINE_MS, type SqliteValue, type Statement, type StatementResult, type StoreConnection, type TransactionOptions, type Tx } from "../sqlite/connection.js";
 import type { Dialect } from "../dialect.js";
 import { postgresDialect } from "./dialect.js";
@@ -52,13 +52,19 @@ export interface PgConnectionOptions {
   readonly poolSize?: number;
   /** Deadlines on the store's own (test) clock, bound as parameters, instead of the database's (postgresDialect). */
   readonly testClock?: boolean;
-  /** How long getting a connection may take (STORE_CONNECT_TIMEOUT_MS by default): a new one's connect and startup, or a
-   *  wait for one of the pool's to come free. Past it the call is refused (StoreDeadline, naming the database's place,
-   *  never its URL), never left hanging on a database that does not answer. */
+  /** How long a new connection's connect and startup may take (STORE_CONNECT_TIMEOUT_MS by default). Past it the call is
+   *  refused (StoreDeadline, naming the database's place, never its URL, in words that say it does not answer), never left
+   *  hanging on a database that does not answer. */
   readonly connectTimeoutMs?: number;
+  /** How long a call may wait for one of the pool's connections to come free while every one is in use
+   *  (STORE_WRITE_DEADLINE_MS by default, and never less than connectTimeoutMs): a busy pool is waited out to a write's own
+   *  deadline, never failed at the connect timeout. Past it the call is refused (StoreDeadline, in words that say every
+   *  connection stayed in use), nothing of it sent. */
+  readonly poolWaitMs?: number;
 }
 
-/** The default bound on getting a connection to the store's Postgres (PgConnectionOptions.connectTimeoutMs), in ms. Below
+/** The default bound on a new connection's connect and startup to the store's Postgres (PgConnectionOptions.connectTimeoutMs),
+ *  in ms; a wait for a busy pool's connection to come free has its own, longer bound (PgConnectionOptions.poolWaitMs). Below
  *  the runner's stop margin (runner.ts: lease 30 s, renew every 10 s, stop margin 5 s; a claim is let go when no renew has
  *  landed within lease - margin = 25 s of the last one's send, so two renew ticks, at +10 s and +20 s, fall inside it): a
  *  renew that cannot get a connection gives up within 4 s, inside the 5 s margin, and the next tick tries again. A renew
@@ -67,17 +73,21 @@ export interface PgConnectionOptions {
  *  silent fails by +19 s and the +20 s tick renews on a fresh connection before +25 s. */
 export const STORE_CONNECT_TIMEOUT_MS = 4_000;
 
-/** pg's and pg-pool's words for a connection not had in time: a connect or startup that never finished, or no pool client
- *  free. */
-const CONNECT_TIMEOUT = /timeout exceeded when trying to connect|timeout expired|Connection terminated due to connection timeout/i;
+/** pg's and pg-pool's words for a new connection's connect or startup that never finished in time. */
+const CONNECT_TIMEOUT = /timeout expired|Connection terminated due to connection timeout/i;
+/** pg-pool's words for a wait in its queue that no client came free for in time (every one in use). */
+const POOL_WAIT_TIMEOUT = /timeout exceeded when trying to connect/i;
 
-/** Whether `error`, or an error it was made from, is a connection not had in time. */
-function connectTimedOut(error: unknown): boolean {
+/** Whether `error`, or an error it was made from, says `words`. */
+function says(error: unknown, words: RegExp): boolean {
   for (let e = error as { message?: unknown; cause?: unknown } | undefined, depth = 0; e && depth < 5; e = e.cause as typeof e, depth++) {
-    if (CONNECT_TIMEOUT.test(String(e.message ?? ""))) return true;
+    if (words.test(String(e.message ?? ""))) return true;
   }
   return false;
 }
+
+/** Whether `error`, or an error it was made from, is a new connection not had in time. */
+const connectTimedOut = (error: unknown): boolean => says(error, CONNECT_TIMEOUT);
 
 /** A COMMIT is bounded by what is left of its transaction's deadline, never less than this (a commit sent at the deadline
  *  still gets an answer's time). Past it the connection is taken as silent and let go (destroyed); the commit's outcome is
@@ -126,9 +136,15 @@ async function rollBackAndRelease(client: pg.PoolClient): Promise<void> {
   await answered(client.query("ROLLBACK"), ROLLBACK_ANSWER_MS, "its rollback").then(() => client.release(), (error: Error) => client.release(error));
 }
 
-/** The refusal for a connection not had within `ms` from the database at `where` (postgresWhere: no user or password). */
+/** The refusal for a new connection not made within `ms` to the database at `where` (postgresWhere: no user or password). */
 function connectDeadline(where: string, ms: number): StoreDeadline {
-  return new StoreDeadline(ms, `no connection to the store's Postgres at ${where} within ${ms} ms: it does not answer, or every connection of this store is in use`);
+  return new StoreDeadline(ms, `no connection to the store's Postgres at ${where} within ${ms} ms: it does not answer`);
+}
+
+/** The refusal for a call that waited `ms` for one of the `size` connections of the store's pool on the database at
+ *  `where`, every one of them in use all that time: the store is busier than its pool, and the database answers. */
+function poolBusy(where: string, ms: number, size: number): StoreDeadline {
+  return new StoreDeadline(ms, `no connection of the store's Postgres at ${where} came free within ${ms} ms: all ${size} of this store's connections stayed in use, so the call was never sent`);
 }
 
 /** int8 as a JavaScript number: every integer the store keeps (ms, ids, epochs, counts) is one, and one outside the safe
@@ -323,8 +339,10 @@ export class PgConnection implements StoreConnection {
   /** What taking the owner lock back needs. */
   readonly #ownerConfig: OwnerConfig | undefined;
   readonly #busyTimeoutMs: number;
-  /** The bound on getting a connection (PgConnectionOptions.connectTimeoutMs). */
+  /** The bound on a new connection's connect and startup (PgConnectionOptions.connectTimeoutMs). */
   readonly #connectMs: number;
+  /** The bound on a wait for a busy pool's connection to come free (PgConnectionOptions.poolWaitMs), and the pool's size. */
+  readonly #poolWait: { readonly ms: number; readonly size: number };
   #closed = false;
   /** Set while the owner lock is not held (its connection ended or failed, and it is being taken back), and for good once
    *  another server has the schema: every call is refused with it meanwhile. */
@@ -350,8 +368,9 @@ export class PgConnection implements StoreConnection {
     return columns;
   };
 
-  private constructor(pool: pg.Pool, owner: OwnerSession | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number, leasePool: pg.Pool, ownerConfig: OwnerConfig | undefined) {
+  private constructor(pool: pg.Pool, owner: OwnerSession | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number, poolWait: { readonly ms: number; readonly size: number }, leasePool: pg.Pool, ownerConfig: OwnerConfig | undefined) {
     this.#connectMs = connectMs;
+    this.#poolWait = poolWait;
     this.#pool = pool;
     this.#leasePool = leasePool;
     this.#owner = owner;
@@ -424,17 +443,30 @@ export class PgConnection implements StoreConnection {
   }
 
   /** The pool on `url` in `schema`, and (owner) the owner lock: StoreOwned when another server holds the schema. */
-  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10, testClock = false, connectTimeoutMs = STORE_CONNECT_TIMEOUT_MS, ownerWaitMs = OWNER_WAIT_MS, onOwnerWait, onOwnerLost, ownerCheck }: PgConnectionOptions): Promise<PgConnection> {
+  static async open({ url, schema, owner = false, busyTimeoutMs = 10_000, poolSize = 10, testClock = false, connectTimeoutMs = STORE_CONNECT_TIMEOUT_MS, poolWaitMs = STORE_WRITE_DEADLINE_MS, ownerWaitMs = OWNER_WAIT_MS, onOwnerWait, onOwnerLost, ownerCheck }: PgConnectionOptions): Promise<PgConnection> {
     if (!SCHEMA_NAME.test(schema)) throw new TypeError(`the store's schema is a lower-case name of letters, digits and underscores, not ${JSON.stringify(schema)}`);
     // The database's end of the keepalives (KEEPALIVE_IDLE_S): a vanished client's session, and its locks, ended in ~25 s.
     const keepalives = `-c tcp_keepalives_idle=${KEEPALIVE_IDLE_S} -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3`;
     const session = `-c search_path=${schema} -c lock_timeout=${Math.max(0, Math.floor(busyTimeoutMs))} -c synchronous_commit=on ${keepalives}`;
     const connectMs = Math.max(1, Math.floor(connectTimeoutMs));
+    // Never below the connect's bound: pg-pool's one connectionTimeoutMillis also cuts a new client's connect, which must
+    // keep its own bound and its own words (StoreClient's).
+    const poolWait = Math.max(connectMs, Math.floor(poolWaitMs));
     const where = postgresWhere(url, schema);
-    // connectionTimeoutMillis bounds a new connection's connect and startup, and a wait for a pool client to come free.
+    // Two bounds on getting a connection, each in one place. A new connection's connect and startup: connectMs, on the
+    // client itself (StoreClient), so a database that does not answer is refused fast. A wait in the pool's queue while
+    // every client is in use (a runner's loops' commits behind one another): pg-pool's connectionTimeoutMillis, poolWait,
+    // so a busy pool of a database that answers is waited out to a write's own deadline, never failed at connectMs.
+    class StoreClient extends pg.Client {
+      constructor(config?: string | pg.ClientConfig) {
+        super({ ...(typeof config === "string" ? { connectionString: config } : config), connectionTimeoutMillis: connectMs });
+      }
+    }
     // keepAlive: this end's TCP keepalives, from KEEPALIVE_IDLE_S (pg's default delay, 0, is the OS's 2 h).
     const tcp = { keepAlive: true, keepAliveInitialDelayMillis: KEEPALIVE_IDLE_S * 1_000 };
-    const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: "agentrun-store", connectionTimeoutMillis: connectMs, ...tcp };
+    // Every connection named for its schema, as the lease's and the owner lock's are: pg_stat_activity tells which
+    // store holds each one.
+    const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: `agentrun-store:${schema}`, Client: StoreClient, connectionTimeoutMillis: poolWait, ...tcp };
     let lock: OwnerSession | undefined;
     const waitMs = Math.max(0, Math.floor(ownerWaitMs));
     if (owner) {
@@ -473,7 +505,7 @@ export class PgConnection implements StoreConnection {
       each.on("error", () => undefined);
       each.on("connect", (fresh) => fresh.on("error", () => undefined));
     }
-    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs, leasePool, lock ? { url, waitMs, onLost: onOwnerLost, check: ownerCheck } : undefined);
+    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs, { ms: poolWait, size: poolSize }, leasePool, lock ? { url, waitMs, onLost: onOwnerLost, check: ownerCheck } : undefined);
   }
 
   /** `work`, counted in flight, refused after close. A connection it never got in time is StoreDeadline, naming the
@@ -482,7 +514,9 @@ export class PgConnection implements StoreConnection {
     if (this.#closed) return Promise.reject(new StoreClosed());
     if (this.#ownerLost) return Promise.reject(this.#ownerLost);
     const running = work().catch((error: unknown) => {
-      throw connectTimedOut(error) ? connectDeadline(this.where, this.#connectMs) : error;
+      if (connectTimedOut(error)) throw connectDeadline(this.where, this.#connectMs);
+      if (says(error, POOL_WAIT_TIMEOUT)) throw poolBusy(this.where, this.#poolWait.ms, this.#poolWait.size);
+      throw error;
     });
     this.#inFlight.add(running);
     const done = () => void this.#inFlight.delete(running);

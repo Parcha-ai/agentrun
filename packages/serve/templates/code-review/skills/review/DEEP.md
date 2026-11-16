@@ -8,14 +8,15 @@ credential files.
 
 ## The change
 
-Your prompt gives the facts: `repo`, `pr`, `base_sha`, `head_sha`, `merge_base`, and where to read the code.
+Your prompt gives the facts: `owner`, `repo`, `pr`, `base_sha`, `head_sha`, `merge_base`, and where to read the code.
 
 - `checkout: repo/`: the PR's head is checked out there (ref `pr/head`, with `pr/base` and `pr/merge-base`). Every
   command starts `cd repo && `. The change is `git diff pr/merge-base pr/head`. No branch or commit past the head is
   there.
-- `checkout: none`: read through `pull_request_read` `get_diff` and `get_file_contents(path, sha)`.
-- `diff:` with no PR: the diff in the prompt is the whole change. Run no command and `read` only this folder's files. A
-  rules file pasted in the prompt counts as read from the base: cite it as `<name>:<line>`.
+- `checkout: none`: read through `pull_request_read` `get_diff` and `get_file_contents(path, sha)`, each call with the
+  prompt's `owner` and `repo` exactly: the server refuses any other repository.
+- `diff:`: the diff after it, or in the file it names (`read` it whole), is the change. Run no command; `read` only
+  that file and this folder's. A pasted rules file is read from the base: cite `<name>:<line>`.
 
 ## Rules
 

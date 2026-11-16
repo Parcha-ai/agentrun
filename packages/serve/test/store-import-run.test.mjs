@@ -60,6 +60,27 @@ test("a session imported twice is refused (one run per source and session)", asy
   assert.equal(await store.runs.get("imp-b"), undefined, "the second run is not written");
 });
 
+test("importRun checks source authorization settings inside the run transaction and leaves no partial history after revocation", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  const settingsGuards = [{ key: "source-grant", fields: { allowed: true, revoked: false } }, { key: "source-target", fields: { disconnected: false } }];
+  const input = (id) => ({ id, agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: id }, launch: launch(), startedAt: T0, transcript: transcript(), settingsGuards });
+  await store.settings.put("source-grant", { allowed: true, revoked: false, heartbeat: 10 });
+  await store.settings.put("source-target", { disconnected: false });
+  await store.importRun(input("guarded-good"));
+  await store.settings.put("source-grant", { allowed: true, revoked: true, heartbeat: 11 });
+  await assert.rejects(store.importRun(input("guarded-revoked")), StoreConstraint);
+  assert.equal(await store.runs.get("guarded-revoked"), undefined);
+  await assert.rejects(store.runs.launch("guarded-revoked"), StoreLaunchMissing);
+  assert.deepEqual(await runEntries(store, "guarded-revoked", context), []);
+  await store.settings.put("source-grant", { allowed: true, revoked: false, heartbeat: 12 });
+  await store.settings.put("source-target", { disconnected: true });
+  await assert.rejects(store.importRun(input("guarded-disconnected")), StoreConstraint);
+  await store.settings.remove("source-grant");
+  await assert.rejects(store.importRun(input("guarded-absent")), StoreConstraint);
+  assert.equal((await store.runs.list({})).length, 1);
+});
+
 test("importedFrom.file round-trips to the store's own reads and is never on an answer", async (t) => {
   const { store } = await storeOn(t);
   await agentWithRevision(store);
@@ -80,4 +101,31 @@ test("the import index keys on source and session alone: the same session with a
   await store.importRun({ id: "imp-x", agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: "s", file: one }, launch: launch(), startedAt: T0, transcript: transcript() });
   await assert.rejects(store.importRun({ id: "imp-y", agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: "s", file: two }, launch: launch(), startedAt: T0, transcript: transcript() }), StoreConstraint, "same source and session, so the same run whatever the file");
   assert.equal(await store.runs.get("imp-y"), undefined, "the second run is not written");
+});
+
+test("guarded history import refuses an archive completed after its last active-agent read, without partial rows", async (t) => {
+  const { store, file } = await storeOn(t);
+  await agentWithRevision(store);
+  const other = (await storeOn(t, { file, role: "runner" })).store;
+  assert.equal((await store.agents.get("agent-1")).archivedAt, null, "the authorization read allowed the source");
+  await other.agents.archive("agent-1", true);
+  assert.notEqual((await other.agents.get("agent-1")).archivedAt, null, "the independent archive has committed");
+  await assert.rejects(store.importRun({ id: "imp-after-archive", agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: "after-archive" }, launch: launch(), startedAt: T0, transcript: transcript(), requireActiveAgent: true }), StoreConstraint);
+  assert.equal(await store.runs.get("imp-after-archive"), undefined);
+  await assert.rejects(store.runs.launch("imp-after-archive"), StoreLaunchMissing);
+  assert.deepEqual(await runEntries(store, "imp-after-archive", context), []);
+});
+
+test("guarded history committed before archive is retained and ordinary local imports keep their archived-agent contract", async (t) => {
+  const { store, file } = await storeOn(t);
+  await agentWithRevision(store);
+  const other = (await storeOn(t, { file, role: "runner" })).store;
+  const input = (id) => ({ id, agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: id }, launch: launch(), startedAt: T0, transcript: transcript() });
+  await store.importRun({ ...input("imp-before-archive"), requireActiveAgent: true });
+  const before = await store.runs.get("imp-before-archive");
+  await other.agents.archive("agent-1", true);
+  assert.deepEqual(await store.runs.get("imp-before-archive"), before, "archive does not rewrite already committed history");
+  assert.deepEqual((await runEntries(store, "imp-before-archive", context)).map(row => row.kind), ["pi.user", "pi.assistant"]);
+  await store.importRun(input("imp-local-archived"));
+  assert.equal((await store.runs.get("imp-local-archived")).agentId, "agent-1", "the guard is opt-in for remote history, not a new local import restriction");
 });

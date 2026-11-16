@@ -4,7 +4,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CAPS } from "../dist/timeline/index.js";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
-import { soFarOf } from "../dist/run-view.js";
+import { costWordsOfView } from "../dist/run-view.js";
+
+/** What a run whose cost is unknown has cost so far, as its view says it (costWordsOfView): its usage row joined with its
+ *  decisions' parts (`decisions`: their known sum and how many are not known; null unreadable). */
+const soFarOf = (rows, decisions) => {
+  const words = costWordsOfView(rows, undefined, decisions ? { known: decisions.known, bounded: 0, atMost: 0, unpriced: decisions.unpriced } : decisions);
+  return words.so_far_usd === undefined ? undefined : { so_far_usd: words.so_far_usd, unpriced: words.unpriced };
+};
 
 const receipt = (over = {}) => ({
   id: "d1", at: "2026-10-29T23:00:00.000Z", node: "document_checks", kind: "judge", request: { index: 0, count: 1 }, status: "answered",

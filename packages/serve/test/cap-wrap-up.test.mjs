@@ -1,4 +1,4 @@
-// The cap's wrap-up (tool-budget.ts wrappingUp): once a capped run's spend plus what its requests still out hold leaves
+// The cap's wrap-up (wrap-up.ts wrappingUp): once a capped run's spend plus what its requests still out hold leaves
 // too little to keep back one typical step and one final answer at its least (reserveFor), the run's tool gate refuses
 // every call the model makes, in one fixed text, in every
 // conversation of the run (a delegate's spawn of a child conversation, as a `subagent` spawn, included). Children in
@@ -19,7 +19,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
-const { reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } = await import("../dist/tool-budget.js");
+const { reserveFor, stepAndAnswerFor, WRAP_UP_TEXT, wrappingUp, wrapUpText } = await import("../dist/wrap-up.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -29,7 +29,7 @@ after(closeOpenSessions);
 const OUTPUT = 4_096;
 const priced = (holdUsd) => Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 0, output: (holdUsd / OUTPUT) * 1e6 }, outputCeiling: OUTPUT });
 /** The cap's least answer for a request held at `hold` (output only: ANSWER_TOKENS_LEAST of its OUTPUT), and the reserve
- *  a run with typical answers at `typical` keeps back (tool-budget.ts reserveFor), as the cases derive their lines. */
+ *  a run with typical answers at `typical` keeps back (wrap-up.ts reserveFor), as the cases derive their lines. */
 const LEAST_TOKENS = 1_024;
 const reserveAt = (hold, typical) => reserveFor({ leastUsd: (hold * LEAST_TOKENS) / OUTPUT, step0Usd: hold, worstUsd: hold }, () => typical);
 /** An origin billed as a provider bills: each answer at `billed`, never more than the output its request was limited to
@@ -115,7 +115,7 @@ async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model,
     adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch, price: price ?? (() => billed), extensions: [delegate] }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
-    runCap: { capUsd: () => capUsd, modelOf: () => model ?? priced(hold), judged: (request, answer) => void judged.push(answer) },
+    runCap: { capUsd: () => (typeof capUsd === "function" ? capUsd() : capUsd), modelOf: () => model ?? priced(hold), judged: (request, answer) => void judged.push(answer) },
     hooks: quiet,
     gate: () => "allow",
   }), { restartLimit: MAX_RESTARTS });
@@ -175,7 +175,31 @@ test("the rule: a capped run wraps up once its spend and holds leave too little 
   assert.equal(wrappingUp(undefined, 1e6, reserve), false, "no cap");
   assert.equal(wrappingUp(1, null, reserve), false, "a spend no one knows: the cap refuses the next request for that");
   assert.equal(wrappingUp(1, 0.99, undefined), false, "no reserve yet: the cap stays the last line");
-  assert.notEqual(WRAP_UP_TEXT, TOOL_BUDGET_TEXT);
+});
+
+test("a cap below what the model needs for one more step and an answer is named in the wrap-up's words, by the same rule: Codex on GPT-6.1 Sol at medium under $0.25", async () => {
+  const { requestFigures } = await import("@parcha/agentrun-kernel/kernel/cap");
+  // Sol's list price ($2 in, $2.50 a cache write, $10 out, a million tokens), its first request some 12,200 tokens (the
+  // Codex CLI's prompt and tools, as a follow-up drafter's run wrote its cache), medium effort: 1,024 answer tokens and
+  // 8,192 of reasoning at least. Its whole input at the cache-write rate (the cap's worst for input): its least is $0.1227,
+  // its step-0 step (a 4,096-token answer) $0.0715, so a step in flight and what the run keeps back to answer come to
+  // $0.3168.
+  const SOL = { id: "gpt-6.1-sol", api: "openai-responses", price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 128_000, reasoning: true };
+  const figures = requestFigures({ kind: "model", id: "p", model: SOL, inputTokens: 12_200, outputAsked: 32_000, outputTokensLeast: 9_216 });
+  const step0 = (step0Usd) => step0Usd;
+  const need = stepAndAnswerFor(figures, step0);
+  assert.ok(Math.abs(need - (figures.leastUsd + figures.step0Usd + figures.leastUsd)) < 1e-12, `its least, a step-0 step and a least answer: ${need}`);
+  assert.ok(Math.abs(need - 0.31678) < 1e-9, `$${need}`);
+  // Under $0.25 a run wraps up at its first call with nothing spent but that step in flight at its least.
+  assert.equal(wrappingUp(0.25, figures.leastUsd, reserveFor(figures, step0)), true);
+  assert.equal(wrapUpText(0.25, SOL.id, need), `${WRAP_UP_TEXT} This run's cap of $0.25 is below what gpt-6.1-sol needs for one more step and an answer, about $0.32.`);
+  // The effort its request named, the one its least was read at, is named beside the model.
+  assert.equal(wrapUpText(0.25, SOL.id, need, "medium"), `${WRAP_UP_TEXT} This run's cap of $0.25 is below what gpt-6.1-sol at medium effort needs for one more step and an answer, about $0.32.`);
+  assert.equal(wrapUpText(1, SOL.id, need, "medium"), WRAP_UP_TEXT);
+  // A cap that holds a step and an answer wraps up only once its spend says so, in WRAP_UP_TEXT alone; with no figure, the same.
+  assert.equal(wrapUpText(1, SOL.id, need), WRAP_UP_TEXT);
+  assert.equal(wrapUpText(need, SOL.id, need), WRAP_UP_TEXT, "a cap at the need is not below it");
+  assert.equal(wrapUpText(0.25, SOL.id, undefined), WRAP_UP_TEXT);
 });
 
 test("children whose reservations push the run near its cap wrap up: every conversation that started answers, the root answers, no request is refused for the cap, and nothing is billed past it", async (t) => {
@@ -265,6 +289,28 @@ test("a $1 run on Sonnet asking 64,000 output tokens a request still calls its t
   assert.ok(judged[0] && judged[0].holdUsd > 0.4, `its requests are held at their large worst case: ${JSON.stringify(judged[0])}`);
   assert.equal(ran.read, 10, "every read ran");
   assert.equal(resultsIn(requests).filter((result) => result.text === WRAP_UP_TEXT).length, 0, "no call refused");
+});
+
+test("a call a running script makes is never refused by the wrap-up (the tool in flight is not cut short); the model's next call is", async (t) => {
+  // Held at $0.004 a request ($0.001 at its least). The first answer (the script) is billed $0.002 under no cap yet; the
+  // script's first call lowers the cap to $0.0045, so the run wraps up ($0.002 spent + $0.002 typical + $0.001 least) while
+  // its second call is asked. That call runs; the model's own read next is refused in the wrap-up's words.
+  const HOLD = 0.004;
+  let capNow = 1_000;
+  const { tools, ran } = suiteTools();
+  let lowered = 0;
+  const lower = { name: "lower", replaySafe: true, run: async () => ((capNow = 0.0045), (lowered += 1), "lowered") };
+  const requests = [];
+  const origin = scriptedOrigin([{ call: "codemode", args: { script: "await tools.lower({}); await tools.read({}); return 'both ran';" } }, { call: "read" }, { say: "answered" }], requests);
+  const [first, rest] = [billedAt(origin, 0.002, HOLD), billedAt(origin, 0.001, HOLD)];
+  const fetch = (url, init) => ((JSON.parse(String(init.body)).messages ?? []).some((message) => message.role === "assistant") ? rest : first)(url, init);
+  await wrapRun(t, { capUsd: () => capNow, hold: HOLD, fetch, tools: { ...tools, lower }, price: (_model, usage) => (usage.output * HOLD) / OUTPUT });
+  assert.equal(lowered, 1);
+  assert.equal(ran.read, 1, "the script's read ran under the wrap-up; the model's own did not");
+  const results = resultsIn(requests);
+  assert.equal(results[0]?.isError, false, JSON.stringify(results));
+  assert.match(results[0].text, /both ran/);
+  assert.deepEqual(results[1], { text: WRAP_UP_TEXT, isError: true }, JSON.stringify(results));
 });
 
 test("a run with no cap is unchanged: every child runs its whole script and every spawn is made", async (t) => {

@@ -21,13 +21,19 @@
 //     decision node: the check refuses it before any node runs.
 // Each model request is a request on the run's one route, so what the workflow spends is the run's cost, under its cap:
 // the session's model proxy, under a side key (port-models.ts): the harness's
-// own policy, provider, key and price, booked on the session's records labelled `learned_workflow`. A call a crash cut
-// off is never run again (`replay: "never"`): it is answered interrupted.
+// own policy, provider, key and price, booked on the session's records labelled `learned_workflow`.
+// On the runner the tool `nests` (HostTool.nests): each MCP node is a call of its own nested in the workflow's, asked at
+// the gate as its tool, so one approval card for the call names every MCP action set to ask that it can make, with its
+// arguments' shape (learnedAskShown), and the approval passes exactly those. A call a park or a crash cut off runs again
+// from its start: each node answers what it answered the first time (NestedCalls.memo), each recorded MCP call from its
+// record, never sent twice.
+import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
-import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
+import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode, type LoopRow } from "./learned-nodes.js";
+import { guardJevOn, guardLine, rowOf, stepGuard } from "./runner/step-guard.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
 import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
@@ -45,37 +51,54 @@ import type { Complete } from "./llm.js";
 import type { SearchOn } from "./web-search.js";
 import type { Workspace } from "./workspace/workspace.js";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
-import type { Refusal } from "@parcha/agentrun-kernel";
+import type { JsonValue, NestedCalls, Refusal } from "@parcha/agentrun-kernel";
 import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
-import { hostCalls } from "./host-calls.js";
 import { workflowNodes } from "./model.js";
+import { type ReplayCalls, SKIPPED_WRITE, toolWord, unmarkedWords } from "./learn/replay-calls.js";
+import { SOFT_ESCALATE_THRESHOLD } from "./learn/promote.js";
 
-/** What a learned_workflow call's approval card says of its MCP calls' arguments: the workflow decides them as it runs. */
-export const LEARNED_MCP_ARGUMENTS = "decided by the workflow while it runs, from its input and its earlier steps";
+/** What a learned_workflow call's approval card says of its MCP actions' arguments: a `{name}` in one is filled in as
+ *  the workflow runs. */
+export const LEARNED_MCP_ARGUMENTS = "each {name} is filled in while the workflow runs, from its input or an earlier step";
 
-/** What a learned_workflow call's card shows of the MCP tools set to ask that the workflow can call: that their arguments
- *  are the workflow's to decide, then every one of them by name. The card leads with these (the call's own input after
- *  them), so they are never cut behind a long input. */
-export const learnedAskShown = (asks: readonly string[]): Record<string, unknown> => ({ mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: [...asks] });
+/** An MCP action of a learned workflow: a call node's tool (`mcp:<server>/<tool>`) and its arguments as the workflow
+ *  writes them (their shape: values, and the `{name}`s filled in as it runs). */
+export type LearnedAction = { readonly tool: string; readonly args: unknown };
 
-/** The most bytes of the card those fields may take: the card's preview is cut at ARGS_PREVIEW_BYTES (2 KB), and its
- *  braces and the call's name follow them. A workflow whose ask-gated MCP tools would not all show is refused, never
- *  approved by a person who could not see what they approved. */
-export const LEARNED_ASK_CARD_BYTES = ARGS_PREVIEW_BYTES - 128;
+/** The most bytes of the card its MCP fields may take: the card's preview is cut at ARGS_PREVIEW_BYTES (2 KB), and its
+ *  braces and the call's name follow them. */
+const LEARNED_ASK_CARD_BYTES = ARGS_PREVIEW_BYTES - 128;
 
-/** Whether every MCP tool set to ask that the workflow can call fits on its card (learnedAskShown, LEARNED_ASK_CARD_BYTES). */
-export const learnedAskFits = (asks: readonly string[]): boolean => Buffer.byteLength(JSON.stringify(learnedAskShown(asks)), "utf8") <= LEARNED_ASK_CARD_BYTES;
+/** What a learned_workflow call's card shows of the MCP actions set to ask that the workflow can call: how their
+ *  arguments are filled in, then each action with its arguments' shape, as many as the card's preview shows whole
+ *  (LEARNED_ASK_CARD_BYTES). The card leads with these (the call's own input after them), so they are never cut behind a
+ *  long input. An action past the bound is not named, so its call asks on its own as it runs, never approved unseen; and
+ *  since an approval passes by tool (learnedApprovedTools), a tool with any action past the bound is not named at all. */
+export function learnedAskShown(asks: readonly LearnedAction[]): Record<string, unknown> {
+  const shown: LearnedAction[] = [];
+  for (const action of asks) {
+    if (Buffer.byteLength(JSON.stringify({ mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: [...shown, action] }), "utf8") > LEARNED_ASK_CARD_BYTES) break;
+    shown.push(action);
+  }
+  const cut = new Set(asks.slice(shown.length).map((action) => action.tool));
+  return { mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: shown.filter((action) => !cut.has(action.tool)) };
+}
 
-/** The MCP tools a person's approval of a learned_workflow call covers: exactly those its card named (learnedAskShown's
- *  `mcp_calls`, read from the card they approved, host-calls.ts HostCalls.approved). None when no person approved it,
- *  or the card named none. A tool set to ask that the card did not name (one set to ask after the card was shown) is
- *  never run under that approval. */
-export const learnedApprovedTools = (card: Readonly<Record<string, unknown>> | undefined): ReadonlySet<string> =>
-  new Set(Array.isArray(card?.mcp_calls) ? card.mcp_calls.filter((name): name is string => typeof name === "string") : []);
+/** The fields of a learned_workflow call's card that only the gate writes (learnedAskShown): one of the same name in the
+ *  call's input, which the model wrote, is never shown on its card. */
+export const LEARNED_CARD_FIELDS: ReadonlySet<string> = new Set(["mcp_arguments", "mcp_calls"]);
 
-/** The MCP tools a learned workflow's call nodes name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`), each once; none for
- *  one that does not read. The run's gate asks about them before the workflow's call runs (adapter-run-spec.ts). */
-export async function learnedMcpTools(workflow: string): Promise<string[]> {
+/** The MCP tools an approval card names (learnedAskShown's `mcp_calls`, read from the card a person approved): a call
+ *  nested in the approved one whose tool is among them passes its ask. None for a card that named none. */
+export const learnedApprovedTools = (card: unknown): ReadonlySet<string> => {
+  const named = card && typeof card === "object" ? (card as { mcp_calls?: unknown }).mcp_calls : undefined;
+  return new Set(Array.isArray(named) ? named.flatMap((one) => (one && typeof one === "object" && typeof one.tool === "string" ? [one.tool as string] : [])) : []);
+};
+
+/** The MCP actions a learned workflow's call nodes name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`), each with its
+ *  arguments as written, once per distinct pair; none for one that does not read. The run's gate asks about them before
+ *  the workflow's call runs (adapter-run-spec.ts). */
+export async function learnedMcpCalls(workflow: string): Promise<LearnedAction[]> {
   let doc: unknown;
   try {
     doc = JSON.parse(workflow);
@@ -84,7 +107,13 @@ export async function learnedMcpTools(workflow: string): Promise<string[]> {
   }
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
   try {
-    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => isMcpName(tool));
+    const seen = new Map<string, LearnedAction>();
+    for (const node of workflowNodes(doc, inspectWorkflow(doc as never))) {
+      if (node.node !== "call" || node.via !== "tool" || typeof node.tool !== "string" || !isMcpName(node.tool)) continue;
+      const action = { tool: node.tool, args: node.args ?? {} };
+      seen.set(JSON.stringify(action), action);
+    }
+    return [...seen.values()];
   } catch {
     return [];
   }
@@ -206,12 +235,19 @@ export type LearnedWorkflowRun = {
     readonly book: RunDecisions;
     readonly pause?: (refusal: Refusal) => Promise<void>;
   };
-  /** The run's MCP tools by catalog name (`mcp:<server>/<tool>`): those the claim's pin holds, which its revision grants.
-   *  A call node may name one of these; it runs through the run's own MCP, as the loop wrapped it (host-calls.ts). */
-  mcpTools?: readonly string[];
-  /** The gate's whole decision of an MCP node's call with its arguments, as the run's own call of the tool gets it
-   *  (RunGate.decide: deny, argument pins, ask, no approver). Required for an MCP node: one with none is never sent. */
-  decide?: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
+  /** The run's MCP tools: each catalog name (`mcp:<server>/<tool>`) the claim's pin holds, which its revision grants, to
+   *  the name the session's tools hold it by. A call node may name one of these; it runs as a call nested in the
+   *  workflow's (`nestedOf`). */
+  mcpTools?: ReadonlyMap<string, string>;
+  /** The session's tools as calls nested in the learned_workflow call of this id (NestedCalls, the harness's for a tool
+   *  that `nests`): an MCP node runs as one, asked at the gate as its own tool with the arguments the workflow resolved
+   *  (its deny, its argument pins, its ask: one the approved card named passes, any other parks for a person), recorded
+   *  and booked on the run's one ledger as its own call. None: an MCP node is never sent. */
+  nestedOf?: (callId: string) => NestedCalls | undefined;
+  /** A replay run's (runner/promotion.ts): its call nodes go through the replay's rules (learn/replay-calls.ts: a read
+   *  live through a cache seeded from the graded run's recorded calls, a write only ever answered from that recording),
+   *  and a write the recording does not have stops the workflow there, skipped. Absent: every call node runs live. */
+  replay?: ReplayCalls;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -278,21 +314,25 @@ async function sideStream(models: RunModels, model: unknown, context: object, op
 const HANDBACK_FIELDS = 20;
 const HANDBACK_VALUE = 2_000;
 
-/** The steps a learned workflow ran, as one line after its words: each node's label, kind and status. */
-const stepsLine = (nodes: readonly LearnedNode[]): string =>
-  nodes.length ? `\nIts steps: ${nodes.map(({ label, kind, status }) => `${label} (${kind}) ${status}`).join("; ")}.` : "";
+/** The steps a learned workflow ran, as one line after its words: each node's label, kind and status; then the guards of
+ *  those steps, and any check that handed back on a step past the trace's cap (`guards`: every check of the call). */
+const stepsLine = (nodes: readonly LearnedNode[], guards: readonly GuardRow[] = []): string => {
+  const shown = nodes.flatMap(({ guard }) => (guard ? [guard] : []));
+  const lines = [...shown, ...guards.filter((row) => row.escalated && !shown.includes(row))].map(guardLine);
+  return (nodes.length ? `\nIts steps: ${nodes.map(({ label, kind, status }) => `${label} (${kind}) ${status}`).join("; ")}.` : "") + (lines.length ? `\nIts guards: ${lines.join("; ")}.` : "");
+};
 
 /** What a learned workflow that escalated says to whoever takes the job on: the step that handed it back and its own
  *  words for why, the steps it ran, and what it had found (its state's top-level fields, each whole or named by its
  *  size). A guard that fails is a handback, never a failure of the run: the agent finishes the job from here. */
-export function handedBackText(name: string, escalation: { kind: string; stage: string; summary: string; label?: string }, state: Record<string, unknown>, nodes: readonly LearnedNode[]): string {
+export function handedBackText(name: string, escalation: { kind: string; stage: string; summary: string; label?: string }, state: Record<string, unknown>, nodes: readonly LearnedNode[], guards: readonly GuardRow[] = []): string {
   const at = escalation.label ? ` at its step "${escalation.label}"` : "";
   const why = escalation.summary?.trim() || escalation.kind;
   const fields = Object.entries(state ?? {}).filter(([key]) => !key.startsWith("$")).slice(0, HANDBACK_FIELDS).map(([key, value]) => {
     const text = typeof value === "string" ? value : JSON.stringify(value) ?? "null";
     return `- ${key}: ${text.length > HANDBACK_VALUE ? `(${text.length} characters)` : text}`;
   });
-  return [`The learned workflow ${name} handed the job back${at}: ${why}${stepsLine(nodes)}`, ...(fields.length ? ["What it had:", ...fields] : [])].join("\n");
+  return [`The learned workflow ${name} handed the job back${at}: ${why}${stepsLine(nodes, guards)}`, ...(fields.length ? ["What it had:", ...fields] : [])].join("\n");
 }
 
 /** The run's `learned_workflow` tool over `run.workflows`. */
@@ -301,7 +341,8 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   return defineTool({
     name: LEARNED_WORKFLOW_TOOL,
     description: learnedWorkflowDescription(run.workflows),
-    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": tool-list.ts `replay`).
+    // Registered by itself, never run again after a crash (pi-durable's "unsafe"). On the runner its HostTool nests
+    // (adapter-run-spec.ts learnedWorkflowHostTool), and runs again whole, each node answered as it was the first time.
     replay: "unsafe",
     parameters: {
       type: "object",
@@ -318,19 +359,31 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const flow = run.workflows.find((workflow) => workflow.name === name);
       if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
       const ledger = ledgerOf(api.callId);
-      // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row; a trace
-      // that can't be kept never fails the call. A call stopped part way keeps the nodes that ended before it stopped,
+      // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row, and every
+      // guard check it made (`guards`, uncapped: the run's metrics, B4's replay and refit read each); a trace that can't
+      // be kept never fails the call. A call stopped part way keeps the nodes and checks that ended before it stopped,
       // written outside the stopped call's context, and still ends as a stop.
       const trace: LearnedNode[] = [];
-      const keep = (signal: Context) => (trace.length ? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace } as never })), signal).catch(() => undefined) : undefined);
+      const guards: GuardRow[] = [];
+      // Every loop's exit (`loops`, uncapped too: a quote re-pick is a loop's second pass, which the run's metrics count).
+      const loops: LoopRow[] = [];
+      // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not; so
+      // does how the workflow ended (`ended`, LearnedEnded), the one thing a replay's outcome reads (workflow-first.ts
+      // pathMetrics): a replay run keeps its entry whatever ran, so a refusal before any node is read as one.
+      const keep = (signal: Context, ended?: LearnedEnded) => {
+        const skipped = run.replay?.skipped;
+        // A loop's exit counts too: a loop over an empty map ends no node, yet its row is the run's (metrics `loops`).
+        if (!trace.length && !guards.length && !loops.length && !skipped && !(run.replay && ended)) return undefined;
+        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(guards.length ? { guards } : {}), ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
+      };
       let said: Awaited<ReturnType<typeof runLearned>>;
       try {
-        said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace);
+        said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace, guards, run.nestedOf?.(api.callId), loops);
       } catch (error) {
         await keep(BACKGROUND_CONTEXT);
         throw error;
       }
-      await keep(context);
+      await keep(context, said.ended);
       return forModel(said.text, { isError: said.isError });
     },
   });
@@ -339,9 +392,14 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
 /** `flow` run on `input` for `run`: its output as its tool hands it back (learnedOutput), or why it did not run, and each of its nodes that ran (at most
  *  LEARNED_NODES_MAX), none for one refused before any node ran. Never throws, but on an abort. `ledger`: the tool call's,
  *  which each call node's paid requests are booked under, as a call of its own within it. `nodes`: where each node is
- *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. */
-export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[] }> {
-  const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes });
+ *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. `guards`: where every guard
+ *  check is added as it is made, never capped (a map's checks past the trace's cap too), the caller's to keep likewise.
+ *  `nested`: the session's tools as calls nested in this one, which its MCP nodes run as; and the values its first run
+ *  fixed (`memo`), so a rerun of the call (after a park, a crash) goes on from what its model, decision and call nodes
+ *  answered then, its MCP calls with the arguments they were asked and approved with, each recorded one answered from its
+ *  record, never sent twice. `loops`: where each loop's exit is added (LoopRow), as `guards` are. */
+export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], guards: GuardRow[] = [], nested?: NestedCalls, loops: LoopRow[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded }> {
+  const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes, ended: "failed" as const });
   if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
   const dsl = await import("@parcha/agentrun-dsl");
   // Checked again at the call, against the agent's own tools as its run has them, before any node runs: what merged under
@@ -350,22 +408,48 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // A run handed no gate (a caller past the types) runs nothing: a tool is never allowed for want of a policy.
   if (typeof run.policy !== "function" || typeof run.denyFrom !== "function") return refuse("its run gave no tool policy for its call nodes");
   const { tools, gated, deniedBy } = learnedDraftTools(run.granted, run.policy, run.plane, run.denyFrom);
-  // The run's MCP tools, held to the same gate: one set to allow may be named, and one set to ask only when a person
-  // approved this call with a card that named it (its ask is the call's own: adapter-run-spec.ts adapterRunGate); one set
-  // to deny is refused in its words. One the run's pin does not hold is no tool of the run at all.
-  const approved = learnedApprovedTools(hostCalls()?.approved);
-  for (const name of run.mcpTools ?? []) {
+  // The run's MCP tools, held to the same gate: one set to deny is refused in its words before any node runs; one set to
+  // allow or ask may be named, each call of it asked at the gate as it runs (a call nested in this one): one set to ask
+  // that the call's approved card named passes, any other waits for a person. One the run's pin does not hold is no tool
+  // of the run at all.
+  for (const name of run.mcpTools?.keys() ?? []) {
     const setting = run.policy(name);
-    if (setting === "allow" || (setting === "ask" && approved.has(name))) tools.push(name);
+    if (setting === "allow" || setting === "ask") tools.push(name);
     else {
       gated[name] = setting;
       if (setting === "deny") deniedBy[name] = run.denyFrom(name) as DenyFrom;
     }
   }
-  const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, decisionsOf(run, dsl, flow.workflow));
+  const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy, decisionsOf(run, dsl, flow.workflow));
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
-  const runJudge = run.decisions ? await learnedJudge(run, run.decisions) : undefined;
+  // What a node answered the first time this call ran it, in every rerun of the call (`nested.memo`, by `key`): a rerun
+  // after a park or a crash goes on from the same answers, so its MCP calls are asked with the arguments a person saw,
+  // and never does a node's work again: `work` is called only while no answer is recorded, so a model's request or a paid
+  // decision is made and booked once. A throw of `work` (a cap's refusal, a stop) records nothing: the next run calls it
+  // again. Kept boxed, so an answer of undefined is recorded too. Run with no nested calls (main's process, a test's
+  // registration), a node's answer is its own.
+  // A node the DSL runs again at the same place (each check of a poll, each attempt of a retry) gets a key of its own for
+  // each answer recorded there: the key itself, then `-1`, `-2`. The count moves only once an answer is recorded
+  // (`answered`), so an attempt that recorded nothing (a throw of `fixed`'s work) leaves its key to the next attempt, and
+  // a rerun, reading the same answers in the same order, reaches the same keys. Only one node runs at one place, so no
+  // other node's runs move the count.
+  const seen = new Map<string, number>();
+  const at = (key: string): string => (seen.get(key) ? `${key}-${seen.get(key)}` : key);
+  const answered = (key: string): void => void seen.set(key, (seen.get(key) ?? 0) + 1);
+  const fixed = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
+    if (!nested) return work();
+    const box = (await nested.memo(at(key), async () => JSON.parse(JSON.stringify({ value: await work() })) as JsonValue)) as { value?: T };
+    answered(key);
+    return box.value as T;
+  };
+  const judged = run.decisions ? await learnedJudge(run, run.decisions) : undefined;
+  const runJudge = judged && nested
+    ? (async (params: Parameters<typeof judged>[0]) => {
+        const at = params as { label?: string; executionPath?: string; item?: { index: number }; decisionId?: string };
+        return fixed(`judge:${at.decisionId ?? nestedKey(String(at.label ?? ""), at.executionPath, at.item)}`, () => judged(params));
+      }) as typeof judged
+    : judged;
   // The host runner loads @earendil-works/pi-coding-agent and pi-agent-core, serve's own dependencies (package.json).
   const { createPiHostRunner } = await import("./workflow/host-session.js");
   const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
@@ -391,31 +475,26 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
     if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
-    return (await runnerFor(request.tier as string | undefined))(request);
+    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(request));
   };
-  const runEffect = async ({ node, input: given, signal: own, executionPath, item }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } }) => {
+  type EffectRequest = { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } };
+  const liveEffect = async ({ node, input: given, signal: own, executionPath, item }: EffectRequest) => {
     const tool = node.via === "tool" ? node.tool : undefined;
     // Its call id under the workflow's call: the node, its execution path, its item in a map. Its paid requests are booked
     // under it, as a call of its own.
     const callId = `${ledger?.call ?? LEARNED_WORKFLOW_TOOL}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`;
     if (tool && isMcpName(tool)) {
-      // An MCP tool of the run, through the run's own MCP as the loop wrapped it (its flush, its booking on the run's one
-      // ledger, a CLI's record, the stop's abort), after the gate's rule read again now, as the harness's own call is.
-      const send = (run.mcpTools ?? []).includes(tool) && run.decide ? hostCalls()?.mcp(tool) : undefined;
-      if (!send || !run.decide) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
-      // The gate's whole decision of this call with the arguments the workflow resolved, as the harness's own call of the
-      // tool gets it: its deny, its argument pins (a messaging tool held to one channel), its ask, or no one to approve.
-      // The call's approval lifts only an ask, never a pin or a deny, and only for a tool its card named: one set to ask
-      // since the card was shown was never approved.
-      await run.refresh?.();
-      const verdict = await run.decide(tool, given);
-      if (typeof verdict === "object") throw new Error(verdict.deny);
-      const card = hostCalls()?.approved;
-      if (verdict === "ask" && !learnedApprovedTools(card).has(tool)) {
-        throw new Error(card ? `This ${tool} call needs a person's approval, and the approval given for this learned workflow did not cover it: its card did not name ${tool}. It was not run.` : `This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
-      }
-      const answer = await send(given, { callId, signal: own });
-      if (answer.isError) throw new Error(answer.text);
+      // An MCP tool of the run, as a call nested in this one (`nested`): asked at the gate as its own tool with the
+      // arguments the workflow resolved (its deny, its argument pins, its ask: one the approved card named passes, any
+      // other parks the run for a person), then recorded, flushed and booked on the run's one ledger as its own call. On
+      // the node's own signal too, so a sibling's failure or the node's deadline cuts it at the server.
+      const name = run.mcpTools?.get(tool);
+      if (!name || !nested) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
+      // Every answer of a nested call is recorded, an error's too, so each moves the count.
+      const key = nestedKey(node.label, executionPath, item);
+      const answer = await nested.call(name, given, at(key), own);
+      answered(key);
+      if (answer.refused || answer.isError || answer.interrupted) throw new Error(answer.text);
       return mcpValue(answer.text);
     }
     const effect = tool && allows(CALL_TOOLS, tool) && tools.includes(tool) ? toolOf(tool)?.effect : undefined;
@@ -431,24 +510,82 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const booked = ledger ? { ledger: { ...ledger, call: callId } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
+  // A replay run's call nodes through the replay's rules (learn/replay-calls.ts); a live one runs as above, gate and all.
+  const replay = run.replay;
+  // An MCP node's answer is its nested call's record; any other call node's is fixed as a model node's is.
+  const runEffect = async (request: EffectRequest) => {
+    const tool = request.node.via === "tool" ? request.node.tool : undefined;
+    const work = () => (replay && tool ? replay.call({ label: request.node.label, tool }, request.input, () => liveEffect(request)) : liveEffect(request));
+    return tool && isMcpName(tool) ? work() : fixed(`effect:${nestedKey(request.node.label, request.executionPath, request.item)}`, work);
+  };
+  // A replay's write with no recording stops the whole workflow there: nothing after it runs.
+  const stopped = replay ? (signal ? AbortSignal.any([signal, replay.stop]) : replay.stop) : signal;
+  const skippedWords = () => {
+    const skipped = replay?.skipped;
+    const why = skipped?.unmarked ? `${unmarkedWords([toolWord(skipped.tool)])}; the graded run's recording has no call of it with these arguments` : `a write, and the graded run's recording has no call of it with these arguments, so it ${SKIPPED_WRITE}`;
+    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, ${why}. Nothing was sent.${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" as const } : undefined;
+  };
+  // Its step guards (runner/step-guard.ts): a guard's Jev is a decision of the call, on the run's decisions (its judge,
+  // its gate, its one cap); a run with no Jev provider has no Jev signal, so a guard that reads one hands back.
+  const jevProvider = run.decisions?.providers.providers.jev;
+  const guardStep = stepGuard(runJudge && jevProvider ? guardJevOn(runJudge, jevProvider) : undefined);
+  // Each guard's check by its step's execution path, as the DSL decided it: kept in `guards` at once (what the run's
+  // metrics read), and its node.end (the same path) puts it on the step's trace, where the timeline and a hand-back say it.
+  const guarded = new Map<string, GuardRow>();
+  // A replay records each escalate that reads a judge's field instead of obeying it (the DSL's softEscalates): a judge's
+  // field is one model's opinion of a draft the workflow already wrote, so the workflow goes on to its answer, and the
+  // escalate's row says whether it fired, for the replay's score at the serving setting (it hands back when it fired) and
+  // the refit (it may be switched off). Every other escalate (on a call's result, a route's, the input) stops a replay as
+  // it stops serving. Serving obeys every escalate.
+  const soft = replay ? dsl.softEscalates(doc) : undefined;
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
+    if (event.type === "loop.exited") {
+      const detail = (event.detail ?? {}) as { reason?: unknown; iterations?: unknown };
+      if (typeof detail.iterations === "number") loops.push({ node: String(event.label), iterations: detail.iterations, met: detail.reason === "condition_met" });
+      return;
+    }
+    if (event.type === "escalate.evaluated") {
+      const detail = (event.detail ?? {}) as { fired?: unknown; soft?: unknown };
+      if (detail.soft === true) guards.push({ node: String(event.label), signal: "escalate", p: detail.fired === true ? 0 : 1, threshold: SOFT_ESCALATE_THRESHOLD, escalated: false });
+      return;
+    }
+    if (event.type === "guard.evaluated") {
+      const row = rowOf(String(event.label), event.detail);
+      if (row) {
+        guards.push(row);
+        guarded.set(event.executionPath ?? String(event.label), row);
+      }
+      return;
+    }
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
     const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
     const ran = typeof event.executionPath === "string" ? ranOn.get(event.executionPath) : undefined;
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
+    const guard = guarded.get(event.executionPath ?? String(event.label));
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran, ...(guard ? { guard } : {}) });
   };
   try {
     const judging = runJudge && run.decisions ? { runJudge, decisionProviders: run.decisions.providers } : {};
-    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...judging, ...(signal ? { signal } : {}) } as never);
-    if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes)), isError: true, nodes };
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...judging, ...(soft?.size ? { softEscalate: (label: string) => soft.has(label) } : {}), ...(stopped ? { signal: stopped } : {}) } as never);
+    const skipped = skippedWords();
+    if (skipped) return skipped;
+    if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes, guards)), isError: true, nodes, ended: "escalated" };
     if (result.status !== "complete") return refuse(`it ended ${(result as { status: string }).status}`);
-    return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
+    return { text: learnedText(learnedOutput(result.output)), isError: false, nodes, ended: "complete" };
   } catch (error) {
     if (signal?.aborted) throw error;
-    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes)}`, isError: true, nodes };
+    const skipped = skippedWords();
+    if (skipped) return skipped;
+    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" };
   }
 }
+
+/** A node's key among the calls and values of its learned_workflow call (NestedCalls: `<callId>/<key>`), the same in
+ *  every rerun of the call: its label, then a digest of its label, its execution path and its item in a map, which no
+ *  other node shares. Only letters, digits, `_` and `-`, so a `/` of its path never reads as another level of nesting
+ *  and its call id passes whole through a URL (an approval's). */
+const nestedKey = (label: string, executionPath: string | undefined, item: { index: number } | undefined): string =>
+  `${label.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40)}-${createHash("sha256").update(JSON.stringify([label, executionPath ?? "", item?.index ?? null])).digest("hex").slice(0, 16)}`;
 
 /** The draft check's decisions for `run` (learn/skills.ts DraftDecisions): its providers, and the gate's setting of each
  *  provider `text` asks (its bare id as the settings key) where it is not allow, with where a deny was set. A run handed

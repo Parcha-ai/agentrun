@@ -5,8 +5,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { test } from "node:test";
 import { modelPortFor } from "@parcha/agentrun-kernel";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
-import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
+import { responsesEscapedBytes, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { inputTokensMaxOf, memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { BODY_KEYS, openCodePolicy, usageOf } from "../dist/harness-opencode/host/policy.js";
 
 const policy = (extra = {}) => openCodePolicy({ model: "gpt-test", tools: ["read", "write"], ...extra });
@@ -49,6 +49,12 @@ test("usage is the completed response's, cached tokens booked apart; none is an 
   ].map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
   assert.deepEqual(usageOf(stream), { input: 600, output: 50, cacheRead: 400, cacheWrite: 0 });
   assert.equal(usageOf(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "hi" })}\n\n`), undefined);
+});
+
+test("a completed event the proxy's 64 KiB window cut is read from its kept end whatever its JSON spacing (a Python gateway's `\"usage\": {`)", () => {
+  const line = `data: {"type": "response.completed", "response": {"output": [{"type": "message", "content": [{"type": "output_text", "text": "${"x".repeat(100 * 1024)}"}]}], "usage": {"input_tokens": 1000, "output_tokens": 50, "input_tokens_details": {"cached_tokens": 400}}, "user": null}}`;
+  // What the proxy reads of a long answer: its start and its last 64 KiB, the line's start cut away.
+  assert.deepEqual(usageOf(`${line.slice(0, 64 * 1024)}\n${line.slice(-64 * 1024)}\n\ndata: [DONE]\n\n`), { input: 600, output: 50, cacheRead: 400, cacheWrite: 0 });
 });
 
 test("the watch reads each function call of an answer, its call id, name and arguments, before OpenCode has it", () => {
@@ -126,7 +132,12 @@ test("under a spend cap, the body sent is never longer than the one its input bo
   const answer = await send(p.url, RECORDED_HIGH);
   assert.equal(answer.status, 200, answer.text);
   const measured = asked[0].inputTokensMax;
-  assert.ok(typeof measured === "number" && Buffer.byteLength(sent[0], "utf8") <= measured, `${Buffer.byteLength(sent[0] ?? "", "utf8")} bytes sent, ${measured} measured`);
+  // The bound of the body as it went (its bytes less the escapes of the text it carries) is never above the bound it was
+  // admitted on: limiting its output never made it longer.
+  const went = JSON.parse(sent[0]);
+  const bound = inputTokensMaxOf(openCodePolicy({ model: RECORDED_HIGH.model, tools: toolsOf(RECORDED_HIGH) }), went, sent[0]);
+  assert.ok(typeof measured === "number" && bound <= measured, `${bound} sent, ${measured} measured`);
+  assert.ok(Buffer.byteLength(sent[0], "utf8") <= measured + responsesEscapedBytes(went), "nor its bytes");
 });
 
 test("the host is told what a request asks for and the least it may be limited to: 1,024 tokens for the answer, plus its reasoning effort's allowance", async (t) => {

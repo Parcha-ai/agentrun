@@ -110,8 +110,8 @@ export interface FauxComputers {
 export function fauxComputers(): FauxComputers {
   let started = 0;
 
-  /** A faux desktop for a run: screen.shot gives a grey screen, input.actions does each action and performs none, and its
-   *  watch gives the same grey frame, the next a second after each ack, and takes every input (performing none) until it
+  /** A faux desktop for a run: ping answers, as every computer's does; screen.shot gives a grey screen, input.actions does
+   *  each action and performs none, and its watch gives the same grey frame, the next a second after each ack, and takes every input (performing none) until it
    *  is closed or the desktop is released, which ends it gone. */
   function fauxDesktop(): FauxDesktop {
     const id = `faux-desktop-${++started}`;
@@ -120,6 +120,7 @@ export function fauxComputers(): FauxComputers {
     const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS], screen: { width: WIDTH, height: HEIGHT, scale: 1 } };
     const call = async (method: string, params: Record<string, unknown>) => {
       if (method === "hello") return { ok: true, value: hello };
+      if (method === "ping") return { ok: true, value: {} };
       if (method === "screen.shot") return { ok: true, value: { id: `${id}-shot`, data: png.toString("base64"), eof: true, size: png.length, width: WIDTH, height: HEIGHT } };
       if (method === "input.actions") return { ok: true, value: { done: Array.isArray(params.actions) ? params.actions.length : 0 } };
       return { ok: false, error: { code: "unsupported", message: `the faux desktop has no ${method}` } };

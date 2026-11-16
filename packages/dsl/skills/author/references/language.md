@@ -13,27 +13,27 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 - `output.schemaId` validates the final value; `output.path` selects it from state and must name an input key or a key an earlier node wrote.
 - State is one object. Each step writes its result under one key: its `as`, or, for an agent, decide, extract or code node without `as`, its label. A report writes `report_markdown`. A code node without `as` that returns an object merges that object's top-level fields instead.
 - Keys that hold a `$` are engine-owned: `$host` (host state), `<as>$answers` (raw judge answers and confidences) and `<as>$verify` (verifier results). Read them; never write one. No `as` may hold a `$`, and neither may the label of an agent, decide, extract or code node without `as`.
-- `{dot.path}` placeholders are replaced from state in `state` maps (including `verify.state` and `ask.state`), call `args`, `input`, `env` and `produces`, a child workflow's `input`, and `escalate.summary`; `pick` and `sift` `describe` templates also see `{item...}`. A placeholder that is the whole string keeps its value's type. Every key a state map, call or child input interpolates must be produced upstream. `instructions`, `code` and `command` are literal and never interpolated.
+- `{dot.path}` placeholders are replaced from state in `state` maps (including `verify.state` and `ask.state`), call `args`, `input`, `env` and `produces`, a child workflow's `input`, and `escalate.summary`; `pick` and `sift` `describe` templates also see `{item...}`. A placeholder that is the whole string keeps its value's type. Every key a state map, call or child input interpolates must be produced upstream, except through a whole-string placeholder marked optional, such as `"{draft?}"`: it is null while its path is absent (a loop's first pass, before the step that writes it ran), and the path's value once present. Only a whole string may be marked. `instructions`, `code` and `command` are literal and never interpolated.
 
 ## Node kinds
 
 This is the complete set. Each kind accepts exactly these fields; any other field is an error.
 - `chain`: `steps`
-- `code`: `label`, `code`, `as`
-- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `budget_usd`, `max_turns`, `context`
-- `decide`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
-- `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
+- `code`: `label`, `code`, `as`, `guard`
+- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `guard`, `budget_usd`, `max_turns`, `context`
+- `decide`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `guard`
+- `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `guard`
 - `report`: `label`, `state`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
 - `artifact`: `label`, `state`, `type`, `path`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
 - `map`: `label`, `itemsPath`, `body`, `as`, `resultPath`, `maxConcurrency`, `onItemFailure`, `failedAs`
 - `parallel`: `label`, `branches`
 - `loop`: `label`, `body`, `until`, `maxIters`, `expect_iters`
 - `escalate`: `label`, `when`, `kind`, `stage`, `summary`
-- `call`: `label`, `via`, `tool`, `args`, `code`, `input`, `command`, `env`, `where`, `out`, `as`, `produces`, `deadline_s`, `retry`, `poll`, `requires`
-- `workflow`: `label`, `workflow`, `input`, `out`, `as`
-- `judge`: `label`, `state`, `out`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
-- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
-- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
+- `call`: `label`, `via`, `tool`, `args`, `code`, `input`, `command`, `env`, `where`, `out`, `as`, `produces`, `deadline_s`, `retry`, `poll`, `requires`, `guard`
+- `workflow`: `label`, `workflow`, `input`, `out`, `as`, `guard`
+- `judge`: `label`, `state`, `out`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`, `guard`
+- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`, `guard`
+- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`, `guard`
 - `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `valuePath`, `otherwise`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
 
 Every kind also accepts `metadata`, an object the host owns and the engine never reads; set only the keys the host addendum names.
@@ -92,9 +92,18 @@ Typed questions answered by the host's judge in one request each: no tools, no s
   - `poll` {until, fail_when?, interval_s: >= 0.1 (a busy-loop guard), deadline_s: at least the call's deadline_s (no maximum)} repeats the call until `until` holds on its own result; `fail_when` fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape.
   - Validation and dry runs never perform effects: they synthesize the declared result, and a shell result's stdout is "{}".
 
+### Step guards
+
+A `guard` on a step (agent, decide, extract, code, call, workflow, judge, pick, sift) checks the step once it ran: below its threshold, the run hands the job back (it escalates, kind `guard`, at the step, with the state it reached), so an uncertain step never answers alone.
+- `guard` is {"signal": self|jev|both, "threshold": a number between 0 and 1 (exclusive), "question"?: text, "fit"?: {"w", "b", "n", "fitted_at"}}.
+- `self` reads the step's own confidence: agent, decide, judge, pick, sift nodes only. An agent or decide node with it submits a `confidence` field (0 to 1) beside its record, which lands at `<key>$confidence`, never in its value; its `out` is an object schema. A judge, pick or sift reads its weakest answer's confidence.
+- `jev` asks Jev one yes/no question over what the step saw and what it wrote: `question` (at most 2000 characters), or by default whether the output is right for the input. Every guarded kind may use it; it is the only signal for extract, code, call, workflow nodes.
+- `both` combines the two: through `fit` when it has one, else the lower of the two.
+- `fit` is the host's, written when it fits the threshold on graded runs: {"w": one weight per signal ([self, jev] for both), "b", "n": the runs it was fitted on, "fitted_at": an ISO time}. Never write or change one yourself. A raw confidence is not a calibrated probability: without a fit, set a threshold the host has measured, or leave the guard to the host.
+
 ## Predicates
 
-`loop.until` and `escalate.when` take one of these; `poll` takes only the first 10. Each path or key reads a state value an input or an earlier node produced.
+`loop.until` and `escalate.when` take one of these; `poll` takes only the first 11. Each path or key reads a state value an input or an earlier node produced.
 A predicate is one JSON object that names itself in its `predicate` field beside its own fields, for example `{"predicate": "field_true", "path": "review.approved"}`.
 - `field_equals` {path, value}: holds when the value at `path` equals `value` (a string, number or boolean)
 - `field_true` {path}: holds when the value at `path` is `true`
@@ -105,6 +114,7 @@ A predicate is one JSON object that names itself in its `predicate` field beside
 - `empty` {path}: holds when the value at `path` is an empty array, an empty string, null or absent
 - `no_new_items` {key}: takes `key`, not `path`; holds when that state key is an empty array or falsy
 - `field_type` {path, type}: holds when the value at `path` is of `type`, one of number, string, boolean, array, object, null; a number only when finite, and an absent value is of no type
+- `quote_missing` {path, field, pages}: the quote check, in code: holds when a quote at `path` (a string, or a list of them; with `field`, a list of records each holding its quote at `field`) is in none of the pages at `pages` (state paths holding what this run's call steps fetched; every string under each is page text). Both sides are compared lowercased, with curly quotes straight, dashes as "-" and whitespace runs as one space, then once more as their letters and digits alone; a quote under 8 characters is not checked. `{"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}` on an escalate hands back an answer quoting text no fetched page holds. Check quotes with it, never with a judge or an `ask`
 - `not` {of}: holds when `of`, one mechanical predicate (never `ask`), does not; `{"predicate": "not", "of": {"predicate": "field_type", "path": "score", "type": "number"}}` holds when score is absent or not a finite number
 - `ask` {instructions, state, criteria, gte, provider, model, evidence, timeoutMs, images}: a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)
 

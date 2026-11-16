@@ -336,7 +336,9 @@ test("one agent's disk removals are taken in turn, and each touches the stored r
   const counted = [];
   const first = archilRoute(routes, "deleteAgentArchil", { agent: { ...agentOf("agent-a", { archived: true }), liveOn: async (disk) => (counted.push(`first ${disk}`), await gate, 0) } });
   const second = archilRoute(routes, "deleteAgentArchil", { agent: { ...agentOf("agent-a", { archived: true }), liveOn: async (disk) => (counted.push(`second ${disk}`), 0) } });
-  await new Promise((done) => setTimeout(done, 20));
+  // The first counts once its store calls are done (slower on Postgres); then the second has time it would use if it did not wait.
+  for (const end = Date.now() + 5_000; counted.length === 0 && Date.now() < end; ) await new Promise((done) => setTimeout(done, 10));
+  await new Promise((done) => setTimeout(done, 100));
   assert.deepEqual(counted, [`first ${own.disk}`], "the second waits for the first");
   release();
   assert.deepEqual((await first).removed, { disk_id: own.disk });

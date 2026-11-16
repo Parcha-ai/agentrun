@@ -13,12 +13,14 @@ const REG = { name: "x", description: "x", parameters: {} };
 const PINNED = {
   read: [["allow", "ask", "deny"], ["allow", "allow"], "read", "safe"],
   bash: [["allow", "ask", "deny"], ["allow", "ask"], "bash", "never"],
-  ask_person: [["allow", "deny"], ["allow", "allow"], "ask_person", undefined],
+  ask_person: [["allow", "deny"], ["allow", "allow"], "ask_person", "safe"],
   browser: [["allow", "deny"], ["allow", "allow"], "browser", undefined],
   bash_background: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "never"],
   bash_output: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "safe"],
   learned_workflow: [["allow", "ask", "deny"], ["allow", "allow"], "learned_workflow", "never"],
-  "monid.run": [["allow", "ask", "deny"], ["ask", "ask"], "monid.run", "never"],
+  // A monid endpoint is no table tool: its host tool is made from its pin (runner/monid-run.ts, replay never), as an MCP
+  // server's tool is from its server.
+  "monid:faux/person/enrich": [["allow", "ask", "deny"], ["ask", "ask"], "monid:faux/person/enrich", undefined],
   "mcp:linear/create_issue": [["allow", "ask", "deny"], ["ask", "ask"], "mcp:linear/create_issue", undefined],
   frobnicate: [["allow", "deny"], ["ask", "ask"], undefined, undefined],
 };
@@ -33,9 +35,9 @@ test("each pinned name is permitted, defaulted, keyed and replayed as written", 
 });
 
 test("the table's names are these, in this order", () => {
-  assert.deepEqual(tableTools(), ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "subagent", "pdf_pages", "llm"]);
+  assert.deepEqual(tableTools(), ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "email_search", "email_read", "email_draft", "email_send", "email_file", "browser", "subagent", "pdf_pages", "llm"]);
   assert.equal(blurbOf("web_search"), "Search the web");
-  assert.equal(isHostTool("web_search") && isHostTool("monid.run") && !isHostTool("browser"), true);
+  assert.equal(isHostTool("web_search") && !isHostTool("monid:faux/person/enrich") && !isHostTool("browser"), true);
 });
 
 test("a name no table registers asks by default: the gate defaults to ask for anything but a built-in", () => {

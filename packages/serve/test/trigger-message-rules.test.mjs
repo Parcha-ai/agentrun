@@ -155,8 +155,8 @@ test("a run that comes to wait on a person between the firing's check and its do
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
-// What becomes of the row the door took while the run came to wait: it is not dropped. The runner refuses it while the run
-// waits (it answers no person), so it stays untaken; once the person answers and the run's turn ends, the store's end
+// What becomes of the row the door took while the run came to wait: it is not dropped. The runner leaves it untaken while
+// the run waits (it answers no person), whether it reaches the claim before the park or after it; once the person answers and the run's turn ends, the store's end
 // reopens the run with that leftover steer and it runs as a new turn. The firing's `sent` is therefore true: the message
 // is delivered after the wait, never lost, and never as the answer.
 test("a trigger's message held at the door while the run comes to wait on a question is delivered after the person answers, as a turn of its own: the firing's sent is true, and the answer was the person's", { timeout: 120_000 }, async (t) => {

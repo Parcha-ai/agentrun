@@ -119,7 +119,7 @@ test("a key named in the server's environment wins over its saved one, and goes 
   assert.deepEqual(plantsIn(spec), [], `no planted value in the computer's spec: ${JSON.stringify(spec)}`);
   assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" }, "its labels are the run's, and only those");
   assert.equal(spec.env, undefined, "no environment is handed to the computer");
-  assert.equal(spec.image, "desktop", "E2B's desktop template");
+  assert.equal(spec.image, PREPARED, "the box template E2B's prepareImage() answers");
   assert.ok(spec.lifetimeMs > 0, "a deadline");
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"]]);
@@ -272,21 +272,27 @@ test("the claim makes a computer's spec from what its provider declares: one tha
 });
 
 // Daytona's and E2B's own providers (the computer package's, built with a fake key; nothing is called): under the server's
-// default list, the spec the composer makes from their declared capabilities is one their own check() takes, where the
-// list it made before was refused as network open or an allow-list is ("a remote computer takes network none only").
-test("a Daytona or an E2B sandbox under the server's default box_allow asks for network none within its provider's lifetime, and its provider's check takes the spec", async () => {
+// default list, the spec the composer makes from their declared capabilities is the list, through the egress proxy their
+// init starts, and their own check() takes it. Orgo's, which declares none alone, still gets none, as Settings says.
+test("a Daytona or an E2B sandbox under the server's box_allow asks for that list within its provider's lifetime, and its provider's check takes the spec; none stays none", async () => {
   const spec = computerSpecOf({});
   for (const id of ["daytona", "e2b"]) {
     const provider = await providerFor(id, { apiKey: "fake-test-key" });
     const { network: networks, maxLifetimeMs } = provider.capabilities();
-    const asked = spec(entryOf(id), "sandbox", { boxAllow: [...DEFAULT_BOX_ALLOW], networks, maxLifetimeMs });
-    assert.equal(asked.network, "none", id);
+    // A provider that prepares its image (E2B) gets it from prepareImage() at the claim, as computer-for-claim does.
+    const named = spec(entryOf(id), "sandbox", { boxAllow: [...DEFAULT_BOX_ALLOW], networks, maxLifetimeMs });
+    const prepared = entryOf(id).prepareImage ? await provider.prepareImage() : undefined;
+    const asked = prepared?.ok ? { ...named, image: prepared.value } : named;
+    assert.deepEqual(asked.network, { allow: [...DEFAULT_BOX_ALLOW] }, id);
     assert.deepEqual(provider.check(asked), [], `${id}'s check takes the spec`);
-    const before = { ...asked, network: { allow: [...DEFAULT_BOX_ALLOW] } };
-    assert.deepEqual(provider.check(before).map((refusal) => refusal.field), ["network"], `${id} refuses the list`);
+    const operator = spec(entryOf(id), id === "e2b" ? "desktop" : "sandbox", { boxAllow: ["example.com"], boxAllowSet: true, networks, maxLifetimeMs });
+    assert.deepEqual(operator.network, { allow: ["example.com"] }, `${id}: the operator's list`);
     // An explicit none stays none; nothing is widened.
     assert.equal(spec(entryOf(id), "sandbox", { boxAllow: "none", networks, maxLifetimeMs }).network, "none");
   }
+  const orgo = PROVIDERS.find((one) => one.id === "orgo");
+  assert.deepEqual(orgo.network, ["none"]);
+  assert.equal(spec(entryOf("orgo"), "desktop", { boxAllow: ["example.com"], boxAllowSet: true, networks: orgo.network, maxLifetimeMs: 3_600_000 }).network, "none", "Orgo declares none alone: none");
 });
 
 // AGENTRUN_DAYTONA_SNAPSHOT names the snapshot of every Daytona computer (one of box/Dockerfile, which an Archil mount
@@ -301,8 +307,8 @@ test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no oth
   const asked = spec(entryOf("daytona"), "sandbox", { networks, maxLifetimeMs });
   assert.equal(asked.image, snapshot, "the snapshot the owner named, trimmed");
   assert.deepEqual(provider.check(asked), [], "Daytona's check takes it");
-  assert.equal(spec(entryOf("e2b"), "sandbox", {}).image, entryOf("e2b").defaultImage.sandbox, "E2B keeps its own default");
-  assert.equal(spec(entryOf("modal"), "sandbox", {}).image, entryOf("modal").defaultImage.sandbox, "Modal keeps its own default");
+  assert.equal("image" in spec(entryOf("e2b"), "sandbox", {}), false, "E2B names none: its prepareImage() answers the box template");
+  assert.equal("image" in spec(entryOf("modal"), "sandbox", {}), false, "Modal names none: its prepareImage() answers the box image");
   assert.equal(spec(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE, "Docker keeps its recipe");
   for (const env of [{}, { AGENTRUN_DAYTONA_SNAPSHOT: "" }, { AGENTRUN_DAYTONA_SNAPSHOT: "  " }]) {
     assert.equal(computerSpecOf(env)(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT, JSON.stringify(env));
@@ -327,6 +333,19 @@ test("a cloud phone under a list, the server's default or the operator's, or wit
     assert.deepEqual(provider.check(asked), [], `the phone's check takes the spec under box_allow ${JSON.stringify(boxAllow)}`);
   }
   assert.deepEqual(provider.check({ ...spec(entryOf("phone-harness"), "phone", { networks, maxLifetimeMs }), network: { allow: [...DEFAULT_BOX_ALLOW] } }).map((one) => one.field), ["network"], "the list the spec asked before is refused");
+});
+
+test("a vendor that prepares its image (Agent37, Modal, E2B) names none in the spec, and the owner's Docker image and Docker's recipe are Docker's alone", () => {
+  const owned = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "owner/box:1" });
+  for (const spec of [owned, computerSpecOf({})]) {
+    for (const id of ["agent37", "e2b"]) {
+      for (const kind of ["sandbox", "desktop"]) assert.equal("image" in spec(entryOf(id), kind, {}), false, `${id} ${kind}: its prepareImage() answers it`);
+    }
+    assert.equal("image" in spec(entryOf("modal"), "sandbox", {}), false, "modal sandbox: its prepareImage() answers it");
+  }
+  assert.deepEqual([owned(entryOf("docker"), "sandbox", {}).image, owned(entryOf("docker"), "desktop", {}).image], ["owner/box:1", "owner/box:1"]);
+  assert.equal(computerSpecOf({})(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE);
+  assert.throws(() => computerSpecOf({})(entryOf("docker"), "desktop", {}), /A Docker desktop needs an image with an X server; set one for desktops\./);
 });
 
 test("the spec starts from the image the setting's configuration names, else the kind's default; one named skips a kind with no default", () => {
@@ -357,6 +376,30 @@ test("a cloud phone is refused in words at the claim where the run's box_allow i
   assert.deepEqual(record.created, [], "nothing is made");
 });
 
+// A desktop's browser is a browser: under the default list (a sandbox's package-install list, no browsing policy) a
+// desktop whose provider makes "open" is open, public internet only through its egress proxy; the operator's or the
+// launch's list is its allowlist; none is none; a sandbox keeps the list. Orgo, which makes none alone, stays none.
+test("a desktop under the default list is open, under the operator's list that list, under none none; a sandbox keeps the default list", () => {
+  const image = "example.org/desktop@sha256:" + "a".repeat(64);
+  const desktops = PROVIDERS.filter((one) => one.kinds.includes("desktop") && one.network?.includes("open"));
+  assert.deepEqual(desktops.map((one) => one.id).filter((id) => ["docker", "agent37", "e2b"].includes(id)).sort(), ["agent37", "docker", "e2b"], "Docker's, Agent37's and E2B's desktops make open");
+  for (const entry of desktops) {
+    const spec = (env, run) => computerSpecOf({ AGENTRUN_DOCKER_IMAGE: image, ...env })(entry, "desktop", { networks: entry.network, maxLifetimeMs: 3_600_000, ...run });
+    assert.equal(spec({}, { boxAllow: [...DEFAULT_BOX_ALLOW] }).network, "open", `${entry.id}: the launch's default list`);
+    assert.equal(spec({}, {}).network, "open", `${entry.id}: no box_allow, this server's default list`);
+    assert.deepEqual(spec({}, { boxAllow: ["example.com"], boxAllowSet: true }).network, { allow: ["example.com"] }, `${entry.id}: the launch's operator list`);
+    assert.deepEqual(spec({ AGENTRUN_BOX_ALLOW: "example.com" }, {}).network, { allow: ["example.com"] }, `${entry.id}: this server's operator list`);
+    assert.equal(spec({}, { boxAllow: "none", boxAllowSet: true }).network, "none", `${entry.id}: the launch's none`);
+    assert.equal(spec({ AGENTRUN_BOX_ALLOW: "none" }, {}).network, "none", `${entry.id}: this server's none`);
+  }
+  const docker = entryOf("docker");
+  const sandbox = (run) => computerSpecOf({})(docker, "sandbox", { networks: docker.network, ...run }).network;
+  assert.deepEqual(sandbox({ boxAllow: [...DEFAULT_BOX_ALLOW] }), { allow: [...DEFAULT_BOX_ALLOW] }, "a sandbox under the default list: the list");
+  assert.equal(sandbox({}), "none", "a sandbox with no box_allow: none, as before");
+  const orgo = entryOf("orgo");
+  assert.equal(computerSpecOf({})(orgo, "desktop", { boxAllow: [...DEFAULT_BOX_ALLOW], networks: orgo.network, maxLifetimeMs: 3_600_000 }).network, "none", "Orgo makes none alone: none");
+});
+
 // Local Chrome makes "open" and "allow" behind its own egress proxy: an operator's list holds it to those hosts, the
 // default list (a sandbox's package-install list, no browsing policy) leaves it open, and none refuses it.
 test("Local Chrome at the claim: an operator's list is its allowlist, the default list leaves it open, none refuses it", async () => {
@@ -381,14 +424,16 @@ test("Local Chrome at the claim: an operator's list is its allowlist, the defaul
 
 // The computer's spec by kind (computerSpecOf): box_allow is the computer's egress list, so a sandbox with none (or
 // "none") has no network; a browser, a desktop or a phone whose launch names none reaches what this server allows now
-// (AGENTRUN_BOX_ALLOW, the default list when unset), never "open" for it; an explicit list applies to any kind. Each provider's image for a
+// (AGENTRUN_BOX_ALLOW, the default list when unset); an explicit list applies to any kind. These specs carry no
+// provider networks (run.networks): a desktop whose provider makes "open" is "open" under the default list, in the
+// desktop-rule test above. Each provider's image for a
 // kind is its registry entry's (the computer package's PROVIDERS[].defaultImage); Docker's sandbox is the package's
 // recipe, and a Docker desktop has none, so with no image the owner named it is refused in words, never made from the
 // sandbox recipe, which has no X server. Any other kind with no default image is refused, naming the provider.
 const entryOf = (id) => PROVIDERS.find((one) => one.id === id);
 const DOCKER_DESKTOP_WORDS = "A Docker desktop needs an image with an X server; set one for desktops.";
 
-test("box_allow is the computer's egress list: a sandbox with none has no network, any other kind with none reaches the server's own list, never open, and an explicit list applies to a Docker desktop", () => {
+test("box_allow is the computer's egress list: a sandbox with none has no network, any other kind with none reaches the server's own list when its provider's networks are not known, and an explicit list applies to a Docker desktop", () => {
   const named = "example.org/desktop@sha256:" + "a".repeat(64);
   const spec = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named });
   assert.equal(spec(entryOf("docker"), "sandbox", {}).network, "none", "a sandbox with no box_allow");
@@ -398,8 +443,10 @@ test("box_allow is the computer's egress list: a sandbox with none has no networ
   assert.deepEqual(spec(entryOf("docker"), "sandbox", { boxAllow: ["api.example.com"] }).network, { allow: ["api.example.com"] }, "a sandbox's allow-list");
   assert.equal(spec(entryOf("docker"), "sandbox", { boxAllow: "none" }).network, "none");
   // A launch that names no box_allow (a row from before every launch carried one): this server's own setting now, the
-  // default list when AGENTRUN_BOX_ALLOW is unset, the operator's list or none when set; never "open" for it.
-  assert.deepEqual(spec(entryOf("docker"), "desktop", {}).network, { allow: [...DEFAULT_BOX_ALLOW] }, "a Docker desktop with no box_allow: the server's default list");
+  // default list when AGENTRUN_BOX_ALLOW is unset, the operator's list or none when set. With its provider's networks
+  // given, a Docker desktop under the default list is "open" (the desktop-rule test above).
+  assert.deepEqual(spec(entryOf("docker"), "desktop", {}).network, { allow: [...DEFAULT_BOX_ALLOW] }, "a Docker desktop with no box_allow and no provider networks: the server's default list");
+  assert.equal(spec(entryOf("docker"), "desktop", { networks: ["none", "open", "allow"] }).network, "open", "with Docker's networks: open, through its egress proxy");
   // A Docker desktop needs an image the owner named (the recipe has no X server): the same named image here.
   assert.deepEqual(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named, AGENTRUN_BOX_ALLOW: "pypi.org" })(entryOf("docker"), "desktop", {}).network, { allow: ["pypi.org"] }, "the operator's list");
   assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: named, AGENTRUN_BOX_ALLOW: "none" })(entryOf("docker"), "desktop", {}).network, "none", "the operator's none");
@@ -414,13 +461,13 @@ test("each provider's default image comes from the computer package's registry (
   assert.equal(spec({ ...entryOf("daytona"), defaultImage: { sandbox: "registry-only/snapshot-7f3a" } }, "sandbox", {}).image, "registry-only/snapshot-7f3a");
   // Every default the package's registry declares is the image of that provider's computer of that kind.
   const declared = PROVIDERS.flatMap((entry) => Object.entries(entry.defaultImage ?? {}).map(([kind, image]) => [entry.id, kind, image]));
-  assert.ok(declared.length >= 8, `the registry declares the vendors' defaults: ${JSON.stringify(declared)}`);
+  assert.ok(declared.length >= 6, `the registry declares the vendors' defaults: ${JSON.stringify(declared)}`);
   for (const [id, kind, image] of declared) assert.equal(spec(entryOf(id), kind, {}).image, image, `${id} ${kind}`);
   assert.equal(spec(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT);
   assert.equal(entryOf("docker").defaultImage?.desktop, undefined, "the sandbox recipe has no X server: no desktop image of Docker's own");
   assert.throws(() => spec(entryOf("docker"), "desktop", {}), { message: DOCKER_DESKTOP_WORDS });
   // Any other kind with no default image: refused, naming the provider.
-  assert.throws(() => spec({ ...entryOf("e2b"), defaultImage: { desktop: "desktop" } }, "sandbox", {}), { code: "computer_unavailable", message: /^E2B has no image for a sandbox computer here/ });
+  assert.throws(() => spec({ ...entryOf("e2b"), prepareImage: undefined, defaultImage: { desktop: "desktop" } }, "sandbox", {}), { code: "computer_unavailable", message: /^E2B has no image for a sandbox computer here/ });
   assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/x@sha256:" + "b".repeat(64) })(entryOf("docker"), "desktop", {}).image, "example.org/x@sha256:" + "b".repeat(64), "the image the owner named");
   // Through the claim: refused before anything is made, computer_unavailable in those words.
   const root = scratch();
@@ -453,6 +500,20 @@ test("the local browser's provider is built with the server's Chrome lookup (CHR
   await factories["local-chrome"]({});
   assert.deepEqual(built.map(([id]) => id), ["local-chrome", "local-chrome"], "the claim's and Settings → Computers' alike");
   for (const [, options] of built) assert.deepEqual(options.env, { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin" });
+});
+
+test("every remote provider is built with the server's dial, the one the server holds, and a local one with none; a runner of its own process gives none", async () => {
+  const dial = { url: "https://agentrun.example.com", tokens: { mint: async () => `art_${"0".repeat(64)}`, revoke: async () => undefined }, hub: {} };
+  const built = new Map();
+  const { factories } = computerDepsFrom({ env: {}, store: memoryStore(), sealKey: undefined, dial, load: async (id, options) => (built.set(id, options), {}) });
+  for (const { id } of PROVIDERS) await factories[id]({});
+  for (const { id, local } of PROVIDERS) assert.equal(built.get(id).dial, local ? undefined : dial, `${id}${local ? ", local," : ""} is built with ${local ? "no" : "the server's"} dial`);
+  assert.ok(PROVIDERS.some(({ local }) => local) && PROVIDERS.some(({ local }) => !local), "both kinds are in the registry");
+
+  const alone = new Map();
+  const own = computerDepsFrom({ env: {}, store: memoryStore(), sealKey: undefined, load: async (id, options) => (alone.set(id, options), {}) });
+  for (const { id } of PROVIDERS) await own.factories[id]({});
+  for (const { id } of PROVIDERS) assert.equal(alone.get(id).dial, undefined, `${id} on a runner of its own process`);
 });
 
 // AGENTRUN_DOCKER_HOST_ADDRESSES: the Docker host's own addresses, for a Docker provider that isn't on that host (the
@@ -633,7 +694,7 @@ test("a Docker desktop's spec carries the limits as a Docker sandbox's does; no 
   const spec = computerSpecOf({ ...LIMITS, AGENTRUN_DOCKER_IMAGE: named });
   for (const kind of ["sandbox", "desktop"]) assert.deepEqual(sizeOf(spec(entryOf("docker"), kind, { boxAllow: "none" })), SIZED, `a Docker ${kind}`);
   const vendors = PROVIDERS.flatMap((entry) => (entry.id === "docker" ? [] : Object.keys(entry.defaultImage ?? {}).map((kind) => [entry.id, kind])));
-  assert.ok(vendors.length >= 8, `the registry declares the vendors' computers: ${JSON.stringify(vendors)}`);
+  assert.ok(vendors.length >= 6, `the registry declares the vendors' computers: ${JSON.stringify(vendors)}`);
   for (const [id, kind] of vendors) assert.deepEqual(sizeOf(spec(entryOf(id), kind, {})), {}, `${id} ${kind} sizes itself`);
 });
 

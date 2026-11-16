@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
-import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
+import { type ConformanceModule, descriptorOf, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
 import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES } from "../kinds.js";
 import type { MachineHost } from "../host.js";
 import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
@@ -49,7 +49,7 @@ export interface CliIo {
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
@@ -63,11 +63,18 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
               desktop, the fixture APK for an Android phone
   --gpu       the GPU the gpu case's one computer asks for, a type the provider declares and a count (default 1), such
               as T4 or H100:2; it bills by the second, so without it the gpu case skips
+  --long      run the long cases too, which wait minutes on a vendor's timer: lifetime.idle leaves a computer quiet
+              6 min and reads it running; the live sweep gives it, and without it they skip
+  --concurrency
+              the most computers alive at once, for a plan that keeps fewer (default no cap; the report says the
+              run's peak). The run's computer makes way for a case's own; a case that needs more fails
   --json      print the report as JSON
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
-              by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stderr apart,
-              the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s) that is not cut off
+              by hand. Text of every kind both ways, 8 MiB by sha256, output and stdin while the process runs, stdin while
+              stdout is left unread, stderr apart, the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s)
+              that is not cut off; then what the machine offers: root's network namespace, /dev/fuse, the arch, the
+              kernel (gVisor) and the TCP listeners, each with what it means for your host
 exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
       0 the provider passes the kind, 1 it does not; with --exec-stream, 0 every check passes, 1 one fails`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
@@ -81,6 +88,10 @@ interface Args {
 	kind?: ComputerSettingKind;
 	fixture?: string;
 	gpu?: { type: string; count: number };
+	/** --long: the long cases run too. */
+	long?: true;
+	/** --concurrency: the most computers alive at once. */
+	concurrency?: number;
 	/** --exec-stream's machine: the pre-check runs alone on it. */
 	execStream?: { machine: string; quick: boolean };
 	json: boolean;
@@ -117,7 +128,12 @@ function parse(argv: string[], cases: Case[]): Args {
 			args.kind = kind as ComputerSettingKind;
 		} else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--gpu") args.gpu = gpuOf(value());
-		else if (flag === "--exec-stream") execStream = true;
+		else if (flag === "--long") args.long = true;
+		else if (flag === "--concurrency") {
+			const given = value();
+			if (!/^[1-9][0-9]*$/.test(given) || !Number.isSafeInteger(Number(given))) throw new Usage(`--concurrency: ${JSON.stringify(given)} is not a whole number of computers, 1 or more`);
+			args.concurrency = Number(given);
+		} else if (flag === "--exec-stream") execStream = true;
 		else if (flag === "--machine") machine = value();
 		else if (flag === "--quick") quick = true;
 		else if (flag === "--json") args.json = true;
@@ -128,7 +144,7 @@ function parse(argv: string[], cases: Case[]): Args {
 	if (args.provider === undefined) throw new Usage("--provider is required");
 	if (execStream) {
 		if (machine === undefined) throw new Usage("--exec-stream needs --machine <id>, a machine you made by hand");
-		const others = (["image", "only", "kind", "fixture", "gpu"] as const).filter((name) => args[name] !== undefined);
+		const others = (["image", "only", "kind", "fixture", "gpu", "long", "concurrency"] as const).filter((name) => args[name] !== undefined);
 		if (others.length > 0) throw new Usage(`--exec-stream runs alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
 		return { provider: args.provider, execStream: { machine, quick }, json: args.json, help: false };
 	}
@@ -147,6 +163,8 @@ function parse(argv: string[], cases: Case[]): Args {
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
 		...(args.gpu ? { gpu: args.gpu } : {}),
+		...(args.long ? { long: args.long } : {}),
+		...(args.concurrency ? { concurrency: args.concurrency } : {}),
 		json: args.json,
 		help: false,
 	};
@@ -163,6 +181,8 @@ interface Target {
 	planted?: ConformanceOptions["planted"];
 	/** The module's run folders for the mount cases: mountFor(kind). */
 	mountFor?: ConformanceOptions["mountFor"];
+	/** The module's server for a dial host's machines: dialKit(). */
+	dial?: ConformanceOptions["dial"];
 	/** The module's image for a run that names none. */
 	image?: string;
 	/** The module's notes for the report. */
@@ -180,10 +200,9 @@ const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
  */
 async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; declared?: readonly KindCapabilities[] }> {
 	const found = await moduleFor(name, cwd);
-	// What the provider file declares of itself (its CAPABILITIES; its descriptor once that lands), kept across the switch
-	// to its conformance module, for health.declared.
-	const declared = found.file.CAPABILITIES;
-	return { label: found.label, module: found.module, ...(Array.isArray(declared) ? { declared: declared as readonly KindCapabilities[] } : {}) };
+	// What a registry provider declares of itself, its descriptor's configurations, for health.declared.
+	const declared = isProviderId(name) ? descriptorOf(name)?.capabilities : undefined;
+	return { label: found.label, module: found.module, ...(declared === undefined ? {} : { declared }) };
 }
 
 async function moduleFor(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; file: Record<string, unknown> }> {
@@ -248,10 +267,11 @@ export function plantSecrets(names: readonly string[]): { values: string[]; secr
 
 /**
  * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
- * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
+ * it says of its run: conformanceImage(), the image when --image names none (asked only then: a module's may make or
+ * register its image, so it is given the run's signal), and conformanceNotes, strings for the report.
  */
-async function load(label: string, module: Partial<ConformanceModule>, options: object, declared?: readonly KindCapabilities[]): Promise<Target> {
-	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
+async function load(label: string, module: Partial<ConformanceModule>, options: object, { imageNamed, signal }: { imageNamed: boolean; signal?: AbortSignal }, declared?: readonly KindCapabilities[]): Promise<Target> {
+	const { createProvider, createDriftedProvider, conformanceImage, mountFor, dialKit } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
 	const lacks = PROVIDER_METHODS.filter((name) => typeof provider?.[name] !== "function");
@@ -273,8 +293,9 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 		};
 	}
 	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
-	if (conformanceImage !== undefined) {
-		const image = typeof conformanceImage === "function" ? await conformanceImage(options) : undefined;
+	if (typeof dialKit === "function") target.dial = () => dialKit(options);
+	if (conformanceImage !== undefined && !imageNamed) {
+		const image = typeof conformanceImage === "function" ? await conformanceImage(options, signal ? { signal } : {}) : undefined;
 		if (typeof image !== "string" || image === "") throw new Usage(`${label}: conformanceImage() did not return an image`);
 		target.image = image;
 	}
@@ -340,7 +361,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	let target: Target;
 	try {
 		const { label, module, declared } = await conformanceModule(args.provider, cwd);
-		target = await load(label, module, options, declared);
+		target = await load(label, module, options, { imageNamed: args.image !== undefined, ...(signal ? { signal } : {}) }, declared);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);
 		if (error instanceof Usage) {
@@ -359,11 +380,14 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
 		...(args.gpu ? { gpu: args.gpu } : {}),
+		...(args.long ? { long: true } : {}),
+		...(args.concurrency ? { concurrency: args.concurrency } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
 		...(target.declared ? { declared: target.declared } : {}),
 		...(target.planted ? { planted: target.planted } : {}),
 		...(target.mountFor ? { mountFor: target.mountFor } : {}),
+		...(target.dial ? { dial: target.dial } : {}),
 		...(onResult ? { onResult } : {}),
 		...(io.cdp ? { cdp: io.cdp } : {}),
 	});

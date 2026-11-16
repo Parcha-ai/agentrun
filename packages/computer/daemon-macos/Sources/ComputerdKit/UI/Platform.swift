@@ -240,6 +240,17 @@ public protocol Workspace: Sendable {
 	func terminate(_ id: String) throws
 }
 
+/// An app telling when its accessibility tree changed (on a Mac, an AXObserver): what lets a settle wait for the app to
+/// go quiet and read its window once, instead of reading it again and again until two reads match. One read of a
+/// SwiftUI window (System Settings on CI) costs 260 to 860 ms.
+public protocol Changes: Sendable {
+	/// Watches the app from now on, if it does not already: every change to its tree after this answers is told. False
+	/// when the app will not tell its changes.
+	func watch(_ pid: Int32) -> Bool
+	/// When, on the platform's Clock, the app last told a change; nil when it told none since watching began.
+	func lastChange(_ pid: Int32) -> Double?
+}
+
 /// Time, so settle and expect run on a fake clock in tests.
 public protocol Clock: Sendable {
 	/// Milliseconds on a monotonic clock.
@@ -277,8 +288,10 @@ public struct Platform: Sendable {
 	public var clock: any Clock
 	/// Where ui.act last acted, for the live view's frames (Marks): on clock's time.
 	public var marks: Marks
+	/// When an app's tree changed, where the OS tells it; nil where it does not, and a settle looks until two looks match.
+	public var changes: (any Changes)?
 
-	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock(), marks: Marks = Marks()) {
+	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock(), marks: Marks = Marks(), changes: (any Changes)? = nil) {
 		self.accessibility = accessibility
 		self.capture = capture
 		self.workspace = workspace
@@ -290,6 +303,7 @@ public struct Platform: Sendable {
 		self.person = person
 		self.clock = clock
 		self.marks = marks
+		self.changes = changes
 	}
 }
 

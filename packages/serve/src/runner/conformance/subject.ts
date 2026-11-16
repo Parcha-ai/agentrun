@@ -8,7 +8,7 @@ import type { Journal, LoopFactory } from "../loop-contract.js";
 
 /** One step of the model's script: call a tool, say a text, or say the text of the last steer it was given. */
 export type ScriptStep =
-  | { readonly call: ToolName; readonly args?: Record<string, unknown> }
+  | { readonly call: ToolName | MetaToolName; readonly args?: Record<string, unknown> }
   /** `cut`: the model stops at its output limit as it says it (stopReason "length"): the text is unfinished. */
   | { readonly say: string; readonly cut?: true }
   | { readonly sayLastSteer: true }
@@ -18,9 +18,11 @@ export type ScriptStep =
 /** The suite's tools. effect changes something outside the run; read does not; slow runs until the suite lets it go
  *  (or its signal is aborted); asked is one the gate asks a person about. */
 export type ToolName = "effect" | "read" | "slow" | "asked";
+/** The host's tools over the suite's (runner/meta-tools.ts), which the adapter loop gives every session beside them. */
+export type MetaToolName = "tools_search" | "tools_call" | "codemode";
 
 export interface SuiteTool {
-  readonly name: ToolName;
+  readonly name: string;
   /** May run again after a crash: it changes nothing outside the run. */
   readonly replaySafe: boolean;
   /** The gate asks a person before it runs: the run parks. */
@@ -50,11 +52,14 @@ export interface KernelHooks {
   /** A message taken mid-turn was sent as a turn of its own (the adapter loop's sendAfterTurn): the session holds it, and
    *  the commit that records it and takes its row has not run yet. */
   afterMessageSent?(): Promise<void>;
+  /** A message steered into the turn in flight was placed (the session holds it under the row's request id), and the
+   *  commit that takes its row has not run yet: a CLI's waits for its model to take it (the adapter loop's steerCli). */
+  afterSteerPlaced?(): Promise<void>;
 }
 
 export interface ConformanceSetup {
   readonly script: readonly ScriptStep[];
-  readonly tools: Readonly<Record<ToolName, SuiteTool>>;
+  readonly tools: Readonly<Record<string, SuiteTool>>;
   readonly hooks: KernelHooks;
   /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
   readonly agentId?: string;
@@ -70,6 +75,7 @@ export type ConformanceCase =
   | "steer-mid-turn"
   | "message-mid-turn-kept"
   | "message-resent-after-crash"
+  | "steer-placed-crash"
   | "cancel-ends-for-good"
   | "cancel-parked"
   | "deny-note"
@@ -84,7 +90,13 @@ export type ConformanceCase =
   | "fault-effects-once"
   | "fault-restarts-bounded"
   | "length-ends-failed"
-  | "length-mid-run";
+  | "length-mid-run"
+  | "meta-search"
+  | "meta-call-park"
+  | "meta-call-deny"
+  | "meta-codemode-park"
+  | "meta-codemode-stop"
+  | "meta-codemode-crash";
 
 export interface ConformanceSubject {
   /** The harness's name, as the suite's tests are titled. */
@@ -96,7 +108,10 @@ export interface ConformanceSubject {
   readonly process?: { readonly module: string; readonly export: string };
   /** The facts its adapter declares (AdapterFacts), the cases they rule out derived from them (harness.ts, `factsRuleOut`):
    *  a fact the adapter changes moves its cases with it, never a list kept by hand. */
-  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number };
+  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number; readonly ownCodemode?: true; readonly ownToolSearch?: true };
+  /** False for a loop that gives its sessions no tools_search, tools_call or codemode (they are the adapter loop's,
+   *  runner/meta-tools.ts): their cases are skipped, saying so. */
+  readonly metaTools?: false;
   /** Cases this harness cannot model yet, each with why: reported as skipped with that reason, never as passed. */
   readonly unsupported?: Partial<Record<ConformanceCase, string>>;
   /** How the suite reads this subject's calls, when they are not the kernel's call records: a workflow's calls are the DSL

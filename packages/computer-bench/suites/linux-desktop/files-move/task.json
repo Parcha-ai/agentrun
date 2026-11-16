@@ -1,0 +1,83 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "linux.files.move",
+  "version": 1,
+  "title": "Move two files into another folder in the Thunar file manager",
+  "split": "heldout",
+  "tags": ["files", "thunar", "move"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "thunar", "kind": "exec", "why": "Thunar, and xdotool, which setup places its window with.", "argv": ["sh", "-c", "command -v thunar && command -v xdotool"] }
+    ]
+  },
+  "params": {
+    "plan": {
+      "pick": [
+        { "from": "inbox", "to": "archive", "a": "invoice-april", "b": "invoice-march" },
+        { "from": "downloads", "to": "photos", "a": "beach", "b": "sunset" },
+        { "from": "incoming", "to": "contracts", "a": "addendum", "b": "lease" },
+        { "from": "desk", "to": "taxes", "a": "receipts", "b": "w2-form" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Make the run's two folders: the source holding the two files, the target empty.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d/{{plan.from}}-{{nonce}} $d/{{plan.to}}-{{nonce}} && echo '{{plan.a}} {{nonce}}' > $d/{{plan.from}}-{{nonce}}/{{plan.a}}-{{nonce}}.txt && echo '{{plan.b}} {{nonce}}' > $d/{{plan.from}}-{{nonce}}/{{plan.b}}-{{nonce}}.txt"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Thunar on the source folder.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-thunar.pid && exec thunar /tmp/computer-bench-{{nonce}}/{{plan.from}}-{{nonce}}"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for Thunar's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class thunar | head -n1); [ -n \"$w\" ] || { echo no Thunar window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "In the file manager, move both files in /tmp/computer-bench-{{nonce}}/{{plan.from}}-{{nonce}} into the folder /tmp/computer-bench-{{nonce}}/{{plan.to}}-{{nonce}}.",
+  "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
+  "checks": [
+    {
+      "id": "moved",
+      "kind": "exec",
+      "why": "Every file under the run's folder in byte order (each pick names its two files in that order), with its text: both files are in {{plan.to}}-{{nonce}}, unchanged, and none is left in {{plan.from}}-{{nonce}} (moved, not copied). After setup both are in {{plan.from}}-{{nonce}}, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "cd /tmp/computer-bench-{{nonce}} && find . -type f | LC_ALL=C sort | while read f; do echo \"$f: $(cat \"$f\")\"; done"],
+      "stdout": { "equals": "./{{plan.to}}-{{nonce}}/{{plan.a}}-{{nonce}}.txt: {{plan.a}} {{nonce}}\n./{{plan.to}}-{{nonce}}/{{plan.b}}-{{nonce}}.txt: {{plan.b}} {{nonce}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's Thunar (by the pid setup kept beside the folder: a desktop may have other Thunar windows open) and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -f /tmp/computer-bench-{{nonce}}-*.pid; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Select both files (Ctrl+A) and cut them (Ctrl+X), go to the target folder through the location bar (Ctrl+L, its path, Enter), and paste (Ctrl+V).",
+      "params": {
+        "actions": [
+          { "type": "key", "keys": ["ctrl", "a"] },
+          { "type": "wait", "ms": 500 },
+          { "type": "key", "keys": ["ctrl", "x"] },
+          { "type": "wait", "ms": 500 },
+          { "type": "key", "keys": ["ctrl", "l"] },
+          { "type": "wait", "ms": 500 },
+          { "type": "type", "text": "/tmp/computer-bench-{{nonce}}/{{plan.to}}-{{nonce}}/" },
+          { "type": "wait", "ms": 1000 },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 2000 },
+          { "type": "key", "keys": ["ctrl", "v"] },
+          { "type": "wait", "ms": 2000 }
+        ]
+      }
+    }
+  ]
+}

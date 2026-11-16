@@ -79,6 +79,9 @@ export interface LocalMachineOptions {
     tools: readonly string[];
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
+    /** On a person's ChatGPT plan: its rules (CodexPolicyOptions.plan). */
+    plan?: boolean;
+    credentialRefused?: ModelProxyOptions["credentialRefused"];
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
@@ -249,6 +252,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const route = model.options;
     // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
     let announced: string | undefined;
+    // The script of the last `exec` announced, by its call id: what the host's record of that exec shows.
+    let script: { callId: string; input: string } | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
     const cutListeners: ((stop: { outputTokens?: number }) => void)[] = [];
@@ -259,6 +264,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         model: route.models.model,
         tools: options.proxy.tools,
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
+        ...(options.proxy.plan ? { plan: true } : {}),
         ...(search ? { webSearch: "live" as const, ...(options.searchAllowed ? { searchAllowed: options.searchAllowed } : {}) } : {}),
         announce: {
           // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
@@ -269,7 +275,10 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
             open += 1;
             announced = open > 1 ? UNWATCHED : undefined;
           },
-          exec: (callId) => void (announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId),
+          exec: (callId, input) => {
+            script = { callId, input: input ?? "" };
+            announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId;
+          },
           failed: () => void (announced = UNWATCHED),
           end: () => void (open = Math.max(0, open - 1)),
         },
@@ -278,11 +287,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       model: route.models.model,
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
+      ...(options.proxy.credentialRefused ? { credentialRefused: options.proxy.credentialRefused } : {}),
       ...(price ? { price } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),
+      // The provider's error answer ends the run (a ChatGPT plan's limit reached): no retry or other key can pass it.
+      onFinal: (message) => ctx.halt?.(new Error(message)),
       // The provider cut the turn's answer at its output limit: Codex would ask for it again (it retries an incomplete
       // stream), so the harness ends the turn there, its answer cut.
       onCut: (stop) => {
@@ -301,6 +313,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelUrl: proxy.url,
       modelKey: key,
       announcedExec: () => announced,
+      announcedInput: (callId) => (script?.callId === callId ? script.input : undefined),
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
       onCut: (listener) => void cutListeners.push(listener),
       openTurn: () => proxy.openTurn(),

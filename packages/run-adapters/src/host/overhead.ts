@@ -7,7 +7,20 @@
 // their area after it resizes them, not by their bytes. An image is counted at what the routed model's provider bills it
 // as by its size (Anthropic's, OpenAI's or Google's rule; the most of the three for another provider), in place of the
 // bytes its data takes in the body: a screenshot's base64 is a megabyte, and Claude bills it as some 1,200 tokens. Each
-// figure is the largest the provider documents for any current model, so no model is undercounted.
+// figure is the largest the provider documents for any current model, so no model is undercounted. On the Responses API
+// the text a body carries for the model to read as it is counts at its own bytes, not its JSON-escaped ones
+// (`responsesEscapedBytes`).
+//
+// The byte bound is a proof: a byte-level BPE token covers at least one byte, so a body is never more tokens than bytes.
+// It is also four times what an English prompt bills, and on a capped run that is the difference between going on and
+// parking (a $0.50 lead list whose request 7 holds $0.35 at its least on its bytes, $0.12 on its count). A Responses or
+// Messages body to a model whose tokenizer is o200k_base (`o200kModel`) is counted locally, with o200k_base and a stated
+// margin (`LOCAL_COUNT_MARGIN`, `responsesLocalInputTokens`, `messagesLocalInputTokens`), on every route: straight to
+// OpenAI, through a gateway, or through serve's Messages translation. A body this cannot count with a margin it can state
+// (a model on another tokenizer, a file input) has no local count, and keeps its byte bound; Anthropic counts its own
+// models' (the claude-agent policy's countInput). A Messages request that carries an earlier one its provider billed
+// (a session's next step) is bounded by that bill and the bytes it adds (`messagesInputAfter`), on any model and route.
+import { o200kModel, o200kTokens } from "./o200k.js";
 
 /** One image a request carries: the bytes its data takes in the body (its base64, or its data URL; 0 for an image the
  *  provider fetches by URL), which are counted at the image's billed size instead, and its pixel size when its data's own
@@ -235,32 +248,33 @@ export function imageSizeOf(data: string): { width: number; height: number } | u
 const plain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-/** A Messages body's images, only where the API reads one as an image: a block of a message's content, or of a
- *  tool_result's content, in every turn. Each is a base64 source's data, or a URL's (no bytes). An image-shaped object
- *  anywhere else (a tool call's arguments) is text to the provider: its bytes stay counted as they are. */
-export function messagesImagesIn(messages: unknown): ImageInput[] {
-  const out: ImageInput[] = [];
-  const image = (block: unknown) => {
-    if (plain(block) && block.type === "image") out.push(plain(block.source) && block.source.type === "base64" ? imageInputOf(block.source.data) : { bytes: 0 });
-  };
+/** A Messages body's content blocks where the API reads them, in order: each message's, and each block inside a
+ *  tool_result among them. */
+function messagesBlocks(messages: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
   for (const message of list(messages)) {
     if (!plain(message)) continue;
     for (const block of list(message.content)) {
-      image(block);
-      if (plain(block) && block.type === "tool_result") for (const inner of list(block.content)) image(inner);
+      if (!plain(block)) continue;
+      out.push(block);
+      if (block.type === "tool_result") for (const inner of list(block.content)) if (plain(inner)) out.push(inner);
     }
   }
   return out;
 }
 
-/** A Responses body's images, only where the API reads one as an image: an `input_image` item, a part of an item's
- *  content, or a part of a function call's output, in every turn. Each is a data URL's, or a URL's or file id's (no
- *  bytes). An image-shaped object anywhere else is text to the provider: its bytes stay counted as they are. */
-export function responsesImagesIn(input: unknown): ImageInput[] {
-  const out: ImageInput[] = [];
-  const image = (part: unknown) => {
-    if (plain(part) && part.type === "input_image") out.push({ ...imageInputOf(part.image_url), ...(typeof part.detail === "string" ? { detail: part.detail } : {}) });
-  };
+/** A Messages body's images, only where the API reads one as an image: a block of a message's content, or of a
+ *  tool_result's content, in every turn. Each is a base64 source's data, or a URL's (no bytes). An image-shaped object
+ *  anywhere else (a tool call's arguments) is text to the provider: its bytes stay counted as they are. */
+export function messagesImagesIn(messages: unknown): ImageInput[] {
+  return messagesBlocks(messages).filter((block) => block.type === "image").map((block) => (plain(block.source) && block.source.type === "base64" ? imageInputOf(block.source.data) : { bytes: 0 }));
+}
+
+/** The parts of a Responses body the API reads as images, in order: an `input_image` item, a part of an item's content,
+ *  a part of a function call's output. */
+function responsesImageParts(input: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const image = (part: unknown) => { if (plain(part) && part.type === "input_image") out.push(part); };
   for (const item of list(input)) {
     if (!plain(item)) continue;
     image(item);
@@ -268,6 +282,243 @@ export function responsesImagesIn(input: unknown): ImageInput[] {
     if (item.type === "function_call_output") for (const part of list(item.output)) image(part);
   }
   return out;
+}
+
+/** A Responses body's images, only where the API reads one as an image (`responsesImageParts`), in every turn. Each is a
+ *  data URL's, or a URL's or file id's (no bytes). An image-shaped object anywhere else is text to the provider: its
+ *  bytes stay counted as they are. */
+export function responsesImagesIn(input: unknown): ImageInput[] {
+  return responsesImageParts(input).map((part) => ({ ...imageInputOf(part.image_url), ...(typeof part.detail === "string" ? { detail: part.detail } : {}) }));
+}
+
+/** The items of `type` in `value`, at any depth (a tool's output holds them). */
+function itemsIn(value: unknown, type: string): number {
+  if (Array.isArray(value)) return value.reduce((n: number, item) => n + itemsIn(item, type), 0);
+  if (!plain(value)) return 0;
+  return (value.type === type ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + itemsIn(item, type), 0);
+}
+
+/**
+ * The bytes JSON's escapes add to the text a Responses body carries for the model to read as it is, beyond that text's
+ * own UTF-8 bytes: in `instructions`, and in each `input` item, a message's text, a function call's arguments, a custom
+ * tool call's input, a tool's output (a string, or its text parts) and a reasoning summary's text.
+ *
+ * Why the input bound may count that text at its own bytes: the model reads it as the string itself, never as its JSON
+ * spelling in the body. OpenAI's counting recipe encodes each message's decoded value and adds a fixed few tokens a
+ * message (num_tokens_from_messages,
+ * https://github.com/openai/openai-cookbook/blob/db3144982aa26b87a9bdfb692b4fbedfdf8a14d5/examples/How_to_count_tokens_with_tiktoken.ipynb),
+ * and the harmony format OpenAI published for its models puts a message's content, a call's arguments and a tool's
+ * output between its special tokens as raw text (`<|message|>{"location":"San Francisco"}<|call|>`,
+ * https://github.com/openai/harmony/blob/e0ce87d1c3b9f59dec2e27de4770c769f03ebbd3/docs/format.md#receiving-tool-calls).
+ * A byte-level BPE token covers at least one byte of the text it encodes, so that text is at most its UTF-8 bytes in
+ * tokens; the escape characters JSON adds around it (`\"`, `\\`, `\n`, `\t`, `\u0000`) are bytes the body spends that no
+ * token of it is billed for. Every other byte is counted as sent, as before: the keys, ids and structure of each item
+ * still cover the framing the provider puts around it (a role, a recipient, a few special tokens: fewer than the bytes
+ * of the keys the item spends); the tool definitions (`tools`, and code mode's `additional_tools` item) are counted
+ * whole, since a template renders them into a prompt of its own that may quote their strings again (harmony's
+ * TypeScript namespace); and encrypted reasoning is base64, which JSON never escapes, so it keeps its own bytes.
+ */
+export function responsesEscapedBytes(body: Record<string, unknown>): number {
+  // What the proxy sends is JSON.stringify's spelling, so the escapes are measured by the same spelling.
+  const escaped = (text: unknown) => (typeof text === "string" ? Buffer.byteLength(JSON.stringify(text), "utf8") - 2 - Buffer.byteLength(text, "utf8") : 0);
+  const textOf = (content: unknown) => (typeof content === "string" ? escaped(content) : list(content).reduce((n: number, part) => n + (plain(part) && (part.type === "input_text" || part.type === "output_text" || part.type === "summary_text" || part.type === "reasoning_text") ? escaped(part.text) : 0), 0));
+  let sum = escaped(body.instructions);
+  for (const item of list(body.input)) {
+    if (!plain(item)) continue;
+    if (item.type === "message" || (item.type === undefined && typeof item.role === "string")) sum += textOf(item.content);
+    else if (item.type === "function_call") sum += escaped(item.arguments);
+    else if (item.type === "custom_tool_call") sum += escaped(item.input);
+    else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") sum += textOf(item.output);
+    else if (item.type === "reasoning") sum += textOf(item.summary) + textOf(item.content);
+  }
+  return sum;
+}
+
+/**
+ * The input tokens the provider bills for a Responses `body` beyond its bytes (`providerInputOverhead`, with its
+ * sources), less the escapes in the text it carries (`responsesEscapedBytes`, with the argument for it). The Responses
+ * API documents no prompt of its own that it adds on these routes, and the framing it puts around each input item and
+ * tool definition is a few tokens each, fewer than the bytes of the JSON keys that item already spends in the body. An
+ * image is billed by its area, not its bytes: each counts at the most it can be billed as, in place of the bytes its
+ * data URL takes in the body. A file input (a PDF, billed by its pages) has no stated bound, so a body with one cannot
+ * be measured: this throws, and the request's input is unknown. Codex's and OpenCode's policies both use it.
+ */
+export function responsesInputOverhead(body: Record<string, unknown>): number {
+  if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) - responsesEscapedBytes(body);
+}
+
+/**
+ * The margin a local count adds, and why each part:
+ *  - `share`, 10% of the counted tokens: the count is o200k_base's, the vocabulary tiktoken names for gpt-4o, gpt-4.1,
+ *    gpt-4.5, gpt-5, the o-series and gpt-oss (MODEL_PREFIX_TO_ENCODING,
+ *    https://github.com/openai/tiktoken/blob/79dc2c0533685b893616c78160b5d9e40876e724/tiktoken/model.py#L7-L37). A later
+ *    model that bills by a revised vocabulary may split some text finer; a tenth more covers a revision of that order.
+ *  - `perItem`, 16 tokens for each input item (and each part of a tool's result), each tool and the instructions: the framing the provider renders around
+ *    each (harmony's `<|start|>assistant<|channel|>commentary to=functions.read <|constrain|>json<|message|>`, some 12
+ *    tokens, https://github.com/openai/harmony/blob/e0ce87d1c3b9f59dec2e27de4770c769f03ebbd3/docs/format.md), beside
+ *    the cookbook's 3 a message (num_tokens_from_messages,
+ *    https://github.com/openai/openai-cookbook/blob/db3144982aa26b87a9bdfb692b4fbedfdf8a14d5/examples/How_to_count_tokens_with_tiktoken.ipynb).
+ *  - `perRequest`, 256 tokens: the system message the provider writes itself (harmony's identity, dates, reasoning level
+ *    and channels, some 60 tokens), the tools' namespace header and the reply's priming.
+ * The count is of the body as sent, its JSON keys, ids, quotes and escapes included, which the provider bills none of as
+ * text: that slack is on top of the margin. What the tokenizer cannot see is counted as the byte bound counts it: an
+ * encrypted reasoning or compaction item's `encrypted_content` at its bytes (its plaintext is billed, and a byte bounds a
+ * token), and each image at the most its provider bills it as (`imageTokens`), never at its base64.
+ */
+export const LOCAL_COUNT_MARGIN = Object.freeze({ share: 0.1, perItem: 16, perRequest: 256 });
+
+/** `tokens` counted over a body of `items` items, with `opaque` tokens counted apart, as `LOCAL_COUNT_MARGIN` adds them. */
+const withMargin = (tokens: number, items: number, opaque: number): number => Math.ceil(tokens * (1 + LOCAL_COUNT_MARGIN.share)) + LOCAL_COUNT_MARGIN.perItem * items + LOCAL_COUNT_MARGIN.perRequest + opaque;
+
+/**
+ * The local count of a Responses `body`'s input tokens, margin included (`LOCAL_COUNT_MARGIN`): its JSON as sent, counted
+ * with o200k_base, with each `encrypted_content` at its bytes and each image at what it is billed as in place of their
+ * text. Undefined (the body keeps its byte bound) for a model whose tokenizer is not o200k_base (`o200kModel`), for a body
+ * with a file input (billed by its pages, with no stated bound), and for a body that is not an object.
+ */
+export async function responsesLocalInputTokens(body: Record<string, unknown>): Promise<number | undefined> {
+  if (!plain(body) || !o200kModel(body.model)) return undefined;
+  const model = body.model as string;
+  if (itemsIn(body.input, "input_file") > 0) return undefined;
+  const images = new Set<object>(responsesImageParts(body.input));
+  // Every image the API reads counts once, at the most it is billed as, whatever names it: a data URL by its size, and an
+  // http URL, a file id or no reference at all at the most an image of unknown size is billed (`imageTokens`), as the
+  // byte bound counts it (`responsesImagesIn`). Never as the few tokens of its JSON.
+  let opaque = 0;
+  for (const part of images) {
+    const { image_url: url, detail } = part as { image_url?: unknown; detail?: unknown };
+    opaque += imageTokens(model, { ...imageInputOf(url), ...(typeof detail === "string" ? { detail } : {}) });
+  }
+  // The body as sent, with what the tokenizer cannot count left out of the text and counted on its own.
+  const text = JSON.stringify(body, function (this: unknown, key: string, value: unknown) {
+    if (key === "encrypted_content" && typeof value === "string") {
+      opaque += Buffer.byteLength(value, "utf8");
+      return "";
+    }
+    if (key === "image_url" && typeof value === "string" && typeof this === "object" && this !== null && images.has(this)) return "";
+    return value;
+  });
+  // Each input item, and each part of a function call's output (the provider frames each part it renders, as it does a
+  // Messages tool_result's blocks), each tool and the instructions.
+  const outputParts = list(body.input).reduce<number>((sum, item) => sum + (plain(item) && item.type === "function_call_output" ? list(item.output).filter(plain).length : 0), 0);
+  const items = list(body.input).length + outputParts + list(body.tools).length + (typeof body.instructions === "string" && body.instructions !== "" ? 1 : 0);
+  return withMargin(await o200kTokens(text), items, opaque);
+}
+
+/**
+ * The local count of a Messages `body`'s input tokens, margin included (`LOCAL_COUNT_MARGIN`), by the same rule as a
+ * Responses body's (`responsesLocalInputTokens`), for a Messages request to a model whose tokenizer is o200k_base: one
+ * serve's translation sends on to a provider of another API (pi's session on `openai/gpt-6.1-sol` through OpenRouter,
+ * whose chat completions carry the same text). Its JSON as sent, counted with o200k_base, with a thinking block's
+ * `signature` and a redacted one's `data` at their bytes and each image at what it is billed as on the routed model, in
+ * place of their text. An item is each message's block and each block inside a tool_result (one for a message with
+ * none), each tool and each system block: the provider frames each turn, call, result and part of a result it renders.
+ * Undefined (the body keeps its byte bound) for a model whose tokenizer is not o200k_base (every Claude model: Anthropic
+ * counts those itself, or the byte bound holds), for a body with a document (billed by its pages, with no stated bound),
+ * and for a body that is not an object.
+ */
+export async function messagesLocalInputTokens(body: Record<string, unknown>): Promise<number | undefined> {
+  if (!plain(body) || !o200kModel(body.model)) return undefined;
+  const model = body.model as string;
+  const blocks = messagesBlocks(body.messages);
+  if (blocks.some((block) => block.type === "document")) return undefined;
+  // Every image the API reads counts once, at the most it is billed as (`imageTokens`): a base64 source by the size its
+  // header says, a URL's at the most an image of unknown size is billed, as the byte bound counts it (`messagesImagesIn`).
+  let opaque = messagesImagesIn(body.messages).reduce((sum, image) => sum + imageTokens(model, image), 0);
+  const sources = new Set(blocks.filter((block) => block.type === "image" && plain(block.source)).map((block) => block.source as object));
+  // The body as sent, with what the tokenizer cannot count left out of the text and counted on its own.
+  const text = JSON.stringify(body, function (this: unknown, key: string, value: unknown) {
+    const holder = this as { type?: unknown } | null;
+    if (typeof value === "string" && ((key === "signature" && holder?.type === "thinking") || (key === "data" && holder?.type === "redacted_thinking"))) {
+      opaque += Buffer.byteLength(value, "utf8");
+      return "";
+    }
+    if (key === "data" && typeof value === "string" && typeof this === "object" && this !== null && sources.has(this)) return "";
+    return value;
+  });
+  const messages = list(body.messages).filter(plain);
+  const system = typeof body.system === "string" ? (body.system === "" ? 0 : 1) : list(body.system).length;
+  const items = messages.reduce((sum, message) => sum + Math.max(1, messagesBlocks([message]).length), 0) + list(body.tools).length + system;
+  return withMargin(await o200kTokens(text), items, opaque);
+}
+
+/** An earlier request of a session and the input tokens its provider billed for it (input, cache reads and cache writes
+ *  together), as its answer reported them. */
+export interface BilledRequest {
+  readonly body: Record<string, unknown>;
+  readonly inputTokens: number;
+}
+
+/** The fields of a Messages body that bill no input: how much it may answer, whether it streams, and who asks. */
+const UNBILLED_FIELDS: ReadonlySet<string> = new Set(["messages", "max_tokens", "stream", "metadata"]);
+
+/** A tool or a content block without its own cache marker, its `cache_control` key: a marker bills no token. Only that
+ *  key: one deeper (a schema's property, a tool call's input) is text the model reads. */
+const unmarked = (block: unknown): unknown => {
+  if (!plain(block)) return block;
+  const { cache_control: _marker, ...rest } = block;
+  return rest;
+};
+/** Content blocks without the cache markers the API reads in them: on each block, and on each block of a tool result's
+ *  content. */
+const unmarkedBlocks = (blocks: unknown): unknown =>
+  Array.isArray(blocks)
+    ? blocks.map((block) => {
+        const bare = unmarked(block);
+        return plain(bare) && bare.type === "tool_result" && Array.isArray(bare.content) ? { ...bare, content: bare.content.map(unmarked) } : bare;
+      })
+    : blocks;
+/** A content (a message's, or the system prompt) as the API reads it: a string is one text block. */
+const asBlocks = (content: unknown): unknown => (typeof content === "string" ? [{ type: "text", text: content }] : content);
+/**
+ * A body's field (`name`), or one of its messages (`message`), as the model reads it: without the cache markers, where
+ * the Messages API reads one (Anthropic's prompt caching guide, "What can be cached": a tool definition, a block of the
+ * system prompt, a block of a message's content, and so a tool use or tool result, and the API's `ToolResultBlockParam`,
+ * whose content blocks each take one). A `cache_control` anywhere else is not a marker and bills as text.
+ */
+const readOf = (name: string | undefined, value: unknown): string => {
+  if (name === undefined) return JSON.stringify(plain(value) ? { ...value, content: unmarkedBlocks(asBlocks(value.content)) } : value);
+  if (name === "system") return JSON.stringify(unmarkedBlocks(asBlocks(value)));
+  if (name === "tools") return JSON.stringify(Array.isArray(value) ? value.map(unmarked) : value);
+  return JSON.stringify(value);
+};
+
+/**
+ * The most input tokens a Messages `body` can be billed for, from an earlier request of its session that the provider
+ * billed (`earlier`): that request's billed input, plus the bytes of the messages `body` carries after the ones the two
+ * share, each image among them at the most it is billed as in place of its data's bytes. Undefined (no figure: the body
+ * keeps its other bounds) when the two differ in anything but their messages and the fields that bill no input
+ * (`max_tokens`, `stream`, `metadata`), when the earlier request's figure is not a count, or when the messages it adds
+ * hold a document (billed by its pages, with no stated bound).
+ *
+ * Why it never undercounts: the provider renders a request as its system prompt and tools, then each message in turn,
+ * each between its own role markers, and bills each message's tokens whatever follows it. So the two requests' system
+ * prompt, tools (the tool-use prompt with them) and shared messages bill alike, and the earlier request was billed for all
+ * of them, and for any message of its own the later one dropped, which only adds to the figure. What the later request
+ * adds is bounded as the byte bound bounds any body (`inputTokensMaxOf`): a byte-level BPE token covers at least one
+ * byte, and the JSON keys each message spends cover its role markers. Two bodies are compared as the model reads them:
+ * a cache marker, where the API reads one (`readOf`), bills nothing, and a message's string content is the one text block the API reads it as (the Claude
+ * CLI sends its environment message as a block in one request and a string in the next). A thinking block the API leaves
+ * out of a later request's context (an earlier turn's) only makes the later request cheaper.
+ *
+ * It needs no tokenizer, so it bounds a Claude model through a gateway (OpenRouter), which counts nothing and whose
+ * tokenizer is not o200k_base: the CLI's second request, read at its bytes, is four times what it bills.
+ */
+export function messagesInputAfter(earlier: BilledRequest, body: Record<string, unknown>): number | undefined {
+  if (!plain(earlier?.body) || !plain(body) || !Number.isSafeInteger(earlier.inputTokens) || earlier.inputTokens <= 0) return undefined;
+  const fields = new Set([...Object.keys(earlier.body), ...Object.keys(body)].filter((name) => !UNBILLED_FIELDS.has(name)));
+  for (const name of fields) if (readOf(name, earlier.body[name]) !== readOf(name, body[name])) return undefined;
+  const before = list(earlier.body.messages);
+  const after = list(body.messages);
+  let shared = 0;
+  while (shared < before.length && shared < after.length && readOf(undefined, before[shared]) === readOf(undefined, after[shared])) shared += 1;
+  const added = after.slice(shared);
+  if (messagesBlocks(added).some((block) => block.type === "document")) return undefined;
+  const model = typeof body.model === "string" ? body.model : undefined;
+  // Each image's data is part of the added bytes, so the sum is never below the earlier figure.
+  const images = messagesImagesIn(added).reduce((sum, image) => sum + imageTokens(model, image) - image.bytes, 0);
+  return earlier.inputTokens + Buffer.byteLength(JSON.stringify(added), "utf8") + images;
 }
 
 /** The image a body's `data` (base64, or a data URL) carries: the bytes it takes, and its size when its header says it.

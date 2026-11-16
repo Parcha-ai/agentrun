@@ -3,16 +3,21 @@
 // machine on.
 import { type AdapterFacts, toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { anthropicPolicy } from "./host/policy.js";
-import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION } from "./versions.js";
+import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_AGENT_BASE_INPUT_TOKENS } from "./versions.js";
 
 export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   id: "claude-agent",
   label: "Claude",
   wire: "anthropic-messages",
-  // A message that comes mid-turn waits for the turn's end.
-  steer: false,
-  // A call that started is never run again (the CLI answers it "[Tool call interrupted]"); only the model calls again.
+  // A message that comes mid-turn reaches the model at its next step, after the tool calls in flight finish, in the same
+  // turn: the session's steer() places it, the harness sends it to the CLI at priority `next`, and the CLI takes it as a
+  // queued command. One that comes as the turn ends starts the next turn.
+  steer: true,
+  // A call that started is never run again (one cut off the CLI answers "[Tool call interrupted]"; one that ended gets its
+  // recorded result); only the model calls again.
   rerunsStarted: false,
+  // Its own tool search defers an MCP server's tools (ENABLE_TOOL_SEARCH, on under the kernel's defersCatalog), so the host offers no tools_search or tools_call beside it.
+  ownToolSearch: true,
   // An answer its output limit cut, the CLI resumes itself in the same turn ("Output token limit hit. Resume directly"),
   // up to 3 times; only a cut it no longer resumes ends the turn cut.
   recoversCutAnswers: 3,
@@ -30,6 +35,10 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   // the pinned CLI), without a word.
   // The CLI's own tools, each the host's table tool it is.
   nativeTools: Object.freeze({ WebSearch: "web_search", WebFetch: "web_fetch", Bash: "bash", Read: "read", Write: "write", Edit: "edit" }),
+  // The SDK's in-process server serves every host tool as `mcp__hands__<host tool>`.
+  hostName: (given: string) => given.replace(/^mcp__hands__/, ""),
+  // Its first request's own input before the agent's prompt, measured on the pinned CLI (versions.ts).
+  baseInputTokens: CLAUDE_AGENT_BASE_INPUT_TOKENS,
   schemaProblems: (tool: string, schema: Record<string, unknown>) => [...toolSchemaProblems(tool, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)],
   policy: (options) => anthropicPolicy({ model: options.model, tools: options.tools, ...(options.auth ? { auth: options.auth } : {}), ...(options.webSearch === true ? { webSearch: true, ...(options.webSearchAllowance ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });

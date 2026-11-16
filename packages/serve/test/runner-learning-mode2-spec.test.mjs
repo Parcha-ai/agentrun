@@ -74,8 +74,9 @@ test("a Mode 2 learning run through the pi spec builder checks its proposal agai
   assert.ok(held?.includes("Wait a little longer"), "the disk's main holds its note");
   assert.notEqual(decoy.sha, seed.sha, "the decoy is another commit, with other content");
 
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
-  const launch = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 1 } };
+  // A notes job (`learning: "notes"`): its run looks back at every end.
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: "notes" } });
+  const launch = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 1, notesOnly: true } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await saveArchilSettings(server, ARCHIL_SETTINGS);
   // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.

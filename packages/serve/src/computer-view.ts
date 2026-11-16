@@ -1,12 +1,15 @@
 // GET /v2/runs/{run_id}/computer's answer: the run's computer live view, one family for every kind (browser, desktop,
 // phone). The viewer comes first: a run's open viewer is served even when its computer would resolve off here now (the
 // run holds the keys it started with). With none open, the run's computer says `none` with its kind and where its session
-// is (never opened, opening, closed), or `off` with why there is no computer here. `hold` is who drives now.
+// is (never opened, opening, closed), or `off` with why there is no computer here. `hold` is who drives now. A parked
+// run's desktop or phone kept at its park is `closed` (the run's timeline says until when), then `ended` in the timeout's
+// words once its time passed.
 
 import type { JournalEntry } from "./computer-commands.js";
 import { KINDS } from "./runner/journal-kinds.js";
 import type { ViewerKind } from "./store/store.js";
 import { BROWSER_STEPS } from "./timeline/labels.js";
+import { type Kept, lapsedWords } from "./workspace/computer-kept.js";
 
 export type { JournalEntry };
 
@@ -25,6 +28,16 @@ export type ComputerAnswer =
   | { state: "none"; kind: ComputerKind; hold: ComputerHold; session: ComputerSession; ended?: { at: string; why: string } }
   | { state: "live"; kind: ComputerKind; viewer: string; hold: ComputerHold };
 
+/** Why a parked run's kept computer of `kind` is not kept any more, from its keep's row (computer-kept.ts): its time
+ *  passed or its end began, in the timeout's words, at that time; nothing while it is kept, with no row, or with one of
+ *  another kind (a sandbox's: it has no screen). Only for a run still parked: a resumed run's row, taken or left ended,
+ *  says nothing. */
+export function lapsedOf(kind: ComputerKind, kept: Kept | undefined, now: number): { at: string; why: string } | undefined {
+  if (!kept || kept.kind !== kind) return undefined;
+  if (kept.ended || kept.ending || now >= kept.until) return { at: new Date(kept.until).toISOString(), why: lapsedWords(kind) };
+  return undefined;
+}
+
 export async function computerView(deps: {
   /** The run's open viewer, the owner's link to it (its token in the fragment) and its computer's kind; none, undefined. */
   viewer(): Promise<{ kind: ComputerKind; viewer: string } | undefined>;
@@ -37,13 +50,16 @@ export async function computerView(deps: {
   /** Why the run's browser is not up, read only for a `none` browser: let go while the run waited for its person, and none
    *  opened since (browser-wait-ended.ts), with when; undefined otherwise. */
   ended?(): Promise<{ at: string; why: string } | undefined>;
+  /** Why a parked run's desktop or phone kept at its park is not kept any more (lapsedOf), read only for a `none` desktop
+   *  or phone; undefined while it is kept or the run is not parked. */
+  lapsed?(kind: ComputerKind): Promise<{ at: string; why: string } | undefined>;
 }): Promise<ComputerAnswer> {
   const hold = deps.hold?.() ?? "agent";
   const open = await deps.viewer();
   if (open) return { state: "live", kind: open.kind, viewer: open.viewer, hold };
   const computer = deps.computer();
   if ("off" in computer) return { state: "off", hold: "agent", why: computer.off };
-  const ended = computer.kind === "browser" ? await deps.ended?.() : undefined;
+  const ended = computer.kind === "browser" ? await deps.ended?.() : await deps.lapsed?.(computer.kind);
   if (ended) return { state: "none", kind: computer.kind, hold, session: "closed", ended };
   return { state: "none", kind: computer.kind, hold, session: deps.session(computer.kind) };
 }
@@ -63,9 +79,10 @@ const messageOf = (entry: JournalEntry): Obj | undefined => {
 /** Where the run's computer of `kind` is, read from the run's journal `entries` (in order), for a run with no viewer
  *  open. A desktop or a phone is opened by the run's claim at its start and held to its end: opening until its viewer
  *  answers. A browser is opened by the agent's browser steps (OPENS): unopened with no such call in the run; opening
- *  while one has no result yet; closed otherwise (released, or let go with its process). */
-export function sessionIn(kind: ComputerKind, entries: readonly JournalEntry[]): ComputerSession {
-  if (kind !== "browser") return "opening";
+ *  while one has no result yet; closed otherwise (released, or let go with its process). An `ended` run's computer is
+ *  opening nothing: a desktop or a phone closed with the run, and a browser step it ended under is closed. */
+export function sessionIn(kind: ComputerKind, entries: readonly JournalEntry[], ended = false): ComputerSession {
+  if (kind !== "browser") return ended ? "closed" : "opening";
   let asked = false;
   const waiting = new Set<string>();
   const called = (id: unknown, name: unknown): void => {
@@ -84,5 +101,5 @@ export function sessionIn(kind: ComputerKind, entries: readonly JournalEntry[]):
     else if (entry.kind === KINDS.callStart) called(data?.callId, data?.tool);
     else if (entry.kind === KINDS.callEnd && typeof data?.callId === "string") waiting.delete(data.callId);
   }
-  return !asked ? "unopened" : waiting.size ? "opening" : "closed";
+  return !asked ? "unopened" : waiting.size && !ended ? "opening" : "closed";
 }

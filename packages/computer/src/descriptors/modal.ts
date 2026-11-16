@@ -1,10 +1,8 @@
-// Modal's descriptor: a sandbox in a Modal app, the run's folder on an Archil disk, with GPUs when asked.
+// Modal's descriptor: a sandbox in a Modal app, the run's folder on an Archil disk, with GPUs when asked. It starts from
+// our box image, the public registry tag its prepareImage() answers (box-image.ts), which Modal pulls at the first create.
 import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
 import { SANDBOX } from "./shared.js";
-
-/** The image a Modal computer starts from when its setting names none. */
-export const MODAL_DEFAULT_IMAGE = "debian:bookworm-slim";
 
 /**
  * The GPU types Modal takes, by its own names (guide/gpu, 11-10): "A100" is the 40 GB one, "A100-40GB" its explicit
@@ -43,10 +41,13 @@ export const MODAL = defineProvider({
 	settings: [{ name: "modalApp", option: "app", default: "agentrun" }],
 	metered: true,
 	mounts: ["archil"],
-	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
-	network: ["none"],
+	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
+	// its network blocked. Open and a list: the sandbox's network is not blocked, and its programs' one way out is init's
+	// egress proxy, which reaches the public internet alone, and with a list its hosts alone (hosted/network.ts).
+	network: ["none", "open", "allow"],
 	// A linux computer, with GPUs when asked.
 	capabilities: [{ ...SANDBOX, gpu: MODAL_GPU }],
-	defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
+	// No default image: every computer starts from the box image its prepareImage() answers.
+	prepareImage: true,
 	load: () => import("../modal.js"),
 });

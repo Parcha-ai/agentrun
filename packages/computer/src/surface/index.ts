@@ -4,4 +4,4 @@ export type * from "./api.js";
 export { actText, cardOf, chordKeys, createSurface, MAX_READ_BYTES, opsOf, stepName, SURFACE_OPS, SurfaceError, withoutImageData } from "./core.js";
 export type { Surface, SurfaceAnswer, SurfaceOp } from "./core.js";
 export { lineOf, OUTLINE_MAX_CHARS, outlineOf } from "./outline.js";
-export { bindComputer, COMPUTER_CALL_GLOBAL, scriptPrelude } from "./script.js";
+export { bindComputer, COMPUTER_CALL_GLOBAL, computerOver, scriptPrelude } from "./script.js";

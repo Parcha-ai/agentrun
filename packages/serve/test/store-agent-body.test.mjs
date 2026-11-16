@@ -87,13 +87,13 @@ test("a revision's computer keeps surface (code or tools) and exec (a boolean); 
   }
 });
 
-test("a revision keeps a default spend cap and its mode, and the learning switch, when they are set; bad values are refused", () => {
-  assert.equal(bodyOf({ ...A, maxCostUsd: 2.5, capMode: "strict" }).body.maxCostUsd, 2.5);
-  assert.equal(bodyOf({ ...A, maxCostUsd: 2.5, capMode: "strict" }).body.capMode, "strict");
+test("a revision keeps a default spend cap, and the learning switch, when they are set; bad values are refused; a cap mode is not kept", () => {
+  assert.equal(bodyOf({ ...A, maxCostUsd: 2.5 }).body.maxCostUsd, 2.5);
+  // One cap mode, the worst case: a capMode handed in (an old caller's) is never kept in the body.
+  assert.equal("capMode" in bodyOf({ ...A, maxCostUsd: 2.5, capMode: "strict" }).body, false);
   assert.equal(bodyOf({ ...A, learning: false }).body.learning, false);
   assert.equal("learning" in bodyOf(A).body, false);
   for (const maxCostUsd of [0, -1, "2", Number.NaN]) assert.throws(() => bodyOf({ ...A, maxCostUsd }), refused(/maxCostUsd/), String(maxCostUsd));
-  assert.throws(() => bodyOf({ ...A, capMode: "" }), refused(/capMode/));
   assert.throws(() => bodyOf({ ...A, learning: "yes" }), refused(/learning/));
 });
 

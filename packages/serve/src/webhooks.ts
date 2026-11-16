@@ -89,7 +89,7 @@ const WAITS_KEPT = 20;
  *  sent; `closed`, the server is stopping. */
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
 /** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API. */
-export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" } };
+export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" | "computer" } };
 /** The webhook as the store keeps it, but its secret: `secret_at`, when the secret was made (the same URL keeps it);
  *  `secret_scope`, the scope its secret is sealed under in trigger_settings, one of its own for each secret made, so the
  *  setting names the one secret that signs for its URL, and the two go live in the setting's one write. */
@@ -104,12 +104,14 @@ type Signing = "sealed" | "unreadable";
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** `work`'s result, or `signal`'s reason the moment it aborts: a lookup that never answers is given up on, not waited out. */
+/** `work`'s result, or `signal`'s reason the moment it aborts: a lookup that never answers is given up on, not waited out.
+ *  `work` is always followed to its end, so one that fails after the abort (a name that answers NXDOMAIN once the server
+ *  is stopping) is no unhandled rejection. */
 const abortable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
   new Promise<T>((resolve, reject) => {
-    if (signal.aborted) return reject(signal.reason);
     const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
     work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 export { signatureOf } from "./standard-webhooks.js";
@@ -381,7 +383,7 @@ export class Webhooks {
    *  holds it right before its end is queued, with its notice (null: no such run now): a run continued since the rows
    *  were read has moved past that end, which is not queued again. Answers the runs whose end the store refused to queue
    *  (`unsaved`): the caller tells each again until it is saved (server.ts endsLeft), since no feed change will. */
-  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string }>, current: (id: string) => Promise<{ state?: string; endedAt?: string; notice: RunNotice } | null>): Promise<string[]> {
+  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string; stop?: boolean }>, current: (id: string) => Promise<{ state?: string; endedAt?: string; notice: RunNotice } | null>): Promise<string[]> {
     const config = this.config;
     const unsaved: string[] = [];
     if (this.closed || !config || config.disabled) return unsaved;
@@ -389,7 +391,8 @@ export class Webhooks {
     const forget: { runId: string; marker: string }[] = [];
     for (const [id, noticed] of this.notices) {
       const row = store.get(id);
-      if (this.told.has(id) || (row && (row.state === "running" || !noticed.waits?.length))) continue;
+      // A row a stop ended (`stop`) may stand at the person's stop, a wait: its waits are kept, so it is never told again.
+      if (this.told.has(id) || (row && (row.state === "running" || row.stop || !noticed.waits?.length))) continue;
       for (const wait of noticed.waits ?? []) forget.push({ runId: id, marker: `${WAIT}${wait}` });
       if (!row && noticed.ended !== undefined) forget.push({ runId: id, marker: `${ENDED}${noticed.ended}` });
     }
@@ -409,6 +412,8 @@ export class Webhooks {
         this.say({ condition: "end_moved_on", run: id, ended: endedAt });
         continue;
       }
+      // Stopped by a person, the run stands at that stop (input_required): its wait is told, run.needs_input, not an end.
+      if (now.notice.status === "input_required") continue;
       if ((await this.emit("run.ended", now.notice, endedAt)) === "unsaved") unsaved.push(id);
     }
     return unsaved;
@@ -627,6 +632,8 @@ export class Webhooks {
       }
       attempt.latency_ms = Math.round(performance.now() - started);
     }
+    // In its words, written or not: a try the server's stop cut short still says why it ended.
+    attempt.error = failure ?? null;
     if (this.closed) return attempt;
     // What the try found is settled against the webhook as it stands once every change asked for before it (a PUT, a
     // DELETE, another try's 410) has landed: a 410 never turns off a webhook a PUT is setting again meanwhile.
@@ -643,7 +650,6 @@ export class Webhooks {
    *  sent, which no try's write undoes (sent is final), and a failed one writes no state at all, only its try. */
   private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, tryId: string, claimed: ChannelPostRow | undefined, config: Config | undefined, failure: string | undefined, attempt: Attempt): Promise<Attempt> {
     if (this.closed) return attempt;
-    attempt.error = failure ?? null;
     // The schedule counts the message's own tries, from the count its claim took it at; a redelivery counts none.
     const attempts = claimed ? claimed.attempts + 1 : undefined;
     // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn

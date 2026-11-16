@@ -8,10 +8,13 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { goBack } from "@/lib/back";
-import { costOfCap, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
+import { ManageUsage } from "@/components/ChatGPTSignIn";
+import { PLAN_NO_DOLLARS } from "@/lib/chatgpt";
+import { costOfCap, isEstimate, planOf, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { runPlaceWords } from "@/lib/place";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 
 /** `onRaiseCap`: raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again; offered on a capped agentic
  *  run that has not ended, here and beside a budget pause's banner. */
@@ -20,8 +23,10 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive
 /** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
 const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  if (known) return soFarNote(known, { ended });
-  return c && c.usd !== null && isEstimate(c) ? "A local estimate, not a bill" : undefined;
+  const plan = planOf(c) ? PLAN_NO_DOLLARS : undefined;
+  if (known) return plan ? `${soFarNote(known, { ended })} ${plan}` : soFarNote(known, { ended });
+  if (c && c.usd !== null && isEstimate(c)) return plan ? `A local estimate, not a bill. ${plan}` : "A local estimate, not a bill";
+  return plan;
 };
 
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
@@ -29,26 +34,29 @@ const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
   // Where it ran, as its start resolved it.
-  const ranIn = runPlaceWords(run.place);
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
+  const sdk = backendSdkOf(run);
+  const ranIn = sdk ? "your backend" : runPlaceWords(run.place);
+  const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
+  const view = sdk ? { ...state, canStop: false, canCancel: false } : state;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
   const cap = run.cost?.cap_usd;
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
-  const waitsOnOther = !!run.pending && run.pending.kind !== "budget";
-  const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
+  const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
+  const raisable = !sdk && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
+  const onPlan = !!planOf(run.cost);
   return (
     <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
       <nav className="caps flex min-w-0 items-center gap-2 text-label text-muted-foreground" aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
-        <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1 shrink-0 p-1 hover:text-foreground">
+        <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1.5 shrink-0 p-1.5 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
         </button>
-        <a href={agentHash(run.agent_id)} className="truncate hover:text-foreground hover:underline">{agentName}</a>
+        <a href={agentHash(run.agent_id)} className="-my-1 truncate py-1 hover:text-foreground hover:underline">{agentName}</a>
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>
@@ -65,11 +73,14 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
+            {sdk && <span className="font-mono">{backendSdkLabel(sdk.runtime)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
-            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
-              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}</span>}
+            {/* A run on the ChatGPT plan says so, with where its usage is managed: ChatGPT's settings, in a new tab. The
+                graph's totals are dollars alone, so a workflow on the plan reads its run's cost (tokens, the plan). */}
+            {costText !== undefined && !onPlan ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{onPlan && <> · <ManageUsage /></>}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>
@@ -83,7 +94,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
               </Button>
             )}
             {view.canStop && (
-              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title="End this turn. The run stays open and waits for your next message.">
+              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title={run.native ? "Stop this native turn. Start a new run for another task." : "End this turn. The run stays open and waits for your next message."}>
                 <Square aria-hidden /> {actions.busy === "stop" ? "Stopping" : "Stop"}
               </Button>
             )}

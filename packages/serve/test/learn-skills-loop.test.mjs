@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { CAPS } from "../dist/learn/check.js";
-import { ended, git, learnedOnMain, learner, LEARN, made, mergesOf, reflectRows, repoOf, resnap, savedOf, sleep, started } from "./learn-support.mjs";
+import { ended, fedBack, git, learnedOnMain, learner, LEARN, made, mergesOf, reflectRows, repoOf, resnap, savedOf, sleep, started } from "./learn-support.mjs";
 import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
@@ -25,17 +25,20 @@ const draft = (tools = [], instructions = "Find the store's refund policy from i
 const DESCRIPTION = "Finds a store's refund policy from its public pages; use when a case asks for it";
 const NOTE = note("Check units", "Convert every amount to one unit before comparing");
 
-/** An end-of-run answer with a note, a skill and a workflow draft, as the prompt asks for them. */
+/** An end-of-run answer with a note, a skill and a workflow draft, as the prompt asks for them (`json` null: no draft). */
 const answer = ({ skill = SKILL, json = draft() } = {}) => [
   "Keeping three things.",
   `\`\`\`note check-units.md\n${NOTE}\`\`\``,
   `\`\`\`\`skill find-policies\n${skill}\`\`\`\``,
-  `\`\`\`\`workflow find-policies\n---\ndescription: ${DESCRIPTION}\n---\n${json}\n\`\`\`\``,
+  ...(json === null ? [] : [`\`\`\`\`workflow find-policies\n---\ndescription: ${DESCRIPTION}\n---\n${json}\n\`\`\`\``]),
   "Reflected.",
 ].join("\n\n");
 
 /** Agent `id` whose end-of-run turn answers `text`, with `more` lines in its instructions (the faux grader's rules). */
 const answering = (id, text, more = [], extra = {}) => learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(text)}`, ...more].join("\n"), ...extra });
+/** The same, an agent with `learning: true`, whose look-back keeps a workflow draft: its runs look back on feedback
+ *  (fedBack). */
+const drafting = (id, text, more = [], extra = {}) => answering(id, text, more, { learning: true, ...extra });
 
 /** A server for learning whose grader calls are filed in a file of the test's own. */
 async function server(t) {
@@ -50,8 +53,8 @@ const show = (repo, path) => git(repo, ["show", `main:${path}`]);
 
 test("a note, a skill and a workflow draft in one answer: one grader call, one merge commit with all three, the README written from the draft's description, and the SKILL.md with its code block kept whole", { timeout: 120_000 }, async (t) => {
   const { api, data, grades } = await server(t);
-  await made(api, answering("keeper", answer()));
-  const { view } = await ended(api, await started(api, "keeper"));
+  await made(api, drafting("keeper", answer()));
+  const { view } = await fedBack(api, "keeper");
   assert.equal(view.learning?.state, "merged", JSON.stringify(view.learning));
   assert.equal(grades(), 1, "one grader call for all three");
   const repo = repoOf(data, "keeper");
@@ -69,7 +72,8 @@ test("a note, a skill and a workflow draft in one answer: one grader call, one m
 
 test("a skill from a run whose job failed is left out by the checks as skill_outcome, and the rest of its answer goes on to the grader", { timeout: 120_000 }, async (t) => {
   const { api, data, grades } = await server(t);
-  await made(api, answering("failing", answer(), ["Fail the job."]));
+  // A notes job: it looks back on a failed run too, and keeps no workflow draft.
+  await made(api, answering("failing", answer({ json: null }), ["Fail the job."]));
   const { view } = await ended(api, await started(api, "failing"), ["failed"]);
   assert.deepEqual([view.learning?.state, view.learning?.reason], ["merged", null], JSON.stringify(view.learning));
   const saved = await savedOf(data, view.run_id);
@@ -94,19 +98,19 @@ const callDraft = (tool) => {
 test("a draft may name only the agent's own tools, on a call node: with web_fetch granted a draft that runs it merges, and without it the checks leave the draft out and the rest merges; a model node that names a tool is left out though the agent was granted it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await server(t);
   const text = answer({ json: callDraft("web_fetch") });
-  await made(api, answering("fetcher", text, [], { tools: ["web_fetch"] }));
-  const granted = await ended(api, await started(api, "fetcher"));
+  await made(api, drafting("fetcher", text, [], { tools: ["web_fetch"] }));
+  const granted = await fedBack(api, "fetcher");
   assert.equal(granted.view.learning?.state, "merged", JSON.stringify(granted.view.learning));
-  await made(api, answering("bare", text));
-  const bare = await ended(api, await started(api, "bare"));
+  await made(api, drafting("bare", text));
+  const bare = await fedBack(api, "bare");
   assert.deepEqual([bare.view.learning?.state, bare.view.learning?.reason], ["merged", null]);
   assert.ok(!git(repoOf(data, "bare"), ["ls-tree", "-r", "--name-only", "main"]).includes("workflows/"), "the draft is not on main");
   const saved = await savedOf(data, bare.view.run_id);
   assert.deepEqual(saved.learning.problems.map((problem) => problem.rule), ["workflow"]);
   assert.match(saved.learning.problems[0].detail, /tool "web_fetch" is not one of the host's tools/);
   // A learned model node runs without tools: one that names web_fetch is refused at learn time, though it is granted.
-  await made(api, answering("tooled", answer({ json: draft(["web_fetch"]) }), [], { tools: ["web_fetch"] }));
-  const tooled = await ended(api, await started(api, "tooled"));
+  await made(api, drafting("tooled", answer({ json: draft(["web_fetch"]) }), [], { tools: ["web_fetch"] }));
+  const tooled = await fedBack(api, "tooled");
   assert.deepEqual([tooled.view.learning?.state, tooled.view.learning?.reason], ["merged", null], JSON.stringify(tooled.view.learning));
   assert.ok(!git(repoOf(data, "tooled"), ["ls-tree", "-r", "--name-only", "main"]).includes("workflows/"), "the tooled draft is not on main");
   const refused = await savedOf(data, tooled.view.run_id);
@@ -117,8 +121,8 @@ test("a draft may name only the agent's own tools, on a call node: with web_fetc
 test("the grader drops a draft that singles out one case: the draft (its workflow.json and README) is left out, and the note and the skill it kept merge", { timeout: 120_000 }, async (t) => {
   const { api, data, grades } = await server(t);
   const text = answer({ json: draft([], "Find the refund policy of the one store in this case, shop.example, and answer 30 days.") });
-  await made(api, answering("caser", text, ["Grade: drop workflows/find-policies/workflow.json."]));
-  const { view } = await ended(api, await started(api, "caser"));
+  await made(api, drafting("caser", text, ["Grade: drop workflows/find-policies/workflow.json."]));
+  const { view } = await fedBack(api, "caser");
   assert.deepEqual([view.learning?.state, view.learning?.reason], ["merged", null], JSON.stringify(view.learning));
   assert.equal(grades(), 1);
   const saved = await savedOf(data, view.run_id);
@@ -134,8 +138,8 @@ test("the grader drops a draft that singles out one case: the draft (its workflo
 
 test("a risky skill waits for its owner's OK: merged with status: pending in its SKILL.md, and said so", { timeout: 120_000 }, async (t) => {
   const { api, data } = await server(t);
-  await made(api, answering("risky", answer(), ["Grade: pending skills/find-policies/SKILL.md."]));
-  const { view } = await ended(api, await started(api, "risky"));
+  await made(api, drafting("risky", answer(), ["Grade: pending skills/find-policies/SKILL.md."]));
+  const { view } = await fedBack(api, "risky");
   assert.equal(view.learning?.state, "merged", JSON.stringify(view.learning));
   const repo = repoOf(data, "risky");
   assert.match(show(repo, "skills/find-policies/SKILL.md"), /^---\nname: find-policies\ndescription: .*\nstatus: pending\n---\n# Find policies/);
@@ -250,8 +254,8 @@ test("a draft whose call node calls a tool the agent sets to ask is left out by 
     output: { schemaId: "Page", path: "page" },
     root: { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
   });
-  await made(api, answering("asking", answer({ json }), [], { tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }));
-  const asked = await ended(api, await started(api, "asking"));
+  await made(api, drafting("asking", answer({ json }), [], { tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }));
+  const asked = await fedBack(api, "asking");
   assert.equal((await learnedOnMain({ api, data }, "asking", asked.view.run_id)).result?.ok, true, "the run's other learning stands");
   // What the checks left out, kept with the run's learning (the store's end; the view names it once the learning ends).
   const saved = await savedOf(data, asked.view.run_id);

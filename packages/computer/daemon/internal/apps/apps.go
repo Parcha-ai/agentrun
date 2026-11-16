@@ -1,7 +1,8 @@
 // Package apps is a Linux desktop's apps group (src/protocol.ts, the same methods and answers as a Mac's): apps.list
 // reads the desktop files of the apps there are, apps.launch opens one on the display and answers once its window
 // shows, apps.terminate ends it. An app is launched as process.start launches a program with orphans "keep": it is in
-// computerd's process table, with DISPLAY, and what it starts runs on after its launcher ends, to the computer's end.
+// computerd's process table, with DISPLAY, no session bus (DBUS_SESSION_BUS_ADDRESS=disabled:) and NO_AT_BRIDGE=1, and
+// what it starts runs on after its launcher ends, to the computer's end.
 //
 // Windows are read on the display's own connection (package desktop): the top-level windows that are the apps' own (a
 // window manager's frames looked into), each one's app by the process that launched it (_NET_WM_PID) and else by its
@@ -14,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -161,20 +163,29 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 		had[w.id] = true
 	}
 	// An app already running with a window answers at once (wire.md, apps.launch), its window brought to the front, as
-	// a Mac's does. A url is handed to it by a launch: the app's own launcher passes it to the instance that runs.
-	if shown := before.of(e.ID); len(shown) > 0 && params.URL == "" {
-		if err := g.front(ctx, shown[len(shown)-1], before); err != nil {
+	// a Mac's does. A url is handed to it by a launch: the app's own launcher passes it to the instance that runs and
+	// ends (Chromium's), or opens it in a window of its own (a second instance).
+	running := before.of(e.ID)
+	if len(running) > 0 && params.URL == "" {
+		if err := g.front(ctx, running[len(running)-1], before); err != nil {
 			return nil, err
 		}
-		return g.active(ctx, shown[len(shown)-1], before)
+		return g.active(ctx, running[len(running)-1], before)
 	}
-	started, err := g.table.Start(ctx, process.StartParams{Argv: argv, Env: map[string]string{"DISPLAY": g.display.Name()}, Orphans: "keep"})
+	handOff := len(running) > 0
+	// No session bus: an app given none autolaunches one (dbus-launch, on E2B Desktop), and that bus starts services as
+	// the user, with sockets a program of the user reaches: gnome-keyring-daemon's under the user's home
+	// (~/.cache/keyring-*/control), an at-spi bus. "disabled:" is no address a D-Bus library connects to, so an app runs
+	// with no bus, as on Agent37's box, which has no dbus-launch. NO_AT_BRIDGE: a GTK app asks for no accessibility bus.
+	env := map[string]string{"DISPLAY": g.display.Name(), "DBUS_SESSION_BUS_ADDRESS": "disabled:", "NO_AT_BRIDGE": "1"}
+	started, err := g.table.Start(ctx, process.StartParams{Argv: argv, Env: env, Orphans: "keep"})
 	if err != nil {
 		return nil, err
 	}
 	g.mu.Lock()
 	g.launched[e.ID] = append(g.launched[e.ID], launch{id: started.ID, pid: started.Pid})
 	g.mu.Unlock()
+	tree := treeOf(started.Pid)
 	deadline := time.Now().Add(g.window)
 	for {
 		now, err := g.look()
@@ -182,15 +193,37 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		shown := now.of(e.ID)
-		// A new window of the app's; or, when it had one before and the launch ended (a second launch of a single-
-		// instance app hands its work to the first), the one it has.
+		// The launch read once per pass, for both decisions below: read twice, a launcher that failed between the reads
+		// would pass the first as running and the second as a hand-off that worked.
+		runs, failed := g.status(started.ID)
+		// A hand-off opened nothing when its launch showed a dialog of its own instead (Firefox's "already running" box:
+		// its second launch passes a url to the first over a session bus only, and an app here has none), or its launcher
+		// failed. The launch is ended, so its dialog goes, and the call fails in words.
+		if handOff {
+			title, dialog, err := g.dialogOf(now, e.ID, had, tree)
+			if err != nil {
+				return nil, err
+			}
+			if dialog != nil {
+				ended := "That launch was ended"
+				if left := g.end(ctx, started.ID, *dialog); left != "" {
+					ended = "That launch was sent TERM and then KILL, yet " + left
+				}
+				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url did not hand it the url: it showed a dialog of its own, %q, instead (an app that takes a url from a second launch over a session bus, as Firefox does, can't here: apps run with none). %s, and the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, title, ended, e.ID)
+			}
+			if failed {
+				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url failed (%s), so the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, g.ended(started.ID), e.ID)
+			}
+		}
+		// A new window of the app's; or, when it had one before and the launch ended leaving nothing that runs (a second
+		// launch of a single-instance app hands its work to the first), the one it has.
 		var pick *window
 		for i := range shown {
 			if !had[shown[i].id] {
 				pick = &shown[i]
 			}
 		}
-		if pick == nil && len(shown) > 0 && !g.running(started.ID) {
+		if pick == nil && len(shown) > 0 && !runs && !tree.lingers() {
 			pick = &shown[len(shown)-1]
 		}
 		if pick != nil {
@@ -320,6 +353,57 @@ func (g *group) running(id string) bool {
 	zero := int64(0)
 	waited, err := g.table.Wait(context.Background(), process.WaitParams{ID: id, TimeoutMs: &zero})
 	return err == nil && waited.Running
+}
+
+// status is how the launch stands, in one read: whether it still runs its program, and whether it ended with a signal
+// or an exit code other than 0.
+func (g *group) status(id string) (runs, failed bool) {
+	zero := int64(0)
+	waited, err := g.table.Wait(context.Background(), process.WaitParams{ID: id, TimeoutMs: &zero})
+	if err != nil {
+		return false, false
+	}
+	return waited.Running, !waited.Running && (waited.Signal != nil || (waited.ExitCode != nil && *waited.ExitCode != 0))
+}
+
+// end ends one launch whose window w is not the app's to keep, and the process that showed w (the launch's, or one it
+// started, which may outlive it): TERM, then KILL, each given endWait for the launch to end and w to go, so a screenshot
+// right after the answer has none. What is left, in words: "" when both did.
+func (g *group) end(ctx context.Context, id string, w window) string {
+	shows := true
+	for _, sig := range []string{"TERM", "KILL"} {
+		_, _ = g.table.Signal(process.SignalParams{ID: id, Signal: sig})
+		if w.pid > 1 {
+			n := syscall.SIGTERM
+			if sig == "KILL" {
+				n = syscall.SIGKILL
+			}
+			_ = syscall.Kill(w.pid, n)
+		}
+		for deadline := time.Now().Add(endWait); ; {
+			if s, err := g.look(); err == nil {
+				shows = slices.ContainsFunc(s.windows, func(one window) bool { return one.id == w.id })
+			}
+			if !shows && !g.running(id) {
+				return ""
+			}
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(poll):
+			}
+		}
+	}
+	var left []string
+	if g.running(id) {
+		left = append(left, fmt.Sprintf("its process %s still runs", id))
+	}
+	if shows {
+		left = append(left, "its dialog still shows")
+	}
+	return strings.Join(left, " and ")
 }
 
 // ended says how a launch stands, for a launch's error: running, or how it ended.

@@ -14,11 +14,18 @@ test("a launch body round-trips its per-run fields", () => {
     place: { mode: "runner" },
     effort: "high",
     maxCostUsd: 2.5,
-    capMode: "expected",
     followUp: true,
   };
   const read = readLaunchBody(launchBody(launch));
   assert.deepEqual(read, launch);
+});
+
+test("a stored launch body that still holds a cap mode (written before the one mode) reads as if it had none", () => {
+  const stored = { ...launchBody({ input: { content: "go" }, title: "Old run", place: { mode: "runner" }, maxCostUsd: 2.5 }), cap_mode: "expected" };
+  const read = readLaunchBody(stored);
+  assert.equal(read.maxCostUsd, 2.5);
+  assert.equal("capMode" in read, false);
+  assert.equal("cap_mode" in launchBody(read), false, "written back, it carries no mode");
 });
 
 test("a launch body round-trips every field a run's spec is built from", () => {
@@ -30,7 +37,6 @@ test("a launch body round-trips every field a run's spec is built from", () => {
     model: { provider: "anthropic", modelId: "claude-x" },
     effort: "high",
     maxCostUsd: 5,
-    capMode: "strict",
     plane: { model: "a-model" },
     approvers: true,
     documents: "/docs",

@@ -4,7 +4,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
-import { bookedCapSpend, bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
+import { bookedListSpend, bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** A CLI run whose model answered or called a tool with no model request booked (metrics.ts cliModelWorked): what it
@@ -14,11 +14,11 @@ const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => 
 /** What a run has spent, as the cap reads it, from the one store's journal: its model requests and its paid tool calls. */
 export async function spentOverStore(store: Store, runId: string, context: Context): Promise<number | null> {
   const entries = await runEntries(store, runId, context);
-  // A run whose record carries no cost of its own (a CLI harness's, a workflow's) reads what its sessions booked, the
-  // figure its cap holds it to (metrics.ts bookedCapSpend), its record's answers reading $0: 0 before any request, an
-  // unknown booked spend unknown (null).
+  // A run whose record carries no cost of its own (a CLI harness's, a workflow's) reads what its sessions booked for the
+  // requests that answered (metrics.ts bookedListSpend), its record's answers reading $0: 0 before any request, an
+  // unknown booked spend unknown (null). A request still out is held, not spent: its hold never shows as spend.
   // A CLI run whose model worked with no request booked (its requests went past its model proxy) reads unknown, never $0.
-  if (costIsBooked(entries, isCliRecord(entries))) return unbookedCli(entries) ? null : bookedCapSpend(entries);
+  if (costIsBooked(entries, isCliRecord(entries))) return unbookedCli(entries) ? null : bookedListSpend(entries);
   // A pi run's paid tool calls (a browser's time, a search, a monid call) are booked on the run's one ledger, not its root:
   // folded back as the charges the file-backed root held (withPaidCosts), as metersOverStore reads them, so a live run's
   // listed spend counts them.
@@ -43,5 +43,7 @@ export async function metersOverStore(store: Store, runId: string, context: Cont
   if (!costIsBooked(raw, isCliRecord(raw))) return figures;
   const model = bookedSpend(raw, "model");
   if (!model.requests) return unbookedCli(raw) ? { ...figures, tokens: null } : figures;
-  return { ...figures, tokens: model.usd, known: { ...figures.known, tokens: model.known } };
+  // /usage says no "at most": a request booked at its hold (`bounded`) is no spend there, so its meter is unknown, as for
+  // a request of no known cost, and its known dollars are the exact charges alone.
+  return { ...figures, tokens: model.bounded > 0 ? null : model.usd, known: { ...figures.known, tokens: model.known } };
 }

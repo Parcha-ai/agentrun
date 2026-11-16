@@ -9,6 +9,7 @@ import { rules as recommended } from "@secretlint/secretlint-rule-preset-recomme
 secretLintProfiler.setEnabled(false);
 
 import { keyShaped } from "./secret-name.js";
+import { secretValues } from "./api-token.js";
 
 /** Whether a name is a secret's, whatever list names it or none does: one of its `_`-separated segments, in any case, is
  *  KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN, or its last is PWD after another.
@@ -26,7 +27,8 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
   const secrets = (Array.isArray(envs) ? envs : [envs])
     .flatMap((env: NodeJS.ProcessEnv) => Object.getOwnPropertyNames(env).map((name) => [name, env[name]] as const))
     .filter(([name, value]) => (keyShaped(name) || names.includes(name)) && typeof value === "string" && value.length >= 8)
-    .map(([, value]) => value as string)
+    // AGENTRUN_TOKENS's each secret too, not only the list whole (api-token.ts secretValues).
+    .flatMap(([name, value]) => secretValues(name, value as string).filter((part) => part.length >= 8))
     // The longest first: a key that holds a shorter one is cut whole.
     .sort((a, b) => b.length - a.length);
   // `text.removed` counts the values it cut, each once however often it was met; `text.probe` cuts the same and counts

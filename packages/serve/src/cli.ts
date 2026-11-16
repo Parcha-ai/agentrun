@@ -15,6 +15,7 @@ import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
+import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
 import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
@@ -28,7 +29,7 @@ surviveClosedPipes();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
-       agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
+       agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -76,8 +77,13 @@ Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it 
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
 it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's (a DIR/.token from an earlier start is removed), and is never printed; DIR/.token's is
-printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
-published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
+printed only by the start that made it. AGENTRUN_TOKENS, when set, holds more tokens as id:secret entries separated by
+commas or whitespace (each secret 32 characters or more): every one opens what the token opens, AGENTRUN_TOKEN's id is
+"default", and the request lines name the id of the token used, never a secret. Set alone, it takes DIR/.token's place.
+AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
+published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is.
+AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most requests on free models ($0 in the catalog) a run makes, capped
+or not (ChatGPT-plan requests don't count): the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
@@ -108,11 +114,26 @@ session found, those imported before included, and the address to open the conso
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
 own in this process, over a temp data directory removed at the end, so it never touches your server; --server URL runs
-them on that server instead, its token in AGENTRUN_API_KEY, and archives the agents it made. --runs N runs each case N
+them on that server instead, its token in AGENTRUN_API_KEY, and archives the agents it made. --on-data DIR runs its own
+server on DIR, a stopped server's data folder, so the runs use what that server keeps (its ChatGPT sign-in) and a case's
+fakes (its clock, its mailbox) still bind; it archives the agents it made there and leaves the folder and its settings,
+and is refused while another server holds DIR, when DIR has enabled triggers or runs not ended, or for an email case
+when DIR's server keeps an email account. --runs N runs each case N
 times in place of its own count; --grader-model is the llm graders' model (default: the server's); --faux answers every
 model request from MODULE, as the server's --faux does. Progress goes to stderr, a summary to stdout, the whole report
 as JSON to --report FILE. Exit 0 when every case passed, 1 when one failed, 2 when the flags, the package or a case are
 wrong and nothing ran. Real runs cost money: each case's prompt.md caps each of its runs (max_cost_usd).`;
+
+if (process.argv[2] === "remote-bridge") {
+  const { runRemoteWorkerBridge } = await import("./native/remote-worker-bridge.js");
+  await runRemoteWorkerBridge();
+  process.exit(0);
+}
+
+if (process.argv[2] === "native") {
+  const { nativeMain } = await import("./native/cli.js");
+  process.exit(await nativeMain(process.argv.slice(3)));
+}
 
 if (process.argv[2] === "reset-password") {
   let dir: string | undefined;
@@ -154,12 +175,12 @@ if (process.argv[2] === "validate-template") {
 // 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
 // ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
 if (process.argv[2] === "eval-template") {
-  const { CaseError, evalTemplate, exitCodeOf, markdownReport } = await import("./template-eval.js");
+  const { CaseError, evalTemplate, exitCodeOf, markdownReport, ON_DATA_WITH_SERVER } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
     try {
-      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" }, data: { type: "string" } } });
+      return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" }, data: { type: "string" }, "on-data": { type: "string" } } });
     } catch (error) {
       return usage((error as Error).message);
     }
@@ -169,6 +190,8 @@ if (process.argv[2] === "eval-template") {
   if (given.runs !== undefined && !/^[1-9]\d{0,2}$/.test(given.runs)) usage("--runs takes a whole number from 1 to 999.");
   if (given.server !== undefined && !(URL.canParse(given.server) && /^https?:$/.test(new URL(given.server).protocol))) usage("--server takes the server's http(s) address.");
   if (given.server !== undefined && given.faux !== undefined) usage("--faux is the model of the server it starts itself, and --server names another server.");
+  if (given.server !== undefined && given["on-data"] !== undefined) usage(`${ON_DATA_WITH_SERVER}.`);
+  if (given["on-data"] === "") usage("--on-data takes a server's data folder.");
   const token = given.server === undefined ? undefined : secret("AGENTRUN_API_KEY") || secret("AGENTRUN_TOKEN");
   if (given.server !== undefined && !token) usage("--server needs that server's token in AGENTRUN_API_KEY.");
   // The report is written after every case ran, so where it goes is checked now, before anything runs or is paid for.
@@ -207,7 +230,8 @@ if (process.argv[2] === "eval-template") {
     const report = await evalTemplate({
       dir: resolve(positionals[0]!), cases: given.case, ...(given.runs !== undefined ? { runs: Number(given.runs) } : {}),
       ...(given.server !== undefined ? { server: { baseUrl: given.server, token: token! } } : {}), ...(given["grader-model"] !== undefined ? { graderModel: given["grader-model"] } : {}),
-      ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), log: (line) => console.error(line), signal: stop.signal,
+      ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), ...(given["on-data"] !== undefined ? { data: resolve(given["on-data"]) } : {}),
+      log: (line) => console.error(line), signal: stop.signal,
     });
     // A stop asked as the eval ended still stops it: no report, 130.
     stop.signal.throwIfAborted();
@@ -303,6 +327,15 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
+// More tokens, each with an id (api-token.ts), for a rotation with no caller refused; never printed. A list that cannot
+// be read stops here, in words that hold no secret.
+let givenList: ApiToken[] | undefined;
+try {
+  givenList = parseTokens(secret("AGENTRUN_TOKENS"));
+} catch (error) {
+  console.error(`${(error as Error).message}\n\n${USAGE}`);
+  process.exit(2);
+}
 // The stop is listened for before anything starts: a SIGTERM or SIGINT during the start (a platform's redeploy, the
 // moment the banner shows) is kept, never the default end by signal that cuts what the start began. Once the start has
 // what a stop closes, the stop below takes over (stopOnSignals), and a stop asked meanwhile runs it, through the same
@@ -338,7 +371,7 @@ try {
       console.error(`agentrun-serve: ${error.message}`);
       process.exit(1);
     },
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
@@ -372,7 +405,7 @@ if (!values["no-runner"] && askedAt === undefined) {
     // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, mcpLoopback: serve.localInstall });
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
@@ -380,8 +413,8 @@ if (!values["no-runner"] && askedAt === undefined) {
   }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
-const source = given ? "env" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);

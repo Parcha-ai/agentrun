@@ -120,12 +120,35 @@ export async function listMcpServers(store: { mcp: Pick<Mcp, "servers"> }): Prom
   return store.mcp.servers();
 }
 
+/** One saved server's row (its credential stays sealed), or undefined when no such server. */
+export async function getMcpServer(store: { mcp: Pick<Mcp, "server"> }, name: string): Promise<McpServerRow | undefined> {
+  return store.mcp.server(name);
+}
+
+/** The credential of a row already read, opened (§7), as openServerCredential does for a name. */
+export function openMcpRow(sealKey: Buffer, row: Pick<McpServerRow, "name" | "url" | "sealed">): OpenedMcpCredential {
+  return openMcpCredential(sealKey, { name: row.name, url: row.url, sealed: row.sealed });
+}
+
 /** A saved server's credential opened (§7): the credential with its origin, or why not — none saved; unopened (another
  *  seal key, or not the store's format); damaged (saved for another origin than the row's url, so it is never sent).
  *  undefined when no such server. */
 export async function openServerCredential(store: { mcp: Pick<Mcp, "server"> }, sealKey: Buffer, name: string): Promise<OpenedMcpCredential | undefined> {
-  const row = await store.mcp.server(name);
-  return row && openMcpCredential(sealKey, { name: row.name, url: row.url, sealed: row.sealed });
+  const row = await getMcpServer(store, name);
+  return row && openMcpRow(sealKey, row);
+}
+
+/** A refreshed OAuth `credential` sealed and kept as the server's, only while its row's credential is still the one the
+ *  refresh started from (`row.sealed`): Mcp.keepRefreshed, whose `holder` is the refresh lease's. */
+export async function keepRefreshedCredential(
+  store: { mcp: Pick<Mcp, "keepRefreshed"> },
+  sealKey: Buffer,
+  row: Pick<McpServerRow, "name" | "url" | "sealed">,
+  credential: McpCredential,
+  holder: string,
+): Promise<boolean> {
+  const { kept } = await store.mcp.keepRefreshed(row.name, { seen: row.sealed, sealed: sealMcpCredential(sealKey, row.name, credential, row.url), holder, tokenLeftMs: tokenLeftOf(credential) });
+  return kept;
 }
 
 /** Saves an MCP OAuth sign-in in flight, its secret parts sealed (§7, AAD mcp_oauth_pending|<state>|sealed): the PKCE

@@ -75,7 +75,7 @@ describe("runState", () => {
     expect(view("completed", "idle", "workflow", { ...ON, steer_workflow_runs: true }, true).canMessage).toBe(false);
   });
 
-  it("on a harness that does not steer mid-turn (codex, Claude), a message to a working run is a follow_up, never a steer", () => {
+  it("on a harness that does not steer mid-turn (codex, OpenCode), a message to a working run is a follow_up, never a steer", () => {
     // serve answers steer only when the run's harness steers mid-turn; otherwise the message waits for the turn's end.
     expect(view("working", "working", "agentic", ON, false)).toMatchObject({ canMessage: true, messageMode: "follow_up" });
     expect(view("queued", "working", "agentic", ON, false)).toMatchObject({ canMessage: true, messageMode: "follow_up" });

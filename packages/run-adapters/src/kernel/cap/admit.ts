@@ -8,11 +8,11 @@ import type { CapMarks, StartMark } from "./marks.js";
 import { ownCostsOf, spendOf, toldIn } from "./recover.js";
 import { capRule, noteFor, priced } from "./rule.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
-import type { Admission, Cap, CapMode, CapModel, CapOptions, CapRequest, DecisionCapRequest, ModelCapRequest, Settled } from "./types.js";
+import type { Admission, Cap, CapModel, CapOptions, CapRequest, DecisionCapRequest, ModelCapRequest, Settled } from "./types.js";
 
 export { CapRefused, DecisionPriceUnreadable };
 
-const NO_HOLD = (id: string): Admission => ({ id, heldUsd: 0, boundUsd: 0, worstUsd: 0, stoppedUsd: () => 0 });
+const NO_HOLD = (id: string): Admission => ({ id, heldUsd: 0, stoppedUsd: () => 0 });
 /** A step whose start mark could not be written is not sent. */
 export const MARK_NOT_WRITTEN = "the model request was not sent: its mark could not be written";
 /** A step whose end mark did not land within its wait. */
@@ -27,25 +27,20 @@ export async function openCap(options: CapOptions & { marks: CapMarks }): Promis
   return createCap({ ...options, spentUsd: options.spentUsd === undefined ? spent : options.spentUsd }, { costs: ownCostsOf(read), told: toldIn(read) });
 }
 
-/** The output a decision is expected to take, a question (main's DECISION_OUTPUT_TOKENS). */
-export const DECISION_OUTPUT_TOKENS = 256;
 /** An image's input allowance, in tokens (main's DECISION_IMAGE_TOKENS: a 1568 px square at 750 pixels a token). */
 export const DECISION_IMAGE_TOKENS = 3_300;
 
-/** A decision held as a model request is, at its fixed output (all of it or refused, never clamped), as main holds it:
- *  DECISION_OUTPUT_TOKENS a question under "expected", whatever its model's most output (so a model with none is admitted
- *  so); its model's most completion tokens under "strict" (none, and its output priced: no bound, refused); its images'
- *  tokens in its input; its fees (per request, per image) beside its tokens. */
-export function decisionAsk(request: DecisionCapRequest, mode: CapMode): { model: CapModel; inputTokens: number; output: number | null; feeUsd: number } {
+/** A decision held as a model request is, at its worst case, its fixed output all of it or refused, never clamped (its
+ *  request names no output limit): its model's most completion tokens (none, and its output priced: no bound, refused);
+ *  its images' tokens in its input; its fees (per request, per image) beside its tokens. */
+export function decisionAsk(request: DecisionCapRequest): { model: CapModel; inputTokens: number; output: number | null; feeUsd: number } {
   if (request.model === "unreadable") throw new DecisionPriceUnreadable();
   const images = request.images ?? 0;
-  const output = mode === "strict" ? request.model.outputCeiling : request.questions * DECISION_OUTPUT_TOKENS;
-  const model = mode === "strict" ? request.model : { ...request.model, outputCeiling: output };
   const feeUsd = (request.requestUsd ?? 0) + (request.imageUsd ?? 0) * images;
-  return { model, inputTokens: request.inputTokens + images * DECISION_IMAGE_TOKENS, output, feeUsd };
+  return { model: request.model, inputTokens: request.inputTokens + images * DECISION_IMAGE_TOKENS, output: request.model.outputCeiling, feeUsd };
 }
-const asModel = (request: DecisionCapRequest, mode: CapMode): ModelCapRequest => {
-  const { model, inputTokens, output, feeUsd } = decisionAsk(request, mode);
+const asModel = (request: DecisionCapRequest): ModelCapRequest => {
+  const { model, inputTokens, output, feeUsd } = decisionAsk(request);
   return {
     kind: "model",
     id: request.id,
@@ -64,7 +59,6 @@ const unpriced = (request: DecisionCapRequest): ModelCapRequest => ({
 });
 
 export function createCap(options: CapOptions, seed: { costs?: { model: string; usd: number }[]; told?: boolean } = {}): Cap {
-  const mode: CapMode = options.mode ?? "expected";
   const now = options.now ?? Date.now;
   const ledger = new Ledger(options.spentUsd === undefined ? 0 : options.spentUsd);
   const marks = options.marks;
@@ -87,7 +81,7 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
   const started = async (admission: Admission, extra: Partial<StartMark>, heldUsd: number | null = admission.heldUsd): Promise<Admission> => {
     if (!marks) return admission;
     try {
-      await marks.write({ kind: "start", id: admission.id, at: now(), heldUsd, ...(admission.boundUsd > 0 ? { boundUsd: admission.boundUsd } : {}), ...extra });
+      await marks.write({ kind: "start", id: admission.id, at: now(), heldUsd, ...extra });
     } catch {
       ledger.release(admission.id);
       throw new Error(MARK_NOT_WRITTEN);
@@ -111,7 +105,7 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
     async admit(input: CapRequest): Promise<Admission> {
       // Read before every check: a raise holds from the next paid step. A decision under no cap is not priced.
       const capUsd = options.capUsd();
-      const request = input.kind !== "decision" ? input : capUsd === undefined ? unpriced(input) : asModel(input, mode);
+      const request = input.kind !== "decision" ? input : capUsd === undefined ? unpriced(input) : asModel(input);
       // An id whose last step's marks are not all written is not used again until its settle is retried: else that retry
       // finds the new step's hold and settles it at the old step's figure.
       const last = settlements.get(request.id);
@@ -124,7 +118,7 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
         ledger.hold(request.id, { usd: null });
       } else {
         try {
-          const judged = capRule.judge(request, { capUsd, spentUsd: ledger.spent(), heldUsd: ledger.held(), mode, now: now() });
+          const judged = capRule.judge(request, { capUsd, spentUsd: ledger.spent(), heldUsd: ledger.held() });
           admission = { id: request.id, ...judged };
         } catch (error) {
           if (error instanceof CapRefused) return refusing(request.id, error, extra);
@@ -168,11 +162,11 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
       return settled.usd;
     },
     leastUsd(request: ModelCapRequest): number {
-      const p = priced(request, mode, now());
+      const p = priced(request);
       return p ? p.cost(p.least) : Number.NaN;
     },
     note(request: ModelCapRequest) {
-      const note = noteFor(request, { capUsd: options.capUsd(), spentUsd: ledger.spent(), heldUsd: ledger.held(), costs: ownCosts(request.model.id), told, mode, now: now() });
+      const note = noteFor(request, { capUsd: options.capUsd(), spentUsd: ledger.spent(), heldUsd: ledger.held(), costs: ownCosts(request.model.id), told });
       if (note) offered = note;
       return note;
     },
