@@ -40,6 +40,25 @@ function linksWithin(links: readonly unknown[], keep: number): number {
   return links.length;
 }
 
+/** `text`, a call of `tool`'s output, with `cut` (the run's redactor) applied to each string of its JSON by itself and to
+ *  the lines after it, never to its JSON line whole: the redactor reads a run of more than 8,192 characters with no
+ *  whitespace as "[redacted]" (key-refusal.ts redactedAnswer), and a JSON line, whose newlines are escapes, is one such
+ *  run from its text's last space through its links, so cut whole it loses its links and no longer parses. Undefined for
+ *  a tool other than web_search and web_fetch, or an output whose first line is not a JSON object: that one is cut as
+ *  any other tool's. */
+export function webCut(tool: string, text: string, cut: (text: string) => string): string | undefined {
+  if (tool !== WEB_SEARCH && tool !== WEB_FETCH) return undefined;
+  const end = text.indexOf("\n");
+  let read: unknown;
+  try {
+    read = JSON.parse(end < 0 ? text : text.slice(0, end));
+  } catch {
+    return undefined;
+  }
+  if (!isObj(read)) return undefined;
+  return `${JSON.stringify(eachString(read, cut))}${end < 0 ? "" : cut(text.slice(end))}`;
+}
+
 /** `text`, a call of `tool`'s output, as a grader reads it (WebShown), each of its strings through `each` first (the
  *  run's redaction, its URLs' query values elided), so a cut never falls inside what that takes out. Undefined for a
  *  tool other than web_search and web_fetch, or an output that is not its JSON. A page's links past a cut are counted
