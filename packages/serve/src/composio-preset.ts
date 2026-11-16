@@ -128,31 +128,36 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", "A user_id is letters, digits and . _ @ - (at most 128)."));
   if (issues.length) throw invalid(issues);
   const ask = asking(control, key, signal);
-  const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
-  const noAuth = needsNoAuth(kit);
-  let authConfig: string | undefined;
-  let madeConfig = false;
-  if (!noAuth) {
-    const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(toolkit)}`);
-    const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
-    authConfig = managed ? text((managed as Json).id) : undefined;
-    if (!authConfig) {
-      const made = await ask("making the toolkit's auth config", "POST", "/api/v3/auth_configs", { toolkit: { slug: toolkit }, auth_config: { type: "use_composio_managed_auth" } });
-      authConfig = isObject(made.auth_config) ? text(made.auth_config.id) : "";
-      if (!authConfig) throw new ApiError("upstream_failed", "Composio made no auth config: nothing was saved.");
-      madeConfig = true;
-    }
-  }
-  const made = await ask("making the MCP server", "POST", "/api/v3.1/mcp/servers/custom", {
-    name: `ar-${name.slice(0, 18)}-${randomBytes(3).toString("hex")}`, toolkits: [toolkit], ...(authConfig ? { auth_config_ids: [authConfig] } : {}), allowed_tools: tools, managed_auth_via_composio: true,
-  });
-  const id = text(made.id);
-  if (!id) throw new ApiError("upstream_failed", "Composio made no MCP server: nothing was saved.");
-  // From here a failure deletes the server Composio just made, so a failed save leaves nothing in the person's account
-  // (best effort: the save's own error is the one answered). Not when the local entry was written before the save failed
-  // (its flush, say): `savedUrl` reads the name's saved address, and one that is this server's keeps it.
+  // What this save made at Composio. A failure removes it all again (the MCP server, the account its connect link started,
+  // then the auth config), so a failed save leaves nothing it made in the person's account, and never removes what it
+  // found there. The save's own error is the one answered, saying what is left when Composio refuses a removal too. Not
+  // when the local entry was written before the save failed (its flush, say): `savedUrl` reads the name's saved address,
+  // and one that is this server's keeps it all.
+  const madeHere: Removable[] = [];
   let url: string | undefined;
   try {
+    const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
+    const noAuth = needsNoAuth(kit);
+    let authConfig: string | undefined;
+    let madeConfig = false;
+    if (!noAuth) {
+      const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(toolkit)}`);
+      const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
+      authConfig = managed ? text((managed as Json).id) : undefined;
+      if (!authConfig) {
+        const made = await ask("making the toolkit's auth config", "POST", "/api/v3/auth_configs", { toolkit: { slug: toolkit }, auth_config: { type: "use_composio_managed_auth" } });
+        authConfig = isObject(made.auth_config) ? text(made.auth_config.id) : "";
+        if (!authConfig) throw new ApiError("upstream_failed", "Composio made no auth config: nothing was saved.");
+        madeConfig = true;
+        madeHere.push({ kind: "auth_config", id: authConfig });
+      }
+    }
+    const made = await ask("making the MCP server", "POST", "/api/v3.1/mcp/servers/custom", {
+      name: `ar-${name.slice(0, 18)}-${randomBytes(3).toString("hex")}`, toolkits: [toolkit], ...(authConfig ? { auth_config_ids: [authConfig] } : {}), allowed_tools: tools, managed_auth_via_composio: true,
+    });
+    const id = text(made.id);
+    if (!id) throw new ApiError("upstream_failed", "Composio made no MCP server: nothing was saved.");
+    madeHere.push({ kind: "mcp", id });
     const generated = await ask("making the MCP server's address", "POST", "/api/v3.1/mcp/servers/generate", { mcp_server_id: id, user_ids: [user], managed_auth_by_composio: true });
     const address = Array.isArray(generated.user_ids_url) ? text(generated.user_ids_url[0]) : "";
     if (!address) throw new ApiError("upstream_failed", "Composio gave no address for the MCP server: nothing was saved.");
@@ -168,7 +173,10 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         // The link starts the connected account it connects (connected_account_id): this save's, removed with the server.
         const link = await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: authConfig, user_id: user });
         connect = text(link.redirect_url) || undefined;
-        if (text(link.connected_account_id)) accounts.push({ id: text(link.connected_account_id), made: true });
+        if (text(link.connected_account_id)) {
+          accounts.push({ id: text(link.connected_account_id), made: true });
+          madeHere.push({ kind: "account", id: text(link.connected_account_id) });
+        }
       }
     }
     const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig } : null, accounts };
@@ -189,9 +197,31 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     return { server, ...(connect ? { connect_url: connect } : {}), ...(missing.length ? { not_served: missing } : {}) };
   } catch (error) {
     if (url && savedUrl && (await savedUrl().catch(() => undefined)) === url) throw error;
-    await ask("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`).catch(() => undefined);
-    throw error;
+    const left = await removing(ask, [...madeHere].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]), []);
+    if (!left.length || !(error instanceof ApiError)) throw error;
+    throw new ApiError(error.code, `${error.message} ${said(name, [], [], left).note}`, error.extra, error.headers);
   }
+}
+
+/** A thing at Composio a save or a delete may remove. */
+type Removable = Thing | { kind: "mcp"; id: string };
+/** The order things are removed in: the MCP server, then the accounts, then the auth config they are under. */
+const ORDER: Record<Removable["kind"], number> = { mcp: 0, account: 1, auth_config: 2 };
+/** Removes `things` at Composio in order, each named in `removed` once gone (Composio's 404: already gone); answers
+ *  those it could not remove, named. */
+async function removing(ask: Ask, things: readonly Removable[], removed: string[]): Promise<string[]> {
+  const left: string[] = [];
+  for (const thing of things) {
+    const path = thing.kind === "mcp" ? `/api/v3.1/mcp/${encodeURIComponent(thing.id)}` : thing.kind === "account" ? `/api/v3/connected_accounts/${encodeURIComponent(thing.id)}` : `/api/v3/auth_configs/${encodeURIComponent(thing.id)}`;
+    try {
+      await ask(`deleting ${named(thing)}`, "DELETE", path, undefined, "gone");
+      removed.push(named(thing, true));
+    } catch (error) {
+      if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") removed.push(named(thing, true));
+      else left.push(named(thing));
+    }
+  }
+  return left;
 }
 
 /** JSON-RPC's "Method not found": what a Composio MCP server with none of the picked actions answers a tool listing. */
@@ -222,28 +252,18 @@ function said(name: string, removed: string[], kept: (Thing & { by?: string })[]
 }
 
 /** What the answer to a delete says when this server could not ask Composio at all (the saved key does not open here, or
- *  the address names no Composio server): all of it is left there, to remove by hand. */
-export const composioNote = (name: string, cleanup?: Cleanup): { removed: false; note: string } =>
-  ({ removed: false, note: said(name, [], [], [`${listed(["the MCP server it made", ...(cleanup?.remove ?? []).map((thing) => named(thing))])} (the saved key doesn't open here)`]).note });
+ *  the address names no Composio server): all of it is left there, to remove by hand.
+ *  `mcp` false: a save over a server, which removes no MCP server, says what it keeps too. */
+export const composioNote = (name: string, cleanup?: Cleanup, mcp = true): { removed: false; note: string } =>
+  ({ removed: false, note: said(name, [], mcp ? [] : cleanup?.kept ?? [], [`${listed([...(mcp ? ["the MCP server it made"] : []), ...(cleanup?.remove ?? []).map((thing) => named(thing))])} (the saved key doesn't open here)`]).note });
 
 /** Deleting a preset server: the Composio MCP server `id` it made is deleted as `key` (the saved credential, held for this
  *  call only), then what `cleanup` says this server made for it and nothing else uses (composio-made.ts: its connected
  *  accounts, then their auth config). Composio's 404 is "already gone"; a refusal, or no answer, leaves that one there and
- *  says so, for the delete of our own row to go on regardless. The answer says in words what went, what stays and why. */
-export async function composioForget(control: ComposioControl, key: string, id: string, name: string, signal?: AbortSignal, cleanup?: Cleanup): Promise<{ removed: boolean; note: string }> {
-  const ask = asking(control, key, signal, "it is still there");
+ *  says so, for the delete of our own row to go on regardless. The answer says in words what went, what stays and why.
+ *  No `id`: a save over a server, which removes only what the save before made and it no longer stands on. */
+export async function composioForget(control: ComposioControl, key: string, id: string | undefined, name: string, signal?: AbortSignal, cleanup?: Cleanup): Promise<{ removed: boolean; note: string }> {
   const removed: string[] = [];
-  const left: string[] = [];
-  const remove = async (thing: Thing | { kind: "mcp"; id: string }, path: string) => {
-    try {
-      await ask(`deleting ${named(thing)}`, "DELETE", path, undefined, "gone");
-      removed.push(named(thing, true));
-    } catch (error) {
-      if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") removed.push(named(thing, true));
-      else left.push(named(thing));
-    }
-  };
-  await remove({ kind: "mcp", id }, `/api/v3.1/mcp/${encodeURIComponent(id)}`);
-  for (const thing of cleanup?.remove ?? []) await remove(thing, thing.kind === "account" ? `/api/v3/connected_accounts/${encodeURIComponent(thing.id)}` : `/api/v3/auth_configs/${encodeURIComponent(thing.id)}`);
+  const left = await removing(asking(control, key, signal, "it is still there"), [...(id ? [{ kind: "mcp" as const, id }] : []), ...(cleanup?.remove ?? [])], removed);
   return said(name, removed, cleanup?.kept ?? [], left);
 }

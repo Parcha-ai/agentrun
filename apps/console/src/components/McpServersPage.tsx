@@ -403,7 +403,9 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const [name, setName] = useState(add?.name ?? "");
   const [listed, setListed] = useState<ComposioTools | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
-  const [after, setAfter] = useState<{ connect?: string; notServed?: string[] } | null>(null);
+  // What a save says after it is saved: where to connect the account, the actions not served, and what a save over a
+  // server did at Composio with what its earlier save made.
+  const [after, setAfter] = useState<{ connect?: string; notServed?: string[]; composio?: { removed: boolean; note: string } } | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   const key = () => ((form.current?.elements.namedItem("composio-key") as HTMLInputElement | null)?.value ?? "").trim();
@@ -425,7 +427,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
     const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
     form.current?.reset();
     onSaved();
-    if (answer.connect_url || answer.not_served?.length) setAfter({ connect: answer.connect_url, notServed: answer.not_served }); else onClose();
+    if (answer.connect_url || answer.not_served?.length || answer.composio) setAfter({ connect: answer.connect_url, notServed: answer.not_served, composio: answer.composio }); else onClose();
   });
   const toggle = (slug: string) => setPicked((now) => (now.includes(slug) ? now.filter((x) => x !== slug) : [...now, slug]));
   if (after) {
@@ -434,6 +436,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
         <p className="text-body">Saved.{after.connect ? ` Its tools need your ${listed?.toolkit} account: connect it on Composio, then refresh the server.` : ""}</p>
         {after.connect && <p><a href={after.connect} target="_blank" rel="noopener noreferrer" className="font-mono text-body underline">Connect your {listed?.toolkit} account</a></p>}
         {after.notServed?.length ? <p className="font-mono text-body text-muted-foreground">Composio's server doesn't list {after.notServed.join(", ")}: a run can't call {after.notServed.length === 1 ? "it" : "them"}.</p> : null}
+        {after.composio && <p className={`border p-4 text-body ${after.composio.removed ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">{after.composio.note}</p>}
         <Button size="sm" onClick={onClose}>Done</Button>
       </section>
     );

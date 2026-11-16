@@ -5,7 +5,8 @@
 // the row keeps) as its source record is (mcp-sources.ts); read when the server is deleted. The delete removes what was
 // made that no other saved server uses (cleanupOf), and passes what another one uses to that one's record, so the last
 // of them to go removes it. What this server didn't make (an auth config or an account the owner had already, or one no
-// record says it made, as for a server saved before this was recorded) is never removed.
+// record says it made, as for a server saved before this was recorded) is never removed. A save over the server does the
+// same with what the record it replaces made that the new one no longer stands on (droppedOf).
 import { isObject } from "./validate.js";
 
 /** A thing on Composio by its id, and whether this server made it. */
@@ -57,7 +58,7 @@ export function madeToWrite(found: ComposioMade, was: ComposioMade | undefined, 
 /** What a removed server's record leaves to do, with the records of the servers still saved (`others`, by name): each
  *  thing it made that none of them uses is removed; one another uses is kept and passed to that one (`handover`: its record
  *  as it is to be written, owning it); one it didn't make is kept. */
-export function cleanupOf(mine: ComposioMade, others: readonly [string, ComposioMade][]): { cleanup: Cleanup; handover: [string, ComposioMade][] } {
+export function cleanupOf(mine: ComposioMade, others: readonly [string, ComposioMade][], withConfig = true): { cleanup: Cleanup; handover: [string, ComposioMade][] } {
   const cleanup: Cleanup = { remove: [], kept: [] };
   const handed = new Map<string, ComposioMade>();
   const take = (name: string, record: ComposioMade) => handed.get(name) ?? (handed.set(name, { ...record, accounts: [...record.accounts] }), handed.get(name)!);
@@ -70,7 +71,7 @@ export function cleanupOf(mine: ComposioMade, others: readonly [string, Composio
       record.accounts = [...record.accounts.filter((a) => a.id !== account.id), { id: account.id, made: true }];
     } else cleanup.remove.push({ kind: "account", id: account.id });
   }
-  if (mine.auth_config) {
+  if (mine.auth_config && withConfig) {
     const config = mine.auth_config;
     const user = others.find(([, other]) => other.auth_config?.id === config.id);
     if (!config.made) cleanup.kept.push({ kind: "auth_config", id: config.id });
@@ -80,4 +81,14 @@ export function cleanupOf(mine: ComposioMade, others: readonly [string, Composio
     } else cleanup.remove.push({ kind: "auth_config", id: config.id });
   }
   return { cleanup, handover: [...handed] };
+}
+
+/** What a save over a server leaves to do at Composio, with the records of the other servers saved (`others`, by name):
+ *  what the record it replaces (`was`) made that the one written now (`now`) no longer stands on, an account of another
+ *  user or auth config, and an auth config of another toolkit, each removed or passed on as a delete's is (cleanupOf). */
+export function droppedOf(was: ComposioMade, now: ComposioMade, others: readonly [string, ComposioMade][]): { cleanup: Cleanup; handover: [string, ComposioMade][] } {
+  const accounts = was.accounts.filter((account) => account.made && !now.accounts.some((kept) => kept.id === account.id));
+  // The auth config goes through only when this save stands on another one: its accounts are checked under it either way.
+  const config = was.auth_config !== null && was.auth_config.made && now.auth_config?.id !== was.auth_config.id;
+  return cleanupOf({ user: was.user, auth_config: was.auth_config, accounts }, others, config);
 }

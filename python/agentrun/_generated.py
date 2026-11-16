@@ -809,6 +809,7 @@ __all__ = [
     "RunsResource",
     "SaveComposioServerBody",
     "SaveComposioServerResponse",
+    "SaveComposioServerResponseComposio",
     "SaveComposioServerResponseServer",
     "SaveComposioServerResponseServerAuth",
     "SaveComposioServerResponseServerOauth",
@@ -4119,6 +4120,7 @@ class _SaveComposioServerResponseRequired(TypedDict):
 class SaveComposioServerResponse(_SaveComposioServerResponseRequired, total=False):
     connect_url: str
     not_served: list[str]
+    composio: SaveComposioServerResponseComposio
 
 
 class _SaveComposioServerResponseServerRequired(TypedDict):
@@ -4180,6 +4182,11 @@ class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServe
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class SaveComposioServerResponseComposio(TypedDict):
+    removed: bool
+    note: str
 
 
 SaveComputerKeysBody: TypeAlias = "dict[str, str | None]"

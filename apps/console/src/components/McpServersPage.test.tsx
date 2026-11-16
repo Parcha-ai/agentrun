@@ -740,6 +740,21 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(document.body.innerHTML).not.toContain(KEY);
   });
 
+  it("a save over a server shows, in its words, what it did at Composio with what the earlier save made", async () => {
+    const note = "Removed in Composio: the connected account ca_link_1 (its connect link with it).";
+    const s = server([[], [saved({ name: "gh" })]], (c) => (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio" ? json(200, { server: saved({ name: "gh" }), composio: { removed: true, note } }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    const said = [...p.host.querySelectorAll('[role="status"]')].find((e) => e.textContent === note);
+    expect(said?.className).toContain("text-success-text");
+  });
+
   it("drops an action list asked for a toolkit no longer in the field, and keeps Cancel off while a save is out", async () => {
     let late: (r: Response) => void = () => undefined;
     let first = true;

@@ -4948,6 +4948,10 @@ export interface operations {
       };
       connect_url?: string;
       not_served?: string[];
+      composio?: {
+        removed: boolean;
+        note: string;
+      };
     };
   };
   saveComputerKeys: {

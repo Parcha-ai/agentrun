@@ -121,7 +121,7 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
-import { mcpServersOverStore } from "./mcp-servers-store.js";
+import { type ComposioDropped, mcpServersOverStore } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
@@ -1700,6 +1700,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     signal: stopping.signal,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
+  // The Composio preset's saves and the MCP servers' deletes, one at a time, Composio's calls included: a delete never
+  // removes there an auth config or account that a save still at Composio reuses (it would find no record of it yet), and
+  // a save never reuses one a delete is removing. A failure of one never stops the next.
+  let composioLast: Promise<unknown> = Promise.resolve();
+  const inComposioTurn = <T>(work: () => Promise<T>): Promise<T> => {
+    const turn = composioLast.then(work, work);
+    composioLast = turn.catch(() => undefined);
+    return turn;
+  };
   // A repair of the GitHub installations (below) stops before the triggers close, in a start that fails as in close.
   stops.push(() => githubConnect.close());
   stops.push(async () => triggers.close());
@@ -3744,8 +3753,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
-        const answer = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, undefined, made, stands), id, stopping.signal, async () => (await mcpServers.get(id)).url);
-        await refreshMcpMeta();
+        // In the Composio turn. A save over a preset server removes there what the save before made that this one no longer
+        // stands on (an account of another user, an auth config of another toolkit), with the key it was made with, and
+        // says so as a delete does; what another saved server uses is that one's now, and said too.
+        const answer = await inComposioTurn(async () => {
+          const over: { dropped?: ComposioDropped } = {};
+          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, undefined, made, stands, (left) => (over.dropped = left)), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+          await refreshMcpMeta();
+          const { dropped } = over;
+          if (!dropped) return saved;
+          const composio = "unusable" in dropped && dropped.cleanup.remove.length ? composioNote(id, dropped.cleanup, false) : await composioForget(options.composioControl ?? {}, "key" in dropped ? dropped.key : "", undefined, id, stopping.signal, dropped.cleanup);
+          return { ...saved, composio };
+        });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "listComposioEvents":
@@ -3804,10 +3823,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // what its save made for it there that no other saved server uses (its connect link's account, its auth config).
         // Composio refusing or not answering, or a key that does not open, never keeps our row. A preset's answer says in
         // words what went there, what stays and why, and what to remove by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
-        // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting).
-        const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
-        await refreshMcpMeta();
-        const forgotten = !made ? undefined : "unusable" in made ? composioNote(id, made.cleanup) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal, made.cleanup);
+        // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting). All of
+        // it in the Composio turn, so a Composio save still at work finishes first and its record is counted.
+        const forgotten = await inComposioTurn(async () => {
+          const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
+          await refreshMcpMeta();
+          return !made ? undefined : "unusable" in made ? composioNote(id, made.cleanup) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal, made.cleanup);
+        });
         if (forgotten) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }

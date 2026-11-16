@@ -18,7 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, madeToWrite, recordedMade, storedMade } from "./composio-made.js";
+import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, droppedOf, madeToWrite, recordedMade, storedMade } from "./composio-made.js";
 import { COMPOSIO_USER, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
@@ -59,11 +59,17 @@ function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpSer
 export type ComposioHandle = ({ id: string; key: string } | { unusable: true }) & { cleanup?: Cleanup };
 function composioHandleOf(removed: RemovedMcpServer | undefined, cleanup: Cleanup | undefined): ComposioHandle {
   const id = removed ? composioServerId(removed.url) : undefined;
-  const open = removed?.opened;
-  const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
-  const key = headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
+  const key = composioKeyOf(removed?.opened);
   return { ...(id && key ? { id, key } : { unusable: true as const }), ...(cleanup ? { cleanup } : {}) };
 }
+/** The Composio key a preset row's opened credential holds (its x-api-key header); none when it does not open. */
+function composioKeyOf(open: RemovedMcpServer["opened"]): string | undefined {
+  const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
+  return headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
+}
+/** What a save over a preset server leaves to do at Composio (composio-made.ts droppedOf), with the key the server was
+ *  saved with before, which made what it dropped; `unusable` when that key does not open here. */
+export type ComposioDropped = ({ key: string } | { unusable: true }) & { cleanup: Cleanup };
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
  *  client, with its secret) sealed together by its state, the rest of its working state plain JSON the callback rebuilds.
@@ -253,8 +259,9 @@ export class McpServersOverStore {
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
    *  auth type and the URL's origin stay the same. `made`: what made the server, when that is the Composio preset (its
    *  source and toolkit, recorded as they are), and `stands`, what it stands on at Composio (composio-made.ts), recorded
-   *  for its delete. */
-  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade) {
+   *  for its delete. `dropped` is told what a save over the server leaves to do there: what the save before made that
+   *  this one no longer stands on, which another saved server's record now owns or the caller removes. */
+  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
     // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
@@ -323,9 +330,28 @@ export class McpServersOverStore {
     // What it stands on at Composio: what the preset found and made, over what the server saved before over this row had
     // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
     if (made && stands) {
-      const others = (await this.composioRecords()).filter(([other]) => other !== name).map(([, record]) => record);
+      const others = (await this.composioRecords()).filter(([other]) => other !== name);
       const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
-      await this.store.settings.put(composioMadeKey(name), storedMade(madeToWrite(stands, before, others), saved));
+      const record = madeToWrite(stands, before, others.map(([, other]) => other));
+      await this.store.settings.put(composioMadeKey(name), storedMade(record, saved));
+      // What the save before made that this one no longer stands on: another saved server's now (its record rewritten to
+      // own it), or the caller's to remove at Composio, with the key it was made with.
+      if (was && before) {
+        const done = droppedOf(before, record, others.map(([other, mine]): [string, ComposioMade] => [other, mine]));
+        for (const [other, handed] of done.handover) {
+          const of = others.find(([n]) => n === other)?.[2];
+          if (of !== undefined) await this.store.settings.put(composioMadeKey(other), storedMade(handed, { createdAt: of }));
+        }
+        if (done.cleanup.remove.length || done.cleanup.kept.length) {
+          let key: string | undefined;
+          try {
+            key = composioKeyOf(openMcpRow(this.sealKey, was));
+          } catch {
+            key = undefined;
+          }
+          dropped?.({ ...(key ? { key } : { unusable: true as const }), cleanup: done.cleanup });
+        }
+      }
     } else if (moved) await this.store.settings.remove(composioMadeKey(name));
     await this.store.flush();
     return this.view(saved);

@@ -2849,6 +2849,10 @@ export type SaveComposioServerResponse = {
   };
   connect_url?: string;
   not_served?: Array<string>;
+  composio?: {
+    removed: boolean;
+    note: string;
+  };
 };
 
 /** Save a computer provider's keys, sealed (PUT /computers/{provider}/keys). */
