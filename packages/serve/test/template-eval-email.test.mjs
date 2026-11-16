@@ -41,9 +41,9 @@ const INBOX = [
 ];
 const NEW = msg({ from: "ana@example.com", from_name: "Ana", subject: "Re: Invoice 1042", date: "2026-11-14T08:00:00Z", message_id: "<a2@example.com>", in_reply_to: "<a1@example.com>", references: ["<a1@example.com>"], text: "Any news on the invoice?" });
 
-/** A package that grants email_search, email_read, email_draft and email_file, with an email trigger and a schedule; its
- *  cases each a fixture, their graders as given. */
-async function mailPackage(t, cases) {
+/** A package that grants email_search, email_read, email_draft and email_file, with an email trigger and a schedule (a
+ *  daily 09:00 UTC cron, or `schedule`'s source fields); its cases each a fixture, their graders as given. */
+async function mailPackage(t, cases, { schedule = "cron: \"0 9 * * *\", timezone: UTC" } = {}) {
   const dir = join(await scratch(t), "mailpkg");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "agent.md"), [
@@ -63,7 +63,7 @@ async function mailPackage(t, cases) {
     "        content: |",
     indented(REPLY, 10),
     "  - name: Morning digest",
-    "    source: { kind: schedule, cron: \"0 9 * * *\", timezone: UTC }",
+    `    source: { kind: schedule, ${schedule} }`,
     "    target:",
     "      kind: start_run",
     "      input:",
@@ -174,6 +174,24 @@ test("a schedule case run more than once fires each run on the case's own date, 
   // trigger clock reached on an earlier run.
   const fired = graderInputs().flatMap((input) => /\(Started by the schedule "Morning digest" for ([^)]*)\.\)/.exec(input)?.[1] ?? []);
   assert.deepEqual(fired, ["Nov 14, 2026, 9:00 AM UTC", "Nov 14, 2026, 9:00 AM UTC", "Nov 14, 2026, 9:00 AM UTC"], fired.join(" | "));
+});
+
+test("a case whose now has passed applies a package whose one-time schedule is on the case's date: the apply checks the date by the case's clock, as the trigger fires by it", { timeout: 600_000 }, async (t) => {
+  // A day the real clock passed long ago: a one-time `at` on it is in the future only by the case's clock.
+  const dir = await mailPackage(t, {
+    "digest-once": {
+      fixture: { description: "Two threads in the inbox, for a one-time digest on its day.", account: { address: "agent@acme.example" }, mailboxes: { INBOX } },
+      graders: { "found.md": "---\ntype: regex\npattern: \"<b1@example\\\\.com>\"\n---\n", "dated.md": "---\ntype: llm\n---\nPass if the answer starts with \"DIGEST\".\n" },
+      yaml: "now: \"2020-03-02T09:00:00Z\"\n",
+    },
+  }, { schedule: "at: \"2020-03-02T09:00:00Z\"" });
+  const report = await evalTemplate({ dir, cases: ["digest-once"], serve: { faux: FAUX } });
+  assert.equal(report.cases[0].runs?.length, 1, JSON.stringify(report.cases[0], null, 1));
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.match(run.answer, /^DIGEST \{"messages":\[\{"message_id":"<b1@example\.com>"/, run.answer);
+  const fired = graderInputs().flatMap((input) => /\(Started by the schedule "Morning digest" for ([^)]*)\.\)/.exec(input)?.[1] ?? []);
+  assert.ok(fired.some((at) => /^Mar 2, 2020, 9:00 AM/.test(at)), fired.join(" | "));
 });
 
 test("email_file with archive false keeps the message in INBOX on both layouts: refused on folders (the refused call still counts), a label on gmail; a grader of one layout grades that layout's run alone", { timeout: 600_000 }, async (t) => {
