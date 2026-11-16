@@ -169,6 +169,18 @@ test("delete revokes the machine's token before it closes the socket, and closes
 	assert.match(notes.join("\n"), /its machine token could not be revoked \(the store is down\)/);
 });
 
+test("a token store that never answers a revoke holds a delete back no longer than requestMs: the socket closes and the machine is deleted", async () => {
+	const { fake, tokens, hub } = setup();
+	const dial = { url: PUBLIC_URL, tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: () => new Promise(() => {}) }, hub };
+	const notes = [];
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 300 }, dial, onNote: (note) => notes.push(note.note) });
+	const ref = made(await create(provider));
+	made(await provider.release(ref, "delete"));
+	assert.equal(hub.online(ref.name), false);
+	assert.deepEqual(fake.live(), []);
+	assert.deepEqual(notes, ["its machine token could not be revoked (the token store did not answer within 0.3 s): it is refused past the machine's backstop either way"]);
+});
+
 test("a dial host's provider given no dial refuses create in its own words, of the process, before the vendor is called", async () => {
 	const { fake } = fakeDialHost({ daemon: DAEMON_BYTES });
 	const refused = await create(new HostedProvider(fake.host, { daemonPath: DAEMON_PATH }));

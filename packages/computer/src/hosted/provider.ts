@@ -533,11 +533,17 @@ export class HostedProvider implements ComputerProvider {
 	async #revoke(name: string): Promise<void> {
 		const dial = this.#dial;
 		if (dial === undefined) return;
+		const { requestMs } = this.#timeouts;
+		const said = (why: string) => this.#onNote?.({ computer: name, note: `its machine token could not be revoked (${why}): it is refused past the machine's backstop either way` });
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			await dial.tokens.revoke(name);
+			// Bounded by requestMs: a store that never answers must not hold the socket open or the vendor's delete back.
+			const late = await Promise.race([dial.tokens.revoke(name).then(() => false), new Promise<true>((done) => (timer = setTimeout(done, requestMs, true)))]);
+			if (late) said(`the token store did not answer within ${requestMs / 1000} s`);
 		} catch (error) {
-			this.#onNote?.({ computer: name, note: `its machine token could not be revoked (${words(error)}): it is refused past the machine's backstop either way` });
+			said(words(error));
 		} finally {
+			clearTimeout(timer);
 			dial.hub.revoke(name, `${name} was deleted`);
 		}
 	}

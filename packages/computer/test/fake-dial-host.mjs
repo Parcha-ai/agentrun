@@ -71,6 +71,8 @@ export function fakeDialHost({ daemon, dials = true, helloMs = 1_000, ...options
 		facts: { connect: "dial", ...options.facts },
 		onBoot(m) {
 			if (!dials || m.boot.AGENTRUN_DAEMON_SHA256 !== served) return;
+			// The machine is of the host's arch, and its daemon's hello says so.
+			m.box.hello = { ...m.box.hello, arch: fake.host.facts.arch };
 			const [server, machine] = socketPair();
 			serveDaemon(machine, (request) => fake.answer(m, request));
 			fake.dialed.push({ machine: m.id, url: m.boot.AGENTRUN_ATTACH_URL });
