@@ -403,7 +403,8 @@ async function outsideWords(host: ToolHost, args: Record<string, unknown>): Prom
   }
   try {
     const account = await openAccount(host.store, host.sealKey);
-    if (!account) return undefined;
+    // No account, or one a template eval's run may not open: the send itself is refused in its own words.
+    if (!account || !fakeHeld(host, account)) return undefined;
     const mail = new Mail(account, scope, threadOf(host));
     const people = await withMail(mail, (session) => mail.people(session));
     const outside = people ? recipients.filter((one) => !people.has(one)) : [];
@@ -411,6 +412,15 @@ async function outsideWords(host: ToolHost, args: Record<string, unknown>): Prom
   } catch (error) {
     return `its recipients couldn't be checked against this email's thread (${(error as Error)?.message ?? String(error)})`;
   }
+}
+
+/** Whether two servers are the same host and port. */
+const same = (a: { host: string; port: number }, b: { host: string; port: number }) => a.host === b.host && a.port === b.port;
+/** False when `account` is not the one this run may open: a template eval's run opens only its case's fake account, so a
+ *  real one saved meanwhile is never reached. */
+function fakeHeld(host: ToolHost, account: { imap: { host: string; port: number }; smtp: { host: string; port: number } }): boolean {
+  const fake = host.emailFake;
+  return !fake || (same(account.imap, fake.imap) && same(account.smtp, fake.smtp));
 }
 
 /** The names email_file refuses whatever the account flags: the trash and junk folders by their usual names. */
@@ -498,9 +508,6 @@ const TOOLS: Record<string, { description: string; properties: Record<string, un
   },
 };
 
-/** Whether two servers are the same host and port. */
-const same = (a: { host: string; port: number }, b: { host: string; port: number }) => a.host === b.host && a.port === b.port;
-
 /** The five tools, for a run `host` serves (host-bounds.test.mjs lists them as the Claude Agent CLI is given them). */
 export const emailRegistrations = (host: ToolHost): ToolRegistration[] => Object.keys(TOOLS).map((name) => emailTool(name, host));
 
@@ -522,9 +529,7 @@ function emailTool(name: string, host: ToolHost, kind?: ServerKind): ToolRegistr
         if (!host.store || !host.sealKey) return forModel(`${name}: the email tools run on the runner, which this run is not on.`, { isError: true });
         const account = await openAccount(host.store, host.sealKey);
         if (!account) return forModel(`${name}: ${NO_ACCOUNT}`, { isError: true });
-        // A template eval's run opens only its case's fake account: a real one saved meanwhile is never reached.
-        const fake = host.emailFake;
-        if (fake && !(same(account.imap, fake.imap) && same(account.smtp, fake.smtp))) return forModel(`${name}: this eval run reads only its case's fake mailbox, and the server's email account is another.`, { isError: true });
+        if (!fakeHeld(host, account)) return forModel(`${name}: this eval run reads only its case's fake mailbox, and the server's email account is another.`, { isError: true });
         const mail = new Mail(account, await (scope ??= scopeOf(host, name)), threadOf(host), host.now);
         const answer = await tool.run(mail, (isObject(args) ? args : {}) as Record<string, unknown>, host);
         return forModel(emailText(answer as Record<string, unknown>));
