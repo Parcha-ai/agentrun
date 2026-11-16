@@ -304,6 +304,24 @@ test("a long queue never trims the running replay out: no second replay starts w
   assert.equal(store.created.length, 6, "the newest draft's replay runs start");
 });
 
+// The same trim on the skipped records the queue reads: a draft skipped long ago may have lost its record to it. With the
+// records at the cap, a claim pinned to a revision with no record that is not the folder's newest starts nothing (it may be
+// a skipped or held revision whose record the trim dropped); under the cap, nothing changes (it starts at once).
+test("records at the trim's cap: a revision with no record that is not the newest starts nothing", async () => {
+  const flow = flowOf(undefined);
+  const [three, four] = ["three", "four"].map((n) => flow.replace("Answer.", `Answer, revision ${n}.`));
+  const [THREE, FOUR] = [three, four].map((text) => workflowDigest({ workflow: text }));
+  const at = new Date().toISOString();
+  const others = Array.from({ length: PROMOTIONS_KEPT }, (_, i) => ({ workflow: "other", digest: `other-${i}`, at, decided: "hold", source: "replay", reason: "held" }));
+  const full = await replayStoreOf({ records: others, newest: FOUR });
+  assert.equal(await full.gateOf()({ name: "answer", workflow: three }, THREE), undefined);
+  assert.equal(promotionOf(await promotionsOf(full.settings, "a"), "answer", THREE), undefined, full.logs.join("\n"));
+  assert.deepEqual(full.created, []);
+  const under = await replayStoreOf({ records: others.slice(1), newest: FOUR });
+  await under.gateOf()({ name: "answer", workflow: three }, THREE);
+  assert.equal(promotionOf(await promotionsOf(under.settings, "a"), "answer", THREE)?.decided, "replaying", under.logs.join("\n"));
+});
+
 // A graded run a learned workflow answered alone (path workflow) has a recorded answer and a grade as an agent's run does:
 // it is a replay input, never left out for the path it took.
 test("graded runs a workflow answered alone are replayed: a new revision reserves a replay run on each", async () => {

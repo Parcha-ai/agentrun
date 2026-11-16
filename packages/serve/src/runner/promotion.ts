@@ -68,7 +68,7 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayLaunch, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, scoreOf, skippedToolsOf, thresholdsOf, withinBar } from "../learn/promote.js";
+import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, PROMOTIONS_KEPT, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayLaunch, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, scoreOf, skippedToolsOf, thresholdsOf, withinBar } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -291,14 +291,17 @@ async function decide(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   }
   // A new revision, or a queued one. One replay at a time, and a running replay finishes: the laid one moves only when it
   // is the newest revision (the one the learning folder's main holds now); a run pinned to an older commit lays an older
-  // text and starts nothing, whenever it was launched (a queued one it lays is skipped for the newest), nor does one whose
-  // record the trim dropped (a skipped or held revision is never the newest). `seen`, the queue as read before the newest
-  // check: every queue change below (queued, skips, a start) is one guarded write kept only while the queue is still that
-  // (sameQueue), so a claim that read an older main never skips a newer revision a later claim queued meanwhile.
+  // text and starts nothing, whenever it was launched (a queued one it lays is skipped for the newest). With the records at
+  // the trim's cap a revision with none may be one whose record the trim dropped (a skipped or held one): it starts only
+  // when it is the newest too, so a skipped draft never replays once its record is gone. `seen`, the queue as read before
+  // the newest check: every queue change below (queued, skips, a start) is one guarded write kept only while the queue
+  // is still that (sameQueue), so a claim that read an older main never skips a newer revision a later claim queued
+  // meanwhile.
   const seen = await promotionsOf(store.settings, agentId);
   let records = seen;
   const ahead = [...replayingOf(records, workflow.name, digest), ...replayingOf(records, workflow.name, digest, "queued")];
-  if (ahead.length || record || deps.newest) {
+  const trimmed = records.length >= PROMOTIONS_KEPT;
+  if (ahead.length || record || trimmed) {
     const newest = deps.newest ? await deps.newest(workflow.name) : undefined;
     if (newest !== digest && (ahead.length || record || newest !== undefined)) {
       if (record && newest !== undefined) await skip(deps, record, newest);
