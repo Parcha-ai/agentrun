@@ -54,6 +54,9 @@ type Guarded struct {
 	reported bool
 }
 
+// GuardPid is the pid of g's guard, known from its fork: a program that ends at once leaves no trail in /proc to it.
+func (g *Guarded) GuardPid() int { return g.guard.Process.Pid }
+
 // groupAnswerTimeout bounds the wait for the guard's answer to a signal to a named group.
 var groupAnswerTimeout = 2 * time.Second
 
