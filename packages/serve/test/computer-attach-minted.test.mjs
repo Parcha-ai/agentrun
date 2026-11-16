@@ -111,6 +111,23 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   assert.match(logged, /machine_token_revoked/);
 });
 
+test("an API-only server takes a run's hosted machine on the attach socket and the daemon route, and a paired computer's token (the console's) as unknown", async (t) => {
+  const server = await serve(t, { apiOnly: true, runner: false });
+  const token = await server.dial.tokens.mint("computer-0000000000a1", { ...MINT, expiresAt: inMs(60_000) });
+  const driver = attachDriver({ address: server.url, token, scale: 0.01 });
+  t.after(() => driver.stop());
+  driver.start();
+  await until(async () => server.attachHub.online("computer-0000000000a1"), Boolean, "the machine is in the hub");
+  assert.equal((await fetchDaemon(server, token, "x86")).status, 422, "the daemon route is served, and takes the token");
+  assert.equal((await fetchDaemon(server, UNKNOWN)).status, 401);
+
+  const pairedToken = `art_${"1".repeat(64)}`;
+  await server.store.pairedComputers.addCode("pairing-api-only", sha256("code"), Date.now() + 60_000);
+  assert.equal(await server.store.pairedComputers.pair(sha256("code"), { id: "cmp-apionly", name: "laptop", hello: DRIVER_HELLO, labels: {}, tokenSha256: sha256(pairedToken) }), true);
+  assert.deepEqual(await dial(server, pairedToken), { open: false, status: 401 }, "a paired computer is the console's");
+  assert.equal(server.attachHub.online("cmp-apionly"), false);
+});
+
 test("the daemon route serves this server's computerd build for the machine's arch, the bytes a hosted provider uploads; ten fetches a minute per machine, then 429; another arch is 422; the token is in no log line", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
   const lines = [];
   const server = await serve(t, { runner: false, publicUrl: "https://agentrun.example.com/", log: (line) => lines.push(line) });

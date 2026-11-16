@@ -1026,7 +1026,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
   const attachHub = new AttachHub();
-  const attach = createAttachRoutes({ store, hub: attachHub, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
+  const attach = createAttachRoutes({ store, hub: attachHub, machinesOnly: options.apiOnly === true, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -4223,9 +4223,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings).
-    if (options.apiOnly) return deny("404 Not Found");
-    // A paired computer's driver dialing its attach socket (computer-attach.ts): its token, not the owner's, lets it in.
+    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings), whose tokens
+    // the attach socket takes as unknown there (machinesOnly). A run's hosted machine that dials still reaches it.
+    if (options.apiOnly && raw !== ATTACH_PATH) return deny("404 Not Found");
+    // A paired computer's driver or a hosted machine dialing the attach socket (computer-attach.ts): its token, not the
+    // owner's, lets it in.
     if (raw === ATTACH_PATH) {
       return attach.upgrade(req, socket, head, (status, words = "", headers = {}) => {
         if (status.startsWith("401")) authFailed(raw, "attach_token");

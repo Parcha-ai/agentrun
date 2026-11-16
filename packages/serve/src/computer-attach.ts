@@ -286,6 +286,9 @@ export interface AttachRoutesOptions {
   /** Told each event worth a line: a computer paired, attached, refused at its hello, removed; a machine's token minted
    *  or revoked. Never a code or a token, nor a token's hash. */
   readonly log?: (event: string, fields: Record<string, string>) => void;
+  /** An API-only server's (api-only.ts): the socket takes a hosted machine's minted token alone, and a paired computer's
+   *  (the console's) is 401 as one it does not know. */
+  readonly machinesOnly?: boolean;
   /** The socket's liveness timing: the protocol's unless a test gives its own. */
   readonly timing?: AttachTiming;
   readonly now?: () => number;
@@ -417,10 +420,10 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     void (async () => {
       if (closing) return deny("503 Service Unavailable", "this server is stopping");
       const bearer = bearerOf(req.headers.authorization);
-      const row = bearer?.startsWith(ATTACH_TOKEN_PREFIX) ? await paired.byToken(sha256Hex(bearer)) : undefined;
+      const row = !options.machinesOnly && bearer?.startsWith(ATTACH_TOKEN_PREFIX) ? await paired.byToken(sha256Hex(bearer)) : undefined;
       const machine = row === undefined ? await machineBy(req.headers.authorization) : undefined;
       const dialer = row !== undefined ? pairedDialer(row) : machine !== undefined ? machineDialer(machine) : undefined;
-      if (dialer === undefined) return deny("401 Unauthorized", TOKEN_REFUSED, { "www-authenticate": "Bearer" });
+      if (dialer === undefined) return deny("401 Unauthorized", options.machinesOnly ? MACHINE_TOKEN_REFUSED : TOKEN_REFUSED, { "www-authenticate": "Bearer" });
       const asked = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map((one) => one.trim()).filter(Boolean);
       if (!asked.includes(ATTACH_SUBPROTOCOL)) {
         return deny("426 Upgrade Required", `this server speaks ${ATTACH_SUBPROTOCOL}, and the driver asked for ${asked.join(", ") || "no subprotocol"}: update whichever is older`, { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
