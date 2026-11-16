@@ -21,7 +21,9 @@
 // An auth config it makes (`ac_made_<n>`) is listed with its toolkit's from then on, as Composio-managed, until a DELETE
 // /auth_configs/{id} removes it; a connect link answers the connected account it starts (`ca_link_<n>`), which DELETE
 // /connected_accounts/{id} removes. A delete of one it doesn't have answers 404.
-// Its base URL carries a path of its own, new each start, and its MCP server's id is new each start too: a request on its
+// Each MCP server it makes gets an id of its own (the first `mcpId`, new each start; the next `<mcpId>_2`, and so on, in
+// `mcpIds`), served until a DELETE /api/v3.1/mcp/{id} removes it from `mcpLive`. Its base URL carries a path of its own,
+// new each start, as its MCP servers' ids are: a request on its
 // port that the server under test didn't send (a port prober on the host GETs / on each new loopback listener; another
 // test process's client may still call a port it freed, which this fake then took) is not one of its calls. Such a
 // request is answered 404 and kept apart in `strays`, never in `calls`, so a stray without the key can't read as the
@@ -32,7 +34,7 @@ import { startFakeMcp } from "./fake-mcp-server.mjs";
 import { stranger } from "./stranger.mjs";
 
 /** An MCP endpoint that serves no tools, as Composio's does when none of the allowed actions is one it serves: it agrees a
- *  protocol and answers every other method "Method not found". */
+ *  protocol and answers every other method "Method not found". `path`: whether a request's path is one it serves. */
 async function startEmptyMcp(path, inspect, listStatus) {
   const http = createServer(async (req, res) => {
     const chunks = [];
@@ -40,7 +42,7 @@ async function startEmptyMcp(path, inspect, listStatus) {
     inspect(req.headers);
     let message = {};
     try { message = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
-    if (new URL(req.url, "http://x").pathname !== path) return void res.writeHead(404).end();
+    if (!path(new URL(req.url, "http://x").pathname)) return void res.writeHead(404).end();
     if (message.id === undefined) return void res.writeHead(202).end();
     if (listStatus && message.method !== "initialize") return void res.writeHead(listStatus, { "content-type": "application/json" }).end(JSON.stringify({ error: "down" }));
     res.writeHead(200, { "content-type": "application/json" });
@@ -49,7 +51,7 @@ async function startEmptyMcp(path, inspect, listStatus) {
       : { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }));
   });
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${http.address().port}${path}`, log: [], close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
+  return { url: `http://127.0.0.1:${http.address().port}/mcp`, log: [], close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
 }
 
 /** GitHub's new-issue event as Composio lists it (live 11-14): a webhook trigger whose config needs owner and repo. */
@@ -76,8 +78,13 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   const mcpKeys = [];
   const own = `/fake-composio-${randomBytes(6).toString("hex")}`;
   const id = `srv_fake_${randomBytes(4).toString("hex")}`;
+  /** The MCP servers it made, in order, by id: the first is `id`, each one after it `<id>_<n>`. Each is served at
+   *  /v3/mcp/<its id>/mcp until a DELETE removes it from `mcpLive`. */
+  const mcpIds = [];
+  const mcpLive = new Set();
+  const served = (path) => mcpLive.has(/^\/v3\/mcp\/([^/]+)\/mcp$/.exec(path)?.[1]);
   const inspect = (headers) => mcpKeys.push(headers["x-api-key"]);
-  const mcp = noTools || listStatus ? await startEmptyMcp(`/v3/mcp/${id}/mcp`, inspect, listStatus) : await startFakeMcp({ path: `/v3/mcp/${id}/mcp`, inspect });
+  const mcp = noTools || listStatus ? await startEmptyMcp(served, inspect, listStatus) : await startFakeMcp({ path: served, inspect });
   const mcpOrigin = new URL(mcp.url).origin;
   let made = 0;
   let links = 0;
@@ -148,9 +155,15 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     }
     const account = /^\/api\/v3\/connected_accounts\/([^/]+)$/.exec(url.pathname);
     if (req.method === "DELETE" && account) return linked.delete(account[1]) || account[1].startsWith("ca_fake_") ? reply(200, { success: true }) : reply(404, { error: { message: `Connected account ${account[1]} not found` } });
-    if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/custom") return reply(201, { id });
-    if (req.method === "DELETE" && url.pathname === `/api/v3.1/mcp/${id}`) return reply(200, { id, deleted: true });
-    if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/generate") return reply(200, { user_ids_url: body.user_ids.map((u) => `${mcpOrigin}/v3/mcp/${id}?user_id=${u}&include_composio_helper_actions=true`) });
+    if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/custom") {
+      const minted = mcpIds.length ? `${id}_${mcpIds.length + 1}` : id;
+      mcpIds.push(minted);
+      mcpLive.add(minted);
+      return reply(201, { id: minted });
+    }
+    const gone = /^\/api\/v3\.1\/mcp\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "DELETE" && gone && mcpIds.includes(gone[1])) return (mcpLive.delete(gone[1]), reply(200, { id: gone[1], deleted: true }));
+    if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/generate") return reply(200, { user_ids_url: body.user_ids.map((u) => `${mcpOrigin}/v3/mcp/${body.mcp_server_id}?user_id=${u}&include_composio_helper_actions=true`) });
     if (req.method === "GET" && url.pathname === "/api/v3/connected_accounts") {
       const kit = url.searchParams.get("toolkit_slugs");
       const under = url.searchParams.get("auth_config_ids");
@@ -229,7 +242,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   return {
     baseUrl: `http://127.0.0.1:${http.address().port}${own}`,
-    apiKey, calls, strays, mcpKeys, mcpId: id,
+    apiKey, calls, strays, mcpKeys, mcpId: id, mcpIds, mcpLive,
     /** The auth configs it made that it still has, by toolkit slug; and the connected accounts its links started that it
      *  still has. */
     madeConfigs, linked,
@@ -239,7 +252,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
      *  trigger_config, disabled_at }`. */
     instances,
     /** The fake MCP server's log of the requests on its endpoint (a stray on another path is not one). */
-    get mcpLog() { return mcp.log.filter((entry) => new URL(entry.path, "http://x").pathname === `/v3/mcp/${id}/mcp`); },
+    get mcpLog() { return mcp.log.filter((entry) => mcpIds.includes(/^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(entry.path, "http://x").pathname)?.[1])); },
     /** The next call whose path ends in `path` (and of `method`, given) is done as usual, but its answer, as it stood then,
      *  is sent only once `release` is called: `reached` settles when that call has come. */
     hold: (path, method) => {

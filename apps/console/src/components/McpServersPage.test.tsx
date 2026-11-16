@@ -848,6 +848,18 @@ describe("Settings → MCP servers, deleting a Composio server", () => {
     expect(status?.className).toContain("text-success-text");
     expect(status?.className).not.toContain("text-warning-text");
   });
+
+  it("says what a change that moved a Composio server to another address removed in Composio", async () => {
+    const note = "Removed in Composio: the MCP server srv_1, the connected account ca_1 (its connect link with it) and the auth config ac_1.";
+    const s = server([[saved({ name: "work-slack", source: "composio", toolkit: "slack" })], [saved({ name: "work-slack" })]], (c) => (c.method === "PUT" ? json(200, { ...saved({ name: "work-slack" }), composio: { removed: true, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("work-slack"));
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)!.method).toBe("PUT");
+    const status = p.host.querySelector('[role="status"]');
+    expect(status?.textContent).toContain(note);
+    expect(status?.className).toContain("text-success-text");
+  });
 });
 
 describe("Settings → MCP servers, a server's tool settings", () => {

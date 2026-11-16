@@ -6,11 +6,14 @@
 // what is left there. A save that fails removes what it made there (its MCP server, the account its connect link started
 // and the auth config it made), never what it found, and its error says what is left when Composio refuses that too. A
 // save over a server removes what the earlier save made that the server no longer stands on (an account of another user,
-// an auth config of another toolkit), or passes it to a server that uses it, and says so. A delete that starts while a
-// save is at Composio waits for it, so what the save reuses is never removed under it.
+// an auth config of another toolkit), or passes it to a server that uses it, and says so; the MCP server the earlier save
+// made goes too, once the new one is saved. An ordinary save that moves a preset server off Composio removes there what
+// its save made, as a delete does, and says so. A delete that starts while a save is at Composio waits for it, so what
+// the save reuses is never removed under it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { secretWritePath, serve, serverLog } from "./support.mjs";
 
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
@@ -69,7 +72,7 @@ test("an auth config two saved servers share is kept while the other uses it, sa
   const after = s.composio.calls.length;
   const last = await s.api("DELETE", "/settings/mcp-servers/gh2");
   assert.equal(last.status, 200, JSON.stringify(last.body));
-  assert.deepEqual(deletes(s, after).sort(), [`/api/v3.1/mcp/${s.composio.mcpId}`, "/api/v3/auth_configs/ac_made_1", "/api/v3/connected_accounts/ca_link_1", "/api/v3/connected_accounts/ca_link_2"].sort());
+  assert.deepEqual(deletes(s, after).sort(), [`/api/v3.1/mcp/${s.composio.mcpIds[1]}`, "/api/v3/auth_configs/ac_made_1", "/api/v3/connected_accounts/ca_link_1", "/api/v3/connected_accounts/ca_link_2"].sort());
   assert.match(last.body.composio.note, /the auth config ac_made_1/);
   assert.doesNotMatch(last.body.composio.note, /Kept there/);
   assert.deepEqual(s.composio.madeConfigs.github, []);
@@ -181,12 +184,12 @@ test("a save over a server as another user removes the account the earlier save 
   await s.save("gh", "github", "u1");
   const again = await s.put("gh", "github", "u2");
   assert.equal(again.status, 200, JSON.stringify(again.body));
-  assert.deepEqual(again.body.composio, { removed: true, note: "Removed in Composio: the connected account ca_link_1 (its connect link with it)." });
+  assert.deepEqual(again.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpIds[0]} and the connected account ca_link_1 (its connect link with it).` });
   assert.deepEqual([...s.composio.linked], ["ca_link_2"], "u2's account, its link just started, is the one left");
   assert.deepEqual(s.composio.madeConfigs.github.map((config) => config.id), ["ac_made_1"]);
   const before = s.composio.calls.length;
   const res = await s.api("DELETE", "/settings/mcp-servers/gh");
-  assert.deepEqual(deletes(s, before), [`/api/v3.1/mcp/${s.composio.mcpId}`, "/api/v3/connected_accounts/ca_link_2", "/api/v3/auth_configs/ac_made_1"], JSON.stringify(res.body));
+  assert.deepEqual(deletes(s, before), [`/api/v3.1/mcp/${s.composio.mcpIds[1]}`, "/api/v3/connected_accounts/ca_link_2", "/api/v3/auth_configs/ac_made_1"], JSON.stringify(res.body));
 });
 
 test("a save over a server as another user keeps the earlier account while another saved server uses it, says so, and that server's delete removes it", async (t) => {
@@ -195,11 +198,11 @@ test("a save over a server as another user keeps the earlier account while anoth
   await s.save("gh-b", "github", "u1");
   const again = await s.put("gh-a", "github", "u2");
   assert.equal(again.status, 200, JSON.stringify(again.body));
-  assert.deepEqual(again.body.composio, { removed: true, note: "Kept in Composio: the connected account ca_link_1, which gh-b uses too." });
+  assert.deepEqual(again.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpIds[0]}. Kept there: the connected account ca_link_1, which gh-b uses too.` });
   assert.ok(s.composio.linked.has("ca_link_1"));
   const before = s.composio.calls.length;
   await s.api("DELETE", "/settings/mcp-servers/gh-b");
-  assert.deepEqual(deletes(s, before).sort(), [`/api/v3.1/mcp/${s.composio.mcpId}`, "/api/v3/connected_accounts/ca_link_1", "/api/v3/connected_accounts/ca_link_2"].sort(), "gh-b's own account and the one passed to it; the auth config gh-a stands on stays");
+  assert.deepEqual(deletes(s, before).sort(), [`/api/v3.1/mcp/${s.composio.mcpIds[1]}`, "/api/v3/connected_accounts/ca_link_1", "/api/v3/connected_accounts/ca_link_2"].sort(), "gh-b's own account and the one passed to it; the auth config gh-a stands on stays");
   assert.deepEqual([...s.composio.linked], ["ca_link_3"]);
 });
 
@@ -208,7 +211,88 @@ test("a save over a server with another toolkit removes the auth config and acco
   await s.save("gh");
   const again = await s.put("gh", "hackernews");
   assert.equal(again.status, 200, JSON.stringify(again.body));
-  assert.deepEqual(again.body.composio, { removed: true, note: "Removed in Composio: the connected account ca_link_1 (its connect link with it) and the auth config ac_made_1." });
+  assert.deepEqual(again.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpIds[0]}, the connected account ca_link_1 (its connect link with it) and the auth config ac_made_1.` });
+  assert.deepEqual(s.composio.madeConfigs.github, []);
+  assert.equal(s.composio.linked.size, 0);
+});
+
+test("a save over a preset server removes there the MCP server the save before made, with its key, once the new one is saved, and names it", async (t) => {
+  const s = await setup(t);
+  await s.save("hn", "hackernews");
+  const [first] = s.composio.mcpIds;
+  const before = s.composio.calls.length;
+  const again = await s.put("hn", "hackernews");
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  const second = s.composio.mcpIds[1];
+  assert.ok(second && second !== first, "the save made an MCP server of its own");
+  assert.deepEqual(deletes(s, before), [`/api/v3.1/mcp/${first}`], "the earlier one went, and only it");
+  const calls = s.composio.calls.slice(before);
+  assert.ok(calls.findIndex((call) => call.method === "DELETE") > calls.findIndex((call) => call.path === "/api/v3.1/mcp/servers/generate"), "after the new one's address was made");
+  assert.ok(calls.filter((call) => call.method === "DELETE").every((call) => call.keyOk), "with the saved key");
+  assert.deepEqual(again.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${first}.` });
+  assert.deepEqual([...s.composio.mcpLive], [second]);
+  const after = s.composio.calls.length;
+  const res = await s.api("DELETE", "/settings/mcp-servers/hn");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual(deletes(s, after), [`/api/v3.1/mcp/${second}`]);
+  assert.ok(!JSON.stringify(again.body).includes(s.composio.apiKey) && !s.log.text().includes(s.composio.apiKey), "the key is in no answer or log line");
+});
+
+test("a save over a preset server that fails keeps the MCP server the save before made: only the one it made goes", async (t) => {
+  let generated = 0;
+  const s = await setup(t, { fail: { method: "POST", path: (path) => path === "/api/v3.1/mcp/servers/generate" && ++generated === 2, status: 500 } });
+  await s.save("hn", "hackernews");
+  const [first] = s.composio.mcpIds;
+  const before = s.composio.calls.length;
+  const again = await s.put("hn", "hackernews");
+  assert.equal(again.status, 424, JSON.stringify(again.body));
+  assert.deepEqual(deletes(s, before), [`/api/v3.1/mcp/${s.composio.mcpIds[1]}`]);
+  assert.deepEqual([...s.composio.mcpLive], [first]);
+  // The row still names the earlier one: its delete removes it.
+  const after = s.composio.calls.length;
+  const res = await s.api("DELETE", "/settings/mcp-servers/hn");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual(deletes(s, after), [`/api/v3.1/mcp/${first}`]);
+});
+
+test("an ordinary save that moves a preset server off Composio removes there what its save made, as a delete does, with its key, and says so", async (t) => {
+  const s = await setup(t);
+  await s.save("gh");
+  const other = await startFakeMcp();
+  t.after(() => other.close());
+  const before = s.composio.calls.length;
+  const moved = await s.api("PUT", "/settings/mcp-servers/gh", { url: other.url, auth: { type: "none" } });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.deepEqual(deletes(s, before), [`/api/v3.1/mcp/${s.composio.mcpId}`, "/api/v3/connected_accounts/ca_link_1", "/api/v3/auth_configs/ac_made_1"]);
+  assert.ok(s.composio.calls.slice(before).every((call) => call.method === "DELETE" && call.keyOk), "its removals alone, each with the key it was saved with");
+  assert.deepEqual(moved.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpId}, the connected account ca_link_1 (its connect link with it) and the auth config ac_made_1.` });
+  assert.equal(moved.body.name, "gh", "the answer is the server as saved, as ever");
+  assert.deepEqual(s.composio.madeConfigs.github, []);
+  assert.equal(s.composio.linked.size, 0);
+  const after = s.composio.calls.length;
+  const res = await s.api("DELETE", "/settings/mcp-servers/gh");
+  assert.equal(res.status, 204, "another service's server now, deleted as any other");
+  assert.equal(s.composio.calls.length, after, "its delete sends Composio nothing");
+  assert.ok(!JSON.stringify(moved.body).includes(s.composio.apiKey) && !s.log.text().includes(s.composio.apiKey), "the key is in no answer or log line");
+});
+
+test("an ordinary save that moves a preset server off Composio keeps there what another saved server uses, says so, and that one's delete removes it", async (t) => {
+  const s = await setup(t);
+  await s.save("gh1");
+  await s.save("gh2");
+  const other = await startFakeMcp();
+  t.after(() => other.close());
+  const before = s.composio.calls.length;
+  const moved = await s.api("PUT", "/settings/mcp-servers/gh1", { url: other.url, auth: { type: "none" } });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.deepEqual(deletes(s, before), [`/api/v3.1/mcp/${s.composio.mcpIds[0]}`], "only gh1's MCP server went");
+  assert.match(moved.body.composio.note, new RegExp(`^Removed in Composio: the MCP server ${s.composio.mcpIds[0]}\\. Kept there: `));
+  assert.match(moved.body.composio.note, /the auth config ac_made_1, which gh2 uses too/);
+  assert.match(moved.body.composio.note, /the connected account ca_link_1, which gh2 uses too/);
+  const after = s.composio.calls.length;
+  const last = await s.api("DELETE", "/settings/mcp-servers/gh2");
+  assert.equal(last.status, 200, JSON.stringify(last.body));
+  assert.deepEqual(deletes(s, after).sort(), [`/api/v3.1/mcp/${s.composio.mcpIds[1]}`, "/api/v3/auth_configs/ac_made_1", "/api/v3/connected_accounts/ca_link_1", "/api/v3/connected_accounts/ca_link_2"].sort());
   assert.deepEqual(s.composio.madeConfigs.github, []);
   assert.equal(s.composio.linked.size, 0);
 });

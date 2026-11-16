@@ -56,8 +56,10 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
       res.writeHead(200, { "content-type": "application/json" });
       return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
-    // Its endpoint is `path` (/mcp unless a test names another), with any query of its own (?version=2).
-    if (new URL(req.url, base).pathname !== path) return void res.writeHead(404).end();
+    // Its endpoint is `path` (/mcp unless a test names another; a function: each path it holds), with any query of its own
+    // (?version=2).
+    const pathname = new URL(req.url, base).pathname;
+    if (typeof path === "function" ? !path(pathname) : pathname !== path) return void res.writeHead(404).end();
     inspect?.(req.headers);
     // `hold`: awaited before a request to /mcp is answered, for a test that keeps a listing waiting at a point it chooses.
     if (hold) await hold(req.headers);
@@ -73,7 +75,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     res.end();
   });
   await new Promise((resolve) => http.listen(port, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${http.address().port}${path}`;
+  const url = `http://127.0.0.1:${http.address().port}${typeof path === "function" ? "/mcp" : path}`;
   return { url, log, tools, close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
 }
 

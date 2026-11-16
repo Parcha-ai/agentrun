@@ -93,11 +93,13 @@ test("a preset row the owner edited to another service (same path shape, another
   t.after(() => other.close());
   const edited = await s.api("PUT", "/settings/mcp-servers/hn", { url: other.url, auth: { type: "headers", headers: { "x-api-key": "not-a-secret" } } });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  // The edit moved it off Composio: the MCP server the preset made there went then, with the key it was saved with.
+  assert.deepEqual(edited.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpId}.` });
+  assert.equal(deleted(s).length, 1);
   const before = s.composio.calls.length;
   const res = await s.api("DELETE", "/settings/mcp-servers/hn");
   assert.equal(res.status, 204, "it is another service's server now, deleted as any other");
   assert.equal(s.composio.calls.length, before, "Composio got no call at all from the delete");
-  assert.equal(s.composio.calls.filter((call) => call.method === "DELETE").length, 0);
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
 });
 
