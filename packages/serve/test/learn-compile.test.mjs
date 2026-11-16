@@ -610,7 +610,7 @@ test("the quote check is code: a draft whose answer carries quotes and which fet
 // H5d (preregistered): on a quote miss, the answer step once more over the run's pages kept 26 of 31 misses, right 76.9%
 // against the draft's 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost 21.7%. So a checked
 // answer re-picks once before its check hands back: the step writing it is a loop of 2 until that check passes.
-const NO_REPICK = (step) => `the step "${step}" writes the answer and the escalate "quotes" hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back`;
+const NO_REPICK = (step) => `the step "${step}" writes the answer and the escalate "quotes" hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`;
 
 test("the quote check re-picks once: a checked answer step that hands back on its first miss is refused; in a loop of 2 until that check passes it passes; more passes, or a loop until anything else, is refused", () => {
   const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
@@ -626,9 +626,15 @@ test("the quote check re-picks once: a checked answer step that hands back on it
   assert.deepEqual(again((loop) => (loop.until = QUOTES_WHEN({ pages: ["page"] }))), [NO_REPICK("repick")], "until the quote misses");
   assert.deepEqual(again((loop) => (loop.until = { predicate: "field_true", path: "answer.refunds" })), [NO_REPICK("repick")], "until something else");
   assert.deepEqual(again((loop) => (loop.until.of = QUOTES_WHEN({ path: "answer.other", pages: ["page"] }))), [NO_REPICK("repick")], "until a check of other quotes");
+  // A quote check inside the loop's body hands back on the first pass's miss: the loop never re-picks, however it waits.
+  const inner = { node: "escalate", label: "inner_quotes", when: QUOTES_WHEN({ pages: ["page"] }), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" };
+  assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, inner] })), [INNER_CHECK("repick", "inner_quotes")], "a check in the loop's chain");
+  assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, { node: "route", label: "which", branches: { a: { body: inner }, b: { body: { node: "chain", steps: [] } } } }] })), [INNER_CHECK("repick", "inner_quotes")], "a check deeper in the body");
   // The compile turn is told the same.
   assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `"maxIters": 2`/);
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /the check after the loop, never inside it/);
 });
+const INNER_CHECK = (loop, check) => `the re-pick loop "${loop}" holds the quote_missing escalate "${check}" in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`;
 
 // A loop's `until` is one predicate, and no predicate joins two quote_missing checks: a loop watching one of several
 // lets the others hand back with no re-pick (quotes: string | [{quote}], answered with records, while the loop reads the
@@ -703,7 +709,11 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   assert.deepEqual(quoteCheckProblems(routed), [NO_QUOTE_CHECK], "checked on one branch only");
   routed.root.steps.push(check);
   assert.deepEqual(quoteCheckProblems(routed), [NO_REPICK("kind")], "checked after the route, on every branch's answer, which hands back on a first miss");
+  // The route in the re-pick loop with a check still inside its branch: that check hands back on the first draft's miss,
+  // so the loop never re-picks. The check sits after the loop, never inside it.
   routed.root.steps[2] = repickOf({ pages: ["page"] }, routed.root.steps[2]);
+  assert.deepEqual(quoteCheckProblems(routed), [INNER_CHECK("repick", "quotes")], "a check inside the loop's body");
+  routed.root.steps[2] = repickOf({ pages: ["page"] }, { node: "route", label: "kind", branches: { quoted: { body: answer }, plain: { body: answer } } });
   assert.deepEqual(quoteCheckProblems(routed), [], "checked after the route, which re-picks once");
   const early = citedDraft({ check: null });
   early.root.steps = [fetch, check, facts, answer];
