@@ -1531,8 +1531,9 @@ const carries = (machine: Machine, labels: Record<string, string>) => Object.ent
  * readMachine, within requestMs, and its label file where the host keeps labels in the machine. One the vendor no longer
  * has (not found) is dropped, and so is one whose get carries not every label, but a machine of the name asked for whose
  * labels are not written yet. A label file's read that fails or does not end within requestMs leaves its machine out of
- * this listing alone, told through onNote by its id: one wedged machine never holds up the rest. A get that fails fails
- * the whole.
+ * this listing alone, told through onNote by its id: one wedged machine never holds up the rest. A listing by a
+ * request's name is the exception: what is left of it may be the request's own, so such a read fails it, as a get that
+ * fails fails the whole.
  */
 export async function foundBy(
 	host: MachineHost,
@@ -1549,8 +1550,9 @@ export async function foundBy(
 			const read = await readMachine(host, id, requestMs, signal);
 			if (!read.ok) return read;
 			const inside = await labelled(host, read.value, requestMs, signal, true);
-			// A machine of the name asked for is that request's own: never left out, so its create never makes a second.
-			if (inside.ok || inside.error.code === "aborted" || (name !== undefined && read.value?.name === name)) return inside;
+			// A listing by a request's name is left with machines of that name or of none (listedBy), and either may be the
+			// request's own: one that can't be read fails the listing, so its create never makes a second.
+			if (inside.ok || inside.error.code === "aborted" || name !== undefined) return inside;
 			onNote?.({ computer: id, note: `${inside.error.message}; this listing leaves it out, and the next one reads it again` });
 			return ok(undefined);
 		}),

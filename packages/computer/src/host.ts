@@ -46,7 +46,8 @@ export interface MachineHost {
 	 * provider instances can then both make a machine, and the adapter deletes every one but the oldest (createdAt), so
 	 * a vendor may see a second create deleted. With facts.labels "machine" it lists by req.name where the vendor lists by
 	 * name, else every machine: the adapter keeps those of the name, then reads each one's labels from inside it; one
-	 * whose read fails or does not end is left out of that listing, in words.
+	 * whose read fails or does not end is left out of that listing, in words, except from a listing by a request's name,
+	 * which that read fails.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
 	/**

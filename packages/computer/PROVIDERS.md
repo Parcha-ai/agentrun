@@ -262,7 +262,8 @@ as E2B's is (it can still show a deleted machine, or an end from before a timer 
 don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. With
 `labels: "machine"`, list by `labels["agentrun.computer.name"]` where it is asked and your API lists by name, or list
 everything. AgentRun keeps the machines of that name and reads each running one's labels from its file; one whose
-read fails or doesn't end is left out of that listing, in words, and read again at the next. A stopped
+read fails or doesn't end is left out of that listing, in words, and read again at the next (a create's listing by its
+name fails instead, since the machine may be its own). A stopped
 machine can't be read: it has the labels this process last read from it, or none after a restart, so the janitor
 leaves it, and only your timer or a person ends it.
 

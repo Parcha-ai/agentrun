@@ -245,6 +245,17 @@ test("one wedged machine never holds up a listing: each label read is bounded, a
 	assert.equal(wedged.deleted || unreadable.deleted, false, "neither is touched");
 });
 
+test("a create's lookup by its name never leaves out a machine it can't rule out: a nameless machine whose label read does not end fails the create, which makes no second machine", async () => {
+	const fake = fakeHost(KEEPS);
+	const nameless = fake.add({});
+	nameless.wedged = true;
+	const hosted = provider(fake.host, { timeouts: { ...TIMEOUTS, requestMs: 50 } });
+	const result = await hosted.create(SPEC, { requestId: `nameless-wedged-${++requests}` });
+	assert.equal(result.ok, false, "the create fails: the nameless machine may be its own");
+	assert.match(result.error.message, new RegExp(`reading the labels in ${nameless.id} did not end within 0\\.05 s`));
+	assert.equal(fake.creates(), 0, "no machine is made beside one that may be the request's");
+});
+
 test("a machine of the request's name with no file and no createdAt is never old enough: a sweep leaves it, for the vendor's timer", async () => {
 	const fake = fakeHost({ ...KEEPS, born: () => undefined });
 	const requestId = `undated-${++requests}`;
