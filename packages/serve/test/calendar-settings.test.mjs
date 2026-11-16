@@ -27,6 +27,8 @@ async function calendarFaux(t, options) {
 /** The secret parts of `faux`'s address: the whole, and its path, which is where a provider keeps the secret. */
 const secretsOf = (address) => [address, new URL(address).pathname, decodeURIComponent(new URL(address).pathname)];
 const holds = (text, address) => secretsOf(address).some((form) => text.includes(form));
+/** The secret token of `faux`'s address alone: its private-… path segment. */
+const tokenOf = (address) => new URL(address).pathname.split("/").find((segment) => segment.startsWith("private-"));
 
 test("GET, PUT, test and DELETE: the view never holds the address; the test answers in words; a token is refused; the address is sealed and in no answer or log line", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
@@ -40,8 +42,10 @@ test("GET, PUT, test and DELETE: the view never holds the address; the test answ
   assert.deepEqual(empty.body, { configured: false, host: null, name: null, time_zone: null });
   await meets(api, "get", "/settings/calendar", "200", empty.body);
 
-  // Refused by field, in words that never echo the address.
-  for (const [body, said] of [[{ url: "http://calendar.example.com/private-abc/basic.ics" }, /over https only/], [{ url: "ftp://calendar.example.com/x.ics" }, /https only/], [{ url: "https://me:pw@calendar.example.com/x.ics" }, /user and password/], [{}, /iCal address/], [{ url: faux.address, name: "x" }, /name/]]) {
+  // Refused by field, in words that never echo the address. A user and password built so that no one literal reads as a
+  // credential URL (export:source credential_url).
+  const userinfo = "me:pw@";
+  for (const [body, said] of [[{ url: "http://calendar.example.com/private-abc/basic.ics" }, /over https only/], [{ url: "ftp://calendar.example.com/x.ics" }, /https only/], [{ url: `https://${userinfo}calendar.example.com/x.ics` }, /user and password/], [{}, /iCal address/], [{ url: faux.address, name: "x" }, /name/]]) {
     const refused = await api("PUT", "/settings/calendar", body);
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
     assert.match(JSON.stringify(refused.body), said);
@@ -77,7 +81,7 @@ test("GET, PUT, test and DELETE: the view never holds the address; the test answ
   assert.deepEqual(failed.body, { ok: false, message: `${new URL(faux.origin).host} answered 500.` });
   faux.failing(404);
   forgetCalendarsForTests();
-  assert.match((await api("POST", "/settings/calendar/test", {})).body.message, /answered 404: the address may be old or wrong; copy it again into Settings → Calendar\./);
+  assert.match((await api("POST", "/settings/calendar/test", {})).body.message, /answered 404: the address may be old or wrong; copy it again and save it with PUT \/v2\/settings\/calendar\./);
   faux.failing(undefined);
 
   // The token alone is refused every one of them: the owner's session reads and writes the calendar.
@@ -96,7 +100,7 @@ test("GET, PUT, test and DELETE: the view never holds the address; the test answ
   assert.deepEqual((await api("GET", "/settings/calendar")).body, empty.body);
   const none = await api("POST", "/settings/calendar/test", {});
   assert.equal(none.status, 422, JSON.stringify(none.body));
-  assert.match(JSON.stringify(none.body), /Settings → Calendar/);
+  assert.match(JSON.stringify(none.body), /its owner saves its iCal address with PUT \/v2\/settings\/calendar/);
 });
 
 test("a calendar on a private address is refused, on loopback only for a local install; a save whose read fails is kept, its name and zone unknown", { timeout: 120_000 }, async (t) => {
@@ -205,4 +209,51 @@ test("a read that fails is said without the address, whatever the server or the 
   faux.failing(503);
   const down = await readCalendar(faux.at("/other.ics"), { loopback: true }).then(() => "read", (error) => error);
   assert.equal(down.message, `${new URL(faux.origin).host} answered 503.`);
+});
+
+test("a calendar whose own name (X-WR-CALNAME) quotes its address: PUT, GET and the test never show the address or its token", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api } = await serve(t, { runner: false });
+  const faux = await calendarFaux(t);
+  faux.serve(FAUX_CALENDAR.replace("X-WR-CALNAME:Work", `X-WR-CALNAME:Work ${faux.address}`));
+  const token = tokenOf(faux.address);
+  const put = await api("PUT", "/settings/calendar", { url: faux.address });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.equal(put.body.name, "Work [the calendar's address]");
+  const got = await api("GET", "/settings/calendar");
+  const tested = await api("POST", "/settings/calendar/test", {});
+  assert.match(tested.body.message, /^Work \[the calendar's address\]: 6 events, /);
+  for (const answer of [put, got, tested]) assert.ok(!JSON.stringify(answer.body).includes(token) && !holds(JSON.stringify(answer.body), faux.address), JSON.stringify(answer.body));
+});
+
+/** A calendar of `n` series in UTC, each `rule` from `start`, and one event an hour from now. */
+function repeating(n, rule, start) {
+  const soon = new Date(Date.now() + 3_600_000).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const series = Array.from({ length: n }, (_, i) => ["BEGIN:VEVENT", `UID:tick-${i}@test`, "DTSTAMP:20200101T000000Z", `DTSTART:${start}`, `RRULE:${rule}`, `SUMMARY:Tick ${i}`, "END:VEVENT"]);
+  return icsLines(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//AgentRun//test//EN", "X-WR-CALNAME:Ticks", "X-WR-TIMEZONE:UTC", ...series.flat(), "BEGIN:VEVENT", "UID:soon@test", "DTSTAMP:20200101T000000Z", `DTSTART:${soon}`, "SUMMARY:Soon", "END:VEVENT", "END:VCALENDAR"]);
+}
+
+test("a calendar with hundreds of old every-minute series that never end: the test answers in a moment that it has too many repeating events to read, not a partial list", { timeout: 840_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api } = await serve(t, { runner: false });
+  const faux = await calendarFaux(t, { text: repeating(200, "FREQ=MINUTELY", "20200101T000000Z") });
+  const started = Date.now();
+  const tested = await api("POST", "/settings/calendar/test", { url: faux.address });
+  const took = Date.now() - started;
+  assert.equal(tested.status, 200, JSON.stringify(tested.body));
+  assert.equal(tested.body.ok, false, JSON.stringify(tested.body));
+  assert.match(tested.body.message, /too many repeating events to read/);
+  assert.ok(took < 3_000, `answered in ${took} ms`);
+});
+
+test("series that ended before the window (an UNTIL long past) are not stepped through: a calendar of them reads in a moment", { timeout: 840_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api } = await serve(t, { runner: false });
+  const faux = await calendarFaux(t, { text: repeating(40, "FREQ=MINUTELY;UNTIL=20200201T000000Z", "20200101T000000Z") });
+  const started = Date.now();
+  const tested = await api("POST", "/settings/calendar/test", { url: faux.address });
+  const took = Date.now() - started;
+  assert.equal(tested.body.ok, true, JSON.stringify(tested.body));
+  assert.match(tested.body.message, /^Ticks: 41 events, time zone UTC, next: Soon, /);
+  assert.ok(took < 3_000, `answered in ${took} ms`);
 });

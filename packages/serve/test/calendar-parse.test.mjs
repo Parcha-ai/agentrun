@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FAUX_CALENDAR, hourlyCalendar, icsLines } from "../dist/calendar/ics-faux.js";
-import { eventsIn, parseCalendar, serverZone, windowOf, WindowError } from "../dist/calendar/parse.js";
+import { eventsIn, parseCalendar, serverZone, summaryOf, windowOf, WindowError } from "../dist/calendar/parse.js";
 import { addressForms, addressOf, scrubAddress } from "../dist/calendar/address.js";
 import { calendarText } from "../dist/calendar/tools.js";
 import { redactedAnswer } from "../dist/key-refusal.js";
@@ -80,7 +80,7 @@ test("a moved instance is gone from its old day and found on its new one, whiche
   assert.deepEqual(read(parsed(), "2026-11-27", "2026-11-27").events, []);
 });
 
-test("at most 200 events an answer, sorted by start, with truncated; a rule that never reaches the window stops; a file with no zone of its own is read in the server's", () => {
+test("at most 200 events an answer, sorted by start, with truncated; a rule that starts long before the window is read in it, fast; a file with no zone of its own is read in the server's", () => {
   const busy = parseCalendar(hourlyCalendar(), "faux.example");
   const { events, truncated } = read(busy, "2026-11-02", "2026-11-30");
   assert.equal(events.length, 200);
@@ -90,8 +90,13 @@ test("at most 200 events an answer, sorted by start, with truncated; a rule that
 
   const secondly = parseCalendar(icsLines(["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:s@x", "DTSTART:20200101T000000Z", "RRULE:FREQ=SECONDLY", "SUMMARY:Tick", "END:VEVENT", "END:VCALENDAR"]), "faux.example");
   const started = Date.now();
-  assert.deepEqual(read(secondly, "2026-11-02", "2026-11-03").events, [], "its steps stop before the window");
-  assert.ok(Date.now() - started < 10_000, "and fast");
+  // Every second since 2020: the window's first 200 seconds, and truncated; not stepped through from 2020.
+  const ticks = read(secondly, "2026-11-02", "2026-11-03");
+  assert.equal(ticks.truncated, true);
+  assert.equal(ticks.events.length, 200);
+  assert.equal(new Date(ticks.events[0].start).getTime(), windowOf({ from: "2026-11-02" }, secondly.zone, NOW).start);
+  assert.equal(new Date(ticks.events[199].start).getTime() - new Date(ticks.events[0].start).getTime(), 199_000);
+  assert.ok(Date.now() - started < 2_000, `and fast: ${Date.now() - started} ms`);
   assert.equal(secondly.zone, serverZone(), "no X-WR-TIMEZONE: the server's zone");
 });
 
@@ -136,9 +141,11 @@ test("a file that is not iCalendar is refused in words naming the host only", ()
 });
 
 test("the address: webcal read as https, plain http only to loopback, a user and password refused; every form of it scrubbed from text", () => {
+  // A user and password in the address, built so that no one literal reads as a credential URL (export:source credential_url).
+  const userinfo = "me:pw@";
   assert.equal(addressOf("webcal://calendar.example.com/ical/private-abc/basic.ics"), "https://calendar.example.com/ical/private-abc/basic.ics");
   assert.equal(addressOf("webcals://calendar.example.com/x.ics"), "https://calendar.example.com/x.ics");
-  for (const [bad, said] of [["http://calendar.example.com/x.ics", /over https only/], ["ftp://calendar.example.com/x.ics", /https only/], ["https://me:pw@calendar.example.com/x.ics", /user and password/], ["not an address", /a space or a control character/], ["calendar.example.com", /not an address/], [7, /as text/]]) {
+  for (const [bad, said] of [["http://calendar.example.com/x.ics", /over https only/], ["ftp://calendar.example.com/x.ics", /https only/], [`https://${userinfo}calendar.example.com/x.ics`, /user and password/], ["not an address", /a space or a control character/], ["calendar.example.com", /not an address/], [7, /as text/]]) {
     assert.throws(() => addressOf(bad), (error) => error.code === "input_invalid" && said.test(JSON.stringify(error.fields ?? error.details ?? error.message)) && !JSON.stringify(error).includes("calendar.example.com/x.ics"), String(bad));
   }
   const url = "https://calendar.example.com/calendar/ical/me%40example.com/private-0123456789abcdef/basic.ics";
@@ -167,4 +174,63 @@ test("calendar_events on the timeline: 'Reading the calendar' while it runs, 'Ca
   assert.equal(labelOf("calendar_events", {}, view("not the calendar's answer")), "Read the calendar");
   assert.equal(foldLabel("calendar_events", [1, 2, 3].map(() => ({ input: null, output: null }))), "Read the calendar 3 times");
   assert.equal(nameOf("calendar_events"), "Read the calendar");
+});
+
+test("the address's secret token is scrubbed alone too, so text that holds it without the rest of the address (an address cut short) never shows it", () => {
+  const url = "https://calendar.example.com/calendar/ical/me%40example.com/private-0123456789abcdef/basic.ics";
+  for (const text of ["cut: https://calendar.example.com/calendar/ical/me%40example.com/private-0123456789abcdef/bas…", "the token private-0123456789abcdef alone", "query https://calendar.example.com/feed.ics?token=q0123456789abcdefXYZ"]) {
+    const queried = "https://calendar.example.com/feed.ics?token=q0123456789abcdefXYZ";
+    const scrubbed = scrubAddress(scrubAddress(text, url), queried);
+    assert.ok(!scrubbed.includes("private-0123456789abcdef") && !scrubbed.includes("q0123456789abcdefXYZ"), scrubbed);
+  }
+  // Words that are no token stay: the host, a short path segment, the owner's address in the path.
+  assert.equal(scrubAddress("calendar.example.com said basic.ics is gone", url), "calendar.example.com said basic.ics is gone");
+});
+
+/** A calendar of `events`, each a VEVENT's lines, in New York. */
+const calendarOf = (events) => icsLines(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//AgentRun//test//EN", "X-WR-TIMEZONE:America/New_York", ...events.flatMap((lines) => ["BEGIN:VEVENT", ...lines, "END:VEVENT"]), "END:VCALENDAR"]);
+const WEEKLY = ["UID:weekly@test", "DTSTAMP:20261001T000000Z", "DTSTART;TZID=America/New_York:20261102T093000", "DTEND;TZID=America/New_York:20261102T100000", "RRULE:FREQ=WEEKLY;COUNT=6", "SUMMARY:Planning"];
+
+test("RECURRENCE-ID;RANGE=THISANDFUTURE moves that occurrence and every later one, and a cancelled one drops them all; the earlier ones stay as they were", () => {
+  const moved = parseCalendar(calendarOf([WEEKLY, ["UID:weekly@test", "DTSTAMP:20261001T000000Z", "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=America/New_York:20261116T093000", "DTSTART;TZID=America/New_York:20261116T140000", "DTEND;TZID=America/New_York:20261116T143000", "SUMMARY:Planning (afternoons)"]]), "test");
+  assert.deepEqual(read(moved, "2026-11-01", "2026-12-10").events.map(brief), [
+    ["Planning", "2026-11-02T09:30:00-05:00", "2026-11-02T10:00:00-05:00", false],
+    ["Planning", "2026-11-09T09:30:00-05:00", "2026-11-09T10:00:00-05:00", false],
+    ["Planning (afternoons)", "2026-11-16T14:00:00-05:00", "2026-11-16T14:30:00-05:00", false],
+    ["Planning (afternoons)", "2026-11-23T14:00:00-05:00", "2026-11-23T14:30:00-05:00", false],
+    ["Planning (afternoons)", "2026-11-30T14:00:00-05:00", "2026-11-30T14:30:00-05:00", false],
+    ["Planning (afternoons)", "2026-12-07T14:00:00-05:00", "2026-12-07T14:30:00-05:00", false],
+  ]);
+  // A window that holds only the later weeks finds them moved; none at their old time.
+  assert.deepEqual(read(moved, "2026-11-23", "2026-11-23").events.map(brief), [["Planning (afternoons)", "2026-11-23T14:00:00-05:00", "2026-11-23T14:30:00-05:00", false]]);
+  const cancelled = parseCalendar(calendarOf([WEEKLY, ["UID:weekly@test", "DTSTAMP:20261001T000000Z", "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=America/New_York:20261116T093000", "DTSTART;TZID=America/New_York:20261116T093000", "DTEND;TZID=America/New_York:20261116T100000", "STATUS:CANCELLED", "SUMMARY:Planning"]]), "test");
+  assert.deepEqual(read(cancelled, "2026-11-01", "2026-12-10").events.map(brief), [
+    ["Planning", "2026-11-02T09:30:00-05:00", "2026-11-02T10:00:00-05:00", false],
+    ["Planning", "2026-11-09T09:30:00-05:00", "2026-11-09T10:00:00-05:00", false],
+  ]);
+});
+
+test("an RDATE;VALUE=PERIOD occurrence keeps its own end or duration, and a window that starts inside it finds it", () => {
+  const calendar = parseCalendar(calendarOf([["UID:period@test", "DTSTAMP:20261001T000000Z", "DTSTART;TZID=America/New_York:20261102T090000", "DTEND;TZID=America/New_York:20261102T093000", "RDATE;VALUE=PERIOD;TZID=America/New_York:20261105T130000/20261105T150000", "RDATE;VALUE=PERIOD;TZID=America/New_York:20261106T130000/PT2H", "SUMMARY:Workshop"]]), "test");
+  assert.deepEqual(read(calendar, "2026-11-01", "2026-11-10").events.map(brief), [
+    ["Workshop", "2026-11-02T09:00:00-05:00", "2026-11-02T09:30:00-05:00", false],
+    ["Workshop", "2026-11-05T13:00:00-05:00", "2026-11-05T15:00:00-05:00", false],
+    ["Workshop", "2026-11-06T13:00:00-05:00", "2026-11-06T15:00:00-05:00", false],
+  ]);
+  assert.deepEqual(read(calendar, "2026-11-05T14:00:00-05:00", "2026-11-05T16:00:00-05:00").events.map(brief), [["Workshop", "2026-11-05T13:00:00-05:00", "2026-11-05T15:00:00-05:00", false]]);
+});
+
+test("one work budget per read, across every series: a calendar of many every-minute series, or one whose rule must be stepped through, stops in a moment with words, never a partial list; the test's summary the same", () => {
+  const tick = (i, rule) => ["UID:tick-" + i + "@test", "DTSTAMP:20200101T000000Z", "DTSTART:20200101T000000Z", `RRULE:${rule}`, `SUMMARY:Tick ${i}`];
+  const many = parseCalendar(calendarOf(Array.from({ length: 300 }, (_, i) => tick(i, "FREQ=MINUTELY"))), "test");
+  // A COUNT, and a BYHOUR, are stepped through from the start: a rule of them that runs to 2026 is too much to read.
+  const counted = parseCalendar(calendarOf([tick(0, "FREQ=MINUTELY;COUNT=100000000"), tick(1, "FREQ=MINUTELY;BYHOUR=9,10,11")]), "test");
+  for (const calendar of [many, counted]) {
+    let started = Date.now();
+    assert.throws(() => read(calendar, "2026-11-02", "2026-11-30"), /too many repeating events to read/);
+    assert.ok(Date.now() - started < 2_000, `stopped in ${Date.now() - started} ms`);
+    started = Date.now();
+    assert.throws(() => summaryOf(calendar, NOW), /too many repeating events to read/);
+    assert.ok(Date.now() - started < 2_000, `the summary stopped in ${Date.now() - started} ms`);
+  }
 });

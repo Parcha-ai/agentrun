@@ -11,7 +11,7 @@ import { FAUX_EMAIL, sawOf } from "./email-support.mjs";
 import { FAUX_CALENDAR, hourlyCalendar, startIcsFaux } from "../dist/calendar/ics-faux.js";
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
-const NO_CALENDAR = "calendar_events: This server has no calendar: save its iCal address in Settings → Calendar.";
+const NO_CALENDAR = "calendar_events: This server has no calendar: its owner saves its iCal address with PUT /v2/settings/calendar.";
 
 /** A fake calendar server for the test, closed after it. */
 async function calendarFaux(t, options) {
@@ -121,4 +121,25 @@ test("the address is in no answer, row, run view, log line or byte of the store:
   }
   assert.ok(!holds(lines.join("\n"), faux.address), "the log never holds it");
   for (const form of secretsOf(faux.address)) assert.ok(!storeBytes(data).includes(Buffer.from(form)), `the store holds no clear copy (${form.length} chars)`);
+});
+
+test("a description, and the calendar's own name, that quote the address at a length where the cut falls inside its last path segment: the tool's answer, the run and its rows never hold the address's token", { timeout: 150_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api } = await serve(t, { faux: FAUX_EMAIL });
+  assert.equal((await api("POST", "/agents", agent("cut", { harness: "pi", tools: ["calendar_events"] }))).status, 201);
+  const faux = await calendarFaux(t);
+  const token = new URL(faux.address).pathname.split("/").find((segment) => segment.startsWith("private-"));
+  // A description is cut at 500 characters and a calendar's name at 200: each ends 4 characters short of the address's end.
+  const description = `${"x".repeat(499 - (faux.address.length - 4))}${faux.address}`;
+  const name = `${"y".repeat(199 - (faux.address.length - 4))}${faux.address}`;
+  faux.serve(FAUX_CALENDAR.replace("SUMMARY:Lunch", `SUMMARY:Lunch\r\nDESCRIPTION:${description}`).replace("X-WR-CALNAME:Work", `X-WR-CALNAME:${name}`));
+  assert.equal((await api("PUT", "/settings/calendar", { url: faux.address })).status, 200);
+  const run = await ran(api, "cut", [["calendar_events", { from: "2026-11-02", to: "2026-11-30" }]]);
+  const [answer] = run.saw;
+  assert.equal(answer.events.length, 8, JSON.stringify(answer));
+  assert.match(answer.events.find((e) => e.title === "Lunch")?.description ?? "", /^x+\[the calendar's address\]$/);
+  assert.ok(answer.calendar.startsWith("yyy"), answer.calendar);
+  for (const [what, text] of [["the answer", JSON.stringify(answer)], ["the run view", JSON.stringify(run.view)], ["the rows", JSON.stringify(run.rows)], ["the run's events", JSON.stringify((await api("GET", `/runs/${run.runId}/events`)).body)]]) {
+    assert.ok(!text.includes(token), `${what} holds the token`);
+  }
 });

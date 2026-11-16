@@ -105,7 +105,7 @@ test("a package naming calendar_events applies on a server with no calendar as o
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   assert.equal(view.status, "completed", JSON.stringify(view));
-  assert.match(view.result?.final_answer ?? "", /^SAID calendar_events: This server has no calendar: save its iCal address in Settings → Calendar\./);
+  assert.match(view.result?.final_answer ?? "", /^SAID calendar_events: This server has no calendar: its owner saves its iCal address with PUT \/v2\/settings\/calendar\./);
 });
 
 test("a calendar case's runs read its fake calendar on its clock: the window is the case's week, and its graders see each call with its arguments and answer", { timeout: 300_000 }, async (t) => {
