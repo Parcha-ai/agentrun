@@ -1,5 +1,5 @@
 import { dollars } from "./format";
-import type { FieldIssue } from "./client";
+import type { Client, FieldIssue } from "./client";
 import { type FieldSpec, fieldValues, schemaFields } from "./inputForm";
 import { type McpServer, SOURCE_LABEL } from "./mcp";
 import { browserZone } from "./schedules";
@@ -121,6 +121,41 @@ export function setUpHref(need: McpNeed): string {
   if (need.source === "composio") return `#/settings/mcp?add=${toolkit}&preset=composio&toolkit=${toolkit}&tools=${need.tools.map((x) => encodeURIComponent(x.name)).join(",")}`;
   return need.source === "github" ? "#/settings/mcp?add=github&auth=github_app" : `#/settings/mcp?add=${toolkit}`;
 }
+
+/** A template whose setup is only its parameters: no MCP tool to tick, no server to pick, no key to save. The console
+ *  applies one itself (Apply is its main action); one with more to set up is run with a coding agent. */
+export const isPlain = (t: Pick<TemplateView, "mcp" | "secrets">) => t.mcp.length === 0 && t.secrets.length === 0;
+
+/** Something the server checks at apply that the Apply screen reads first, so Apply waits for it instead of being refused:
+ *  whether a template needs it, how it is read, and what the screen says while it is unmet. A new one is one more entry in
+ *  APPLY_REQUIREMENTS. */
+export type ApplyRequirement = {
+  id: string;
+  /** What is read, as "the …": the screen says it couldn't be read, or that it is being read. */
+  what: string;
+  needs: (t: TemplateView) => boolean;
+  /** Resolves true when it is met; a failed read rejects. */
+  met: (v2: Client) => Promise<boolean>;
+  /** The line beside Apply while it is unmet: its words around one link to where it is set up. */
+  unmet: { before: string; link: string; href: string; after: string };
+};
+
+const kindOf = (trigger: Record<string, unknown>) => {
+  const source = trigger.source;
+  return typeof source === "object" && source !== null && "kind" in source ? source.kind : undefined;
+};
+
+export const APPLY_REQUIREMENTS: readonly ApplyRequirement[] = [
+  // An email tool or an email trigger reads the server's one mail account (Settings → Email): the apply refuses one
+  // with none saved.
+  {
+    id: "email",
+    what: "the email account",
+    needs: (t) => (t.tools ?? []).some((tool) => tool.startsWith("email_")) || t.triggers.some((x) => kindOf(x) === "email"),
+    met: async (v2) => (await v2.emailAccount()).configured,
+    unmet: { before: "Connect your mailbox under ", link: "Settings → Email", href: "#/settings/email", after: " first." },
+  },
+];
 
 /** The gate names the owner ticked, in the template's order: the consent an apply sends (`grants`), nothing else. */
 export const grantsOf = (t: TemplateView, ticked: ReadonlySet<string>) => t.mcp.flatMap((m) => m.tools.map((x) => x.tool)).filter((g) => ticked.has(g));
