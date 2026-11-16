@@ -651,7 +651,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd` |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -687,7 +687,8 @@ the owner's signed-in session only (the API token is 403), and `POST /v2/compute
 the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`, `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, and
-`KERNEL_API_KEY`, and `BOXD_API_KEY` (with `BOXD_ORG` and `BOXD_REGION` optional); Docker takes none.
+`KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and `BOXD_REGION` optional), and `CLOUDFLARE_RELAY_URL` and
+`CLOUDFLARE_RELAY_TOKEN` (the relay Worker's, `packages/computer/relays/cloudflare`); Docker takes none.
 The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
