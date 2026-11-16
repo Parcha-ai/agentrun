@@ -98,13 +98,26 @@ test("a page that is not HTML lists the absolute URLs its text holds: a JSON bod
 
 test("the URLs a hostile text writes out are read in one pass: runs of schemes, closing brackets and nesting take no longer than their length", async () => {
   const { linksOf } = await import("../dist/web-fetch-direct.js");
+  const hostile = (n) => ["https://".repeat(n / 8), `https://a.example/${")".repeat(n)}`, `https://a.example/${"(".repeat(n)}${".".repeat(n)}`, `${"[".repeat(n / 80)}"https://deep.example/"${"]".repeat(n / 80)}`, `${"](".repeat(n / 2)} https://after.example/`, `<f${" a='".repeat(n / 4)}`, `<f${" a=".repeat(n / 3)}`, `<f a="${"&amp;".repeat(n / 5)}`];
   const n = 400_000;
-  const texts = ["https://".repeat(n / 8), `https://a.example/${")".repeat(n)}`, `https://a.example/${"(".repeat(n)}${".".repeat(n)}`, `${"[".repeat(5_000)}"https://deep.example/"${"]".repeat(5_000)}`, `${"](".repeat(n / 2)} https://after.example/`, `<f${" a='".repeat(n / 4)}`, `<f${" a=".repeat(n / 3)}`, `<f a="${"&amp;".repeat(n / 5)}`];
-  const started = performance.now();
-  const found = texts.map((text) => [...linksOf(text)]);
-  const ms = performance.now() - started;
-  assert.ok(ms < 1_000, `read in ${Math.round(ms)} ms, not under 1,000`);
-  assert.deepEqual(found.slice(1, 5), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
+  const large = hostile(n);
+  assert.deepEqual(large.slice(1, 5).map((text) => [...linksOf(text)]), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
+  // The time is checked as a ratio, never against a clock: a loaded runner slows both sizes alike, while a pass that
+  // rereads the text takes a hundred times as long for ten times the length. Each size keeps its fastest of three reads,
+  // taken in turn so a burst of load lands on both.
+  const small = hostile(n / 10);
+  const read = (texts) => {
+    const started = performance.now();
+    for (const text of texts) [...linksOf(text)];
+    return performance.now() - started;
+  };
+  let fast = Infinity;
+  let slow = Infinity;
+  for (let i = 0; i < 3; i++) {
+    fast = Math.min(fast, read(small));
+    slow = Math.min(slow, read(large));
+  }
+  assert.ok(slow < 30 * fast, `ten times the text took ${(slow / fast).toFixed(1)} times as long (${Math.round(fast)} ms, then ${Math.round(slow)} ms), not under 30`);
 });
 
 /** A GitHub releases.atom, as github.com serves it: each entry's link in an attribute, its content escaped HTML. */
