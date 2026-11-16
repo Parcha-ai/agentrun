@@ -132,6 +132,8 @@ test("a changed UIDVALIDITY replays nothing and says so; what comes after it fir
   faux.setUidValidity(777);
   clock.to(minute(2));
   const [rebuilt] = await firings(api, id, 2);
+  // That poll done (its check written), not just its row: a time that comes while a time's poll runs is skipped.
+  await checked(api, id, minute(2));
   assert.deepEqual([rebuilt.status, rebuilt.run_id], ["skipped", null]);
   assert.equal(rebuilt.reason, "INBOX was rebuilt on the mail server (its UIDVALIDITY changed): watching it from now; the 2 messages there won't start runs.");
   const next = faux.seed({ from: "a@example.com", subject: "Two" });
@@ -154,6 +156,8 @@ test("a saved account swapped for another replays none of the other's mail, thou
   const one = a.seed({ from: "a@example.com", subject: "One on A" });
   clock.to(minute(2));
   const [fired] = await firings(api, id, 2);
+  // That poll done (its check written), not just its row: a time that comes while a time's poll runs is skipped.
+  await checked(api, id, minute(2));
   assert.deepEqual([fired.status, fired.key], ["started", keyOf("email", id, one.messageId)]);
   await follow(api, fired.run_id, ["completed"]);
   // Another account: its INBOX the same UIDVALIDITY as A's (both fakes number it alike), and more UIDs than A's cursor.
@@ -162,6 +166,8 @@ test("a saved account swapped for another replays none of the other's mail, thou
   await saved(api, b);
   clock.to(minute(3));
   const [changed] = await firings(api, id, 3);
+  // That poll done (its check written), not just its row: a time that comes while a time's poll runs is skipped.
+  await checked(api, id, minute(3));
   assert.deepEqual([changed.status, changed.run_id], ["skipped", null], JSON.stringify(changed));
   assert.equal(changed.reason, "The email account changed: watching INBOX from now; the 3 messages there won't start runs.");
   const next = b.seed({ from: "b@example.com", subject: "New on B" });
@@ -288,6 +294,8 @@ test("a run an email started is handed no other run's answer: bob's run never re
   const alice = faux.seed({ from: "alice@example.com", to: [ADDRESS], subject: "Refund", text: "Where is my refund?" });
   clock.to(minute(1));
   const first = (await firings(api, id, 2)).find((f) => f.key === keyOf("email", id, alice.messageId));
+  // That poll done (its check written), not just its row: a time that comes while a time's poll runs is skipped.
+  await checked(api, id, minute(1));
   assert.equal(first?.status, "started");
   await follow(api, first.run_id, ["completed"]);
   assert.deepEqual((await api("GET", `/runs/${first.run_id}`)).body.result.output, ANSWER, "alice's run has a structured answer");
