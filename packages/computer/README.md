@@ -1735,7 +1735,7 @@ made instead of making a second.
 An E2B computer is a sandbox made from an E2B template. The descriptor names no default: it says `prepareImage`, and
 `prepareImage()` answers the box template, `boxE2bTemplate()` (`src/box-image.ts`), with no call and no wait. That is
 `<BOX_E2B_PUBLISHER>/agentrun-archil-<recipe hash>`, the box image (`box/Dockerfile`: the archil client and helper,
-the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box-e2b` job builds as a template in the publishing
+the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box` job builds as a template in the publishing
 team and makes public, so any E2B account starts it by that name. A sandbox and a desktop both start from it, in either
 mode. It is kind `desktop`: computerd starts the X server and xfwm4 itself (`src/desktop.ts`), as on a Docker desktop,
 and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any template, with no display: the same

@@ -20,7 +20,7 @@ export function boxRecipeHash(): string {
 export const boxImageRef = (): string => `${BOX_IMAGE_REPOSITORY}:${boxRecipeHash()}`;
 
 /**
- * The E2B team that publishes the box template: release.yml's box-e2b job builds the box image as the E2B template
+ * The E2B team that publishes the box template: release.yml's box job builds the box image as the E2B template
  * agentrun-archil-<recipe hash> (box/build-e2b.mjs --image --public) in this team, and makes it public, so any E2B
  * account starts it as <team slug>/<template>. The slug is E2B's name for the publishing team.
  */
