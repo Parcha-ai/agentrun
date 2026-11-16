@@ -923,9 +923,10 @@ export function readPackage(from: string | PackageFiles): Package {
     const at = /^triggers\.(\d+)\.enabled$/.exec(field);
     return !!at && typeof p.triggers[Number(at[1])]?.enabled === "string";
   };
-  // A feed trigger a parameter's default leaves with no feeds is skipped at apply (feedLeftEmpty), never refused: so here.
+  // A feed trigger a parameter's default leaves with no feeds is skipped at apply (feedLeftEmpty), never refused: so its
+  // urls are not refused here. Every other field of it is checked, as the apply makes it once the owner sets urls.
   const skippedAtApply = (field: string): boolean => {
-    const at = /^triggers\.(\d+)\./.exec(field);
+    const at = /^triggers\.(\d+)\.source\.urls(?:\[\d+\])?$/.exec(field);
     const trigger = at ? made.triggers[Number(at[1])] : undefined;
     return !!trigger && feedLeftEmpty(trigger);
   };
