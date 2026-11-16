@@ -9,8 +9,10 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   id: "claude-agent",
   label: "Claude",
   wire: "anthropic-messages",
-  // A message that comes mid-turn waits for the turn's end.
-  steer: false,
+  // A message that comes mid-turn reaches the model at its next step, after the tool calls in flight finish, in the same
+  // turn: the session's steer() places it, the harness sends it to the CLI at priority `next`, and the CLI takes it as a
+  // queued command. One that comes as the turn ends starts the next turn.
+  steer: true,
   // A call that started is never run again (one cut off the CLI answers "[Tool call interrupted]"; one that ended gets its
   // recorded result); only the model calls again.
   rerunsStarted: false,
