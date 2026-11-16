@@ -255,18 +255,25 @@ export class ComposioTriggers implements TriggerUpstream {
    *  delete take its project's turn, so a create still making its first trigger is saved, and counted, before the check;
    *  any other server (no Composio key) is deleted with no turn and nothing asked of Composio. */
   async deleting<T>(name: string, remove: () => Promise<T>): Promise<T> {
-    const credential = await this.deps.credential(name, "route").catch(() => undefined);
-    const checked = async () => {
+    return this.inTurnOf(name, async () => {
       await this.inUse(name);
       return remove();
-    };
-    return credential ? this.serial(credential.key, checked) : checked();
+    });
   }
 
-  /** The triggers that use saved server `name`: a server that has any is not deleted (refused, naming them). */
-  async inUse(name: string): Promise<void> {
+  /** `step` in the turn of saved server `name`'s Composio project, when it is a Composio server (its key opens): a create
+   *  still making its first trigger on it is saved, and counted, before `step` reads who uses it. Any other server's runs
+   *  at once. A save that moves the server off what its triggers stand on checks inUse in it (server.ts saveMcpServer). */
+  async inTurnOf<T>(name: string, step: () => Promise<T>): Promise<T> {
+    const credential = await this.deps.credential(name, "route").catch(() => undefined);
+    return credential ? this.serial(credential.key, step) : step();
+  }
+
+  /** The triggers that use saved server `name`: a server that has any is not deleted, nor saved off what they stand on
+   *  (`then`: what to do once they are gone), refused, naming them. */
+  async inUse(name: string, then = "then the server"): Promise<void> {
     const using = (await this.deps.holders()).filter((h) => h.source.server === name);
-    if (using.length) throw new ApiError("composio_in_use", `${name} has Composio triggers: ${using.map((h) => h.name).join(", ")}. Delete ${using.length > 1 ? "them" : "it"} first, then the server.`, { details: { triggers: using.map((h) => ({ id: h.id, name: h.name })) } });
+    if (using.length) throw new ApiError("composio_in_use", `${name} has Composio triggers: ${using.map((h) => h.name).join(", ")}. Delete ${using.length > 1 ? "them" : "it"} first, ${then}.`, { details: { triggers: using.map((h) => ({ id: h.id, name: h.name })) } });
   }
 
   // ---- its steps ---------------------------------------------------------------------------------------------------------
