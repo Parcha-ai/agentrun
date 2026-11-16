@@ -124,18 +124,34 @@ export type JevRequestDiagnostic = {
   stateBytes?: number;
   maxStateBytes?: number;
 };
+/** The provider's machine-readable error fields. Message text is never read into them. */
+export type JevProviderDiagnostic = {
+  type?: string;
+  code?: string;
+  errorType?: string;
+};
 
 /** Deliberately excludes provider bodies, headers, input state, and underlying causes. */
 export class JevError extends Error {
   readonly responseDiagnostic?: JevResponseDiagnostic;
+  readonly providerType?: string;
+  readonly providerCode?: string;
+  readonly providerErrorType?: string;
   /** The state the request held as sent, and the values cut, when it was cut to fit Jev's context before sending: a
    *  decision receipt records it (jevProvider passes it on as the DecisionProviderError's `stateSent`). */
   stateSent?: DecisionStateSent;
   constructor(readonly code: JevErrorCode, message: string, readonly attempts: number = 0, readonly status?: number,
-    readonly requestDiagnostic?: JevRequestDiagnostic, responseDiagnostic?: JevResponseDiagnostic) {
+    readonly requestDiagnostic?: JevRequestDiagnostic, responseDiagnostic?: JevResponseDiagnostic,
+    providerDiagnostic?: JevProviderDiagnostic) {
     super(message);
     this.name = "JevError";
     if (isJevResponseReason(responseDiagnostic?.reason)) this.responseDiagnostic = { reason: responseDiagnostic.reason };
+    const providerType = providerToken(providerDiagnostic?.type);
+    const providerCode = providerToken(providerDiagnostic?.code);
+    const providerErrorType = providerToken(providerDiagnostic?.errorType, true);
+    if (providerType !== undefined) this.providerType = providerType;
+    if (providerCode !== undefined) this.providerCode = providerCode;
+    if (providerErrorType !== undefined) this.providerErrorType = providerErrorType;
   }
 }
 
@@ -158,6 +174,24 @@ const requireConfig = (condition: boolean, message: string): void => {
 const isTimerMs = (n: number, allowZero = false): boolean => Number.isSafeInteger(n) && n >= (allowZero ? 0 : 1) && n <= MAX_TIMER_MS;
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isTokenCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+/** A bounded machine token, never free text. Provider `error_type` values are lower-case identifiers. */
+function providerToken(value: unknown, lowerCase = false): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) return undefined;
+  return (lowerCase ? /^[a-z][a-z0-9_.-]*$/ : /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/).test(value) ? value : undefined;
+}
+/** Read typed fields from the JSON body's own shape. A broker's `message` is never parsed. */
+function providerDiagnostic(error: APIError): JevProviderDiagnostic | undefined {
+  const body = error.body;
+  if (!isRecord(body)) return undefined;
+  const nested = isRecord(body.error) ? body.error : undefined;
+  const detail = isRecord(body.detail) ? body.detail : undefined;
+  const diagnostic = {
+    type: providerToken(body.type ?? nested?.type),
+    code: providerToken(body.code ?? nested?.code),
+    errorType: providerToken(detail?.error_type, true),
+  };
+  return diagnostic.type === undefined && diagnostic.code === undefined && diagnostic.errorType === undefined ? undefined : diagnostic;
+}
 
 function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal, error: () => JevError): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -450,7 +484,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       const { request, body, headers } = prepared;
       sent = prepared.sent;
       // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
-      let billable: { status?: number } | undefined;
+      let billable: { status?: number; provider?: JevProviderDiagnostic } | undefined;
       for (attempt = 1; ; attempt++) {
         if (signal.aborted) throw abortError();
         let result: unknown;
@@ -463,23 +497,25 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           // the deadline ended the call. A timed-out request may have been billed, and its code is what says so.
           if (signal.aborted || (timeoutMs !== null && error instanceof APITimeoutError)) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
+          const provider = error instanceof APIError ? providerDiagnostic(error) : undefined;
           const before = error instanceof APIConnectionError && neverSent(error);
           // A request that was sent may have been answered and billed: unless the host asked for retries after sending, it is not sent again.
           if (!retryAfterSend && (status === 408 || (status !== undefined && status >= 500 && status <= 599) || (error instanceof APIConnectionError && !before))) {
             const safeStatus = status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
-            const capacity = error instanceof APIError && isRecord(error.body) && isRecord(error.body.detail) && error.body.detail.error_type === "max_tokens_exceeded";
+            const capacity = provider?.errorType === "max_tokens_exceeded";
             const what = safeStatus === undefined ? "Jev's connection was lost" : `Jev returned HTTP ${safeStatus}`;
             // Only the structured reason is named, as on any HTTP failure; the provider's body text never reaches the message.
             throw new JevError("outcome_unknown", capacity
               ? `${what}: the request exceeds the model's token budget (max_tokens_exceeded). Send fewer or shorter items per request. It was sent once and is not sent again.`
-              : `${what} after the request was sent; it may have been answered, and is not sent again.`, attempt, safeStatus, undefined, capacity ? { reason: "max_tokens_exceeded" } : undefined);
+              : `${what} after the request was sent; it may have been answered, and is not sent again.`, attempt, safeStatus, undefined,
+              capacity ? { reason: "max_tokens_exceeded" } : undefined, provider);
           }
           const toldWhen = status === 429 && error instanceof APIError && retryAfterMs(error.headers) !== undefined;
           const retryable = retryAfterSend
             ? status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError
             : before || toldWhen;
           // A request that never reached Jev was not billed, and a 429 was refused unanswered: neither is the billable attempt.
-          if (retryable && status !== 429 && !before && billable === undefined) billable = status === undefined ? {} : { status };
+          if (retryable && status !== 429 && !before && billable === undefined) billable = { ...(status === undefined ? {} : { status }), ...(provider ? { provider } : {}) };
           if (retryable && attempt < maxAttempts) {
             const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
             const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;
@@ -494,16 +530,17 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
             }
           }
           // HTTP 429 means every attempt was refused unanswered; after one that may have been billed, the give-up names that one instead.
-          if (status === 429 && billable) throw billable.status === undefined ? new JevError("connection", "Jev transport failed.", attempt) : new JevError("http", `Jev returned HTTP ${billable.status}.`, attempt, billable.status);
+          if (status === 429 && billable) throw billable.status === undefined
+            ? new JevError("connection", "Jev transport failed.", attempt)
+            : new JevError("http", `Jev returned HTTP ${billable.status}.`, attempt, billable.status, undefined, undefined, billable.provider);
           if (status !== undefined) {
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
-            const capacity = error instanceof APIError && isRecord(error.body) && isRecord(error.body.detail)
-              && error.body.detail.error_type === "max_tokens_exceeded";
+            const capacity = provider?.errorType === "max_tokens_exceeded";
             // Only the structured reason is named; the provider's body text never reaches the message.
             const returned = safeStatus === undefined ? "Jev returned an HTTP failure" : `Jev returned HTTP ${safeStatus}`;
             throw new JevError("http", capacity
               ? `${returned}: the request exceeds the model's token budget (max_tokens_exceeded). Send fewer or shorter items per request.`
-              : `${returned}.`, attempt, safeStatus, undefined, capacity ? { reason: "max_tokens_exceeded" } : undefined);
+              : `${returned}.`, attempt, safeStatus, undefined, capacity ? { reason: "max_tokens_exceeded" } : undefined, provider);
           }
           if (error instanceof APIConnectionError) throw new JevError("connection", "Jev transport failed.", attempt);
           throw new JevError("invalid_request", "Jev could not process the request. Check question and transport configuration.", attempt);

@@ -48,6 +48,36 @@ test('HTTP statuses and exact structured capacity code survive without provider 
   }
 });
 
+test('HTTP failures expose only the provider typed error fields', async () => {
+  const cases = [
+    [402, { type: 'billing_error', code: 'quota_exhausted', detail: { error_type: 'billing_error', message: secret }, message: secret },
+      { providerType: 'billing_error', providerCode: 'quota_exhausted', providerErrorType: 'billing_error' }],
+    [401, { error: { type: 'authentication_error', code: 'token_not_found_in_db', message: secret, param: 'None' } },
+      { providerType: 'authentication_error', providerCode: 'token_not_found_in_db', providerErrorType: undefined }],
+    // The observed broker wraps the vendor object in a JSON string. It is message text, not a typed field.
+    [403, { error: { type: 'None', code: '403', message: JSON.stringify({ detail: { error_type: 'billing_error' } }) } },
+      { providerType: 'None', providerCode: '403', providerErrorType: undefined }],
+  ];
+  for (const [status, body, expected] of cases) {
+    const run = createJevRunner({
+      maxAttempts: 1,
+      client: { async systemOne() { throw new APIError(status, body, new Headers({ 'x-typesafe-request-id': secret })); } },
+    });
+    await assert.rejects(run(params), error => {
+      assert.equal(error.code, 'http');
+      assert.equal(error.status, status);
+      assert.deepEqual({
+        providerType: error.providerType,
+        providerCode: error.providerCode,
+        providerErrorType: error.providerErrorType,
+      }, expected);
+      assert.equal(error.message, `Jev returned HTTP ${status}.`);
+      safe(error);
+      return true;
+    });
+  }
+});
+
 test('generic adapter does not parse broker messages, unknown codes or wrong paths', async () => {
   for (const body of [secret, { message: 'max_tokens_exceeded' }, { detail: { error_type: 'MAX_TOKENS_EXCEEDED' } },
     { detail: { error_type: secret } }, { error: { message: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } },
@@ -76,6 +106,11 @@ test('malformed HTTP status and forged diagnostic cannot disclose arbitrary valu
   assert.equal(isJevResponseReason(secret), false);
   const error = new JevError('invalid_response', 'fixed', 1, undefined, undefined, { reason: secret, extra: secret });
   assert.equal(error.responseDiagnostic, undefined); safe(error);
+  const providerError = new JevError('http', 'fixed', 1, 400, undefined, undefined,
+    { type: 'not a token', code: /** @type {any} */ ({}), errorType: secret });
+  assert.deepEqual([providerError.providerType, providerError.providerCode, providerError.providerErrorType],
+    [undefined, undefined, undefined]);
+  safe(providerError);
 });
 
 test('abort wins over lateinvalid response, late400, and retrybackoff', async () => {
