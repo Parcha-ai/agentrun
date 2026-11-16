@@ -3,8 +3,8 @@
 // request's machine with no file only by the request's own name and once it is older than any create's write. The
 // fake host plays such a vendor: it keeps the name create gave, answers no labels, and lists every machine.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,6 +40,11 @@ const made = (result) => {
 const fileOf = (m) => (m.file === undefined ? undefined : JSON.parse(m.file));
 const reads = (fake) => (fake.labelRuns ?? []).filter((run) => !run.write).length;
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+/** Another instance's view of host: its first listing doesn't show the machine yet, and the vendor fails its create after it may have made one (a 502), so it sweeps the request's name. */
+const lagging = (host) => {
+	let listed = false;
+	return { ...host, list: async (...args) => (listed ? host.list(...args) : ((listed = true), [])), create: async () => Promise.reject(new Error("502: Bad Gateway")) };
+};
 
 test("a host that keeps no labels has them written to a root-only file once the machine runs, before anything else of the create's, and read back from there", async () => {
 	const fake = fakeHost(KEEPS);
@@ -86,7 +91,7 @@ test("a machine of the account that is not the adapter's (another name, no file)
 	assert.equal(stranger.deleted || nameless.deleted, false);
 });
 
-test("the label script, run by sh: write replaces the file from stdin, 0600 in a 0700 directory, and prints it; a read prints it, or exits 3 when there is none", () => {
+test("the label script, run by sh: write replaces the file from stdin, 0600 in a 0700 directory, and prints it; a read prints it, or exits 3 when there is none, and two writers never share a file", async () => {
 	const root = mkdtempSync(join(tmpdir(), "computer-labels-"));
 	try {
 		// Not root here: the script reaches root through sudo -n, which this stand-in runs as it is, and chown is a no-op.
@@ -110,6 +115,25 @@ test("the label script, run by sh: write replaces the file from stdin, 0600 in a
 		assert.equal(execFileSync(read[0], read.slice(1), { env, encoding: "utf8" }), text);
 		execFileSync(write[0], write.slice(1), { env, input: "{}", encoding: "utf8" });
 		assert.equal(readFileSync(file, "utf8"), "{}", "a write replaces it");
+		// Two writers at once (two instances' extends): the second starts and ends while the first is half written, and
+		// each renames in its own whole file.
+		const writer = () => {
+			const child = spawn(write[0], write.slice(1), { env });
+			// Each prints the file it wrote: read it, so a long one never fills the pipe.
+			child.stdout.resume();
+			return { child, code: new Promise((done) => child.on("close", done)) };
+		};
+		const long = JSON.stringify({ [COMPUTER]: "1", [DEADLINE]: "a".repeat(200_000) });
+		const first = writer();
+		first.child.stdin.write(long.slice(0, 100_000));
+		await pause(200);
+		const second = writer();
+		second.child.stdin.end(text);
+		assert.equal(await second.code, 0, "the second writer");
+		first.child.stdin.end(long.slice(100_000));
+		assert.equal(await first.code, 0, "the first writer");
+		assert.equal(readFileSync(file, "utf8"), long, "the last rename's whole file, never a mix");
+		assert.deepEqual(readdirSync(join(root, "var", "lib", "agentrun")), ["labels.json"], "no writer's file is left beside it");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -134,10 +158,9 @@ test("two instances, one request: a sweep of the request's name leaves another i
 	const [mine] = fake.machines.values();
 	assert.equal(mine.name, nameOf(requestId));
 	assert.equal(mine.file, undefined, "A's machine has no label file yet");
-	// Instance B's create of the same request: the vendor fails it after it may have made a machine (a 502), so B sweeps
-	// the request's name, the late sweep #2913 holds to.
-	const failing = { ...fake.host, create: async () => Promise.reject(new Error("502: Bad Gateway")) };
-	const b = await provider(failing).create(SPEC, { requestId });
+	// Instance B's create of the same request, whose listing doesn't show A's machine yet: the vendor fails it after it
+	// may have made a machine (a 502), so B sweeps the request's name, the late sweep #2913 holds to.
+	const b = await provider(lagging(fake.host)).create(SPEC, { requestId });
 	assert.equal(b.ok, false);
 	assert.equal(b.error.code, "vendor");
 	assert.match(b.error.message, new RegExp(`1 machine named ${nameOf(requestId)} with no labels written yet, younger than ${UNFILED_MS / 1000} s, left: another create of this request may still be making it`));
@@ -145,23 +168,59 @@ test("two instances, one request: a sweep of the request's name leaves another i
 	// A machine of another request's name with no file, however old, is never this request's.
 	const other = fake.add({ name: nameOf(`another-${requestId}`) });
 	other.createdAt = new Date(Date.now() - 2 * UNFILED_MS);
-	// Past the guard with still no file: the next sweep of the name (instance C's) takes it.
+	// Past the guard with still no file: instance C's create of the request lists it, never got its labels, and takes it.
 	mine.createdAt = new Date(Date.now() - UNFILED_MS - 1_000);
-	const c = await provider(failing).create(SPEC, { requestId });
+	const c = await provider(fake.host).create(SPEC, { requestId });
 	assert.equal(c.ok, false);
-	assert.match(c.error.message, new RegExp(`${mine.id} was deleted and read back gone`));
+	assert.equal(c.error.code, "exists");
+	assert.match(c.error.message, new RegExp(`${nameOf(requestId)} was made for this request and its labels were never written: create with a new request id; the machine named .* ${mine.id} was deleted and read back gone`));
 	assert.equal(mine.deleted, true, "the old machine with no file is swept");
 	assert.equal(other.deleted, false, "a machine of another name is left");
 	gate.resolve();
 	assert.equal((await a).ok, false, "A's create finds its machine gone");
 });
 
+test("a retry of a request on another instance, while the first create has not written its labels yet, waits for them and answers that computer: no second machine", async () => {
+	const gate = deferred();
+	let held = false;
+	const fake = fakeHost({
+		...KEEPS,
+		onStep: async (step) => {
+			if (step !== "exec labels" || held) return;
+			held = true;
+			await gate.promise;
+		},
+	});
+	const requestId = `retry-unwritten-${++requests}`;
+	const a = provider(fake.host).create(SPEC, { requestId });
+	for (let i = 0; i < 400 && !held; i++) await pause(5);
+	assert.equal(held, true, "A's create reached its machine's labels");
+	const b = provider(fake.host).create(SPEC, { requestId });
+	await pause(50);
+	assert.equal(fake.machines.size, 1, "B makes no machine of its own while A's has no labels");
+	gate.resolve();
+	const [first, second] = [made(await a), made(await b)];
+	assert.equal(second.id, first.id, "B answers A's computer");
+	assert.equal(fake.machines.size, 1);
+});
+
+test("a running machine whose label file reads as no label map fails the listing in words: it is never left out as a machine with no labels", async () => {
+	const fake = fakeHost(KEEPS);
+	const hosted = provider(fake.host);
+	const ref = made(await hosted.create(SPEC, { requestId: `unreadable-${++requests}` }));
+	const [m] = fake.machines.values();
+	m.file = "not a label map";
+	const listed = await provider(fake.host).list({});
+	assert.equal(listed.ok, false, "a fresh instance can't read the file, so its listing fails");
+	assert.equal(listed.error.code, "vendor");
+	assert.match(listed.error.message, new RegExp(`reading the labels in ${ref.id} failed \\(exit 0\\): not a label map`));
+});
+
 test("a machine of the request's name with no file and no createdAt is never old enough: a sweep leaves it, for the vendor's timer", async () => {
 	const fake = fakeHost({ ...KEEPS, born: () => undefined });
 	const requestId = `undated-${++requests}`;
 	const left = fake.add({ name: nameOf(requestId) });
-	const failing = { ...fake.host, create: async () => Promise.reject(new Error("502: Bad Gateway")) };
-	const result = await provider(failing).create(SPEC, { requestId });
+	const result = await provider(lagging(fake.host)).create(SPEC, { requestId });
 	assert.match(result.error.message, /1 machine named .* with no labels written yet, younger than/);
 	assert.equal(left.deleted, false);
 });

@@ -77,10 +77,12 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
 - A vendor that keeps no labels (the host's `facts.labels` is `"machine"`) gets the name as its machine's own name,
   and the adapter writes the labels as JSON to a root-only file in the machine (`/var/lib/agentrun/labels.json`, 0600
   in a 0700 directory) once it runs. Between the vendor's answer and that write, a machine of the request's name with
-  no file is the request's. A later create's sweep of the name leaves it while it is younger than any create could
-  take to write it (two creates' bounds, a listing, a read and the write, plus five minutes: 11.5 minutes on the
-  default timeouts), since another create of the request may still be making it, and deletes it once it is older. One
-  whose vendor reads no `createdAt` is never old enough: the vendor's timer ends it. The Core case
+  no file is the request's. Until it is older than any create could take to write it (two creates' bounds, a listing,
+  a read and the write, plus five minutes: 11.5 minutes on the default timeouts), another create of the request may
+  still be making it. A retry that lists it waits for its labels as for a computer still starting, and a sweep of the
+  name leaves it. Once it is older, a retry is refused `exists` and deletes it, as a sweep does. One whose vendor reads
+  no `createdAt` is never old enough: the vendor's timer ends it. Only a missing file reads as no labels; a read that
+  fails otherwise fails the listing in words, so the janitor never misses a computer it couldn't read. The Core case
   `isolation.label-file` checks that the computer's user cannot read the file.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.

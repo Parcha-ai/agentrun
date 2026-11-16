@@ -560,7 +560,12 @@ export class HostedProvider implements ComputerProvider {
 	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal, taken?: Result<never>): Promise<Result<CreatedComputer>> {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
-		const found = listed.value.filter((machine) => ours(machine.labels, name));
+		// With labels kept in the machine, a young one of the name with none written yet is this request's still being made
+		// (#again waits for its labels); an old one never got them, and is deleted.
+		const found = listed.value.filter((machine) => ours(machine.labels, name) || this.#unfiled(machine, name) === "young");
+		if (found.length === 0 && listed.value.some((machine) => this.#unfiled(machine, name) === "old")) {
+			return this.#fail("exists", `${name} was made for this request and its labels were never written: create with a new request id${await this.#deleteNamed(name)}`);
+		}
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
 		if (found.length === 1) return this.#again(spec, name, found[0] as Machine, signal);
 		if (taken) return taken;
@@ -630,7 +635,10 @@ export class HostedProvider implements ComputerProvider {
 			if (machine === undefined || (machine.state !== "starting" && machine.state !== "running")) return this.#fail("exists", endedWords(name));
 			const deadline = deadlineOf(machine);
 			if (deadline !== undefined && deadline.getTime() <= Date.now()) return this.#fail("exists", endedWords(name));
-			if (machine.state === "running") {
+			// With labels kept in the machine: the create making it has not written them yet.
+			const unwritten = machine.state === "running" && this.#unfiled(machine, name) !== undefined;
+			if (unwritten) last = { code: "refused", message: "has no labels written" };
+			if (machine.state === "running" && !unwritten) {
 				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
@@ -1466,18 +1474,23 @@ function labelMapOf(text: string): Record<string, string> | undefined {
 
 /**
  * A machine of a host that keeps labels in the machine, with the labels its file holds: read through exec while it runs
- * (fresh), else as last read; none where it has no file, or one not read. Another host's machine is as read.
+ * (fresh), else as last read, or none. No file (exit 3) is none; a read that fails otherwise is an error, never none, so
+ * a listing never leaves out a computer it could not read. Another host's machine is as read.
  */
 async function labelled(host: MachineHost, machine: Machine | undefined, ms: number, signal: AbortSignal | undefined, fresh: boolean): Promise<Result<Machine | undefined>> {
 	if (host.facts.labels !== "machine" || machine === undefined) return ok(machine);
 	const known = filedOf(host);
 	const held = known.get(machine.id);
 	if (machine.state !== "running" || (held !== undefined && !fresh)) return ok({ ...machine, labels: { ...held } });
-	const read = await runToExit(host, machine.id, labelsCommand(), { ms, ...(signal ? { signal } : {}), what: `reading the labels in ${machine.id}` });
-	if (!read.ok && read.error.code === "aborted") return read;
-	const labels = read.ok && read.value.exitCode === 0 ? labelMapOf(read.value.stdout) : undefined;
-	if (labels !== undefined) known.set(machine.id, labels);
-	return ok({ ...machine, labels: { ...(labels ?? held) } });
+	const what = `reading the labels in ${machine.id}`;
+	const read = await runToExit(host, machine.id, labelsCommand(), { ms, ...(signal ? { signal } : {}), what });
+	// Gone since the vendor's read: as a read that finds none.
+	if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
+	if (read.value.exitCode === 3) return ok({ ...machine, labels: {} });
+	const labels = read.value.exitCode === 0 ? labelMapOf(read.value.stdout) : undefined;
+	if (labels === undefined) return failFor(host.descriptor.id)("vendor", `${what} failed (exit ${read.value.exitCode}): ${`${read.value.stdout} ${read.value.stderr}`.trim().slice(0, 300)}`);
+	known.set(machine.id, labels);
+	return ok({ ...machine, labels: { ...labels } });
 }
 
 /** Whether a machine carries every one of these labels. */

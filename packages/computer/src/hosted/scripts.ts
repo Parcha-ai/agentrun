@@ -166,15 +166,15 @@ const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "
 export const LABEL_FILE = "/var/lib/agentrun/labels.json";
 
 /**
- * The label file, as root. With write, stdin replaces it: written beside it and renamed in, 0600 in a 0700 directory,
- * both root's. Then it prints the file; exit 3 when there is none.
+ * The label file, as root. With write, stdin replaces it: written to a file of its own beside it (two writers never
+ * share one) and renamed in, 0600 in a 0700 directory, both root's. Then it prints the file; exit 3 when there is none.
  */
 const LABELS_SCRIPT = [
 	"# agentrun-computer: labels",
 	"f=$1",
 	ROOT,
 	'if [ "${2-}" = write ]; then',
-	`\t$p sh -c 'umask 077; d=\${0%/*}; mkdir -p "$d" && chown 0:0 "$d" && chmod 700 "$d" && cat >"$0.new" && mv -f "$0.new" "$0"' "$f" || exit 5`,
+	`\t$p sh -c 'umask 077; d=\${0%/*}; mkdir -p "$d" && chown 0:0 "$d" && chmod 700 "$d" && t=$(mktemp "$0.XXXXXX") || exit 5; cat >"$t" && mv -f "$t" "$0" || { rm -f "$t"; exit 5; }' "$f" || exit 5`,
 	"fi",
 	`exec $p sh -c '[ -e "$0" ] || exit 3; exec cat "$0"' "$f"`,
 ].join("\n");
