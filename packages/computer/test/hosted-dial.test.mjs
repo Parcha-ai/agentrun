@@ -44,6 +44,7 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.match(env.AGENTRUN_DAEMON_SHA256, /^[0-9a-f]{64}$/);
 	assert.equal(env.AGENTRUN_INIT_ARGS, `--deadline ${request.labels["agentrun.computer.deadline"]} --user 2510:2510 --own-network --max-deadline ${request.labels["agentrun.computer.max-deadline"]}`);
 	assert.equal(request.command, undefined, "no entrypoint: agentrun-dial starts init");
+	assert.equal(request.egress, true, "its root reaches this server, with its tools' network none");
 	// The token stops at the machine's backstop.
 	assert.equal(tokens.check(env.AGENTRUN_ATTACH_TOKEN)?.machine, ref.name);
 	assert.equal(tokens.check(env.AGENTRUN_ATTACH_TOKEN)?.mint.expiresAt.toISOString(), request.backstopAt);
@@ -57,6 +58,37 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.equal(tokens.check(env.AGENTRUN_ATTACH_TOKEN), undefined, "delete revoked the token");
 	assert.equal(hub.online(ref.name), false, "and closed its socket");
 	assert.deepEqual(fake.live(), []);
+});
+
+test("a release of a machine gone already revokes its token and closes its socket", async () => {
+	const { fake, provider, hub, tokens } = setup();
+	const ref = made(await create(provider));
+	const token = fake.calls.find(([what]) => what === "create")[1].boot.env.AGENTRUN_ATTACH_TOKEN;
+	fake.vanish(ref.id);
+	made(await provider.release(ref, "delete"));
+	assert.equal(tokens.check(token), undefined);
+	assert.equal(hub.online(ref.name), false);
+});
+
+test("two provider instances of one server creating one request at once make one machine, which stays attached", async () => {
+	const { fake, hub, provider: instance } = fakeDialHost({ daemon: DAEMON_BYTES });
+	const [a, b] = [instance({ daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), instance({ daemonPath: DAEMON_PATH, timeouts: TIMEOUTS })];
+	const [first, second] = (await Promise.all([a.create(SPEC, { requestId: "dial-twice" }), b.create(SPEC, { requestId: "dial-twice" })])).map(made);
+	assert.equal(second.id, first.id);
+	assert.equal(fake.creates(), 1);
+	assert.equal(hub.online(first.name), true);
+	const connection = made(await b.connect(second));
+	assert.deepEqual(made(await connection.client.call("ping", {})), {});
+	await connection.close();
+	made(await a.release(first, "delete"));
+});
+
+test("two mints of one machine at once leave one token, and its revoke refuses both", async () => {
+	const tokens = new MemoryMachineTokens();
+	const mint = { kind: "linux", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + 60_000) };
+	const both = await Promise.all([tokens.mint("computer-5f3a9c1e7b2d", mint), tokens.mint("computer-5f3a9c1e7b2d", mint)]);
+	await tokens.revoke("computer-5f3a9c1e7b2d");
+	assert.deepEqual(both.map((token) => tokens.check(token)), [undefined, undefined]);
 });
 
 test("a server with no public https address refuses a dial create in words before the vendor is called", async () => {

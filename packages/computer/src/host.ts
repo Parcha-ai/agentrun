@@ -154,8 +154,9 @@ export interface MachineRequest {
 	backstopAt: string;
 	/**
 	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
-	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts). Its tools' own network
-	 * is init's, loopback alone, read from inside, either way.
+	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts), and for every dial
+	 * machine (boot), which fetches its daemon from the server and dials it. Its tools' own network is init's, loopback
+	 * alone, read from inside, either way.
 	 */
 	egress: boolean;
 	/** facts.daemon "pid1" alone: the machine's main process (the entrypoint that waits for the daemon, then becomes init). */

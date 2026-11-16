@@ -169,8 +169,9 @@ export class MemoryMachineTokens implements MachineTokens {
 	readonly #held = new Map<string, { machine: string; mint: MachineMint }>();
 	readonly #hashOf = new Map<string, string>();
 
+	// No await in either: a mint replaces the machine's token at once, so two of one machine leave one token, not two.
 	async mint(machine: string, mint: MachineMint): Promise<string> {
-		await this.revoke(machine);
+		this.#drop(machine);
 		const token = `art_${randomBytes(32).toString("hex")}`;
 		this.#held.set(sha256(token), { machine, mint: { ...mint } });
 		this.#hashOf.set(machine, sha256(token));
@@ -178,6 +179,10 @@ export class MemoryMachineTokens implements MachineTokens {
 	}
 
 	async revoke(machine: string): Promise<void> {
+		this.#drop(machine);
+	}
+
+	#drop(machine: string): void {
 		this.#held.delete(this.#hashOf.get(machine) ?? "");
 		this.#hashOf.delete(machine);
 	}

@@ -202,6 +202,8 @@ const START_POLL_MS = 500;
  * timeouts, and the vendor's clock against this one's.
  */
 const UNFILED_MARGIN_MS = 300_000;
+/** The dial creates in flight per request name, keyed by the server's AttachHub (#inTurn). */
+const DIAL_TURNS = new WeakMap<object, Map<string, Promise<unknown>>>();
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The longest timeout the adapter takes: the race of a call bounded by it must still fit a Node timer. */
@@ -633,8 +635,26 @@ export class HostedProvider implements ComputerProvider {
 			// The checks #again makes of a computer listed already, made here of the spec in flight: what it gives is shared
 			// only with a create that asks the same.
 			userOf: (asked) => this.#userOf(asked),
-			make: (name) => this.#createOnce(spec, name, context.signal),
+			make: (name) => (dialed === undefined ? this.#createOnce(spec, name, context.signal) : this.#inTurn(dialed.dial.hub, name, () => this.#createOnce(spec, name, context.signal))),
 		});
+	}
+
+	/**
+	 * A dial create of one request after any other of it on this server, whichever provider instance makes it. A
+	 * machine's token and socket go by the request's name, so two machines of one request must never dial at once: the
+	 * second create finds the first's computer instead (#createOnce). One server process is what dial asks for.
+	 */
+	async #inTurn<T>(hub: object, name: string, make: () => Promise<T>): Promise<T> {
+		const turns = DIAL_TURNS.get(hub) ?? new Map<string, Promise<unknown>>();
+		DIAL_TURNS.set(hub, turns);
+		const mine = (turns.get(name) ?? Promise.resolve()).then(make, make);
+		const settled = mine.catch(() => undefined);
+		turns.set(name, settled);
+		try {
+			return await mine;
+		} finally {
+			if (turns.get(name) === settled) turns.delete(name);
+		}
 	}
 
 	/** A request's computer given up on or deleted: its request is refused from now on. */
@@ -829,8 +849,8 @@ export class HostedProvider implements ComputerProvider {
 			backstopAt,
 			// The machine has egress where its tools' network is open or a list, which init's proxy holds to the public
 			// internet (./network.ts), and where an Archil computer's root reaches Archil. Its tools' none is init's own
-			// either way, read back by the probe from inside, as the tool user.
-			egress: archil || throughProxy(spec.network),
+			// either way, read back by the probe from inside, as the tool user. A dial machine's root reaches this server.
+			egress: archil || throughProxy(spec.network) || boot !== undefined,
 			...(this.host.facts.daemon === "pid1" && boot === undefined ? { command: commands.entrypoint } : {}),
 			...(boot === undefined ? {} : { boot: { env: boot.value } }),
 			...(spec.gpu === undefined ? {} : { gpu: spec.gpu }),
@@ -1552,7 +1572,11 @@ export class HostedProvider implements ComputerProvider {
 		if (how !== "delete") return this.#fail("invalid", `release is "delete", not ${String(how)}`);
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found;
-		if (found.value === undefined) return ok(undefined);
+		if (found.value === undefined) {
+			// Gone already (deleted by hand, or the vendor's timer): its token and socket still go.
+			await this.#revoke(ref.name);
+			return ok(undefined);
+		}
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
 		this.#end(ref.name);
 		const { letGo, gone: done } = await this.#remove(ref, found.value, signal);
