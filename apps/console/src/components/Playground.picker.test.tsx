@@ -102,9 +102,9 @@ describe("Playground's Agent and Revision pickers", () => {
 });
 
 describe("Playground's fields and switches, to a screen reader", () => {
-  it("names each field by its label, and the page by a heading", () => {
+  it("names each field by its label, and leaves the page's one heading to the page around it", () => {
     const t = open();
-    expect(t.host.querySelector("h1")?.textContent).toBe("Playground");
+    expect(t.host.querySelector("h1")).toBeNull();
     for (const [id, name] of [["playground-input", "input.content"], ["playground-repo", "repo"], ["playground-cap", "max_cost_usd"]]) {
       const field = t.host.querySelector(`#${id}`) as HTMLInputElement | null;
       expect(field, id).not.toBeNull();

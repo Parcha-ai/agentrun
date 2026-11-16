@@ -143,7 +143,6 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   if (!agents.length) return <section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section>;
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      <h1 className="sr-only">Playground</h1>
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
         <div className="flex min-w-0 items-center gap-2 text-small">
           <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>

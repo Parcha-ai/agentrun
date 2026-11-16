@@ -90,8 +90,7 @@ dark fill only, and words are `text-primary-text`.
 - `.caps` is mono, uppercase and tracked: buttons, tabs, chips and small labels. Never write `uppercase
   tracking-*` by hand.
 - Weights are `font-normal` and `font-semibold`. The bundled fonts carry no other weight.
-- A page has one `h1`. A page that shows no title (the Playground) has an `sr-only` one. Headings go down in
-  order: `h1`, `h2`, `h3`.
+- A page has one `h1`. Headings go down in order: `h1`, `h2`, `h3`.
 - A heading under the title is one of three: a section's (`text-lg font-semibold`), a panel's label (`caps text-small
   font-semibold`), or a card's name for the thing it holds (`text-prose font-semibold`).
 
