@@ -727,13 +727,14 @@ const CASES: readonly Case[] = [
       const { calls, messages } = await w.read();
       const slow = calls.find((call) => call.tool === "slow");
       const steered = messages.find((message) => message.role === "steer");
-      const said = messages.filter((message) => message.role === "model");
       assert.ok(slow?.endEntry !== undefined && slow.status === "done", `slow ran to its end: ${JSON.stringify(calls)}`);
+      // Everything the model said once the call started. What it said with the call, before the call's row (a CLI's
+      // "Calling slow."), is that step's, as deny-note reads it; the step after the call said only the steer.
+      const said = messages.filter((message) => message.role === "model" && message.entry > slow.startEntry);
       assert.equal(steered?.text, "check the totals", `the steer is in the journal: ${JSON.stringify(messages)}`);
       assert.ok(steered.entry > slow.endEntry, "after the tool's end: mid-turn, not lost");
-      // What the model said before the steer (a CLI says a word before its call) is no answer to it; what it said after is.
-      assert.ok(said.every((message) => message.entry > steered.entry || !message.text.includes("check the totals")), `nothing before the steer answered it: ${JSON.stringify(messages)}`);
-      assert.deepEqual(said.filter((message) => message.entry > steered.entry).map((message) => message.text), ["check the totals"], "the next step saw it");
+      assert.deepEqual(said.map((message) => message.text), ["check the totals"], `the next step saw it: ${JSON.stringify(messages)}`);
+      assert.ok(said[0]!.entry > steered.entry);
       assert.ok((await w.commandRow(steer.id)).takenAt !== null, "the steer row is taken");
     },
   },
@@ -955,12 +956,16 @@ const CASES: readonly Case[] = [
       await until(() => w.answered(steer.id), "the steer placed by the loop");
       letSlowGo();
       await w.ended("ended");
-      const { messages } = await w.read();
+      const { calls, messages } = await w.read();
       const steered = messages.find((message) => message.text === "a new order came in" && message.role !== "model");
       assert.deepEqual(steered?.origin, origin, `the message keeps its origin: ${JSON.stringify(messages)}`);
-      // What the model said before the steer (a CLI says a word before its call) is no answer to it.
-      const said = messages.filter((message) => message.role === "model" && message.entry > steered!.entry).map((message) => message.text);
-      assert.deepEqual(said, ["a new order came in"], "the model read it as any message");
+      // Everything the model said once the call started (what it said with the call, before its row, is that step's, as in
+      // steer-mid-turn): only its answer to the steer, after it.
+      const slow = calls.find((call) => call.tool === "slow");
+      assert.ok(slow, `slow is on the record: ${JSON.stringify(calls)}`);
+      const said = messages.filter((message) => message.role === "model" && message.entry > slow.startEntry);
+      assert.deepEqual(said.map((message) => message.text), ["a new order came in"], `the model read it as any message: ${JSON.stringify(messages)}`);
+      assert.ok(said[0]!.entry > steered!.entry, `it answered after the steer: ${JSON.stringify(messages)}`);
     },
   },
   {
