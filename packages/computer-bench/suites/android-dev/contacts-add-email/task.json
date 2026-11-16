@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.contacts.add-email",
-  "version": 1,
+  "version": 2,
   "title": "Add an email address to a contact in Contacts",
   "split": "heldout",
   "tags": ["contacts", "edit"],
@@ -35,6 +35,7 @@
     }
   ],
   "instruction": "In Contacts, add the email address {{who.user}}.{{nonce}}@{{domain}} to the contact \"{{who.first}} {{who.last}} {{nonce}}\", and save.",
+  "exec": "deny",
   "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
   "checks": [
     {
@@ -53,9 +54,12 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "add-email", "{{who.first}} {{who.last}} {{nonce}}", "{{who.user}}.{{nonce}}@{{domain}}"], "timeoutMs": 30000 }
-    }
+    { "method": "ui.act", "why": "Wait for the list to load the contact: a find sees only what is on screen now.", "params": { "steps": [], "expect": { "text": "{{who.first}} {{who.last}} {{nonce}}", "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "Open the contact from the list (a tap on its name: the row's own role varies).", "params": { "foreground": true, "steps": [{ "press": { "find": { "name": { "equals": "{{who.first}} {{who.last}} {{nonce}}" } } } }], "expect": { "text": "Edit", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Edit" } } } }], "expect": { "text": "Edit contact", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Swipe the editor up 300 points (600 screen pixels), slowly (no fling), to its Email field below the phones.", "params": { "actions": [{ "type": "swipe", "path": [[360, 1000], [360, 700], [360, 400]], "ms": 900 }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Email", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "Email" } } }, "value": "{{who.user}}.{{nonce}}@{{domain}}" }], "expect": { "text": "{{who.user}}.{{nonce}}@{{domain}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "Saved: the editor closes back to the contact's page.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "SAVE" } } } }], "expect": { "text": "Edit contact", "gone": true, "timeoutMs": 8000 } } }
   ]
 }

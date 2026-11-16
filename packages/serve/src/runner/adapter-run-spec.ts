@@ -199,7 +199,7 @@ export interface AdapterSpecDeps {
    *  or standalone runner's loopback is its host's other services. */
   readonly mcpLoopback?: boolean;
   /** That server's own addresses (Serve.own: where it listens, and its public address on loopback), told with
-   *  mcpLoopback: a run's loopback request (an MCP server's, its authorization server's, a pin's listing) never goes to
+   *  mcpLoopback: a run's loopback request (an MCP server's, its authorization server's, a pin's listing, calendar_events') never goes to
    *  their ports, as the server's own requests never do. */
   readonly mcpOwn?: readonly string[];
   /** A template eval's fakes, by the agent a run is of (template-eval.ts, from its case: EvalFakes). Only the eval's own
@@ -705,7 +705,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -1078,6 +1078,10 @@ export function buildToolHost(opts: {
   readonly toolSettings?: unknown;
   /** The run's template eval fakes, where the eval's own runner gives them (AdapterSpecDeps.evalFakes). */
   readonly fakes?: EvalFakes;
+  /** The server is a local install (AdapterSpecDeps.mcpLoopback): calendar_events may read a calendar on loopback. */
+  readonly loopback?: boolean;
+  /** That server's own addresses (AdapterSpecDeps.mcpOwn): never the ports calendar_events reads on loopback. */
+  readonly own?: readonly string[];
 }): ToolHost {
   const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
@@ -1086,6 +1090,8 @@ export function buildToolHost(opts: {
     ...(web ? { web } : {}),
     ...(now ? { now } : {}),
     ...(email ? { emailFake: email } : {}),
+    ...(opts.loopback ? { calendarLoopback: true } : {}),
+    ...(opts.own ? { serverOwn: opts.own } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },

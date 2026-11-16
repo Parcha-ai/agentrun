@@ -252,12 +252,11 @@ test("a dial host takes no Archil mount, in words, and declares none", async () 
 	assert.equal(fake.creates(), 0);
 });
 
-test("the constructor refuses a dial host with exec or upload, with labels kept in the machine, or for a desktop", () => {
+test("the constructor refuses a dial host with exec or upload, or for a desktop", () => {
 	const dialFacts = { connect: "dial", lifetime: "vendor" };
 	const host = fakeHost({ facts: dialFacts }).host;
 	assert.throws(() => new HostedProvider({ ...host, exec: fakeHost().host.exec }, { daemonPath: DAEMON_PATH }), /dial this server \(facts.connect "dial"\), so its host has no exec and no upload/);
 	assert.throws(() => new HostedProvider({ ...host, upload: async () => {} }, { daemonPath: DAEMON_PATH }), /has no exec and no upload/);
-	assert.throws(() => new HostedProvider(fakeHost({ facts: { ...dialFacts, labels: "machine" } }).host, { daemonPath: DAEMON_PATH }), /keep no labels \(facts.labels "machine"\), which are read through exec/);
 	assert.throws(() => new HostedProvider(host, { daemonPath: DAEMON_PATH, kind: "desktop" }), /agentrun-dial starts init with no display: make it kind linux/);
 });
 

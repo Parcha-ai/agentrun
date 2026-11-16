@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.files.move-file",
-  "version": 1,
+  "version": 2,
   "title": "Move a file into a folder in the Files app",
   "split": "heldout",
   "tags": ["files", "move"],
@@ -29,6 +29,7 @@
     }
   ],
   "instruction": "In the Files app, move {{f.file}}-{{nonce}}.txt from Download/computer-bench-{{nonce}} into the folder {{f.dest}} inside it. Leave the other file where it is.",
+  "exec": "deny",
   "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
   "checks": [
     {
@@ -47,9 +48,17 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "params": { "argv": ["mv", "/sdcard/Download/computer-bench-{{nonce}}/{{f.file}}-{{nonce}}.txt", "/sdcard/Download/computer-bench-{{nonce}}/{{f.dest}}/{{f.file}}-{{nonce}}.txt"], "timeoutMs": 20000 }
-    }
+    { "method": "ui.act", "why": "Wait for the folder to list the file.", "params": { "steps": [], "expect": { "text": "{{f.file}}-{{nonce}}.txt", "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "A long press selects the file.", "params": { "steps": [{ "perform": { "find": { "role": "button", "name": { "equals": "{{f.file}}-{{nonce}}.txt" } } }, "action": "ACTION_LONG_CLICK" }], "expect": { "text": "1 selected", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Tap the selection bar's More options at the screen's top right (336,48 points). A find can't name it: the folder bar's More options, hidden under the selection bar, comes first in the tree.", "params": { "actions": [{ "type": "tap", "at": [672, 96] }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Move to…", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Move to…" } } } }], "expect": { "text": "MOVE", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The picker opens on the Downloads root, which lists folders made from the shell but not their subfolders; the phone's own storage root does.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Show roots" } } } }], "expect": { "text": "redroid15_arm64", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The storage root is named after the phone's model (this cloud phone's image).", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "redroid15_arm64" } } } }], "expect": { "text": "Files on redroid15_arm64", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Download" } } } }], "expect": { "text": "Files in Download", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "computer-bench-{{nonce}}" } } } }], "expect": { "text": "Files in computer-bench-{{nonce}}", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "{{f.dest}}" } } } }], "expect": { "text": "Files in {{f.dest}}", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "MOVE" } } } }], "expect": { "text": "MOVE", "gone": true, "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "The move runs in the background (\"Moving 1 item\"): give it a moment before the checks read the folder.", "params": { "actions": [{ "type": "wait", "ms": 2000 }] } }
   ]
 }

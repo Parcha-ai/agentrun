@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.battery-level",
-  "version": 1,
+  "version": 2,
   "title": "Read the battery level from Settings",
   "split": "heldout",
   "tags": ["settings", "info", "answer"],
@@ -22,6 +22,7 @@
     }
   ],
   "instruction": "What is the phone's battery level right now, in percent? Give the number in your final answer. Don't change anything.",
+  "exec": "deny",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {
@@ -37,5 +38,9 @@
       "why": "Give BatteryService back the real battery readings.",
       "params": { "argv": ["dumpsys", "battery", "reset"], "timeoutMs": 20000 }
     }
+  ],
+  "oracle": [
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "Scroll the home list until the Battery row shows; it shows the level under it, so the answer is on screen. The answer check still wants it in words.", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "{{level}}%", "timeoutMs": 8000 } } }
   ]
 }
