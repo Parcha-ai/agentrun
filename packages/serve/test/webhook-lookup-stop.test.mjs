@@ -8,7 +8,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { openSqliteStore } from "../dist/store/index.js";
 import { Webhooks } from "../dist/webhooks.js";
 
@@ -22,21 +21,24 @@ test("a try whose name lookup starts as the server stops is given up on in words
   t.after(() => process.off("unhandledRejection", seen));
   const asked = [];
   let webhooks;
-  // The save's check resolves it to a public address; the try's lookup starts as the server stops, and its NXDOMAIN
-  // comes after.
-  const lookup = async (host) => {
+  let nxdomain;
+  // The save's check resolves the name to a public address. The try's lookup is where the stop lands: the server stops
+  // as it is asked, and its answer, NXDOMAIN, comes only once the test says, after the try has given up.
+  const lookup = (host) => {
     asked.push(host);
-    if (asked.length === 1) return ["93.184.216.34"];
+    if (asked.length === 1) return Promise.resolve(["93.184.216.34"]);
     void webhooks.close();
-    await sleep(20);
-    throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host });
+    return new Promise((_, reject) => (nxdomain = () => reject(Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host }))));
   };
   webhooks = new Webhooks(store, randomBytes(32), () => undefined, { retryMs: [], lookup });
   await webhooks.load();
   await webhooks.save({ url: "https://hooks.example/in" });
   const tried = await webhooks.test();
-  assert.equal(tried.error, "not reached: the server is stopping");
-  await sleep(100);
   assert.deepEqual(asked, ["hooks.example", "hooks.example"]);
+  assert.equal(tried.error, "not reached: the server is stopping");
+  nxdomain();
+  // A rejection no one handles is told once the microtasks run out: a turn of the event loop after the answer.
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
   assert.deepEqual(unhandled.map(String), [], "the lookup's failure after the stop is handled");
 });
