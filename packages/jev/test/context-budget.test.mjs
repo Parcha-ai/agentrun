@@ -128,3 +128,94 @@ test('questions too long for the context even with every value cut are refused b
   });
   assert.equal(jev.sent.length, 0);
 });
+
+// Images count toward Jev's context too ("Image tokens also count toward the request's context length", and each use of a
+// reference adds the image again: https://docs.typesafe.ai/images). TypeSafe publishes no per-image figure, so this faux
+// charges a full-size image (1568x1568) 3,278 tokens a use, Claude's 750 square pixels a token at the same side limit, and
+// a token per byte of text, the most text can cost.
+const be = (n, width) => Array.from({ length: width }, (_, i) => (n >>> (8 * (width - 1 - i))) & 0xff);
+const png = (side) => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, ...be(side, 4), ...be(side, 4), 8, 2, 0, 0, 0, 1]);
+const SHOT = { '<shot>': { bytes: png(1568), mime: 'image/png' } };
+function fauxImageJev() {
+  const sent = [];
+  const client = {
+    async systemOne(request, options) {
+      const long = new Headers(options.headers ?? {}).get(LONG) === 'true';
+      sent.push({ request, long });
+      const text = JSON.stringify([request.state, request.questions]);
+      const uses = Object.keys(request.assets ?? {}).reduce((n, reference) => n + text.split(reference).length - 1, 0);
+      const tokens = bytes(request.state) + bytes(request.questions) + uses * 3_278;
+      if (tokens > (long ? JEV_CONTEXT_TOKENS.long : JEV_CONTEXT_TOKENS.perQuestion)) throw new Error('HTTP 400 max_tokens_exceeded');
+      return { model: 'jev-1.14.0', answers: Object.fromEntries(Object.keys(request.questions).map((id) => [id, { type: 'noul', noul: 0.9 }])), usage: { input_tokens: tokens, output_tokens: 0 } };
+    },
+  };
+  return { client, sent };
+}
+const shotQuestions = { holds: { type: 'noul', instructions: 'Does the page, or its screenshot, show a refund policy?' } };
+
+test('an image takes room in the context: text that fits alone, with a full-size image beside it, goes with the long-context header', async () => {
+  const jev = fauxImageJev();
+  const run = createJevRunner({ client: jev.client });
+  const state = { shot: '<shot>', page: 'fictional policy text '.repeat(1_340) };
+  const result = await run({ label: 'policy', state, questions: shotQuestions, assets: SHOT });
+  assert.equal(result.answers.holds.noul, 0.9);
+  assert.equal(jev.sent.length, 1);
+  assert.equal(jev.sent[0].long, true, 'the image left the text too little of the default context');
+  assert.deepEqual(jev.sent[0].request.state, state, 'nothing cut');
+});
+
+test('a request whose images alone are over the long context is refused before anything is sent', async () => {
+  const jev = fauxImageJev();
+  const run = createJevRunner({ client: jev.client });
+  const state = { shots: Array.from({ length: 21 }, () => '<shot>') };
+  await assert.rejects(run({ label: 'policy', state, questions: shotQuestions, assets: SHOT }), (error) => {
+    assert.ok(error instanceof JevError);
+    assert.equal(error.code, 'invalid_request');
+    assert.equal(error.requestDiagnostic?.reason, 'over_context');
+    assert.match(error.message, /image/);
+    return true;
+  });
+  assert.equal(jev.sent.length, 0);
+});
+
+test('cut to the default context, the text leaves room for the images beside it, and the result says what was cut', async () => {
+  const jev = fauxImageJev();
+  const run = createJevRunner({ client: jev.client, longContext: false });
+  const page = 'fictional policy text '.repeat(2_000);
+  const result = await run({ label: 'policy', state: { shot: '<shot>', page }, questions: shotQuestions, assets: SHOT });
+  assert.equal(result.answers.holds.noul, 0.9, 'answered, not refused for the image');
+  const sentState = jev.sent[0].request.state;
+  assert.equal(sentState.shot, '<shot>');
+  assert.ok(sentState.page.endsWith(JEV_CUT_MARK));
+  assert.deepEqual(result.state_sent, { state: sentState, cut: [{ path: '/page', bytes: Buffer.byteLength(page), sent_bytes: Buffer.byteLength(sentState.page) }] });
+});
+
+test("a decision receipt holds the state Jev was sent: cut values as cut, and which were cut, from their length as asked to as sent", async () => {
+  const jev = fauxJev();
+  const receipts = [];
+  const input = { merchant: 'Example Outfitters', home: page(0, 40_000).content, pages: [page(1, 30_000), page(2, 900)] };
+  const result = await runWorkflow(rubricFlow, input, { runJudge: judgeOn({ fetch: jev.fetch, longContext: false }), recordDecision: async (receipt) => { receipts.push(receipt); } });
+  assert.equal(result.status, 'complete', `the rubric answered, got ${result.status}: ${result.error ?? ''}`);
+  const sentState = jev.sent[0].request.state;
+  assert.ok(sentState.home.endsWith(JEV_CUT_MARK));
+  assert.equal(receipts.length, 1);
+  assert.deepEqual(receipts[0].state, sentState, 'the receipt shows what Jev read, not the pages it never saw');
+  assert.equal(receipts[0].state_truncated, false);
+  assert.deepEqual(receipts[0].state_cut, [
+    { path: '/home', bytes: Buffer.byteLength(input.home), sent_bytes: Buffer.byteLength(sentState.home) },
+    { path: '/pages/0/content', bytes: Buffer.byteLength(input.pages[0].content), sent_bytes: Buffer.byteLength(sentState.pages[0].content) },
+  ]);
+});
+
+test('a cut request whose outcome is lost is receipted with the state it was sent with', async () => {
+  const sent = [];
+  const lost = async (_url, init) => { sent.push(JSON.parse(init.body)); return json({}, 502); };
+  const receipts = [];
+  const input = { merchant: 'Example Outfitters', home: page(0, 40_000).content, pages: [] };
+  const result = await runWorkflow(rubricFlow, input, { runJudge: judgeOn({ fetch: lost, longContext: false }), recordDecision: async (receipt) => { receipts.push(receipt); } });
+  assert.equal(result.status, 'escalated');
+  assert.equal(sent.length, 1);
+  assert.equal(receipts[0].status, 'failed');
+  assert.deepEqual(receipts[0].state, sent[0].state);
+  assert.deepEqual(receipts[0].state_cut.map((each) => each.path), ['/home']);
+});
