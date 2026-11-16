@@ -174,7 +174,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // The compile turn's facts (learn/compile.ts), read once: a run not looked back on with none due ends here, as above.
     const compileOf = async () => (deps.compileFacts && read !== "unreadable" ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse }).catch(() => undefined) : undefined);
     const early = alone ? await compileOf() : undefined;
-    if (alone && !early) return onlyWorkflow();
+    // None due now, but a compile request this run already asked and kept (a crash cut it, another run merged a workflow
+    // since) was paid: its cost stays the look-back's, as every other cut's does (`begun`), never the task's.
+    if (alone && !early) return begun ? unasked(droppedRow(null, "empty", notAsked)) : onlyWorkflow();
     // Every end from here closes through this one function: looked's timings first, then the cut LAST, over every
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });

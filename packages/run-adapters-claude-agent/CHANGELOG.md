@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.41 (2026-11-16)
+
+- A message sent to a working `claude-agent` run now steers it mid-turn. Before, it waited for the turn's end, and a run whose whole job is one turn read it only after the work was done. The model now reads it at its next step, after the tool calls in flight finish, in the same turn. `POST /v2/runs/{id}/messages` answers mode `steer` for a working claude-agent run (it answered `follow_up`), and `GET /v2/capabilities` lists `claude-agent` with `steer: true`.
+  - The Timeline shows the message where the model read it: after the tool call it was sent during, never where it waited in the queue. Its command row is taken in that commit.
+  - A message sent as the turn ends starts the next turn, and the run ends only after that turn.
+  - A runner lost after it placed the message, before the model took it, neither loses it nor sends it twice. The next runner places nothing again, its resumed turn carries the message if the CLI never had it, and the message is on the Timeline once.
+  - A trigger's message that answers nothing (`answers: false`), and the answer to a question the run's last turn ended on, still run as turns of their own, as before.
+  - Adapters: `AdapterEvent` gains `message_taken` (`ids`): the submissions the model was given, for a host that keeps the run's record itself. `@parcha/agentrun-harness-claude`'s session implements `steer()`, places nothing again for an id it already holds, and says `message_taken`.
+
 ## 0.1.0-beta.39 (2026-11-16)
 
 - A capped Claude Agent run on a Claude model reached through a gateway (Sonnet 5.5 through OpenRouter) no longer stops at its second step with most of its cap left. The provider's count is asked for only at Anthropic, and no local tokenizer counts Claude, so each request was bounded by its bytes: about four times its tokens. An inbox agent's second request read as about 32,000 tokens, so at a $0.10 cap the step after one that cost $0.01-0.02 "needs at least $0.10" and the run paused, where a real step costs about $0.03. The model proxy now keeps each model's last request whose answer reported its whole input, and bounds a later request that carries it unchanged by that billed input plus the bytes of the messages it adds, when that is lower. That request must match the earlier one in everything that bills input apart from the added messages (system, tools, thinking, effort, model); a moved cache marker (a `cache_control` key on a tool, a system or message content block, or a block of a tool result's content) does not count as a change, and a `cache_control` key anywhere else is compared as text. The wrap-up note is asked for on that bound. A first request, a request that changes its tools or prompt, one that adds a document, or one that offers the hosted search keeps its byte bound, and a step that does not fit is still refused.
