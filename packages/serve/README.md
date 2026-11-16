@@ -2284,8 +2284,8 @@ claim ends, and the next claim of the run makes it again.
 Two ways to give an agent email: Email (IMAP/SMTP, runs on your server, no public URL) vs Composio Gmail (OAuth through
 Composio, needs a public URL). Email is one account per server: the server signs in to its mail servers itself with the
 account's app password, reads the mailbox on a timer and sends over SMTP, so nothing outside has to reach the server.
-Composio Gmail connects the account through Composio's OAuth and calls Gmail through Composio's tools; its triggers
-arrive as Composio's webhook, which needs the server's public URL ([Webhook triggers](#webhook-triggers)).
+Composio Gmail connects the account through Composio's OAuth and calls Gmail through Composio's tools; its events start
+runs through a [Composio trigger](#composio-triggers), which Composio reaches at the server's public URL.
 
 **The account.** `PUT /v2/settings/email` saves it, from the owner's signed-in session only (the token is 403). A preset
 fills the servers: `gmail`, `fastmail` or `icloud`; `other` takes `imap` and `smtp` (`{host, port}`) from the body.
