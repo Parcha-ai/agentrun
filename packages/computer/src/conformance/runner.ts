@@ -16,7 +16,6 @@ import { kindCases, kindRunProblem, kindVerdict } from "./kind.js";
 import {
 	type Capability,
 	type Case,
-	type Clock,
 	type CaseContext,
 	type CaseResult,
 	type ComputerRole,
@@ -109,7 +108,6 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
 	const dialer = options.cdp ?? dialCdp;
-	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
 	const capabilities = provider.capabilities();
@@ -428,7 +426,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					else sockets.push(socket);
 					return socket;
 				},
-				clock,
+				// The wall clock's wait ends with the case (its timeout, or the run's abort), so no timer outlives the run.
+				clock: options.clock ?? { now: () => Date.now(), sleep: (ms) => sleep(ms, undefined, { signal: caseSignal }).catch(() => undefined) },
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();

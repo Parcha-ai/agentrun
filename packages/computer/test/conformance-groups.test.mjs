@@ -380,6 +380,17 @@ test("lifetime.idle, a long case: skipped in words without long; with it, a comp
 	assert.equal(reasons(short)["lifetime.idle"], "lifetime.idle needs a maxLifetimeMs of 10 min or more, not 300000 ms");
 });
 
+test("lifetime.idle on the wall clock, aborted during its 6 min wait: the run ends and leaves no timer behind", { timeout: 30_000 }, async () => {
+	const timers = () => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+	const before = timers();
+	const stop = new AbortController();
+	const aborting = setTimeout(() => stop.abort(), 1_000);
+	const report = await run(fakeDevices().provider, ["lifetime.idle"], { clock: undefined, long: true, signal: stop.signal });
+	clearTimeout(aborting);
+	assert.equal(statuses(report)["lifetime.idle"], "fail", reasons(report)["lifetime.idle"]);
+	assert.ok(timers() <= before, `${timers() - before} more timers after the run than before it: the 6 min wait outlived the run`);
+});
+
 test("apps.launch-terminate needs apps alone: a phone with no ui group and no files is seen launching Settings in its screenshot", async () => {
 	const groups = ["screen", "input.touch", "apps"];
 	const seen = await run(fakeDevices({ kind: "android", groups }).provider, ["apps.launch-terminate"]);
