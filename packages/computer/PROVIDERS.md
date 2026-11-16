@@ -313,6 +313,13 @@ node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tm
 The first sweep records what your account already holds. The second deletes anything the run left behind and prints
 what is still there. `--kind sandbox` or `--kind desktop` runs one kind's cases, and `-- --help` lists every flag.
 
+The report's last lines say the most computers the run had alive at once. If your plan keeps fewer (a free tier's few
+machines), add `--concurrency <n>`: a create waits for a computer to go, and the run's own computer is deleted while a
+case that doesn't use it needs room. A case that needs more at once than `n` fails in words. Put the number your run
+printed in your pull request. If your API limits requests an hour, your provider passes `HostedProvider` a larger
+`timeouts.pollMs` (default 1 s): create's wait for the listing to show a new machine starts at 150 ms between
+listings and backs off to it.
+
 A desktop also needs the fixture its input cases check against, built for your machines' arch (`GOARCH=amd64` or
 `arm64`). Without it those cases skip and the run fails. Build it, then add `--fixture /tmp/computerd-fixture`:
 

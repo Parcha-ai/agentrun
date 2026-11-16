@@ -99,8 +99,10 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu, concurrency } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
+	if (concurrency !== undefined && !(Number.isSafeInteger(concurrency) && concurrency >= 1)) throw new TypeError(`concurrency is a whole number of computers, 1 or more; got ${concurrency}`);
+	const cap = concurrency ?? Infinity;
 	// What the provider declares of itself: as given, else the kind registry's entry for its id (health.declared), its
 	// parked configurations with its offered ones: a parked one built for the suite is held to its own declaration.
 	const entry = PROVIDERS.find((one) => one.id === provider.id);
@@ -131,6 +133,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		core: "fail",
 		undeclared: [],
 		cleanup: { deleted: [], left: [], errors: [], late: [] },
+		computers: { peak: 0, ...(concurrency === undefined ? {} : { cap: concurrency }) },
 		...(notes !== undefined && notes.length > 0 ? { notes: [...notes] } : {}),
 	};
 	const deleted = new Set<string>();
@@ -156,6 +159,16 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		...extra,
 		labels: { ...extra.labels, ...runLabels },
 	});
+	/**
+	 * The computers alive now, each by its role, held from its create's call until its release (or its create made none):
+	 * a create past the cap waits for one to go. `slots` frees each computer's by name at its release.
+	 */
+	const alive = new Map<symbol, ComputerRole>();
+	const slots = new Map<string, () => void>();
+	const waiting: Array<() => void> = [];
+	const free = (slot: symbol) => {
+		if (alive.delete(slot)) for (const wake of waiting.splice(0)) wake();
+	};
 	const release = async (ref: ComputerRef, by: ComputerProvider = provider) => {
 		try {
 			const released = await within(by.release(ref, "delete"), cleanupTimeoutMs, `release ${ref.name}`);
@@ -163,6 +176,56 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			else report.cleanup.errors.push(`release ${ref.name}: ${released.error.code}: ${released.error.message}`);
 		} catch (error) {
 			report.cleanup.errors.push(words(error).startsWith(`release ${ref.name}`) ? words(error) : `release ${ref.name} threw: ${words(error)}`);
+		} finally {
+			slots.get(ref.name)?.();
+			slots.delete(ref.name);
+		}
+	};
+	/** Whether the case running now uses the run's computer: while it does, the run's computer is not deleted for room. */
+	let usingShared = false;
+	/**
+	 * A slot for one more computer of `role`, under the cap: while none is free, the run's computer makes way when the
+	 * case running doesn't use it, and a case whose own computers (and the run's, which it uses) fill the cap fails in
+	 * words; else the create waits for a computer to be released, or for `signal`.
+	 */
+	const hold = async (role: ComputerRole, signal?: AbortSignal): Promise<symbol> => {
+		while (alive.size >= cap) {
+			if (sharedRef !== undefined && !usingShared) {
+				const ref = sharedRef;
+				[shared, sharedRef] = [undefined, undefined];
+				await release(ref);
+				continue;
+			}
+			if ([...alive.values()].every((held) => held === role || (held === "shared" && usingShared))) {
+				throw new Error(`this case needs more than ${cap} ${cap === 1 ? "computer" : "computers"} alive at once, and --concurrency ${cap} caps them`);
+			}
+			signal?.throwIfAborted();
+			await new Promise<void>((resolve) => {
+				const wake = () => {
+					signal?.removeEventListener("abort", wake);
+					resolve();
+				};
+				waiting.push(wake);
+				signal?.addEventListener("abort", wake, { once: true });
+			});
+			signal?.throwIfAborted();
+		}
+		const slot = Symbol(role);
+		alive.set(slot, role);
+		report.computers.peak = Math.max(report.computers.peak, alive.size);
+		return slot;
+	};
+	/** create's answer, its slot kept by the computer it made until that computer's release, else freed at once. */
+	const holding = async (slot: symbol, creating: Promise<Result<CreatedComputer>>): Promise<Result<CreatedComputer>> => {
+		try {
+			const created = await creating;
+			// A retry of one request answers the computer the first attempt made, whose slot it is already.
+			if (created.ok && !slots.has(created.value.name)) slots.set(created.value.name, () => free(slot));
+			else free(slot);
+			return created;
+		} catch (error) {
+			free(slot);
+			throw error;
 		}
 	};
 	/** Each computer the run made, by name: its role, "shared" or the id of the case that made it. */
@@ -199,15 +262,22 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		report.daemons.push({ computer, role: roles.get(computer) ?? role, version: hello.version, os: hello.os, arch: hello.arch, ...(hello.fence === undefined ? {} : { fence: hello.fence }) });
 	};
 
-	/** The run's shared computer, made the first time a case needs it or the daemon's hello. */
+	/**
+	 * The run's shared computer, made the first time a case needs it or the daemon's hello, and again after it made way
+	 * for a case's own under the cap (hold); `hello` is its first one's.
+	 */
 	let shared: Promise<{ ref: ComputerRef; hello: HelloResult } | { error: string }> | undefined;
 	let sharedRef: ComputerRef | undefined;
+	let hello: HelloResult | undefined;
+	let made = 0;
 	const getShared = () =>
 		(shared ??= (async () => {
 			// The run's signal ends the wait at once (Ctrl-C during setup) and reaches the create; a computer that arrives
 			// after it is deleted as it lands (lateCreate).
 			const stop = new AbortController();
-			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal, requestId: `${run}/shared` });
+			const both = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+			const requestId = `${run}/shared${++made > 1 ? `/${made}` : ""}`;
+			const creating = hold("shared", both).then((slot) => holding(slot, provider.create(spec(), { signal: both, requestId })));
 			let created: Result<CreatedComputer>;
 			try {
 				created = await within(creating, caseTimeoutMs, "create", signal);
@@ -233,6 +303,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			if (!connected.ok) return { error: `connect: ${connected.error.code}: ${connected.error.message}` };
 			await bounded(connected.value.close(), CLOSE_MS);
 			sawHello(created.value.name, connected.value.hello, "shared");
+			hello ??= connected.value.hello;
 			return { ref: created.value, hello: connected.value.hello };
 		})().catch((error: unknown) => ({ error: `the provider threw: ${words(error)}` })));
 
@@ -244,7 +315,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				if (typeof provider[need] !== "function") return `the provider has no ${need}()`;
 			} else if (GROUP_NAMES.has(need)) {
 				if (!groups.includes(need as Group)) return `the provider does not declare ${need}`;
-				const got = await getShared();
+				// The run's first computer's hello: one that made way under the cap is not made again to be read.
+				const got = hello === undefined ? await getShared() : { hello };
 				if ("hello" in got && !(Array.isArray(got.hello.groups) && got.hello.groups.includes(need as Group))) {
 					return `the ${capabilities.daemon === "none" ? "computer's" : "daemon's"} hello does not declare ${need}`;
 				}
@@ -283,6 +355,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			...(observed.length > 0 ? { observed: [...observed] } : {}),
 		});
 		if (signal?.aborted) return result("fail", "not run: the run was aborted");
+		usingShared = (c.computer ?? "shared") === "shared";
 		const why = await missing(c.needs);
 		if (why !== undefined) {
 			const lacking: Capability[] = [];
@@ -343,7 +416,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		let creates = 0;
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
 		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId = `${run}/${c.id}/${++creates}`) => {
-			const creating = by.create(whole, { signal: caseSignal, requestId }).then((created) => {
+			const creating = hold(c.id, caseSignal).then((slot) => holding(slot, by.create(whole, { signal: caseSignal, requestId }))).then((created) => {
 				noteCreated(created, c.id);
 				// A retry of one request answers the computer the first attempt made: it is tracked once.
 				if (created.ok && !refs.some((one) => one.ref.id === created.value.id)) track(created.value, by);
