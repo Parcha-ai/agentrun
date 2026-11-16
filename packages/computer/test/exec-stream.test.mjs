@@ -75,7 +75,8 @@ test("an exec on a terminal, whose \\n comes back as \\r\\n, fails the text chec
 test("an exec that decodes each piece of output as text on its own fails large, and names the U+FFFD a split character became", async () => {
 	const { byId } = await run({ decodePieces: true });
 	assert.equal(byId.large.status, "fail");
-	assert.match(byId.large.words, /came back through cat as ef bf bd: U\+FFFD \(ef bf bd\), as a decoder makes of half a character/);
+	// The split character is random, so the fourth byte shown after ef bf bd is too (none at the very end).
+	assert.match(byId.large.words, /came back through cat as ef bf bd( [0-9a-f]{2})?: U\+FFFD \(ef bf bd\), as a decoder makes of half a character/);
 });
 
 test("an exec that holds output until the process exits fails stdout-live in those words", async () => {

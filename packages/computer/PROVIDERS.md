@@ -38,9 +38,13 @@ AgentRun needs two things from your API:
 Whatever carries it, your `exec` keeps five rules, and the [exec pre-check](#step-one-run-the-exec-pre-check) judges
 it by them alone:
 
-- **Bytes both ways, live.** Every byte value 0-255, in and out while the process runs: no text decoding, no terminal.
-- **stdin ends.** `end()` gives the process end of file. The daemon's bridge never calls it (it ends by `kill`), but the
-  default upload (`cat`, which a host's own `upload` replaces) and the pre-check do.
+- **Text intact both ways, live.** UTF-8 text in and out while the process runs: every code point, lines of any
+  length, `\r` and `\r\n` as they were, and no terminal (a tty turns `\n` into `\r\n`). Decode output as one stream,
+  so a character split across two pieces comes back whole. Bytes that aren't UTF-8 needn't pass: AgentRun sends its
+  daemon as base64 text.
+- **stdin needn't end.** Where your API has no end of file, `end()` may do nothing: nothing AgentRun runs waits for
+  one (the default upload reads a length, a root command's input is one line, the bridge ends by `kill`), and the
+  pre-check never ends stdin.
 - **`kill()` ends the process in the machine**, not only your streams: the pre-check reads its pid back gone. A
   wrapper that writes the pid to a file, and a kill that reads it over a second exec, is fine.
 - **stderr apart**, and `wait()` answers the process's own exit code.
@@ -49,17 +53,46 @@ it by them alone:
 | Your API gives | Your `exec` | In the tree |
 | --- | --- | --- |
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
+| Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | none yet; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
 | SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/agent37-ssh.ts`](src/agent37-ssh.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` only closes stdin and fails the pre-check's kill check: copy its shape, and kill with a pid wrapper |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
 
-Two shapes can't carry the daemon today. A request and response exec (one call runs a command and answers its output
-when it ends) can't hold a process open: it needs a relay over another stream. A text-only exec (output decoded as
-text, input as a JSON string) fails the byte checks. AgentRun has no text mode, so your `exec` writes the shim itself:
-a wrapper in the machine that encodes the bytes (base64, say) and your side that decodes them. The pre-check judges a
-shim or a relay as it judges any exec. If none of these fits, [open an issue](https://github.com/Parcha-ai/agentrun/issues)
-that says what your API offers.
+One shape can't carry the daemon today. A request and response exec (one call runs a command and answers its output
+when it ends) can't hold a process open: it needs a relay over another stream. The pre-check judges a relay as it
+judges any exec. If none of these fits, [open an issue](https://github.com/Parcha-ai/agentrun/issues) that says what
+your API offers.
+
+#### A text exec in split calls
+
+`framedExec` from `src/hosted/framed-exec.ts` takes your vendor's calls about one process and answers the
+`MachineProcess` that `exec` returns. Each `write` gets whole characters and starts once the one before it answered;
+a write that fails fails every one after it. Without `kill`, the process starts under a `sh` that writes its pid to
+stderr first, and `kill()` runs `kill -KILL <pid>`. Without `end`, `end()` does nothing, so a command that reads to end
+of file never ends; AgentRun runs none. `rest`'s `stream` reads a response's body as it comes, with the call's
+timeout on its headers alone, and `ndjson` reads that body a line at a time. For an API whose output events are
+`{"stream":"stdout","text":"…"}` lines, then `{"exit":0}`:
+
+```ts
+const api = rest({ base, headers: () => ({ Authorization: `Bearer ${key}` }), vendor: "acme", timeoutMs: 30_000 });
+const exec = (id: string, argv: readonly string[], ctx: HostCall) =>
+	framedExec<string>(
+		{
+			start: async (argv, ctx) => (orThrow(await api.json("POST", api.url(`/machines/${id}/processes`), { json: { argv }, timeoutMs: ctx.timeoutMs })) as { id: string }).id,
+			events: async function* (pid) {
+				yield* ndjson(orThrow(await api.stream("GET", api.url(`/processes/${pid}/events`))).body) as AsyncIterable<FramedEvent>;
+			},
+			write: async (pid, text) => void orThrow(await api.call("POST", api.url(`/processes/${pid}/stdin`), { json: { text } })),
+		},
+		argv,
+		ctx,
+	);
+```
+
+An event may carry `base64` in place of `text` for output that isn't text. The tests run this host against a
+loopback vendor ([`test/fake-text-host.mjs`](test/fake-text-host.mjs)) through the pre-check and the shared adapter's
+create.
 
 ### Step one: run the exec pre-check
 
@@ -75,10 +108,11 @@ export COMPUTER_<VENDOR>_API_KEY=<your key>
 npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>
 ```
 
-It calls `exec` and nothing else, and checks the five rules: all 256 byte values each way, 8 MiB of random bytes,
-stdin and output while the process runs, stderr, the exit code, `kill`, and a silent process of 75 seconds (`--quick`:
-5). Each failure says what your exec did wrong, such as "byte 0x80 came back on stdout as ef bf bd: your exec decodes
-UTF-8". When it prints `exec PASS`, write the rest.
+It calls `exec` and nothing else, and checks the five rules: text of every kind of code point with `\r`, `\r\n` and a
+1 MiB line each way, 8 MiB of random UTF-8 by sha256, stdin and output while the process runs, stderr, the exit code,
+`kill`, and a silent process of 75 seconds (`--quick`: 5). Each failure says what your exec did wrong, such as "U+000A
+(byte 9) came back on stdout as 0d 0a 0b 0c: your exec turns \n into \r\n, as a terminal does". When it prints
+`exec PASS`, write the rest.
 
 ### What you write
 
@@ -275,7 +309,8 @@ function codeOf(error: unknown): ComputerErrorCode {
 ```
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
-without it, AgentRun streams its daemon through `exec`'s stdin. `extend(id, endsAt, ctx)` moves a machine's end when
+without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, so the image needs `head` and
+`base64` (coreutils and busybox both have them). `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if

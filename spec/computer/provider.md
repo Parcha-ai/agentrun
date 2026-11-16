@@ -157,13 +157,18 @@ adapter calls `end()` at once for a command it gives no input, such as the daemo
 
 - **Two-way and live.** Each `write()` reaches the process's stdin as it is written, and stdout and stderr bytes come
   back as the process writes them, while it runs. Not request and response, and never held until the process exits.
-- **Byte-exact.** Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
-  nothing added or dropped.
+- **Text intact.** UTF-8 text both ways: every code point, lines of any length, `\r` and `\r\n` kept, no newline
+  translation, no terminal, nothing added or dropped, and a character split across two pieces of output comes back
+  whole. Each `write()` is whole characters. Bytes that aren't UTF-8 need not pass: the adapter's own traffic is text
+  (the bridge's JSON lines, and the daemon's upload as base64 through `base64 -d`). An exec that carries bytes carries
+  this.
 - **Without a timeout.** The process runs until it exits or `kill()` ends it. The vendor's command timeout, and any idle
   timeout on the stream, are off.
-- **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and `end()`
-  gives stdin end of file (the bridge ends by `kill()` and needs no `end()`; a command given input does). `kill()` ends
-  the process in the machine, not only the streams: a wrapper that records its pid for a second exec to kill is enough.
+- **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and
+  `end()` gives stdin end of file where the vendor has one, and otherwise does nothing: nothing the adapter runs waits
+  for end of file (the upload reads its length, a root command's input is one line, the bridge ends by `kill()`).
+  `kill()` ends the process in the machine, not only the streams: a wrapper that records its pid for a second exec to
+  kill is enough.
 
 The exec pre-check checks each of these with `exec` alone, on a machine made by hand, before anything else of the host
 is written:
@@ -173,14 +178,16 @@ npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js
 ```
 
 It builds the host with the module's `createHost(options)`, which it calls with `{}`, so `env` defaults to `process.env`
-(E2B's `createHost({ env = process.env } = {})`). It sends all 256 byte values each way and 8 MiB of random bytes
-(compared by sha256), checks output and stdin while the process runs, stderr apart, `sh -c 'exit 7'`, a killed `sleep`,
-and a silent process of 75 s (`--quick`: 5 s). Each failure says what the exec did wrong, such as "byte 0x80
-came back on stdout as ef bf bd: your exec decodes UTF-8". It exits 0 when every check passes and 1 when one fails.
+(E2B's `createHost({ env = process.env } = {})`). It sends text of every class of code point, with `\r`, `\r\n` and a
+1 MiB line, each way, and 8 MiB of random UTF-8 (compared by sha256), checks output and stdin while the process runs,
+stderr apart, `sh -c 'exit 7'`, a killed `sleep`, and a silent process of 75 s (`--quick`: 5 s). No check ends stdin.
+Each failure says what the exec did wrong, such as "U+000A (byte 9) came back on stdout as 0d 0a 0b 0c: your exec turns
+\n into \r\n, as a terminal does". It exits 0 when every check passes and 1 when one fails.
 
-The vendor's exec may be any transport that keeps these rules: its own stream, SSH, its SDK, or a relay in the image
-over any binary two-way stream. A request and response exec, which answers a command's output when it ends, can't
-carry the bridge. A text-only exec breaks byte-exact; there is no text mode, so a host over one encodes the bytes itself.
+The vendor's exec may be any transport that keeps these rules: its own stream, SSH, its SDK, a relay in the image over
+any two-way stream, or split calls (one starts a process, one streams its events, one per write), which
+`framedExec` (`packages/computer/src/hosted/framed-exec.ts`) turns into a `MachineProcess`. A request and response
+exec, which answers a command's output when it ends, can't carry the bridge.
 
 On a vendor whose root can make a network namespace, or one inside a user namespace, the three networks are the
 adapter's: init's fence holds `none`, and init's egress proxy holds `open` and a list

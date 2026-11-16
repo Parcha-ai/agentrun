@@ -2512,7 +2512,7 @@ core PASS 55/55 · 10 optional cases skipped, not declared · full 10/13 · moun
 ```
 
 A hosted vendor runs the exec pre-check first, with `--exec-stream --machine <id> [--quick]`: the module's
-`createHost(options)` and `host.exec` alone, on a machine made by hand, checked for a live, two-way, byte-exact stream
+`createHost(options)` and `host.exec` alone, on a machine made by hand, checked for a live, two-way stream that keeps text intact,
 with no timeout (`src/conformance/exec-stream.ts`; [the contract](../../spec/computer/provider.md#a-hosted-vendors-exec)).
 It exits 0 when every check passes and 1 when one fails, and `--json` prints `{ host, machine, checks: [{ id, status,
 words, ms }], pass }`.

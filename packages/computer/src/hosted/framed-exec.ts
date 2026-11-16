@@ -18,8 +18,9 @@ export interface ExecPieces<P> {
 	/** One call that hands text to the process's stdin, answered once the vendor took it. */
 	write(handle: P, text: string): Promise<void>;
 	/**
-	 * Ends the process's stdin. Leave it out where the vendor has no end of file: end() then does nothing, and nothing the
-	 * adapter runs waits for one (its upload reads a length; its bridge ends by kill).
+	 * Ends the process's stdin. Leave it out where the vendor has no end of file: end() then does nothing. The cost: a
+	 * command that reads stdin to its end (cat, a sh reading its script) never ends, and only kill() stops it. Nothing
+	 * the adapter runs does (its upload reads a length, a root command's input is one line, its bridge ends by kill).
 	 */
 	end?(handle: P): Promise<void>;
 	/**
