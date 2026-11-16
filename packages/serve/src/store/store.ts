@@ -1091,6 +1091,33 @@ export interface PairedComputers {
   revoke(id: string): Promise<boolean>;
 }
 
+/** A hosted machine's minted token (store schema `minted_tokens`): what the machine must say it is at hello, and the
+ *  token's life. The token is not here: the store keeps its SHA-256 alone. */
+export interface MintedTokenRow {
+  /** The create's request id: the machine's id in the attach hub. */
+  readonly requestId: string;
+  readonly kind: string;
+  readonly os: string;
+  readonly arch: string;
+  /** When the token ends: the machine's backstop. */
+  readonly expiresAt: number;
+  /** When it was revoked (the machine's delete); null while it is good. */
+  readonly revokedAt: number | null;
+  readonly createdAt: number;
+}
+
+/** The tokens minted for hosted machines that dial this server (a dial provider's create, spec/computer/attach.md). */
+export interface MintedTokens {
+  /** Keeps the token's SHA-256 for `requestId`, replacing one minted for it before. Rows past their end go in the same write. */
+  mint(token: Pick<MintedTokenRow, "requestId" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string }): Promise<void>;
+  /** The row whose token has this SHA-256, while it is good: neither revoked nor past its end. */
+  byToken(tokenSha256: string): Promise<MintedTokenRow | undefined>;
+  /** The request id's row, good or not; undefined when it has none (never minted, or gone past its end). */
+  get(requestId: string): Promise<MintedTokenRow | undefined>;
+  /** Revokes the request id's token. False when it had none good. */
+  revoke(requestId: string): Promise<boolean>;
+}
+
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
  *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
  *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
@@ -1294,6 +1321,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
+  /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
+  readonly mintedTokens: MintedTokens;
   /** The template packages imported from GitHub, their files kept as read. */
   readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */

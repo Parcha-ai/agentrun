@@ -57,7 +57,7 @@ import { BASH_POLICIES } from "./bash-read-only.js";
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
 import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
-import { PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
+import { DAEMON_FETCHES_PER_MINUTE, PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
 
 type Json = Record<string, unknown>;
 
@@ -2015,8 +2015,18 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/computers/attach": {
     get: {
       operationId: "attachComputer", tags: ["local"], summary: "The attach socket: a paired computer's driver dials it (a WebSocket)",
-      description: `A WebSocket (spec/computer/attach.md). The driver dials it with \`Authorization: Bearer <its token>\` (POST /computers/pair) and the subprotocol \`${ATTACH_SUBPROTOCOL}\`. A token no paired computer has (unknown, or its computer removed) is 401 before the upgrade; another subprotocol is 426. Frames are text, one JSON-RPC message each, at most ${MAX_LINE_BYTES} bytes (a bigger one closes the socket with 1009, a binary frame with 1003). The server is the caller: it sends hello, and the computer is attached while its hello is what it paired as (else closed with 4400, or 4426 for another protocol version); then the server sends a run's calls. Each side pings every ${ATTACH_HEARTBEAT_MS / 1000} s, and one that hears nothing for ${ATTACH_IDLE_MS / 1000} s closes with 4408. The same computer dialing again replaces its older socket (4409); removing it closes the socket with 4401. A request with no upgrade is 400. One server process holds the socket, so a run uses a paired computer only on a runner in that process (the start's runner beside the server).`,
+      description: `A WebSocket (spec/computer/attach.md). The driver dials it with \`Authorization: Bearer <its token>\` (POST /computers/pair) and the subprotocol \`${ATTACH_SUBPROTOCOL}\`. A hosted machine of a dial provider dials it the same way with the token its create minted (GET /computers/daemon), and its socket stands for that create's machine, whose hello must say the kind, os and arch it was made as (else 4400). A token no paired computer or hosted machine has good (unknown, its computer removed, its machine deleted or past its backstop) is 401 before the upgrade; another subprotocol is 426. Frames are text, one JSON-RPC message each, at most ${MAX_LINE_BYTES} bytes (a bigger one closes the socket with 1009, a binary frame with 1003). The server is the caller: it sends hello, and the computer is attached while its hello is what it paired as (else closed with 4400, or 4426 for another protocol version); then the server sends a run's calls. Each side pings every ${ATTACH_HEARTBEAT_MS / 1000} s, and one that hears nothing for ${ATTACH_IDLE_MS / 1000} s closes with 4408. The same computer dialing again replaces its older socket (4409); removing it closes the socket with 4401. A request with no upgrade is 400. One server process holds the socket, so a run uses a paired computer only on a runner in that process (the start's runner beside the server).`,
       responses: { "101": { description: "Switching to the attach WebSocket." }, ...errors(400, 401, 500) },
+      ...ATTACH_MARK,
+    },
+  },
+  "/computers/daemon": {
+    get: {
+      operationId: "getComputerDaemon", tags: ["local"], summary: "This server's computerd build, for a hosted machine that dials it (its minted token)",
+      description: `A hosted machine of a provider whose host has no exec (a dial provider's) fetches its daemon here as it boots, with \`Authorization: Bearer <its token>\`: the token the machine's create minted, which its env holds (AGENTRUN_ATTACH_TOKEN). The answer is this server's own computerd build for \`arch\`, the same bytes a hosted provider uploads, whose SHA-256 the create put in the machine's env (AGENTRUN_DAEMON_SHA256) for the machine to check before it runs it. A token no machine has good (unknown, revoked at the machine's delete, or past its backstop) is 401; each machine's token gets ${DAEMON_FETCHES_PER_MINUTE} fetches a minute (429 past them, with Retry-After); an arch other than amd64 or arm64 is 422. The owner's token and session are not a machine's token: 401.`,
+      security: [],
+      parameters: [{ name: "arch", in: "query", required: true, description: "The machine's architecture.", schema: { type: "string", enum: ["amd64", "arm64"] } }],
+      responses: { "200": { description: "The daemon's bytes.", content: { "application/octet-stream": { schema: { type: "string", contentMediaType: "application/octet-stream" } } } }, ...errors(401, 422, 429, 500, 503) },
       ...ATTACH_MARK,
     },
   },

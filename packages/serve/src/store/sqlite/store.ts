@@ -11,7 +11,7 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -21,7 +21,7 @@ import {
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
-  type ImportedTemplates,
+  type ImportedTemplates, type MintedTokenRow, type MintedTokens,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -184,6 +184,8 @@ const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider:
 type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
+type MintedRecord = { request_id: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number };
+const mintedOf = (r: MintedRecord): MintedTokenRow => ({ requestId: r.request_id, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -324,6 +326,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMMANDS_ONE_ANSWER },
         // An earlier build of this version kept no imported template packages (schema.ts IMPORTED_TEMPLATES).
         { sql: IMPORTED_TEMPLATES },
+        // Nor any hosted machine's minted token (schema.ts MINTED_TOKENS).
+        { sql: MINTED_TOKENS },
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       await backfillNativeCommandOwners(connection);
@@ -423,6 +427,7 @@ class SqliteStore implements Store {
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
   readonly pairedComputers: PairedComputers;
+  readonly mintedTokens: MintedTokens;
   readonly importedTemplates: ImportedTemplates;
   readonly triggerSettings: TriggerSettings;
   readonly channels: Channels;
@@ -1460,6 +1465,33 @@ class SqliteStore implements Store {
       },
       revoke: async (id) => {
         const [result] = await db.write([{ sql: "UPDATE paired_computers SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), id] }]);
+        return (result?.changes ?? 0) === 1;
+      },
+    };
+
+    const MINTED = "SELECT request_id, kind, os, arch, expires_at, revoked_at, created_at FROM minted_tokens";
+    this.mintedTokens = {
+      // A mint for a request id that has one replaces it: its older token dials no more.
+      mint: async ({ requestId, tokenSha256, kind, os, arch, expiresAt }) => {
+        const at = now();
+        await db.write([
+          { sql: "DELETE FROM minted_tokens WHERE expires_at <= ?", params: [at] },
+          {
+            sql: "INSERT INTO minted_tokens (request_id, token_sha256, kind, os, arch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO UPDATE SET token_sha256 = excluded.token_sha256, kind = excluded.kind, os = excluded.os, arch = excluded.arch, expires_at = excluded.expires_at, revoked_at = NULL, created_at = excluded.created_at",
+            params: [requestId, tokenSha256, kind, os, arch, expiresAt, at],
+          },
+        ]);
+      },
+      byToken: async (tokenSha256) => {
+        const row = await db.get<MintedRecord>(`${MINTED} WHERE token_sha256 = ? AND revoked_at IS NULL AND expires_at > ?`, tokenSha256, now());
+        return row === undefined ? undefined : mintedOf(row);
+      },
+      get: async (requestId) => {
+        const row = await db.get<MintedRecord>(`${MINTED} WHERE request_id = ?`, requestId);
+        return row === undefined ? undefined : mintedOf(row);
+      },
+      revoke: async (requestId) => {
+        const [result] = await db.write([{ sql: "UPDATE minted_tokens SET revoked_at = ? WHERE request_id = ? AND revoked_at IS NULL", params: [now(), requestId] }]);
         return (result?.changes ?? 0) === 1;
       },
     };

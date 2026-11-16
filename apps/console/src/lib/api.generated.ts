@@ -2289,6 +2289,10 @@ export interface operations {
       models?: string[];
     };
   };
+  getComputerDaemon: {
+    body: never;
+    answer: never;
+  };
   getEmailAccount: {
     body: never;
     answer: {

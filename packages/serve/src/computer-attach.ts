@@ -9,18 +9,24 @@
 // each, never the value. A wrong, used or expired code is one answer, 404 with no word about which, and each source
 // address gets PAIR_TRIES_PER_MINUTE tries a minute.
 //
+// A hosted machine that dials this server (a dial provider's, spec/computer/attach.md) is let in by the token its create
+// minted (machineTokens), kept as its SHA-256 until the machine's backstop or its delete: its socket goes to the hub under
+// the create's request id, and it fetches this server's computerd build with the same token (GET /v2/computers/daemon,
+// DAEMON_FETCHES_PER_MINUTE a minute per machine).
+//
 // One process: the hub is this process's memory, so a run takes a paired computer only from a runner in the process
 // that holds its socket (the CLI's start, with its runner beside the server). A runner of its own process refuses one in
 // words (workspace/attached-computers.ts ONE_PROCESS_WORDS); a second server on the same store is refused at its start.
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type HelloResult, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
+import { fileURLToPath } from "node:url";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type HelloResult, MAX_LINE_BYTES, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
 import { type WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { peerKey } from "./owner.js";
 import { registerNotSecretWrite } from "./secret-writes.js";
-import type { PairedComputerRow, PairedComputers } from "./store/index.js";
+import type { MintedTokenRow, MintedTokens, PairedComputerRow, PairedComputers } from "./store/index.js";
 import { pairedOf, PAIRED_ID_PREFIX, servesNoKind } from "./workspace/attached-computers.js";
 
 // Routes under /computers, where a provider's keys are a secret write (computers.ts): these three write none of the
@@ -35,11 +41,13 @@ export const PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const ATTACH_TOKEN_PREFIX = "art_";
 /** Pair tries a source address makes in a minute; the next waits. */
 export const PAIR_TRIES_PER_MINUTE = 10;
-const PAIR_WINDOW_MS = 60_000;
-/** The most source addresses the pair limit keeps at once; past it, those with no try in the window go first. */
-const PAIR_PEERS = 10_000;
-/** The one key the addresses the full table has no room for are counted under (no address's key has a space). */
-const OVERFLOW_PEER = "every address past the table";
+/** Daemon fetches a minted machine's token makes in a minute (GET /v2/computers/daemon); the next is 429. */
+export const DAEMON_FETCHES_PER_MINUTE = 10;
+const MINUTE_MS = 60_000;
+/** The most keys a minute limit keeps at once; past it, those with no try in the window go first. */
+const LIMIT_KEYS = 10_000;
+/** The one key the keys the full table has no room for are counted under (no address's or request id's has a space). */
+const OVERFLOW_KEY = "every key past the table";
 /** The longest name a person gives a computer, in characters. */
 export const PAIRED_NAME_MAX = 100;
 /** A WebSocket close frame's reason holds at most this many bytes of UTF-8. */
@@ -69,6 +77,16 @@ export const newPairedId = (pick: (below: number) => number = randomInt): string
 /** A new computer token: ATTACH_TOKEN_PREFIX and 32 random bytes. */
 export const newAttachToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
 
+/** A new hosted machine's token: ATTACH_TOKEN_PREFIX and 32 random bytes in hex, which goes in the machine's env. */
+export const newMintedToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes(32).toString("hex")}`;
+
+/** The computerd builds a minted machine fetches (GET /v2/computers/daemon?arch=). */
+export const DAEMON_ARCHES: readonly string[] = ["amd64", "arm64"];
+
+/** This server's computerd build for `arch`: the file a hosted provider uploads by default, so the daemon route serves
+ *  the bytes whose SHA-256 the provider puts in the machine's env. */
+export const daemonPathOf = (arch: string): string => fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.resolve("@parcha/agentrun-computer")));
+
 /** `reason` cut to what a close frame holds (123 bytes of UTF-8), never inside a character. */
 export function closeReason(reason: string): string {
   if (Buffer.byteLength(reason) <= CLOSE_REASON_BYTES) return reason;
@@ -80,27 +98,42 @@ export function closeReason(reason: string): string {
   return `${cut}...`;
 }
 
-/** The pair route's limit: PAIR_TRIES_PER_MINUTE tries a minute by source address (peerKey: an IPv6 one by its /64). */
-export class PairTries {
+/** A limit of `perMinute` tries a minute by key: the pair route's by source address (`keyOf` peerKey: an IPv6 one by its
+ *  /64), the daemon route's by the minted token's request id. */
+export class MinuteLimit {
   readonly #tries = new Map<string, number[]>();
-  constructor(private readonly now: () => number = Date.now, private readonly peers = PAIR_PEERS) {}
+  constructor(
+    private readonly perMinute: number,
+    private readonly keyOf: (key: string) => string = (key) => key,
+    private readonly now: () => number = Date.now,
+    private readonly keys = LIMIT_KEYS,
+  ) {}
 
-  /** Counts a try from `address`: ok, or how long until the next is let in. */
-  allow(address: string): { ok: true } | { ok: false; retryAfterMs: number } {
+  /** Counts a try by `key`: ok, or how long until the next is let in. */
+  allow(given: string): { ok: true } | { ok: false; retryAfterMs: number } {
     const now = this.now();
-    let key = peerKey(address);
-    if (!this.#tries.has(key) && this.#tries.size >= this.peers) {
-      for (const [known, at] of this.#tries) if (!at.some((one) => now - one < PAIR_WINDOW_MS)) this.#tries.delete(known);
-      // A table still full of addresses trying now counts every address it has no room for as one: the table never grows
-      // past its bound, and no address goes uncounted.
-      if (this.#tries.size >= this.peers) key = OVERFLOW_PEER;
+    let key = this.keyOf(given);
+    if (!this.#tries.has(key) && this.#tries.size >= this.keys) {
+      for (const [known, at] of this.#tries) if (!at.some((one) => now - one < MINUTE_MS)) this.#tries.delete(known);
+      // A table still full of keys trying now counts every key it has no room for as one: the table never grows past its
+      // bound, and no key goes uncounted.
+      if (this.#tries.size >= this.keys) key = OVERFLOW_KEY;
     }
-    const recent = (this.#tries.get(key) ?? []).filter((at) => now - at < PAIR_WINDOW_MS);
-    if (recent.length >= PAIR_TRIES_PER_MINUTE) return { ok: false, retryAfterMs: recent[0]! + PAIR_WINDOW_MS - now };
+    const recent = (this.#tries.get(key) ?? []).filter((at) => now - at < MINUTE_MS);
+    if (recent.length >= this.perMinute) return { ok: false, retryAfterMs: recent[0]! + MINUTE_MS - now };
     this.#tries.set(key, [...recent, now]);
     return { ok: true };
   }
 }
+
+/** The pair route's limit: PAIR_TRIES_PER_MINUTE tries a minute by source address. */
+export const pairTries = (now: () => number = Date.now, keys = LIMIT_KEYS): MinuteLimit => new MinuteLimit(PAIR_TRIES_PER_MINUTE, peerKey, now, keys);
+
+/** A 429 for a limit's refusal, saying how long to wait. */
+const limited = (what: string, retryAfterMs: number): ApiError => {
+  const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  return new ApiError("rate_limited", `${what}; try again in ${seconds} s`, { retry_after_ms: retryAfterMs }, { "retry-after": String(seconds) });
+};
 
 const KINDS: ReadonlySet<string> = new Set(["linux", "desktop", "android", "ios", "browser"]);
 const OSES: ReadonlySet<string> = new Set(["linux", "windows", "macos", "android", "ios"]);
@@ -250,11 +283,18 @@ export function attachSocketOf(ws: WebSocket, timing: AttachTiming = { heartbeat
   };
 }
 
+/** What a dial provider's create mints a machine's token for (computer package MachineTokens): its kind, os and arch
+ *  as its hello must say them, and when the token ends (its backstop). */
+export type MintFor = { readonly kind: string; readonly os: string; readonly arch: string; readonly expiresAt: string | number | Date };
+
 export interface AttachRoutesOptions {
-  readonly store: { readonly pairedComputers: PairedComputers };
+  readonly store: { readonly pairedComputers: PairedComputers; readonly mintedTokens: MintedTokens };
   readonly hub: AttachHub;
-  /** Told each event worth a line: a computer paired, attached, refused at its hello, removed. Never a code or a token. */
+  /** Told each event worth a line: a computer paired, attached, refused at its hello, removed; a machine's token minted
+   *  or revoked. Never a code or a token, nor a token's hash. */
   readonly log?: (event: string, fields: Record<string, string>) => void;
+  /** This server's computerd build for an arch (daemonPathOf unless a test gives its own). */
+  readonly daemonPath?: (arch: string) => string;
   /** The socket's liveness timing: the protocol's unless a test gives its own. */
   readonly timing?: AttachTiming;
   readonly now?: () => number;
@@ -263,11 +303,25 @@ export interface AttachRoutesOptions {
   readonly onSocket?: (computer: string, ws: WebSocket) => void;
 }
 
-/** The pairing routes and the attach socket over one store and one hub. */
+/** A request's Bearer token, or undefined. */
+const bearerOf = (authorization: string | undefined): string | undefined => /^Bearer (\S+)$/.exec(String(authorization ?? ""))?.[1];
+
+/** The attach socket's 401: a token no paired computer or hosted machine has good. */
+const TOKEN_REFUSED = "no paired computer or hosted machine has this token: pair the computer again from the console's Computers page (a hosted machine's token ends at its delete or its backstop)";
+/** The daemon route's 401: a token no hosted machine has good. */
+const MACHINE_TOKEN_REFUSED = "no hosted machine has this token: a machine's token ends at its delete or its backstop";
+
+/** A minted machine as the hub's words name it. */
+const machineName = (requestId: string): string => `the machine of request ${requestId}`;
+
+/** The pairing routes, the attach socket and the daemon route over one store and one hub, and the tokens a dial
+ *  provider mints. */
 export function createAttachRoutes(options: AttachRoutesOptions) {
-  const { store, hub, log = () => {}, now = Date.now } = options;
+  const { store, hub, log = () => {}, now = Date.now, daemonPath = daemonPathOf } = options;
   const paired = store.pairedComputers;
-  const tries = new PairTries(now);
+  const minted = store.mintedTokens;
+  const tries = pairTries(now);
+  const fetches = new MinuteLimit(DAEMON_FETCHES_PER_MINUTE, undefined, now);
   const sockets = new Set<WebSocket>();
   let closing = false;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: () => ATTACH_SUBPROTOCOL });
@@ -284,10 +338,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   /** POST /v2/computers/pair: the code traded for the computer's id and token, once; `address` the try's source. */
   async function pair(body: unknown, address: string): Promise<{ computer: string; token: string }> {
     const allowed = tries.allow(address);
-    if (!allowed.ok) {
-      const seconds = Math.max(1, Math.ceil(allowed.retryAfterMs / 1000));
-      throw new ApiError("rate_limited", `too many pairing tries from this address; try again in ${seconds} s`, { retry_after_ms: allowed.retryAfterMs }, { "retry-after": String(seconds) });
-    }
+    if (!allowed.ok) throw limited("too many pairing tries from this address", allowed.retryAfterMs);
     const { code, name, hello } = pairBodyOf(body);
     const refused = pairRefusal(name, hello);
     if (refused) throw invalid([{ field: "hello.protocol", reason: "invalid", message: refused }]);
@@ -310,14 +361,75 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     log("computer_removed", { computer: id });
   }
 
-  /** GET /v2/computers/attach's upgrade: the token's computer, then the protocol, then the hub's hello. A refusal is an
-   *  HTTP answer before the upgrade (401 for a token no paired computer has, 426 for another protocol version). */
+  /** A dial provider's tokens (computer package MachineTokens): a new one per create, kept as its SHA-256 by the create's
+   *  request id until `expiresAt` (the machine's backstop); a revoke (the machine's delete) ends it and closes its socket
+   *  with 4401. */
+  const machineTokens = {
+    async mint(requestId: string, { kind, os, arch, expiresAt }: MintFor): Promise<string> {
+      const until = new Date(expiresAt).getTime();
+      if (!Number.isFinite(until)) throw new TypeError(`a machine token's expiresAt is a time, not ${JSON.stringify(expiresAt)}`);
+      const token = newMintedToken();
+      await minted.mint({ requestId, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until });
+      log("machine_token_minted", { request: requestId, kind, os, arch, expires_at: new Date(until).toISOString() });
+      return token;
+    },
+    async revoke(requestId: string): Promise<void> {
+      await minted.revoke(requestId);
+      hub.revoke(requestId, `${machineName(requestId)} was deleted: its token ends`);
+      log("machine_token_revoked", { request: requestId });
+    },
+  };
+
+  /** Who dials the attach socket, as the hub takes it: a paired computer by its id, or a minted machine by its create's
+   *  request id (its hello must say the kind, os and arch it was minted for). `good` reads its row again once the hub has
+   *  the socket; `seen` keeps a paired computer's hello. Its log lines are `<event>_attached` and `<event>_refused`. */
+  type Dialer = { computer: PairedComputer; field: string; event: string; gone: string; good: () => Promise<boolean>; seen: (hello: HelloResult) => Promise<void> };
+  const pairedDialer = (row: PairedComputerRow): Dialer => ({
+    computer: pairedOf(row),
+    field: "computer",
+    event: "computer",
+    gone: `${row.name} was removed from this server's console: pair it again to use it`,
+    good: async () => (await paired.get(row.id))?.revokedAt === null,
+    seen: (hello) => paired.seen(row.id, hello as unknown as Record<string, unknown>),
+  });
+  const machineDialer = (row: MintedTokenRow): Dialer => ({
+    computer: { id: row.requestId, name: machineName(row.requestId), hello: { kind: row.kind, os: row.os, arch: row.arch } as HelloResult, labels: {} },
+    field: "request",
+    event: "machine",
+    gone: `${machineName(row.requestId)} was deleted: its token ends`,
+    good: async () => (await minted.get(row.requestId))?.revokedAt === null,
+    seen: async () => undefined,
+  });
+
+  /** The minted machine whose good token `authorization` bears (Bearer), or undefined. */
+  async function machineBy(authorization: string | undefined): Promise<MintedTokenRow | undefined> {
+    const bearer = bearerOf(authorization);
+    return bearer?.startsWith(ATTACH_TOKEN_PREFIX) ? minted.byToken(sha256Hex(bearer)) : undefined;
+  }
+
+  /** GET /v2/computers/daemon?arch=: the path of this server's computerd build for `arch`, for the minted machine whose
+   *  token `authorization` bears. 401 for a token no machine has good (unknown, revoked or past its end); 429 past
+   *  DAEMON_FETCHES_PER_MINUTE a minute by one machine; 422 for an arch with no build. */
+  async function daemon(authorization: string | undefined, arch: string | null): Promise<string> {
+    const machine = await machineBy(authorization);
+    if (machine === undefined) throw new ApiError("unauthenticated", MACHINE_TOKEN_REFUSED, {}, { "www-authenticate": "Bearer" });
+    const allowed = fetches.allow(machine.requestId);
+    if (!allowed.ok) throw limited("too many daemon fetches with this machine's token", allowed.retryAfterMs);
+    if (arch === null || !DAEMON_ARCHES.includes(arch)) throw invalid([{ field: "arch", reason: "invalid", message: `arch is the machine's, ${DAEMON_ARCHES.join(" or ")}` }]);
+    return daemonPath(arch);
+  }
+
+  /** GET /v2/computers/attach's upgrade: the token's paired computer or minted machine, then the protocol, then the hub's
+   *  hello. A refusal is an HTTP answer before the upgrade (401 for a token neither has good, 426 for another protocol
+   *  version). A minted machine's socket goes to the hub under its create's request id. */
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string, headers?: Record<string, string>) => void): void {
     void (async () => {
       if (closing) return deny("503 Service Unavailable", "this server is stopping");
-      const bearer = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? ""))?.[1];
+      const bearer = bearerOf(req.headers.authorization);
       const row = bearer?.startsWith(ATTACH_TOKEN_PREFIX) ? await paired.byToken(sha256Hex(bearer)) : undefined;
-      if (row === undefined) return deny("401 Unauthorized", "no paired computer has this token: pair the computer again from the console's Computers page", { "www-authenticate": "Bearer" });
+      const machine = row === undefined ? await machineBy(req.headers.authorization) : undefined;
+      const dialer = row !== undefined ? pairedDialer(row) : machine !== undefined ? machineDialer(machine) : undefined;
+      if (dialer === undefined) return deny("401 Unauthorized", TOKEN_REFUSED, { "www-authenticate": "Bearer" });
       const asked = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map((one) => one.trim()).filter(Boolean);
       if (!asked.includes(ATTACH_SUBPROTOCOL)) {
         return deny("426 Upgrade Required", `this server speaks ${ATTACH_SUBPROTOCOL}, and the driver asked for ${asked.join(", ") || "no subprotocol"}: update whichever is older`, { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
@@ -327,21 +439,21 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
         sockets.add(ws);
         ws.once("close", () => sockets.delete(ws));
         const attach = attachSocketOf(ws, options.timing);
-        options.onSocket?.(row.id, ws);
-        void hub.accept(pairedOf(row), attach).then(async (said) => {
-          if (!said.ok) return log("computer_refused", { computer: row.id, code: said.error.code, why: said.error.message });
+        const { computer, field, event } = dialer;
+        options.onSocket?.(computer.id, ws);
+        void hub.accept(computer, attach).then(async (said) => {
+          if (!said.ok) return log(`${event}_refused`, { [field]: computer.id, code: said.error.code, why: said.error.message });
           // The row read for the token may be older than a removal that committed, and its hub.revoke, while this socket
           // was still being accepted (a Postgres read and write are separate connections): read the row again, now that the
           // socket is the hub's. A removal committing after this read revokes the hub's socket after this accept, closing it.
-          const now = await paired.get(row.id);
-          if (now === undefined || now.revokedAt !== null) {
-            hub.revoke(row.id, `${row.name} was removed from this server's console: pair it again to use it`);
-            return log("computer_refused", { computer: row.id, why: "removed while it attached" });
+          if (!(await dialer.good())) {
+            hub.revoke(computer.id, dialer.gone);
+            return log(`${event}_refused`, { [field]: computer.id, why: "removed while it attached" });
           }
-          await paired.seen(row.id, said.value as unknown as Record<string, unknown>);
-          log("computer_attached", { computer: row.id, driver: said.value.version });
+          await dialer.seen(said.value);
+          log(`${event}_attached`, { [field]: computer.id, driver: said.value.version });
         }).catch((error: unknown) => {
-          log("computer_refused", { computer: row.id, why: error instanceof Error ? error.message : String(error) });
+          log(`${event}_refused`, { [field]: computer.id, why: error instanceof Error ? error.message : String(error) });
           attach.close(ATTACH_CLOSE.going, "the server could not take this socket");
         });
       });
@@ -359,7 +471,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     clearTimeout(cut);
   }
 
-  return { createPairing, pair, remove, upgrade, close };
+  return { createPairing, pair, remove, upgrade, close, machineTokens, daemon };
 }
 
 export type AttachRoutes = ReturnType<typeof createAttachRoutes>;

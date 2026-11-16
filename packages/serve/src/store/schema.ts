@@ -16,7 +16,8 @@
 // server open the same way.
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
-// (IMPORTED_TEMPLATES), as it does the one-answer index.
+// (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
+// added the same way.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -68,6 +69,22 @@ export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates
     publisher TEXT NOT NULL,
     ${json("files")},
     imported_at INTEGER NOT NULL
+  ) STRICT`;
+
+/** A hosted machine's minted token (a dial provider's create, spec/computer/attach.md): its computerd dials the attach
+ *  socket and fetches the daemon with it. By the create's request id: the token's SHA-256 alone (hex), what the machine
+ *  must say it is at hello (kind, os, arch), and when the token ends (`expires_at`, the machine's backstop) or was revoked
+ *  (its delete). A row past its end goes at the next mint. In STORE_DDL, and added at a server open to a store an earlier
+ *  build of this version made. */
+export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
+    request_id TEXT PRIMARY KEY,
+    token_sha256 TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    os TEXT NOT NULL,
+    arch TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL
   ) STRICT`;
 
 export const STORE_DDL: readonly string[] = [
@@ -401,6 +418,7 @@ export const STORE_DDL: readonly string[] = [
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
   IMPORTED_TEMPLATES,
+  MINTED_TOKENS,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

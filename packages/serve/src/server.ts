@@ -162,7 +162,7 @@ import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { createAttachRoutes, pairedView } from "./computer-attach.js";
+import { type AttachRoutes, createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -404,6 +404,9 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
    *  process takes it (runner/beside.ts), so its runs can use them. */
   attachHub: AttachHub;
+  /** The tokens a dial provider's create mints for its machines (computer-attach.ts machineTokens), over this server's
+   *  store and hub: the runner beside the server hands them to its dial providers with the hub. */
+  machineTokens: AttachRoutes["machineTokens"];
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
@@ -526,6 +529,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/computers\/pairings$/, name: "createPairing" },
   { method: "POST", pattern: /^\/computers\/pair$/, name: "pairComputer" },
   { method: "GET", pattern: /^\/computers\/attach$/, name: "attachComputer" },
+  // A hosted machine's computerd build, fetched at its boot with the token its create minted (computer-attach.ts daemon).
+  { method: "GET", pattern: /^\/computers\/daemon$/, name: "getComputerDaemon" },
   { method: "DELETE", pattern: /^\/computers\/([^/]+)$/, name: "deleteComputer" },
   { method: "GET", pattern: /^\/workspace\/archil$/, name: "getWorkspaceArchil" },
   { method: "PUT", pattern: /^\/workspace\/archil$/, name: "putWorkspaceArchil" },
@@ -2989,6 +2994,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
     // limited by source address before anything in the body is checked.
     if (found.name === "pairComputer") return send(res, 201, await attach.pair(await bodyOf(req), clientOf(req)), { "cache-control": "no-store" });
+    // A hosted machine fetching this server's computerd build: the token its create minted is its credential, never the
+    // owner's (computer-attach.ts daemon).
+    if (found.name === "getComputerDaemon") {
+      const file = await attach.daemon(req.headers.authorization, url.searchParams.get("arch")).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 401) authFailed(`/v2${path}`, "machine_token");
+        throw error;
+      });
+      const bytes = await readFile(file).catch(() => {
+        throw new ApiError("unavailable", `this server has no computerd build at ${file}: run npm run build:daemon -w @parcha/agentrun-computer where it runs`);
+      });
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length), "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      return void res.end(req.method === "HEAD" ? undefined : bytes);
+    }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
     if (found.name === "mcpOAuthCallback") {
@@ -4545,6 +4563,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     attachHub,
+    machineTokens: attach.machineTokens,
     localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
