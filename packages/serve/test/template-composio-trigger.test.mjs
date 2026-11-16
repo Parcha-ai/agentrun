@@ -4,7 +4,9 @@
 // owner's pick under servers.<toolkit>. What makes it on Composio (its instance, the project's route here, a move of the
 // project's subscription) is this server's to set, at the create: a package carrying any of them is refused when it is
 // read, in words saying to make the trigger from the console on this server, before an apply could make a trigger that
-// runs on someone else's instance or moves the project's subscription unasked.
+// runs on someone else's instance or moves the project's subscription unasked. Its config values (the owner's repository,
+// say) and its accept rules' where `in` values may take a parameter, filled at apply, one that is required or has a
+// default so the trigger never fills empty; its server and event are the package's own.
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,12 +21,18 @@ const PUBLIC = "https://agentrun.example.com";
 const TOOLS = [{ slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "Lists issues." }];
 const NEED = { source: "composio", toolkit: "github", required: "true" };
 
-const MANIFEST = (extra, { need = NEED, server = "github", event = "GITHUB_ISSUE_ADDED_EVENT" } = {}) => `---
+/** The owner's repository as two parameters, required (as a shipped package's are) unless `optional` names one, with no
+ *  default unless `defaults` gives it one. */
+const REPO_PARAMETERS = ({ optional = [], defaults = {} } = {}) => ["owner", "repo"].map((name) => `${name}: { type: string${optional.includes(name) || name in defaults ? ", required: false" : ""}${name in defaults ? `, default: ${defaults[name]}` : ""}, description: "the repository's ${name}" }`);
+/** A config naming the repository by its parameters. */
+const REPO_CONFIG = '{ owner: "${parameters.owner}", repo: "${parameters.repo}" }';
+
+const MANIFEST = (extra, { need = NEED, server = "github", event = "GITHUB_ISSUE_ADDED_EVENT", config = "{ owner: many-drop, repo: agentrun-scratch }", parameters = [] } = {}) => `---
 name: issues
 version: 0.1.0
 description: Triages each new issue in one repository.
 budget: { per_run_usd: 0.5 }
-mcp:
+${parameters.length ? `parameters:\n${parameters.map((line) => `  ${line}`).join("\n")}\n` : ""}mcp:
   - source: ${need.source}
     toolkit: ${need.toolkit}
     tools: [GITHUB_LIST_ISSUES]
@@ -35,7 +43,7 @@ triggers:
       kind: composio
       server: ${server}
       event: ${event}
-      config: { owner: many-drop, repo: agentrun-scratch }
+      config: ${config}
 ${extra.map((line) => `      ${line}`).join("\n")}
     target: { kind: start_run, input: { content: "Triage the new issue." } }
 ---
@@ -51,9 +59,9 @@ async function packageWith(t, extra, options) {
   return { root, dir };
 }
 
-/** readPackage's problems for the package (none: []). */
-async function problemsOf(t, options) {
-  const { dir } = await packageWith(t, [], options);
+/** readPackage's problems for the package, its source's `extra` lines among the options (none: []). */
+async function problemsOf(t, options = {}) {
+  const { dir } = await packageWith(t, options.extra ?? [], options);
   try {
     readPackage(dir);
     return [];
@@ -66,7 +74,7 @@ async function problemsOf(t, options) {
 /** A server serving the package (`manifest`, its options), with a fake Composio (GitHub, connected as agentrun-qa) and
  *  each saved Composio GitHub server of `names`; at the public URL unless `publicUrl` says none. */
 async function withSaved(t, names, { manifest, publicUrl = PUBLIC } = {}) {
-  const { root } = await packageWith(t, [], manifest);
+  const { root } = await packageWith(t, manifest?.extra ?? [], manifest);
   const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] }, active: ["github"] });
   t.after(() => composio.close());
   const server = await serve(t, { templates: root, ...(publicUrl ? { publicUrl } : {}), composioControl: { baseUrl: composio.baseUrl } });
@@ -139,6 +147,48 @@ test("the need a composio trigger names is required: an optional one could resol
   const problems = await problemsOf(t, { need: { ...NEED, required: "false" } });
   assert.ok(problems.some((one) => /^agent\.md: triggers\[0\]\.source\.server/.test(one) && /required: true/.test(one)), JSON.stringify(problems));
   assert.deepEqual(await problemsOf(t, {}), [], "the package with a required composio need reads");
+});
+
+test("a composio trigger's config values take parameters, filled at apply: the trigger and its instance on Composio carry the owner's repository", async (t) => {
+  for (const parameters of [REPO_PARAMETERS(), REPO_PARAMETERS({ defaults: { repo: "web" } })]) assert.deepEqual(await problemsOf(t, { parameters, config: REPO_CONFIG }), [], `${parameters.join("; ")}: the package reads`);
+  const { api, composio } = await withSaved(t, ["work-github"], { manifest: { parameters: REPO_PARAMETERS(), config: REPO_CONFIG } });
+  const trigger = await madeTrigger(api, await api("POST", "/templates/issues/apply", { parameters: { owner: "acme", repo: "web" } }));
+  assert.deepEqual(trigger.source.config, { owner: "acme", repo: "web" });
+  const [instance] = [...composio.instances.values()];
+  assert.deepEqual(instance?.trigger_config, { owner: "acme", repo: "web" }, "Composio's instance watches the owner's repository");
+});
+
+test("a parameter left out of the apply fills a composio trigger's config with its default", async (t) => {
+  const { api, composio } = await withSaved(t, ["work-github"], { manifest: { parameters: REPO_PARAMETERS({ defaults: { repo: "web" } }), config: REPO_CONFIG } });
+  const trigger = await madeTrigger(api, await api("POST", "/templates/issues/apply", { parameters: { owner: "acme" } }));
+  assert.deepEqual(trigger.source.config, { owner: "acme", repo: "web" });
+  assert.deepEqual([...composio.instances.values()][0]?.trigger_config, { owner: "acme", repo: "web" });
+});
+
+test("a composio trigger's config value naming an optional parameter with no default is refused when it is read: the trigger would fill it empty", async (t) => {
+  const problems = await problemsOf(t, { parameters: REPO_PARAMETERS({ optional: ["repo"] }), config: REPO_CONFIG });
+  assert.ok(problems.some((one) => /^agent\.md: parameters\.repo is used in triggers\[0\]\.source\.config/.test(one) && /required or has a default/.test(one)), JSON.stringify(problems));
+  assert.ok(!problems.some((one) => /parameters\.owner/.test(one)), `the required one is fine: ${JSON.stringify(problems)}`);
+});
+
+test("a composio trigger's accept rules take a parameter in a where condition's in values, filled at apply, under the github rule: required or with a default", async (t) => {
+  const accept = ['accept: [{ event: GITHUB_ISSUE_ADDED_EVENT, where: [{ pointer: /data/repo, in: ["${parameters.repo}"] }] }]'];
+  const { api } = await withSaved(t, ["work-github"], { manifest: { parameters: REPO_PARAMETERS(), extra: accept } });
+  const trigger = await madeTrigger(api, await api("POST", "/templates/issues/apply", { parameters: { owner: "acme", repo: "web" } }));
+  assert.deepEqual(trigger.source.accept, [{ event: "GITHUB_ISSUE_ADDED_EVENT", where: [{ pointer: "/data/repo", in: ["web"] }] }]);
+  const problems = await problemsOf(t, { parameters: REPO_PARAMETERS({ optional: ["repo"] }), extra: accept });
+  assert.ok(problems.some((one) => /^agent\.md: parameters\.repo is used in triggers\[0\]\.source\.accept/.test(one) && /required or has a default/.test(one)), JSON.stringify(problems));
+});
+
+test("a composio trigger's server and event take no parameter: they are the package's own, and the refusal lists where a placeholder goes", async (t) => {
+  const parameters = [...REPO_PARAMETERS(), 'kit: { type: string, required: false, default: github, description: "a toolkit" }'];
+  for (const [field, options] of [["server", { server: '"${parameters.kit}"' }], ["event", { event: '"GITHUB_${parameters.kit}_EVENT"' }]]) {
+    const problems = await problemsOf(t, { parameters, ...options });
+    const refusal = problems.find((one) => one.startsWith(`agent.md: triggers[0].source.${field} holds \${parameters.kit}`));
+    assert.ok(refusal, `${field}: ${JSON.stringify(problems)}`);
+    assert.match(refusal, /a composio trigger's config values/);
+    assert.match(refusal, /where in values/);
+  }
 });
 
 for (const [what, extra] of [
