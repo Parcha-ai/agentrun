@@ -817,17 +817,18 @@ export class Triggers {
         this.deps.say({ condition: "trigger_sign_in_refused", trigger: trigger.id, refused: refusals });
         await this.arm();
       }
-      const message = full ? `${result.check.message} ${DUE_KEPT} firings are still waiting for their runs: the rest wait for the next check.` : result.check.message;
-      await settings?.set(trigger.id, LAST_CHECK, JSON.stringify({ at: iso(now), ok: result.check.ok, message, refused: refusals }));
-      if (!result.check.ok) this.deps.say({ condition: "trigger_check_failed", trigger: trigger.id, error: result.check.message });
       // Its source can't be read again as it is (every feed gone): off now, in its words, until an owner edits it and
-      // turns it on again.
+      // turns it on again. Before its last check is written, as a refused sign-in's is: a check that says so is never read
+      // beside a trigger still on.
       if (result.stop && !result.refused) {
         await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: result.stop.detail } });
         this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: result.stop.detail });
         await this.offThere([current]);
         await this.arm();
       }
+      const message = full ? `${result.check.message} ${DUE_KEPT} firings are still waiting for their runs: the rest wait for the next check.` : result.check.message;
+      await settings?.set(trigger.id, LAST_CHECK, JSON.stringify({ at: iso(now), ok: result.check.ok, message, refused: refusals }));
+      if (!result.check.ok) this.deps.say({ condition: "trigger_check_failed", trigger: trigger.id, error: result.check.message });
     } catch (error) {
       this.deps.say({ condition: "trigger_poll_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) });
     }
