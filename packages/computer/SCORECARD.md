@@ -1,7 +1,7 @@
 # Provider scorecard
 
 AgentRun is an open-source platform for running AI agents, and it gives each agent a computer on a vendor's machines.
-This page reads 25 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
+This page reads 26 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
 [spec/computer/provider.md](../../spec/computer/provider.md). For each it says whether a provider fits on the shared
 machine-host adapter, what the provider would take, and what is still open. It is for a vendor's engineer, or a
 contributor, deciding whether to write one.
@@ -23,8 +23,8 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 ## The table
 
-Of 28 rows (25 vendors; Google, Fly.io and Beam have one row per product): 0 clean, 5 fit if unverified facts hold, 13
-need a workaround, 10 are blocked.
+Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
+14 need a workaround, 11 are blocked.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -35,7 +35,9 @@ need a workaround, 10 are blocked.
 | [Beam Sandbox](https://docs.beam.cloud/v2/sandbox/overview) | disposable containers with a TTL | blocked (`exec`: no live stdin) | n/a | none |
 | [Beam VM](https://docs.beam.cloud/v2/vm/overview) | persistent microVMs | needs a workaround (`extend` rewrites the whole metadata map, or is left out) | 300-350 | [ssh-exec][se], [prepareImage][pi] |
 | [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand) | 250-280 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
-| [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (a relay Worker of ours carries create, list, exec and the timers; the image is fixed at deploy) | 250-330, plus a relay Worker | [framedExec][fe] |
+| [boxes.dev](https://boxes.dev/help) as a provider | devboxes, Firecracker VMs on E2B | blocked (no public create, exec or delete API; the CLI is tied to a signed-in user; exec is one-shot; a box sleeps after 5 minutes idle and stays awake 4 hours at most; the VMs are E2B's, which AgentRun already drives) | none | none |
+| [boxes.dev](https://boxes.dev/help) as a bring-your-own machine | the user's own devbox, with computerd dialing in | needs a workaround (Linux pairing, which is planned and not built; unverified: an open outbound connection keeps the box awake) | no provider file | [attach binding](../../spec/computer/attach.md) |
+| [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (on the dial path, a relay Worker of ours in the user's account carries create, get, list and delete, and no exec; an alarm keeps the container alive, since an open outbound socket is not activity; the image is fixed at deploy) | 250-330, plus a relay Worker | none |
 | [Cube Sandbox](https://github.com/TencentCloud/CubeSandbox) | self-hosted KVM microVMs behind an E2B-compatible API | needs a workaround (a copy of E2B's host, which takes no API URL; one arch per deployment) | about 320 | [prepareImage][pi] |
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | blocked (the idle pause can't be switched off; exec would also need a shim of ours over the pty console) | about 300 if the pause could be switched off | [packed labels][pl], [prepareImage][pi] |
 | [Fly Machines](https://docs.fly.io/machines/api/machines-resource) | KVM microVMs from an OCI image | blocked (`exec`: answers once the command ends) | n/a | none |
@@ -164,19 +166,42 @@ provider spec.
   (memory as a multiple of cpus) is held in the host's `check`.
 - **Open:** ours, a "vendor agent as entrypoint" image case and a size rule in `facts`. Unverified: root's network namespace, arch, listeners, the label charset.
 
+### boxes.dev
+
+- **Rents:** devboxes for coding agents, cloned from a project's template snapshot (disk and RAM). The vendor's founders
+  say the machines are Firecracker VMs on E2B ([Show HN thread](https://hn.svelte.dev/item/48399358)); the
+  [CLI](https://boxes.dev/help/agent-command-reference) is `dvb`.
+- **As a provider, blocked.** The only public REST call is the automation API, which starts an agent run
+  ([automation API](https://boxes.dev/help/automation-api)); it has no list, delete, exec or image. Create, list and
+  delete exist only in the CLI, which is bound to a signed-in user
+  ([manage devboxes](https://boxes.dev/help/manage-devboxes)). `dvb exec` is one-shot with a timeout and literal argv, so
+  there is no stdio bridge. A box sleeps after about 5 minutes idle, "Keep awake" runs 1 to 4 hours, and "nothing runs
+  while it sleeps" ([sleep, wake, recover](https://boxes.dev/help/sleep-wake-recover)). The machines are E2B's, which
+  AgentRun already drives, so a provider adds no compute.
+- **As a bring-your-own machine, needs Linux pairing, which is planned.** The user runs one command in their box and computerd
+  dials in ([attach binding](../../spec/computer/attach.md#pairing-bring-your-own-machine)), inside boxes.dev's sleep
+  and 4 hour limits. Linux pairing is planned, not built.
+- **Unverified:** whether an open outbound connection from inside the box keeps it awake. The help pages list what does:
+  an agent working, a hold an agent requests, background commands an agent starts (up to 1 hour, or a declared timeout
+  capped at 4 hours), and a person using the machine; traffic through desktop localhost forwarding does not count
+  ([sleep, wake, recover](https://boxes.dev/help/sleep-wake-recover)). Neither that page, [computer
+  access](https://boxes.dev/help/computer-access), [manage devboxes](https://boxes.dev/help/manage-devboxes) nor the
+  [agent command reference](https://boxes.dev/help/agent-command-reference) says an open connection or a bare process
+  counts. One box left idle past 5 minutes with computerd connected settles it: it stays attached, or it sleeps.
+
 ### Cloudflare Sandbox
 
 - **Rents:** containers, each in its own Firecracker microVM
   ([architecture](https://developers.cloudflare.com/containers/platform-details/architecture/)).
 - **Exec and the rest:** every container call is a binding inside a Worker's Durable Object
   ([container class](https://developers.cloudflare.com/containers/container-class/)); there is no REST call that
-  makes, lists or execs into one. A provider needs a relay Worker of ours in the user's account, with create, list,
-  exec, extend and the timers behind it.
+  makes, lists or deletes one. On the dial path a provider needs a relay Worker of ours in the user's account that
+  carries create, get, list and delete. It has no exec: computerd inside the container dials AgentRun.
 - **Lifetime:** an inactivity window of at most 6 hours, which can't be switched off
   ([lifetime](https://developers.cloudflare.com/sandbox/concepts/lifetime/)). Requests, alarms and accepted
-  WebSockets count as activity and a container's processes don't, so the relay keeps it: the exec WebSocket it holds
-  while AgentRun is connected, and its own alarm between connections, which also ends the container at its deadline.
-  That alarm, the relay's, is the only timer that outlives AgentRun.
+  WebSockets count as activity and a container's processes don't, so an open outbound socket from computerd does not
+  keep the container alive. The relay's own alarm does: it renews the window about hourly and ends the container at its
+  deadline. That alarm, the relay's, is the only timer that outlives AgentRun.
 - **Image:** fixed at Worker deploy ([image management](https://developers.cloudflare.com/containers/platform-details/image-management/)),
   so [prepareImage](PROVIDERS.md#wire-it-up) can't build or pull one at run time.
 - **Open:** ours, dial-out, or a documented vendor-hosted relay shape. The vendor's: a REST API for container instances.
