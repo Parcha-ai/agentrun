@@ -74,6 +74,14 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
   The GPUs are compared likewise: the hosted adapter records them at create in the label `agentrun.computer.gpu`
   (`<type>:<count>`), on every vendor, so a retry asking a GPU finds a computer made without one, or the other way
   round, refused `exists`.
+- A vendor that keeps no labels (the host's `facts.labels` is `"machine"`) gets the name as its machine's own name,
+  and the adapter writes the labels as JSON to a root-only file in the machine (`/var/lib/agentrun/labels.json`, 0600
+  in a 0700 directory) once it runs. Between the vendor's answer and that write, a machine of the request's name with
+  no file is the request's. A later create's sweep of the name leaves it while it is younger than any create could
+  take to write it (two creates' bounds, a listing, a read and the write, plus five minutes: 11.5 minutes on the
+  default timeouts), since another create of the request may still be making it, and deletes it once it is older. One
+  whose vendor reads no `createdAt` is never old enough: the vendor's timer ends it. The Core case
+  `isolation.label-file` checks that the computer's user cannot read the file.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one

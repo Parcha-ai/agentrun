@@ -2602,6 +2602,10 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   path on a read-only mount is closed (BusyBox's `test -w` reads the mode bits alone, so the case reads the mount's
   options too). It checks write access alone and changes nothing.
   `mount.archil-isolated-durable` runs the same check on its Archil computer.
+- **The label file** (`isolation.label-file`, Core wherever files runs): a host whose vendor keeps no labels
+  (`facts.labels: "machine"`) has the adapter write them to `/var/lib/agentrun/labels.json`, root's, 0600 in a 0700
+  directory. The case reads that path with `files.read`, as the computer's user, and passes on `not_found` (no such
+  file: a host that keeps labels at the vendor) or `denied`; it fails if the read succeeds.
 - **Core by kind.** `coreGroups(kind, daemon)` is what a computer of its kind must declare (the table in
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
