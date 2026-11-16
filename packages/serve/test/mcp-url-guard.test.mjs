@@ -211,6 +211,33 @@ test("on the runner, a server whose saved URL carries a credential in its query 
   assert.equal(fake.log.length, 0, "nothing sent");
 });
 
+test("on the runner beside a local install, a server saved on loopback at that server's own port (where it listens, or its public address on loopback) is refused unsent, in words; another loopback port is still reached", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const { store, dir } = await storeOn(t);
+  const tools = { add: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } };
+  await store.mcp.put({ name: "inward", url: fake.url, auth: "none", tools: [{ name: "add", input_schema: tools.add }], sealed: null });
+  /** run `runId`'s add on a runner beside a local install whose own addresses are `own`. */
+  const addOn = async (runId, own) => {
+    await queued(store, runId, { mcpPin: { inward: { url: fake.url, tools: [{ name: "add", inputSchema: tools.add }] } } });
+    const claim = await store.claim(runId, "runner-local", { leaseMs: 60_000 });
+    const mcp = await mcpForClaim({ loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:inward/add"], harness: { commit: async () => undefined }, work: () => dir });
+    t.after(() => mcp.release());
+    const add = mcp.tools.find((tool) => tool.name === "mcp__inward__add");
+    return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
+  };
+  const at = new URL(fake.url);
+  const elsewhere = `http://127.0.0.1:${at.port === "1" ? 2 : 1}`;
+  // The fake stands where the server beside the runner listens, then where its public address (a local proxy) is.
+  for (const [runId, own] of [["run-1", [at.origin]], ["run-2", [elsewhere, `https://localhost:${at.port}`]]]) {
+    const call = await addOn(runId, own);
+    const sent = fake.log.length;
+    assert.deepEqual(await call(`call-${runId}`), { text: `The MCP server inward's address is refused here: the MCP server at ${at.host} is a private address; refused. Nothing was sent.`, isError: true }, runId);
+    assert.equal(fake.log.length, sent, `${runId}: the server heard nothing`);
+  }
+  assert.deepEqual(await (await addOn("run-3", [elsewhere]))("call-3"), { text: "5" }, "a loopback port that isn't the server's own is reached");
+});
+
 test("two runners on one store, one beside a local install and one not: a server saved on loopback is reached by the first alone, the other's runs send it nothing, whatever order they start in", async (t) => {
   const fake = await startFakeMcp();
   t.after(() => fake.close());
