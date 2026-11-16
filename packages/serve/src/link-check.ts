@@ -1,7 +1,8 @@
 // A template eval's link check (template-eval.ts graderInput): each http(s) link a run's answer cites, matched in code
 // against every url its calls answered (its web calls', and the URLs any other call's result holds whole), so "every link
 // the answer cites appears in the run's calls" is read from one block, never judged as URL equality from a rubric's prose. A link matches a url when their canonical forms do
-// (canonicalUrl): no fragment, no trailing slash on the path, scheme and host lower-cased, query keys sorted; the two key
+// (canonicalUrl): no fragment, no trailing slash on the path, scheme and host lower-cased, no leading "www." on the host,
+// query keys sorted; the two key
 // sets equal, and each value equal, except that a call's value read as "…" (a timeline read elides query values,
 // scrubUrls) matches any value for its key. Structural only: whether a cited item is in scope stays the rubric's call.
 import { lastJsonBlock } from "./answer-json.js";
@@ -34,7 +35,10 @@ export function canonicalUrl(url: string): CanonicalUrl | undefined {
   const query = new Map<string, string[]>();
   for (const [key, value] of parsed.searchParams) query.set(key, [...(query.get(key) ?? []), value]);
   for (const values of query.values()) values.sort();
-  return { base: `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, "")}`, query };
+  // A host and the same host with "www." in front are one site (cpsc.gov, www.cpsc.gov); "www." is dropped only where a
+  // domain is left after it (never www.com's), and no other subdomain is (m., amp.).
+  const host = parsed.host.replace(/^www\.(?=[^.]+\.)/, "");
+  return { base: `${parsed.protocol}//${host}${parsed.pathname.replace(/\/+$/, "")}`, query };
 }
 
 /** Whether a cited link matches a url a call answered: the same base and key set, each value equal unless the call's
@@ -155,6 +159,6 @@ export function linkCheck(answer: string, calls: readonly CheckedCall[]): string
     lines.push(`${scrubUrl(link)} — ${at >= 0 ? `matches call ${at + 1}` : `no matching call${cut.length ? ` (${callsWord(cut)}'s links were cut)` : ""}`}`);
   }
   const intro =
-    "Each distinct http(s) link the answer cites, checked in code against every url its calls answered (a web_search's results; a web_fetch's url, its final url and its page's links; any other call's URLs as its result holds them): a fragment, a trailing slash and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
+    "Each distinct http(s) link the answer cites, checked in code against every url its calls answered (a web_search's results; a web_fetch's url, its final url and its page's links; any other call's URLs as its result holds them): a fragment, a trailing slash, a leading "www." on the host and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
   return [intro, ...(lines.length ? lines : ["(the answer cites no http(s) link)"])].join("\n");
 }
