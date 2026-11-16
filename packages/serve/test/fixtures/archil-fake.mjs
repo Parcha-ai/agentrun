@@ -20,8 +20,11 @@
 //   mount holding just that folder's keys, at the place /mnt/archil/<name> names; what each holds afterwards replaces
 //   its folder (files, folders and links), and nothing else on the disk changes. Each must be a folder; while an exec
 //   holds them, a put, an append or a delete under one is refused with 409, as the service refuses a write to a path
-//   another client holds. `banner` (a test's) is printed before the command's own stdout, as a platform's message
-//   would be, and `answerLimit` cuts the answer's stdout, as a platform's limit on an answer would.
+//   another client holds. A computer's FUSE mount of a folder (`delegate`, a test's) takes Archil's write delegation:
+//   while it holds, a put, an append or a delete under that folder is refused with 409 OperationAborted, as the live
+//   service refused a run's skills laid after its computer mounted the run's folder. `banner` (a test's) is printed
+//   before the command's own stdout, as a platform's message would be, and `answerLimit` cuts the answer's stdout, as a
+//   platform's limit on an answer would.
 // Every call is recorded in `calls`: { op, key | prefix | directory | mounts, ... }; every exec's materialized file keys
 // (per mount, relative to its folder) in `materialized`.
 import { spawn } from "node:child_process";
@@ -113,6 +116,10 @@ export class FakeArchilDisk {
   refuseNetwork = undefined;
   /** The paths each running exec holds. */
   #held = new Set();
+  /** Each mount's write delegation (delegate): { path }, one per mount. */
+  #delegated = new Set();
+  /** Each key a write delegation refused, in order. */
+  refusedByDelegation = [];
   /** What exec spawned: [file, args]. */
   spawned = [];
   /** Each exec's materialized file keys, per mount name, relative to that mount's subdirectory. */
@@ -127,6 +134,21 @@ export class FakeArchilDisk {
 
   #refuseHeld(key) {
     if (this.#isHeld(key)) throw new FakeDiskError(409, "Conflict", `${key} is checked out by another client`);
+    for (const { path } of this.#delegated) {
+      if (key === path || key.startsWith(`${path}/`)) {
+        this.refusedByDelegation.push(key);
+        throw new FakeDiskError(409, "OperationAborted", `The path /${path} cannot be written because another client holds a write delegation`);
+      }
+    }
+  }
+
+  /** A computer's FUSE mount of `path` (a folder of the disk) taking Archil's write delegation for it: until the returned
+   *  function lets it go, every put, append and delete at or under `path` over this file API is refused with 409
+   *  OperationAborted, as the service refuses it, and the refused key is recorded in `refusedByDelegation`. */
+  delegate(path) {
+    const held = { path: path.replace(/\/$/, "") };
+    this.#delegated.add(held);
+    return () => void this.#delegated.delete(held);
   }
 
   /** A link on the way to `key` (not `key` itself): Archil answers a write through it 409. */
