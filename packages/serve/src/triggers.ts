@@ -709,8 +709,6 @@ export class Triggers {
     void this.polled(trigger, adapter, last, now).finally(() => this.pollDone(trigger.id));
   }
 
-  /** `trigger`'s poll now, off the timer (made, turned on again, or its source edited), after the one running for it when
-   *  one is. */
   /** A poll of `trigger` now, answered once the poll that answers it is done: its own, or, when an edit of its source
    *  drops its result (polled), the one after it, which it asks for at once; when one is running, the one after that. */
   private kick(trigger: Trigger, waitedFor = true): Promise<void> {
