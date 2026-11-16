@@ -7,9 +7,12 @@ a vendor's machines. This page shows how to add your machines in one pull reques
 
 Conformance comes first: each step ends on a command that tells you whether it's done. Run them from the repository root.
 
-1. Check that your API has the [two things AgentRun needs](#what-your-api-needs).
+1. Check that your API has the [two things AgentRun needs](#what-your-api-needs), and find its
+   [exec shape](#exec-shapes-that-work).
 2. Write your host's constructor, `exec` and `createHost`, then run the [exec pre-check](#step-one-run-the-exec-pre-check)
-   on a machine you made by hand until it prints `exec PASS`:
+   on one machine until it prints `exec PASS`. Make that machine the way your vendor makes them: by hand in its console;
+   through the relay you ship, once it is deployed to your own account; or, on a cloud, in the cluster, group or project
+   you made first. `--machine` takes whatever your `exec` takes, the id `create` answers and `get` reads (a name is fine):
    `npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
 3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the eleven members](#the-eleven-members).
 4. Run the [whole suite between two sweeps](#prove-it) until its last line reads `core PASS`:
@@ -26,13 +29,36 @@ runs local processes), and pass its path to `--provider`, with `--machine local 
 
 AgentRun needs two things from your API:
 
-- **A streaming, two-way exec.** You start a process in a machine, write to its stdin and read its stdout and stderr
-  while it runs, byte for byte, with no timeout. AgentRun talks to its daemon over one such process for the machine's
-  whole life.
+- **A streaming, two-way exec.** You start a process in a machine as root, write to its stdin and read its stdout and
+  stderr while it runs. AgentRun talks to its daemon over one such process for the machine's whole life.
 - **A list by label.** You can list your machines by a label, tag or metadata pair that AgentRun sets at create.
 
-If your API only runs a command and gives back its output when it ends (a one-shot REST exec), or can't list machines
-by label, this adapter can't use it today. Talk to us first by [opening an issue](https://github.com/Parcha-ai/agentrun/issues)
+### Exec shapes that work
+
+Whatever carries it, your `exec` keeps five rules, and the [exec pre-check](#step-one-run-the-exec-pre-check) judges
+it by them alone:
+
+- **Bytes both ways, live.** Every byte value 0-255, in and out while the process runs: no text decoding, no terminal.
+- **stdin ends.** `end()` gives the process end of file. The daemon's bridge never calls it (it ends by `kill`), but the
+  default upload (`cat`, which a host's own `upload` replaces) and the pre-check do.
+- **`kill()` ends the process in the machine**, not only your streams: the pre-check reads its pid back gone. A
+  wrapper that writes the pid to a file, and a kill that reads it over a second exec, is fine.
+- **stderr apart**, and `wait()` answers the process's own exit code.
+- **No timeout.** No command timeout and no idle timeout on the stream: the bridge sits silent for minutes.
+
+| Your API gives | Your `exec` | In the tree |
+| --- | --- | --- |
+| A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
+| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/agent37-ssh.ts`](src/agent37-ssh.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
+| An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` only closes stdin and fails the pre-check's kill check: copy its shape, and kill with a pid wrapper |
+| Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
+| No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
+
+Two shapes can't carry the daemon today. A request and response exec (one call runs a command and answers its output
+when it ends) can't hold a process open: it needs a relay over another stream. A text-only exec (output decoded as
+text, input as a JSON string) fails the byte checks. AgentRun has no text mode, so your `exec` writes the shim itself:
+a wrapper in the machine that encodes the bytes (base64, say) and your side that decodes them. The pre-check judges a
+shim or a relay as it judges any exec. If none of these fits, [open an issue](https://github.com/Parcha-ai/agentrun/issues)
 that says what your API offers.
 
 ### Step one: run the exec pre-check
@@ -40,8 +66,8 @@ that says what your API offers.
 Before you write anything else, write your host's constructor and its `exec` (see [the eleven members](#the-eleven-members)
 below). Then write a `createHost({ env = process.env } = {})` in your conformance module that builds the host from
 your key (the pre-check calls it with `{}`, the sweep with `{ env }`), and point to that module from your provider file
-with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make a machine by
-hand in your console, then run, from the repository root:
+with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make one machine
+(in your console, through your relay, or in your cloud project), then run, from the repository root:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -49,11 +75,10 @@ export COMPUTER_<VENDOR>_API_KEY=<your key>
 npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>
 ```
 
-It calls `exec` and nothing else. It sends all 256 byte values each way and 8 MiB of random bytes, reads output while
-the process still runs, checks stderr comes back apart from stdout, checks the exit code and `kill`, and runs a silent
-process for 75 seconds to check nothing cuts it off. Each failure says what your exec did wrong, such as "byte 0x80 came
-back on stdout as ef bf bd: your exec decodes UTF-8". `--quick` shortens the 75 seconds to 5. When it prints `exec
-PASS`, write the rest.
+It calls `exec` and nothing else, and checks the five rules: all 256 byte values each way, 8 MiB of random bytes,
+stdin and output while the process runs, stderr, the exit code, `kill`, and a silent process of 75 seconds (`--quick`:
+5). Each failure says what your exec did wrong, such as "byte 0x80 came back on stdout as ef bf bd: your exec decodes
+UTF-8". When it prints `exec PASS`, write the rest.
 
 ### What you write
 
@@ -87,9 +112,13 @@ class E2BHost implements MachineHost {
 ```
 
 **`facts`** says what your machines are. It never changes, and AgentRun builds the provider's capabilities from it.
-`daemon: "child"` means your own agent runs first and starts processes; with `"pid1"`, the machine's main process is
-the command AgentRun passes to create. `lifetime: "vendor"` means your timer ends a machine at its deadline; with
-`"janitor"`, AgentRun ends it by label. `vendorAgentPorts` are the ports your agent listens on inside the machine.
+`daemon: "child"` means your vendor starts AgentRun's processes through its exec, and AgentRun starts its daemon that
+way at boot; with `"pid1"`, the machine's main process is the command AgentRun passes to create. `lifetime: "vendor"`
+means your timer ends a machine at its deadline; with `"janitor"`, AgentRun ends it by label. `vendorAgentPorts` are
+the TCP ports your vendor's agent listens on inside the machine. `[]` is right when none listens on TCP (it is reached
+over a unix socket or a virtio device, or nothing of the vendor runs in the machine): the Core case
+`isolation.vendor-agent` still runs, and checks that the computer's programs reach only their own loopback and no unix
+socket but the computer's own. To find the listeners, run `ss -ltnp` as root on the pre-check's machine.
 If your image leaves system paths that root runs or reads with permissions wider than root's, list them in `rootOnly`:
 create makes them root's alone (root the owner, no write by group or other users) before anything else, and the Core case `isolation.root-runs` checks
 that the computer's user can write nothing root runs. `HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
@@ -97,7 +126,14 @@ that the computer's user can write nothing root runs. `HostFacts` in [`src/host.
 `maxLifetimeMs` in `facts` is the longest any of your plans keeps a machine. For E2B that's Pro's 24 hours
 (`PRO_MAX_MS`). Your provider's `maxLifetimeMs` option is the cap a user gets, and it may only lower the fact. Default
 it to the plan most people are on, which is also the plan you test on. For E2B that's Hobby's 1 hour (`HOBBY_MAX_MS`).
-A user on a bigger plan raises the option, up to the fact.
+A user on a bigger plan raises the option, up to the fact. If your vendor documents no cap, measure it (keep a machine
+until the vendor ends it) and write down where the number came from; don't guess one. If your vendor never ends a
+machine, the cap is the janitor's, as Agent37's 24 hours (`DAY_MS`, `src/agent37.ts`).
+
+Switch off every vendor timer that ends a quiet machine (an idle stop or sleep): a computer sits quiet for minutes, and
+the vendor would end it under the agent. Agent37's `create` sends `auto_sleep: false`, and Daytona's idle stop is off
+unless a user sets `autoStopMinutes` (`src/daytona.ts`). With `"janitor"`, where your vendor has a timer that deletes,
+set it a margin past the deadline, so a machine still ends if AgentRun's server is gone.
 
 ```ts
 	readonly facts: HostFacts = {
@@ -147,7 +183,18 @@ vendor whose size is its image's refuses them in its own `check`.
 - `why` is your API's words for a machine that failed to start, which is `gone`.
 
 A machine that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure. Don't read
-back what create sent: AgentRun checks the machine from inside.
+back what create sent: AgentRun checks the machine from inside. `get` never wakes a machine: a read that resumes a
+paused or ended one undoes a deadline or a delete. If your vendor's reads wake machines, read through one that
+doesn't, or make machines in the vendor's mode that doesn't keep them. A deleted machine stays gone after any call.
+
+Some vendors have states beyond these four:
+
+| Your vendor says | `state` |
+| --- | --- |
+| recovering, restoring, temporarily unavailable | `starting` |
+| needs a person's decision before it goes on | `stopped`: create gives up on it, and the janitor still ends it |
+| ended by the platform (an eviction, a cap) | `gone`, with the platform's words in `why`; one it stopped and still keeps (a disk, a bill) is `stopped`, so the janitor still finds and deletes it |
+| only a running flag | `running` when it is set. `create` waits until it is, within `ctx.timeoutMs`; after that, unset is `stopped` |
 
 ```ts
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
@@ -173,7 +220,8 @@ don't carry every label (your API filters by some, or none): AgentRun keeps the 
 **`delete(id, ctx)`** deletes a machine and answers once your API accepts the delete. A machine that is already gone is
 fine. AgentRun then waits until `get` answers `undefined` (or `not_found`), twice running: a machine `get` still reads
 `gone`, one your API is still deleting, holds the wait. Delete is the only release: AgentRun never stops a
-machine and keeps it.
+machine and keeps it. So a host never declares `persistence` today, even where your vendor can stop and resume:
+`src/hosted/provider.ts` refuses `release` `stop` and `detach` in words.
 
 ```ts
 	async delete(id: string, ctx: HostCall): Promise<void> {
@@ -186,10 +234,7 @@ machine and keeps it.
 the process has started. It returns a `MachineProcess` with the output streams, `write` and `end` for stdin, `wait`
 for the exit code, and `kill`. stdin is always open: AgentRun calls `end` itself, at once for a command it gives no
 input. AgentRun installs and starts its daemon this way, then talks to the daemon over one process's stdin and stdout
-for the machine's whole life. So bytes go both ways while the process runs. Every byte comes back exactly as written,
-with no text decoding and no terminal. Nothing times the process out. stdout and stderr stay apart, and `kill` ends the
-process itself. [The spec](../../spec/computer/provider.md#a-hosted-vendors-exec)
-says each rule, and the exec pre-check tests them.
+for the machine's whole life, so it keeps the [five rules](#exec-shapes-that-work).
 
 E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which breaks any byte that isn't UTF-8. So E2B's
 `exec` reads envd's process stream itself and passes on the bytes each event carries:
@@ -235,8 +280,9 @@ an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's 
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
 your API keeps no label change, `get` reads your moved timer as that label. Without `extend`, a computer can't be
-extended. `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields
-aren't checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
+extended: leave it out when what it moves (your timer, or with `"janitor"` your labels) is fixed at create.
+`check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields aren't
+checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
 `list` must never create anything.
 
 ### Wire it up
@@ -274,7 +320,13 @@ export const E2B = defineProvider({
 ```
 
 A descriptor declares only the network forms its computer enforces; a form it doesn't declare is refused at save, never
-widened.
+widened. On a vendor whose root can make a network namespace (or one inside a user namespace, as on Modal's gVisor),
+AgentRun enforces all three itself: init's fence holds `none`, and init's egress proxy holds `open` and a list
+(`src/hosted/network.ts`). So declare all three, even if your vendor has no network control. A vendor policy (deny-all
+for `egress: false`, as Agent37's `create` sends) is optional hardening and never wider than ours; a host may ignore
+`egress: false` where it has none, since the fence holds without it. The probe from inside is what counts. If root can
+make no network namespace, init can't fence and refuses to start, so the shared adapter doesn't fit: declare nothing
+your machines can't hold.
 
 E2B's names no `defaultImage`: it says `prepareImage`, and the provider's `prepareImage()` answers the box template
 (`boxE2bTemplate()` in `box-image.ts`) with no call, so a sandbox and a desktop that mount an Archil disk start from
@@ -282,9 +334,24 @@ an image that has its client. A vendor whose stock image will do names it in `de
 
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 
-Settings stores your key under the name your descriptor gives it, `<VENDOR>_API_KEY`. The conformance module reads it
-as `COMPUTER_<VENDOR>_API_KEY` instead, so a test run never picks up a key your shell already holds for something else.
-It reads your other settings as `COMPUTER_<VENDOR>_*` too, and creates nothing unless `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`.
+A credential of several parts is several `keys`, and a value that isn't secret (a region, a project, an app) is a
+`setting`, with a default where one makes sense. Modal's descriptor (`src/descriptors/modal.ts`) is the worked example:
+
+```ts
+	keys: [
+		{ name: "MODAL_TOKEN_ID", option: "tokenId", required: true },
+		{ name: "MODAL_TOKEN_SECRET", option: "tokenSecret", required: true },
+	],
+	settings: [{ name: "modalApp", option: "app", default: "agentrun" }],
+```
+
+Settings stores each key under its `name` and passes it to your `create(options)` as its `option`, and each setting
+likewise, its `default` when the server names none. The conformance module reads the same values from
+`COMPUTER_<VENDOR>_*` names instead (Modal's `MODAL_ENV`: `COMPUTER_MODAL_TOKEN_ID`, `COMPUTER_MODAL_TOKEN_SECRET`,
+`COMPUTER_MODAL_APP`), so a test run never picks up a key your shell already holds for something else, and it creates
+nothing unless `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`. Settings makes nothing on your vendor: a cluster, a resource group
+or a project the machines live in is the user's to make first. Take it as a setting, and when it's missing, say in
+your error what to make.
 Rename E2B's and keep its exports: `createProvider`, `createDriftedProvider` (its daemon reports another version, and
 the suite checks AgentRun refuses it), `createHost` for the exec pre-check and the sweep, `conformanceImage` and
 `conformanceNotes`.
@@ -388,9 +455,8 @@ refuses it in those words. Daytona declares no mount: `unmounted: { archil: "Arc
 Archil's client hangs on its sandboxes" }`.
 
 If your machines can't run Linux as root, the adapter doesn't fit, and you'd implement `ComputerProvider`
-(`src/provider.ts`) directly. That's a big job, because the adapter's whole lifecycle, claims and all, becomes yours to
-write.
-Talk to us first, in [an issue](https://github.com/Parcha-ai/agentrun/issues).
+(`src/provider.ts`) directly, as [the last exec shape](#exec-shapes-that-work) does: the whole lifecycle, claims and
+all, becomes yours to write. Talk to us first, in [an issue](https://github.com/Parcha-ai/agentrun/issues).
 
 ### Refusals
 
