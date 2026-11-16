@@ -11,13 +11,14 @@ export const COMPILE_AT_RUNS = 5;
 /** A takeover's "N times cheaper" needs this many runs after it (serve learning-cost.ts CHEAPER_AFTER_RUNS). */
 export const CHEAPER_AFTER = 20;
 
-/** A marker on the cost chart's run axis, from a promotion record: a new revision replaying, promoted, held, refit, or
- *  superseded (a newer revision came while it replayed: its replay runs were cancelled and it never serves). */
-export type MarkerKind = "revision" | "promote" | "hold" | "refit" | "superseded";
+/** A marker on the cost chart's run axis, from a promotion record: a new revision replaying, promoted, held, refit,
+ *  queued (it came while another revision replayed: it replays next) or skipped (a newer revision came while it was
+ *  queued: it never replays, never serves). */
+export type MarkerKind = "revision" | "promote" | "hold" | "refit" | "queued" | "skipped";
 export type Marker = { kind: MarkerKind; n: number; at: string; workflow: string; digest: string; reason: string; record: Promotion };
-export const MARKER_WORDS: Record<MarkerKind, string> = { revision: "New revision", promote: "Promoted", hold: "Held", refit: "Refit", superseded: "Superseded" };
+export const MARKER_WORDS: Record<MarkerKind, string> = { revision: "New revision", promote: "Promoted", hold: "Held", refit: "Refit", queued: "Queued", skipped: "Skipped" };
 /** One letter per kind, drawn in the marker's flag so a kind is never told by colour alone. */
-export const MARKER_LETTER: Record<MarkerKind, string> = { revision: "R", promote: "P", hold: "H", refit: "F", superseded: "S" };
+export const MARKER_LETTER: Record<MarkerKind, string> = { revision: "R", promote: "P", hold: "H", refit: "F", queued: "Q", skipped: "S" };
 
 /** A promotion record's kind of marker: a refit's own; a replay that started, a new revision; else its decision. */
 export const kindOf = (record: Promotion): MarkerKind => (record.source === "refit" ? "refit" : record.decided === "replaying" ? "revision" : record.decided);
@@ -56,13 +57,14 @@ export const recordOf = (records: readonly Promotion[], workflow: string, digest
   digest === null ? undefined : [...records].reverse().find((r) => r.workflow === workflow && r.digest === digest);
 
 /** A revision's standing in words a person reads: Serving (it is the champion: `serving`, the digest the server says
- *  serves), Served (promoted once, a newer one serves now), Held, Replaying, Superseded (a newer revision came while it
- *  replayed), or not decided yet; Refit when a threshold refit of it serves in its place (`refit`). A held, replaying or
- *  superseded revision never stops its champion serving. Stopped when it is the champion but the money rule stopped it
+ *  serves), Served (promoted once, a newer one serves now), Held, Replaying, Queued (behind another revision's replay:
+ *  it replays next), Skipped (a newer revision came while it was queued), or not decided yet; Refit when a threshold
+ *  refit of it serves in its place (`refit`). A held, replaying, queued or skipped revision never stops its champion
+ *  serving. Stopped when it is the champion but the money rule stopped it
  *  running first (`stopped`, the digest the cost read says `needs_revision`: stoppedOf); no promotion record says so.
  *  `proof`: what a promoted or held revision was decided on (proofOf), said beside its word; a revision serving with no
  *  replay behind it (a dry-run promote) is never green. */
-export type Standing = { word: "Serving" | "Stopped" | "Served" | "Refit" | "Held" | "Replaying" | "Superseded" | "Not decided"; tone: "success" | "warning" | "active" | "muted" | "plain"; proof?: string; text: string };
+export type Standing = { word: "Serving" | "Stopped" | "Served" | "Refit" | "Held" | "Replaying" | "Queued" | "Skipped" | "Not decided"; tone: "success" | "warning" | "active" | "muted" | "plain"; proof?: string; text: string };
 function standingBase(record: Promotion | undefined, { serving = null, refit, stopped = null }: { serving?: string | null; refit?: Promotion; stopped?: string | null } = {}): Omit<Standing, "text"> {
   if (refit) return { word: "Refit", tone: "muted" };
   if (!record) return { word: "Not decided", tone: "muted" };
@@ -70,7 +72,8 @@ function standingBase(record: Promotion | undefined, { serving = null, refit, st
   const said = proof ? { proof } : {};
   if (record.decided === "promote") return record.digest !== serving ? { word: "Served", tone: "muted", ...said } : record.digest === stopped ? { word: "Stopped", tone: "warning", ...said } : { word: "Serving", tone: proven(record) ? "success" : "plain", ...said };
   if (record.decided === "hold") return { word: "Held", tone: "warning", ...said };
-  if (record.decided === "superseded") return { word: "Superseded", tone: "muted" };
+  if (record.decided === "queued") return { word: "Queued", tone: "plain" };
+  if (record.decided === "skipped") return { word: "Skipped", tone: "muted" };
   return { word: "Replaying", tone: "active" };
 }
 /** The standing with its chip text: the word, then " · " and its proof. Every chip of a standing says `text`. */
@@ -91,7 +94,7 @@ export const refitOf = (records: readonly Promotion[], workflow: string, digest:
 /** What a promotion record was decided on, in a few words beside "Promoted" or "Serving": "replayed 18/20 · 9 alone"
  *  (graded inputs its replay answered or handed back, of those it ran on, and how many of them it answered alone), "0
  *  replays answered" (every one failed or was skipped), "not replayed" (promoted on its passing dry run: too few graded
- *  inputs to replay), "refit on 25 rows · 22 alone"; null for one still replaying, superseded, or held on its served runs
+ *  inputs to replay), "refit on 25 rows · 22 alone"; null for one still replaying, queued, skipped, or held on its served runs
  *  (its reason says). Owner approval of the file is never proof. */
 export function proofOf(record: Promotion): string | null {
   const r = record.replay;
@@ -99,7 +102,7 @@ export function proofOf(record: Promotion): string | null {
   const alone = r ? ` · ${r.n - r.handed_back} alone` : "";
   if (record.source === "dry_run") return "not replayed";
   if (record.source === "refit") return r ? `refit on ${r.n} ${r.n === 1 ? "row" : "rows"}${alone}` : null;
-  if (record.source !== "replay" || !r || record.decided === "replaying" || record.decided === "superseded") return null;
+  if (record.source !== "replay" || !r || (record.decided !== "promote" && record.decided !== "hold")) return null;
   return r.n ? `replayed ${r.n}${r.of?.length ? `/${r.of.length}` : ""}${alone}` : "0 replays answered";
 }
 

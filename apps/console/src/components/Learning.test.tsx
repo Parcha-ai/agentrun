@@ -1827,23 +1827,27 @@ describe("the loop on the Learning tab", () => {
     const chips = [...t.host.querySelectorAll('[data-testid="loop-feed"] [data-testid="feed-compile"]')].map((li) => li.textContent ?? "");
     expect(chips.map((text) => ["Serving", "Served", "Refit"].find((word) => text.includes(word)))).toEqual(["Serving", "Refit", "Served"]);
   });
-  it("a revision a newer one superseded while it replayed reads Superseded in the feed, its compile too, never Held or Replaying", async () => {
-    const [old, newer] = ["a".repeat(16), "b".repeat(16)];
-    const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest: old, promoted: false, draft_errors: [], withheld: false }] } as LearningLoop;
+  it("a revision queued behind a replay, then skipped for a newer one, reads Skipped in the feed, its compile too, never Held or Replaying", async () => {
+    const [running, mid, newer] = ["a".repeat(16), "b".repeat(16), "c".repeat(16)];
+    const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest: mid, promoted: null, draft_errors: [], withheld: false }] } as LearningLoop;
     const base = { workflow: "sort-invoice", source: "replay" as const };
+    const queued = `queued behind ${running}'s replay on 6 graded inputs: a running replay finishes; the newest revision queued meanwhile replays next`;
     const promotions = [
-      { ...base, digest: old, at: "2026-11-05T10:01:00Z", decided: "replaying" as const, reason: "replaying on the agent's last 6 graded inputs it fits", runs: ["r1"] },
-      { ...base, digest: old, at: "2026-11-05T10:02:00Z", decided: "superseded" as const, reason: `superseded by ${newer}, a newer revision, while it replayed: its replay runs were cancelled`, runs: ["r1"], superseded_by: newer },
-      { ...base, digest: newer, at: "2026-11-05T10:02:00Z", decided: "replaying" as const, reason: "replaying on the agent's last 6 graded inputs it fits", runs: ["r2"] },
+      { ...base, digest: running, at: "2026-11-05T10:01:00Z", decided: "replaying" as const, reason: "replaying on the agent's last 6 graded inputs it fits", runs: ["r1"] },
+      { ...base, digest: mid, at: "2026-11-05T10:02:00Z", decided: "queued" as const, reason: queued },
+      { ...base, digest: newer, at: "2026-11-05T10:03:00Z", decided: "queued" as const, reason: queued },
+      { ...base, digest: mid, at: "2026-11-05T10:03:00Z", decided: "skipped" as const, reason: `a newer draft ${newer} arrived before its replay could start: only the newest queued revision replays next`, skipped_by: newer },
     ];
-    const t = await open(agent(true), { loop: async () => loop, promotions: async () => ({ agent: "refunds", promotions, serving: [{ workflow: "sort-invoice", digest: null, replaying: newer }] }) as Promotions });
+    const t = await open(agent(true), { loop: async () => loop, promotions: async () => ({ agent: "refunds", promotions, serving: [{ workflow: "sort-invoice", digest: null, replaying: running }] }) as Promotions });
     const feed = t.host.querySelector('[data-testid="loop-feed"]')!;
     const decided = [...feed.querySelectorAll('[data-testid="feed-promotion"]')].map((li) => li.textContent ?? "");
-    expect(decided.filter((text) => text.includes("S · Superseded"))).toHaveLength(1);
-    expect(decided.find((text) => text.includes("S · Superseded"))).toContain(`superseded by ${newer}, a newer revision, while it replayed`);
+    expect(decided.filter((text) => text.includes("S · Skipped"))).toHaveLength(1);
+    expect(decided.find((text) => text.includes("S · Skipped"))).toContain(`a newer draft ${newer} arrived before its replay could start`);
+    expect(decided.filter((text) => text.includes("Q · Queued"))).toHaveLength(2);
     const compiled = feed.querySelector('[data-testid="feed-compile"]')!.textContent ?? "";
-    expect(compiled).toContain("Superseded");
+    expect(compiled).toContain("Skipped");
     expect(compiled).not.toContain("Held");
+    expect(compiled).not.toContain("Replaying");
   });
 });
 

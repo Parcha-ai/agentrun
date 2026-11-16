@@ -13,7 +13,7 @@ export {
 export { defineJob } from "./job.js";
 export type { Job } from "./job.js";
 export { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, rederiveDecision } from "./decision-receipts.js";
-export type { DecisionImageDigest, DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
+export type { DecisionImageDigest, DecisionKind, DecisionReceipt, DecisionRule, DecisionStateCut, DecisionStateSent } from "./decision-receipts.js";
 export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowEvent, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem, MapItemFailure, DecisionExchange,
