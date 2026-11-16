@@ -295,3 +295,26 @@ test("imported remote history has every listed token cut, not only the server's 
   assert.equal(bytes.includes(Buffer.from(OLD)), false, "the default token is cut");
   assert.equal(bytes.includes(Buffer.from(NEW)), false, "the listed token is cut");
 });
+
+test("an SDK run's credential outlives a rotation: it is signed with the seal key's secret, not the first API token", async (t) => {
+  const first = await serve(t, { token: OLD, runner: false });
+  const registered = await first.api("POST", "/agents", { definition: { id: "sdk-rotation", name: "sdk-rotation", instructions: "Keep the application policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] } });
+  assert.equal(registered.status, 201, JSON.stringify(registered.body));
+  const startBody = { runtime: "claude-agent-sdk", input: "Report current release status.", instructions: "Keep the application policy.", model: "backend-model" };
+  const started = await first.api("POST", "/agents/sdk-rotation/sdk-runs", startBody, { "Idempotency-Key": "rotation" });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const { run_id: runId, token: credential } = started.body;
+  const path = `/sdk-runs/${runId}`;
+  // How a server before this change signed it: with its API token. A run started then keeps working while that token is listed.
+  const earlier = `ar_sdk_${crypto.createHmac("sha256", OLD).update(`sdk-run\0${runId}`).digest("base64url")}`;
+  assert.notEqual(credential, earlier, "the credential is not keyed on the API token");
+  assert.equal((await client(first.baseUrl, credential)("GET", path)).status, 200);
+  assert.equal((await client(first.baseUrl, earlier)("GET", path)).status, 200, "a credential an earlier server signed with a listed token");
+  assert.equal((await client(first.baseUrl, OLD)("GET", path)).status, 401, "an API token is no SDK run's credential");
+  await first.stop();
+  // Steps 1 and 3 of a rotation at once: a new entry first in the list, AGENTRUN_TOKEN gone.
+  const after = await serve(t, { data: first.data, tokens: [{ id: "next", token: NEW }], runner: false });
+  assert.equal((await client(after.baseUrl, credential)("GET", path)).status, 200, "the run's credential still opens its run");
+  assert.equal((await client(after.baseUrl, credential)("POST", `${path}/complete`, { status: "cancelled", answer: "" })).status, 200);
+  assert.equal((await client(after.baseUrl, earlier)("GET", path)).status, 401, "one signed with a removed token does not");
+});
