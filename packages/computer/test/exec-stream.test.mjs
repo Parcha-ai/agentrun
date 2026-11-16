@@ -13,8 +13,8 @@ import { main } from "../dist/conformance/cli.js";
 import { checkExecStream, EXEC_STREAM_CHECKS, EXEC_STREAM_FACTS, formatExecStream, PID_STATE_SCRIPT, randomText, readFacts, tcpListeners, textProblem } from "../dist/conformance/exec-stream.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
 
-/** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB, stdout is left unread 1 s. */
-const QUICK = { longMs: 2_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000, unreadMs: 1_000 };
+/** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB, stdout is left unread 200 ms. */
+const QUICK = { longMs: 2_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000, unreadMs: 200 };
 
 async function run(options = {}, checkOptions = {}) {
 	const host = fakeExecHost(options);
@@ -38,6 +38,24 @@ test("a live, two-way exec that keeps text intact, with no timeout, passes every
 	);
 	assert.ok(host.calls.every((call) => call.id === "machine-1"));
 	assert.match(formatExecStream(report), /exec PASS/);
+});
+
+test("every command the pre-check starts, each check's and the probe's, stays at or under 32 KiB of argv, so a vendor with a 64 KiB cap runs it", async () => {
+	// The size as a vendor counts it: each argument's UTF-8 bytes, summed, no separator. Modal refuses 64 KiB or more.
+	const size = (argv) => argv.reduce((sum, word) => sum + Buffer.byteLength(word, "utf8"), 0);
+	const host = fakeExecHost();
+	const ended = [];
+	try {
+		const report = await checkExecStream(host, "machine-1", { ...QUICK, onCheck: (check) => ended.push({ id: check.id, calls: host.calls.length }) });
+		assert.equal(report.pass, true, formatExecStream(report));
+	} finally {
+		host.stopAll();
+	}
+	const over = host.calls.flatMap((call, i) => {
+		const by = ended.find((check) => i < check.calls)?.id ?? "the capability probe";
+		return size(call.argv) > 32 * 1024 ? [`${by} starts ${size(call.argv)} bytes of argv`] : [];
+	});
+	assert.deepEqual(over, []);
 });
 
 test("kill's probe reads a killed process its parent has not reaped yet (a zombie) as gone, and a live one as running", async (t) => {
@@ -232,7 +250,7 @@ test("an exec whose stdin waits on stdout being read, and never goes on once it 
 test("an exec whose stdin waits while stdout is unread, and goes on once it is read, passes stdout-unread with every write", async () => {
 	const { byId } = await run({ stdinWaitsForReader: true });
 	assert.equal(byId["stdout-unread"].status, "pass", byId["stdout-unread"].words);
-	assert.equal(byId["stdout-unread"].words, "4194304 bytes written to cat while its stdout was left unread for 1 s all came back, in order, once it was read");
+	assert.equal(byId["stdout-unread"].words, "4194304 bytes written to cat while its stdout was left unread for 0.2 s all came back, in order, once it was read");
 });
 
 /** A directory holding stand-ins for the probe's programs, each a sh script, put first on PATH for every exec. */

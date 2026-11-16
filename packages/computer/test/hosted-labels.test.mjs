@@ -38,6 +38,12 @@ const made = (result) => {
 	assert.equal(result.ok, true, result.ok ? "" : `${result.error.code}: ${result.error.message}`);
 	return result.value;
 };
+/** Waits for step (a deferred an onStep resolves), failing in words if the create it waits on answers first. */
+const reached = (step, create, what) => {
+	let came = false;
+	step.promise.then(() => (came = true));
+	return Promise.race([step.promise, create.then((result) => came || assert.fail(`the create answered before ${what}: ${JSON.stringify(result)}`))]);
+};
 const fileOf = (m) => (m.file === undefined ? undefined : JSON.parse(m.file));
 const reads = (fake) => (fake.labelRuns ?? []).filter((run) => !run.write).length;
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -174,7 +180,11 @@ test("the label script, run by sh: write replaces the file from stdin, 0600 in a
 		const long = JSON.stringify({ [COMPUTER]: "1", [DEADLINE]: "a".repeat(200_000) });
 		const first = writer(long);
 		first.child.stdin.write(long.slice(0, 100_000));
-		await pause(200);
+		// The first is half written: its own file beside the label file holds bytes (head writes whole blocks of what it read).
+		const dir = join(root, "var", "lib", "agentrun");
+		const half = () => readdirSync(dir).some((name) => name.startsWith("labels.json.") && statSync(join(dir, name)).size > 0);
+		for (let at = 0; at < 250 && !half(); at++) await pause(20);
+		assert.equal(half(), true, "the first writer has half its file written");
 		const second = writer(text);
 		second.child.stdin.end(text);
 		assert.equal(await second.code, 0, "the second writer");
@@ -187,22 +197,23 @@ test("the label script, run by sh: write replaces the file from stdin, 0600 in a
 	}
 });
 
-test("two instances, one request: a sweep of the request's name leaves another instance's machine with no labels written yet, and takes it once it is older than any create's write", async () => {
+test("two instances, one request: a sweep of the request's name leaves another instance's machine with no labels written yet, and takes it once it is older than any create's write", { timeout: 20_000 }, async () => {
 	const gate = deferred();
-	let held = false;
+	const held = deferred();
+	let holding = false;
 	// Instance A's create stops at its first label run, the machine made and running and no file in it yet.
 	const fake = fakeHost({
 		...KEEPS,
 		onStep: async (step) => {
-			if (step !== "exec labels" || held) return;
-			held = true;
+			if (step !== "exec labels" || holding) return;
+			holding = true;
+			held.resolve();
 			await gate.promise;
 		},
 	});
 	const requestId = `two-instances-${++requests}`;
 	const a = provider(fake.host).create(SPEC, { requestId });
-	for (let i = 0; i < 400 && !held; i++) await pause(5);
-	assert.equal(held, true, "A's create reached its machine's labels");
+	await reached(held, a, "its first label run");
 	const [mine] = fake.machines.values();
 	assert.equal(mine.name, nameOf(requestId));
 	assert.equal(mine.file, undefined, "A's machine has no label file yet");
@@ -228,23 +239,29 @@ test("two instances, one request: a sweep of the request's name leaves another i
 	assert.equal((await a).ok, false, "A's create finds its machine gone");
 });
 
-test("a retry of a request on another instance, while the first create has not written its labels yet, waits for them and answers that computer: no second machine", async () => {
+test("a retry of a request on another instance, while the first create has not written its labels yet, waits for them and answers that computer: no second machine", { timeout: 20_000 }, async () => {
 	const gate = deferred();
-	let held = false;
+	const held = deferred();
+	const waiting = deferred();
+	let holding = false;
+	let gets = 0;
 	const fake = fakeHost({
 		...KEEPS,
 		onStep: async (step) => {
-			if (step !== "exec labels" || held) return;
-			held = true;
+			// B's reads of A's machine once A is held: its listing reads it once, and from the third B is waiting for
+			// its labels, past the one point where it could make a machine of its own.
+			if (step === "get" && holding && ++gets === 3) waiting.resolve();
+			if (step !== "exec labels" || holding) return;
+			holding = true;
+			held.resolve();
 			await gate.promise;
 		},
 	});
 	const requestId = `retry-unwritten-${++requests}`;
 	const a = provider(fake.host).create(SPEC, { requestId });
-	for (let i = 0; i < 400 && !held; i++) await pause(5);
-	assert.equal(held, true, "A's create reached its machine's labels");
+	await reached(held, a, "its first label run");
 	const b = provider(fake.host).create(SPEC, { requestId });
-	await pause(50);
+	await reached(waiting, b, "its third read of the first create's machine");
 	assert.equal(fake.machines.size, 1, "B makes no machine of its own while A's has no labels");
 	gate.resolve();
 	const [first, second] = [made(await a), made(await b)];

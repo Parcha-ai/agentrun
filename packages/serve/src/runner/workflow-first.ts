@@ -143,8 +143,8 @@ export interface FirstChoice {
   readonly champion?: LearnedWorkflow;
 }
 
-/** The learned workflows a run's tool runs once its first choice is made: the laid ones, a champion (FirstChoice) in
- *  place of its laid revision. */
+/** The laid learned workflows with a first choice's champion (FirstChoice) in place of its laid revision: what
+ *  runner/promotion.ts toolFlowsFor reads the rest of from the promotion records, so the run's tool runs only what serves. */
 export const laidFor = (laid: readonly LearnedWorkflow[], choice: FirstChoice): LearnedWorkflow[] =>
   choice.champion ? laid.map((one) => (one.name === choice.champion!.name ? choice.champion! : one)) : [...laid];
 
