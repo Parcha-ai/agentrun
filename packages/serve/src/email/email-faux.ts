@@ -6,8 +6,12 @@
 // UNSELECT, LOGOUT; on the Gmail layout also X-GM-EXT-1's labels (FETCH and STORE of X-GM-LABELS: a message in INBOX
 // carries \Inbox, and one whose \Inbox is taken off leaves INBOX for [Gmail]/All Mail; a label's mailbox lists every
 // message carrying the label, one message in each mailbox it shows in, so a STORE through any of them shows in all of
-// them, and a message put in a label's mailbox is one in [Gmail]/All Mail under the label); and SMTP's EHLO, AUTH PLAIN and
-// LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT. A fetch of BODY[] without PEEK marks the message \Seen, as a
+// them, and a message put in a label's mailbox is one in [Gmail]/All Mail under the label), and with `slowInReplyTo`
+// Gmail's slow search by In-Reply-To, which it does not index (a SEARCH naming HEADER In-Reply-To is never answered, so the
+// client's socket timeout ends it, as on a large Gmail mailbox where it takes minutes); and SMTP's EHLO, AUTH PLAIN and
+// LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT; a recipient whose local part is `refuse` (refuse@faux.example) is refused
+// at RCPT with a 550, as a server refuses an address it won't deliver to, and the rest are delivered. A fetch of BODY[]
+// without PEEK marks the message \Seen, as a
 // real server does, so a test can tell a read that changes the inbox from one that does not. The test seeds the
 // mailboxes, reads them back and what SMTP received, and switches the sign-in off or the UIDVALIDITY to another. Plaintext
 // on the loopback address only: never a server anyone else reaches.
@@ -215,6 +219,9 @@ function tokenize(text: string, literals: string[]): Token[] {
   };
   return read();
 }
+/** Whether search criteria `tokens` name HEADER `name` anywhere, in a list too. */
+const namesHeader = (tokens: Token[], name: string): boolean =>
+  tokens.some((token, i) => ("list" in token ? namesHeader(token.list, name) : word(token).toUpperCase() === "HEADER" && word(tokens[i + 1]).toLowerCase() === name));
 const word = (token: Token | undefined): string => (token === undefined ? "" : "atom" in token ? token.atom : "string" in token ? token.string : "");
 
 /** A sequence set ("1:3,5,7:*") as a test of a number, `max` standing for "*". */
@@ -240,8 +247,10 @@ const quoted = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '
 /** A literal: its length, then its bytes. */
 const literal = (text: string) => `{${Buffer.byteLength(text, "utf8")}}${CRLF}${text}`;
 
-/** Starts the fake account's two servers on loopback. `layout`: the folders it has (default a plain account's). */
-export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date } = {}): Promise<EmailFaux> {
+/** Starts the fake account's two servers on loopback. `layout`: the folders it has (default a plain account's); the Gmail
+ *  layout's server says X-GM-EXT-1. `now`: its clock. `slowInReplyTo`: a search by HEADER In-Reply-To is never answered,
+ *  as Gmail's on a large mailbox (it indexes Message-ID and References, not In-Reply-To). */
+export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date; slowInReplyTo?: boolean } = {}): Promise<EmailFaux> {
   // Its clock: a seeded message's default date and an appended one's arrival (a template eval case's `now`, else the real one).
   const now = options.now ?? (() => new Date());
   const user = "agent@faux.example";
@@ -525,6 +534,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       if (!selected) return bad("select a mailbox first");
       const box = selected.box;
       if (inner === "SEARCH") {
+        if (options.slowInReplyTo && namesHeader(rest, "in-reply-to")) return;
         const found = search(box, rest);
         send(`* SEARCH${found.map((m) => ` ${uid ? m.uid : box.messages.indexOf(m) + 1}`).join("")}`);
         return ok();
@@ -696,7 +706,9 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         }
         case "RCPT": {
           if (!envelope) return send("503 5.5.1 MAIL first");
-          envelope.to.push(/<([^>]*)>/.exec(text)?.[1] ?? "");
+          const rcpt = /<([^>]*)>/.exec(text)?.[1] ?? "";
+          if (/^refuse@/i.test(rcpt)) return send(`550 5.1.1 <${rcpt}>: no such user here`);
+          envelope.to.push(rcpt);
           return send("250 2.1.5 ok");
         }
         case "DATA": {

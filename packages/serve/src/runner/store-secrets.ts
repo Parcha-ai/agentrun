@@ -3,7 +3,7 @@
 // writes carries a secret value) holds its environment's secrets and all of these, not only the keys a claim hands its
 // run (claim-secrets.ts). A run's text may quote a server secret it was never handed: a person pastes it, a provider
 // echoes it back. One read of the store across all its planes (store.sealedSecrets): tool, model, computer and Archil keys,
-// and the ChatGPT sign-in's access and refresh tokens each alone, renewed by whichever process holds the store (sealed_keys); MCP credentials, their headers' values and OAuth tokens and client secret (mcp_servers), and a sign-in in
+// the email account's password alone (its row holds the account whole), and the ChatGPT sign-in's access and refresh tokens each alone, renewed by whichever process holds the store (sealed_keys); MCP credentials, their headers' values and OAuth tokens and client secret (mcp_servers), and a sign-in in
 // flight (mcp_oauth_pending); each trigger source's settings, a webhook trigger's signing secret and the GitHub App's key
 // and webhook secret among them, and the outbound webhook's signing secret, each it held before too (trigger_settings),
 // but a field its source marks public; browser sign-in pointers, live and forgotten; live viewer tokens; a launch's sealed
@@ -12,6 +12,7 @@
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.
 import { CHATGPT_PLAN_ROW } from "../chatgpt-plan.js";
+import { accountRowSecrets, EMAIL_ACCOUNT_ROW } from "../email/account.js";
 import { unseal } from "../sealing.js";
 import { besideTheStore, ServerSecrets } from "../server-secrets.js";
 import type { SealedSecretRow, Store } from "../store/index.js";
@@ -98,7 +99,7 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
     case "run_launch":
       return { listed: plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain], whole: [] };
     case "sealed_keys":
-      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : [plain], whole: [] };
+      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : row.where.name === EMAIL_ACCOUNT_ROW ? accountRowSecrets(plain) : [plain], whole: [] };
     default:
       return { listed: [plain], whole: [] };
   }

@@ -125,6 +125,10 @@ export const REQUEST_REFUSED = "agentrun.request_refused";
  *  call was refused before it ran (a gate's deny, a person's): `{ [CALL_REFUSED]: true }`. Its rows read as refused, the
  *  call in plain words ("Refused: write deny.md"), never as a call that ran and failed ("Wrote deny.md failed"). */
 export const CALL_REFUSED = "agentrun.refused";
+/** The key a host sets in a tool result's `details` when nothing ended the call and the run's end closed it (a harness's
+ *  call that only nests calls, open when the run stopped: Codex's `exec`): `{ [CALL_ENDED_WITH_RUN]: true }`. It has no
+ *  outcome, so its row reads interrupted with no status (`tool_status` null), never failed. */
+export const CALL_ENDED_WITH_RUN = "agentrun.ended-with-run";
 
 /** Whether pi's error for a request is the model proxy's own refusal of it for the run's spend cap, before it was sent:
  *  the proxy's JSON body after the HTTP status pi-ai puts first, read by its fields (`type` "agentrun_proxy", `code`
@@ -769,6 +773,8 @@ function createProjector(options: TimelineOptions) {
   /** Whether a result is a call's refusal before it ran: an error its host marked so in its details (CALL_REFUSED),
    *  read by that field, never by its words. */
   const refused = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_REFUSED] === true;
+  /** Whether a result is the run's end closing a call nothing ended (CALL_ENDED_WITH_RUN): no outcome, read by that field. */
+  const endedWithRun = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_ENDED_WITH_RUN] === true;
   /** A call's name on its rows: a refused one's in plain words (refusedLabel), else its label. */
   const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(labelled(tool), shown(args)) : label(tool, args, result));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
@@ -806,9 +812,11 @@ function createProjector(options: TimelineOptions) {
     // A call refused before it ran is named refused already (refusedLabel), and a computer step's label says it could not
     // (saysFailure): its row says why, never that it failed.
     const failedSummary = refused(view) || saysFailure(tool.name) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
+    // One the run's end closed has no outcome: interrupted, as a call cut off reads (interrupt), with no status.
+    const unended = endedWithRun(view);
     return make("tool_result", conv, rowId, {
-      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
+      summary: unended ? `${named} interrupted` : !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      tool_status: unended ? null : failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
       ...(options.calls ? { tool_result_text: resultText(tool.name, view.text) } : {}),
     });

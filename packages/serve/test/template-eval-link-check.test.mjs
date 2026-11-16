@@ -53,6 +53,19 @@ test("a fragment, a trailing slash, the query's order and the case of scheme and
   assert.deepEqual(cased, ["HTTPS://Vendor.Example/a/b?x=…&y=… — matches call 1"]);
 });
 
+test("a host and the same host with \"www.\" in front are one, on the cited side and the call's both; m., amp. and any other subdomain stay distinct", () => {
+  // Cited www.<host> against a call that returned <host>, and the other way round.
+  assert.deepEqual(checked(graderInput(grader, "task", run("Recall: https://www.cpsc.gov/Recalls/2026/stroller", search("https://cpsc.gov/Recalls/2026/stroller")))), ["https://www.cpsc.gov/Recalls/2026/stroller — matches call 1"]);
+  assert.deepEqual(checked(graderInput(grader, "task", run("Recall: https://cpsc.gov/Recalls/2026/stroller", search("https://www.cpsc.gov/Recalls/2026/stroller")))), ["https://cpsc.gov/Recalls/2026/stroller — matches call 1"]);
+  // Only a leading "www." is dropped: m. and amp. are other hosts, and so is a www. inside a host.
+  const answer = "https://m.cpsc.gov/Recalls/2026/stroller https://amp.cpsc.gov/Recalls/2026/stroller https://cpsc.www.example/a";
+  assert.deepEqual(checked(graderInput(grader, "task", run(answer, search("https://cpsc.gov/Recalls/2026/stroller", "https://www.cpsc.gov/Recalls/2026/stroller", "https://cpsc.example/a")))), [
+    "https://m.cpsc.gov/Recalls/2026/stroller — no matching call",
+    "https://amp.cpsc.gov/Recalls/2026/stroller — no matching call",
+    "https://cpsc.www.example/a — no matching call",
+  ]);
+});
+
 test("a fetch's asked url, its final url and its page's links all match; a page whose links were cut is named on a link that matches nothing", () => {
   const moved = fetch("http://vendor.example/old", { url: "https://vendor.example/new", links: ["https://vendor.example/blog/post-1"] });
   const cut = fetch("https://news.example/", { links: ["https://news.example/a"], links_cut: 40 });

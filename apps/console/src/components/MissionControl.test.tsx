@@ -41,6 +41,16 @@ describe("MissionControl", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
   });
+  it("names the registered-work counts when externally observed sessions are shown separately", () => {
+    const html = renderToStaticMarkup(createElement(MissionControl, { view, hasObservedSessions: true, observations: createElement("div", null, "Observed sessions") }));
+    const host = document.createElement("div"); host.innerHTML = html;
+    const registered = host.querySelector('section[aria-label="Registered agents and runs"]')!;
+    expect(registered.querySelector("h2")?.textContent).toBe("Registered agents & runs");
+    expect(registered.textContent).toContain("Agents2");
+    expect(registered.textContent).toContain("Runs7");
+    expect(registered.textContent).not.toContain("Observed sessions");
+    expect(renderToStaticMarkup(createElement(MissionControl, { view }))).not.toContain("Registered agents &amp; runs");
+  });
   it("links each recent run to its page, and each agent to its page's Runs tab", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     expect(html).toContain('href="#/runs/run-1"');
@@ -130,6 +140,22 @@ describe("MissionControl's analytics", () => {
     expect(html).toContain("<summary");
     // Live runs only: no source line.
     expect(html).not.toContain("Imported from");
+  });
+
+  it("keeps unknown native token totals and chart days unknown without inventing cache ratios", () => {
+    const a = analytics({ totals: { ...analytics().totals, tokens: null, input: null, output: null, cache_read: 100, cache_write: null }, by_harness_effort: [{ ...analytics().by_harness_effort[0], tokens: null }], by_day: [{ ...analytics().by_day[0], tokens: null }, analytics().by_day[1]] });
+    const html = render(withA(a), scope);
+    expect(html).toContain("Unknown");
+    expect(html).toContain("2026-10-30: Unknown tokens");
+    expect(html).not.toContain("of input cached");
+    expect(html).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("makes native model request counts explicitly unknown when telemetry cannot report them", () => {
+    const a = analytics({ totals: { ...analytics().totals, requests: null, unmetered: null } });
+    const html = render(withA(a), scope);
+    expect(html).toContain("Model request counts unavailable");
+    expect(html).not.toContain("0 requests with no token count");
   });
 
   it("says when tokens leave runs out, when requests were unmetered, and when runs were at work", () => {
@@ -260,14 +286,15 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     expect(html).toContain("$0.0123 est. known · 1 not priced");
     expect(html).not.toContain("Unknown");
   });
-  it("puts what needs you first, and before a first run of your own, the start-here panel in place of the counts", () => {
+  it("keeps counts, analytics and recent runs visible alongside first-run onboarding", () => {
     const needs = createElement("section", { "aria-label": "Needs you" }, "the strip");
     const first = createElement("section", { "aria-label": "Start here" }, "the panel");
     const withNeeds = renderToStaticMarkup(createElement(MissionControl, { view, needsYou: needs }));
     expect(withNeeds.indexOf("the strip")).toBeLessThan(withNeeds.indexOf("Needs input"));
     const fresh = renderToStaticMarkup(createElement(MissionControl, { view, startHere: first }));
     expect(fresh).toContain("the panel");
-    expect(fresh).not.toContain("Needs input");
-    expect(fresh).not.toContain("Recent runs");
+    expect(fresh).toContain("Needs input");
+    expect(fresh).toContain("Recent runs");
+    expect(fresh).toContain('aria-label="Analytics"');
   });
 });

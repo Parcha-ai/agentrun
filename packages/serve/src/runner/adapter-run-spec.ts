@@ -22,7 +22,7 @@ import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import { runnerLiveOf } from "../live-reach.js";
 import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
-import { firstMessage, inputMessage } from "../run-manifest.js";
+import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isWebHostTool } from "../tool-list.js";
@@ -34,7 +34,8 @@ import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
-import { environmentLine } from "../environment.js";
+import { webCut } from "../timeline/web-calls.js";
+import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
@@ -48,7 +49,7 @@ import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
-import { copyRunFiles } from "../uploads.js";
+import { placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
@@ -410,8 +411,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   holds.hold({ ws });
 
   // The run's uploaded files, copied into its work/inputs/ before the first turn, from what its start held for it, once
-  // per run (uploads.ts copyRunFiles); a copy that fails ends the run failed, saying why.
-  if (launch.files?.length) await copyRunFiles(deps.data, claim.runId, ws.workspace, launch.files);
+  // per run (uploads.ts copyRunFiles), and its opening message saved beside them as inputs/message.md (placeRunInputs);
+  // a copy that fails ends the run failed, saying why.
+  await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
 
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
@@ -689,7 +691,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (EvalFakes.now), else the real one.
   const now = fakes?.now;
-  const system = [environmentLine(now), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
+  const zone = await runZone(deps.store, launch.inputOrigin);
+  const system = [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
@@ -710,7 +713,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         if (at.unpriced && !at.provider.plan && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
         return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
-      preamble: environmentLine(now),
+      preamble: environmentLine(now, zone),
     }));
   }
 
@@ -987,14 +990,16 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer, claim: Cl
   };
 }
 
-/** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). */
+/** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). A web call's answer is cut
+ *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
+ *  its links whole for a grader's link check. */
 export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        return { ...answer, text: cut(answer.text) };
+        return { ...answer, text: webCut(tool.name, answer.text, cut) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);

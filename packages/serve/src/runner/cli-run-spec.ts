@@ -27,18 +27,18 @@ import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
-import { environmentLine } from "../environment.js";
+import { environmentLine, runZone } from "../environment.js";
 import { type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
-import { firstMessage, inputMessage } from "../run-manifest.js";
+import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
-import { copyRunFiles } from "../uploads.js";
+import { placeRunInputs } from "../uploads.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
@@ -356,7 +356,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go. The claim's Archil keys go
   // from memory last, once nothing more reads the disk.
   holds.hold({ archil, keys: archil });
-  // The run's Workspace at the claim, and its uploaded files copied into work/inputs/ once.
+  // The run's Workspace at the claim, its uploaded files copied into work/inputs/ once and its opening message saved
+  // there as inputs/message.md (uploads.ts placeRunInputs).
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
@@ -364,7 +365,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts).
   const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
   holds.hold({ checkout });
-  if (launch.files?.length) await copyRunFiles(deps.data, claim.runId, ws.workspace, launch.files);
+  await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
@@ -458,7 +459,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's clock: a template eval case's (EvalFakes.now), else the real one. Its environment line and the harness's own
   // turn date (claude-agent's dateLine) read it.
   const now = fakes?.now;
-  const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
+  const zone = await runZone(deps.store, launch.inputOrigin);
+  const built = await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
   // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
@@ -632,7 +634,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
-    system: [environmentLine(now), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
+    system: [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
     tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),

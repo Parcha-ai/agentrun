@@ -1,6 +1,6 @@
 // A stop withdraws the call that waits for approval in the same write that ends the run's turn: from the first read where
 // the run reads stopped (input_required and idle, main's status for a stopped run; cancelled when its stop could only be
-// written on its row), nothing is pending and every call it asked about is answered withdrawn in its journal. Nothing
+// written on its row), no call is pending (kind stopped, or none once cancelled) and every call it asked about is answered withdrawn in its journal. Nothing
 // reopens the withdrawn call: a later approval of it, or a command row on the stopped run, is refused, and the call is
 // never sent.
 // - Held at the end's commit (not slept), so reads land between the stop and its end.
@@ -11,13 +11,13 @@
 //   its row alone, said as an error by its name.
 // - A stopped end with nothing to withdraw keeps the row-only end when the journal refuses it, and a lost claim (Fenced)
 //   writes nothing, as before.
-// pi through the adapter loop, with a spec gate that asks about its one tool. Backoffs are read on the store's clock,
-// which the test moves (no wall-clock waits).
+// pi through the adapter loop, with a spec gate that asks about its one tool. Backoffs, leases and the runner's claim
+// deadline are read on the store's clock, which the test moves (no wall-clock waits).
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { fakeClock, queue, STEADY_LEASE, stores } from "./runner-support.mjs";
 
 const runnerModule = await import("../dist/runner/runner.js");
 const { startRunner } = runnerModule;
@@ -25,9 +25,6 @@ const { startRunner } = runnerModule;
 const BACKOFF_MS = 5_000;
 const CAP_MS = 300_000;
 const AT_CAP = 11;
-// Skipped for now: these three wait for the run's release (releasedAfter) against a 30 s wall-clock budget, which a
-// loaded CI runner overruns. They return with the rewrite that waits on the runner's own beats and events instead.
-const RELEASE_WAIT_SKIP = "waits on a 30 s wall-clock budget a loaded CI runner overruns; returns with the event-wait rewrite";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { momentOverStore, viewOverStore } = await import("../dist/store-view.js");
@@ -39,6 +36,50 @@ const DEPS = { origin: "", serverSecrets: () => [] };
 const END = "agentrun.end";
 const REFUSED = /^run run-1: its end with a withdrawal was refused \(try (\d+)\); retrying in (\d+) ms: /;
 after(closeOpenSessions);
+
+// Waits are on the runner's own signals, never on a wall-clock budget: the runner's every poll (onBeat) and every event
+// it says (onEvent) wakes `upon`, which then reads the store again. On a loaded machine the runner's claim loop runs
+// late, and a wait that raced a budget ran out; this one waits as long as the runner takes. HANG_MS is only a hang
+// guard, far above any loaded time, so a run that never gets there fails with its name rather than stalling the file.
+const HANG_MS = 90_000;
+// A test's timeout sits 30 s above the hang guard, so a stuck wait fails at HANG_MS with its dump before the test's own
+// timeout can fire and lose it.
+const LONG_TEST_MS = HANG_MS + 30_000;
+const wakers = new Set();
+let pulses = 0;
+// What the run in the test now under way looks like, for the hang guard's dump (set by runOf).
+let probe = async () => "no run opened";
+// A claim the runner lost for want of a renewal in the test now under way (reset by runOf). On the fixed clock its lease
+// never runs out, so the run's row keeps that runner and no wait on its release could end: a wait fails at once naming it.
+let notRenewed = null;
+const pulse = () => {
+  pulses++;
+  for (const wake of [...wakers]) wake();
+};
+/** Reads `check` again after each signal of the runner until it returns a truthy value, which it returns. When the guard
+ *  fires (it wakes the wait itself, so a silent runner cannot stall it) the error names the wait and dumps the state. */
+async function upon(check, what) {
+  let hung = false;
+  let wakeSelf = () => {};
+  const guard = setTimeout(() => ((hung = true), wakeSelf()), HANG_MS);
+  try {
+    for (;;) {
+      const seen = pulses;
+      const value = await check();
+      if (value) return value;
+      if (notRenewed) throw new Error(`claim lost unrenewed (${notRenewed}) while waiting: ${what}\n${await probe().catch((error) => `dump failed: ${error}`)}`);
+      if (hung) throw new Error(`hung (${HANG_MS} ms): ${what}\n${await probe().catch((error) => `dump failed: ${error}`)}`);
+      if (pulses !== seen) continue;
+      await new Promise((resolve) => {
+        const wake = () => (wakers.delete(wake), resolve());
+        wakeSelf = wake;
+        wakers.add(wake);
+      });
+    }
+  } finally {
+    clearTimeout(guard);
+  }
+}
 
 /** `store` with each journal's commit that carries the run's end passed through `onEnd` first (a hold, or a refusal),
  *  and each scan of its conversations through `onRead` (a read that throws). */
@@ -66,23 +107,57 @@ function watched(store, { onEnd = async () => {}, onRead = () => {} }) {
 
 /** One pi run whose model calls `add`, which its gate asks about (or, `permission` "allow", runs), on a runner whose
  *  store is `watched` with `hooks`, on the store's clock. Parked on the call unless `parks` is false; `before` is done
- *  to the queued run before its runner starts. */
-async function runOf(t, hooks = {}, { permission = "ask", parks = true, before } = {}) {
+ *  to the queued run before its runner starts. `sibling`: the same answer also calls `slow`, allowed, which runs until
+ *  its signal aborts, and `add` is asked about only once slow runs: the park waits for slow (siblingsSettled, bounded
+ *  by the hang guard here), so the run reads parked while the claim it parked under still holds it, for as long as the
+ *  test needs, never on a timer. */
+async function runOf(t, hooks = {}, { permission = "ask", parks = true, before, sibling = false } = {}) {
   // Only explicit skew steps expire these retry backoffs; wall-clock assertion deadlines and polling still run normally.
+  // The store's wait for another connection's write lock is a wall-clock budget too (10 s by default): a hang guard here.
   const at = Date.now();
   const time = () => at;
-  const opened = await stores({ runners: 1, time });
+  const opened = await stores({ runners: 1, time, busyTimeoutMs: HANG_MS });
+  // The runner's claim deadline (a claim not renewed by its lease less the margin is lost) reads the same clock as the
+  // store: on real time a starved box misses a renewal, the runner drops the claim, and the row keeps it under a lease
+  // that never lapses on the fixed store clock, so the run is never released. Moving `skewMs` moves both clocks.
+  const deadline = fakeClock(at);
+  const clock = {
+    get skewMs() {
+      return opened.clock.skewMs;
+    },
+    set skewMs(value) {
+      const by = value - opened.clock.skewMs;
+      opened.clock.skewMs = value;
+      deadline.advance(by);
+    },
+  };
+  notRenewed = null;
   await queue(opened.server, "run-1");
   if (before) await before(opened.server);
   const sent = [];
   const requests = [];
   const tools = { add: { name: "add", replaySafe: false, ask: false, run: async () => (sent.push("add"), "5") } };
-  const script = [{ call: "add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  let slowRuns = () => {};
+  const slowRunning = new Promise((resolve) => (slowRuns = resolve));
+  if (sibling) {
+    tools.slow = {
+      name: "slow", replaySafe: false, ask: false,
+      run: (_args, signal) => {
+        slowRuns();
+        return new Promise((_, reject) => {
+          const cut = () => reject(new Error("aborted"));
+          if (signal?.aborted) return cut();
+          signal?.addEventListener("abort", cut, { once: true });
+        });
+      },
+    };
+  }
+  const script = [sibling ? { calls: [{ call: "slow" }, { call: "add", args: { a: 2, b: 3 } }] } : { call: "add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
-  const gate = Object.assign(() => permission, { askedAs: (tool) => tool });
-  const loop = createAdapterLoop(async (claim, run) => ({ ...(await base(claim, run)), gate }));
+  const gate = Object.assign(sibling ? async (call) => (call.tool === "slow" ? "allow" : (await slowRunning, permission)) : () => permission, { askedAs: (tool) => tool });
+  const loop = createAdapterLoop(async (claim, run) => ({ ...(await base(claim, run)), gate, ...(sibling ? { parkSiblingsMs: HANG_MS } : {}) }));
   const events = [];
-  const now = () => time() + opened.clock.skewMs;
+  const now = opened.now;
   // Each claim whose loop started: a claim that only ends the run starts none.
   const starts = [];
   // The runners' polls for claimable runs (and renewals) so far: a test waits on them, never on the wall clock.
@@ -94,14 +169,49 @@ async function runOf(t, hooks = {}, { permission = "ask", parks = true, before }
     return made;
   };
   /** A runner on the run's store, its loop the run's own (its model requests and its tool's runs counted as one). */
+  const names = [];
+  let lastBeatAt = 0;
+  probe = async () => {
+    const row = await opened.server.runs.get("run-1");
+    const commands = await opened.server.commands("run-1", 0);
+    return JSON.stringify({
+      runnersSpawned: names,
+      storeNow: now(),
+      deadlineNow: deadline.now(),
+      skewMs: opened.clock.skewMs,
+      row,
+      leaseLeftMs: row.claimedUntil === null ? null : row.claimedUntil - now(),
+      backoffLeftMs: row.backoffUntil === null ? null : row.backoffUntil - now(),
+      commands,
+      beats: beats.count,
+      lastBeatAgoMs: Date.now() - lastBeatAt,
+      starts,
+      lastEvents: events.slice(-8).map((event) => ({ ...event, claim: event.claim && `${event.claim.runId}@${event.claim.epoch}` })),
+    });
+  };
   const spawn = (name) => {
-    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, onEvent: (event) => events.push(event), onBeat: () => beats.count++, ...TIMING });
+    names.push(name);
+    const onEvent = (event) => {
+      if (event.type === "claim-lost" && event.why === "not-renewed") notRenewed = `${name}, ${event.runId}@${event.epoch}`;
+      events.push(event);
+      pulse();
+    };
+    const runner = startRunner({ store: watched(opened.runners[0], hooks), createLoop: counted, name, now, clock: deadline, onEvent, onBeat: () => (beats.count++, (lastBeatAt = Date.now()), pulse()), ...TIMING });
     t.after(() => runner.close());
     return runner;
   };
   const runner = spawn("runner-a");
-  if (parks) await until(async () => (await opened.server.runs.get("run-1")).state === "parked", "the run parked on the call", 30_000);
-  return { server: opened.server, runnerStore: opened.runners[0], runner, spawn, clock: opened.clock, now, sent, requests, events, starts, beats };
+  if (parks) await upon(async () => (await opened.server.runs.get("run-1")).state === "parked", "the run parked on the call");
+  return { server: opened.server, runnerStore: opened.runners[0], runner, spawn, clock, deadline, now, sent, requests, events, starts, beats };
+}
+
+/** Closes `runner` as a test's "no runner holds the run now". A close that gives up on a loop slow to stop (a loaded box:
+ *  runner.ts close, after the lease less its margin in real time) leaves its claim on the row until the lease runs out
+ *  on the store's clock, which is frozen here and would never get there: the clock moves past the lease, where a real
+ *  next runner would have waited it out. A claim the close did release is unaffected. */
+async function closeRunner(runner, clock) {
+  await runner.close();
+  clock.skewMs += STEADY_LEASE.leaseMs;
 }
 
 /** The run's journal entries as they stand. */
@@ -125,10 +235,11 @@ async function read(server) {
  *  by a person (input_required and idle, as main reads a stopped run), or cancelled (a stop written on its row alone). */
 const stoppedRead = (seen) => seen.final || seen.status === "cancelled";
 
-/** The rule at one read: a run that reads stopped waits on nothing, and every call it asked about is withdrawn. */
+/** The rule at one read: a run that reads stopped waits on no call (pending kind stopped while it reads input_required,
+ *  none once cancelled), and every call it asked about is withdrawn. */
 function holds(seen) {
   if (!stoppedRead(seen)) return;
-  assert.equal(seen.pending, null, `stopped, yet pending: ${JSON.stringify(seen)}`);
+  assert.deepEqual(seen.pending, seen.status === "input_required" ? { kind: "stopped" } : null, `stopped, yet pending: ${JSON.stringify(seen)}`);
   assert.ok(seen.asked.length > 0, JSON.stringify(seen));
   for (const [callId, decision] of seen.asked) assert.equal(decision, "withdrawn", `stopped, yet ${callId} reads ${decision ?? "waiting"}: ${JSON.stringify(seen)}`);
 }
@@ -136,11 +247,11 @@ function holds(seen) {
 /** Reads until the run reads stopped by a person (its end, with the withdrawal, in its journal), the rule held at every
  *  read. */
 const stopped = (server) =>
-  until(async () => {
+  upon(async () => {
     const seen = await read(server);
     holds(seen);
     return seen.final && seen.status === "input_required" && seen.state === "idle" && seen;
-  }, "the run reads stopped", 30_000);
+  }, "the run reads stopped");
 
 /** After the stop: its stop row taken, one withdrawn answer in the journal, and nothing reopens, answers or sends the call. */
 async function staysWithdrawn(server, sent) {
@@ -159,31 +270,33 @@ async function staysWithdrawn(server, sent) {
 
 /** The run released after its `tries`-th refused end: not final, no runner, its backoff set; every read keeps the rule. */
 async function releasedAfter(server, tries) {
-  return until(async () => {
+  return upon(async () => {
     holds(await read(server));
     const row = await server.runs.get("run-1");
     const stop = (await server.commands("run-1", 0)).find((one) => one.kind === "stop");
     return row.runner === null && row.backoffUntil !== null && stop.tries === tries && row;
-  }, `the run released after refused end ${tries}`, 30_000);
+  }, `the run released after refused end ${tries}`);
 }
 
 /** The waits the runner said it retries in, by the run's name, in order. */
 const waitsSaid = (events) => events.filter((event) => event.type === "error" && event.runId === "run-1" && REFUSED.test(event.message)).map((event) => Number(REFUSED.exec(event.message)[2]));
 
-test("the stop fixture's retry clock stays fixed while real runner polls continue, and moves only on its explicit skew", async (t) => {
-  const { server, clock, now, beats, requests, sent } = await runOf(t);
+test("the stop fixture's retry clock stays fixed while real runner polls continue, and moves only on its explicit skew", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, clock, deadline, now, beats, requests, sent } = await runOf(t);
   const [at, polled, asked] = [now(), beats.count, requests.length];
-  await until(() => beats.count >= polled + 2, "two actual runner polls after the parked call");
+  await upon(() => beats.count >= polled + 2, "two actual runner polls after the parked call");
   assert.equal(now(), at, "observer scheduling cannot expire the first retry backoff");
   assert.equal(await server.sealedKeys.clock(), at, "the store and runner share that clock");
+  assert.equal(deadline.now(), at, "and so does the runner's claim deadline");
   clock.skewMs += BACKOFF_MS;
   assert.equal(now(), at + BACKOFF_MS);
   assert.equal(await server.sealedKeys.clock(), at + BACKOFF_MS);
+  assert.equal(deadline.now(), at + BACKOFF_MS);
   assert.equal(requests.length, asked);
   assert.deepEqual(sent, []);
 });
 
-test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads nothing pending and the call withdrawn", { timeout: 60_000 }, async (t) => {
+test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads no call pending and the call withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   let reached;
   const atEnd = new Promise((resolve) => (reached = resolve));
   let go;
@@ -198,7 +311,7 @@ test("a stop of a run parked on a call ends it withdrawn in one write: every rea
   await staysWithdrawn(server, sent);
 });
 
-test("a refused stopped end of a run claimed from parked is not claimed again before its backoff: one claim and one refusal per backoff step, never a burst", { timeout: 60_000 }, async (t) => {
+test("a refused stopped end of a run claimed from parked is not claimed again before its backoff: one claim and one refusal per backoff step, never a burst", { timeout: LONG_TEST_MS }, async (t) => {
   const { server, clock, events, beats } = await runOf(t, { onEnd: async () => {
     throw new Error("the journal refused the end (a test's refusal)");
   } });
@@ -206,7 +319,7 @@ test("a refused stopped end of a run claimed from parked is not claimed again be
   // no loop, so it is no `claimed` event).
   const epoch = async () => (await server.runs.get("run-1")).epoch;
   // Parked under its claim, then released: counted from the release.
-  await until(async () => (await server.runs.get("run-1")).runner === null, "the parked run released", 30_000);
+  await upon(async () => (await server.runs.get("run-1")).runner === null, "the parked run released");
   const parkedAt = await epoch();
   await server.command("run-1", { kind: "stop" });
   await releasedAfter(server, 1);
@@ -216,17 +329,44 @@ test("a refused stopped end of a run claimed from parked is not claimed again be
   // 20 more polls of the runner on an unmoved clock it is claimed no more.
   assert.equal((await server.runs.get("run-1")).state, "running");
   const [at, said, polled] = [await epoch(), waitsSaid(events).length, beats.count];
-  await until(() => beats.count >= polled + 20, "20 more polls", 30_000);
+  await upon(() => beats.count >= polled + 20, "20 more polls");
   assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [0, 0], "no claim and no refusal inside the backoff");
   // The clock past the backoff: exactly one more claim and one more refusal, then quiet again until the next step.
   clock.skewMs += BACKOFF_MS;
   await releasedAfter(server, 2);
   const polledAgain = beats.count;
-  await until(() => beats.count >= polledAgain + 20, "20 more polls", 30_000);
+  await upon(() => beats.count >= polledAgain + 20, "20 more polls");
   assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [2, 1], "one claim (and its release) and one refusal for the step");
 });
 
-test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: 60_000, skip: RELEASE_WAIT_SKIP }, async (t) => {
+test("a stop that reaches a run while it parks, under the claim it parked under, whose end is refused: released running with its backoff, not claimed again before it, the tries counted one per step", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, clock, events, beats, starts } = await runOf(t, { onEnd: async () => {
+    throw new Error("the journal refused the end (a test's refusal)");
+  } }, { sibling: true });
+  // Parked (its ask landed with the run parked) and still held by the claim it parked under: the park waits for slow.
+  const parking = await server.runs.get("run-1");
+  assert.deepEqual([parking.state, parking.runner], ["parked", "runner-a"], "parked under its claim");
+  await server.command("run-1", { kind: "stop" });
+  const epoch = async () => (await server.runs.get("run-1")).epoch;
+  // The first refusal, said and released, by the runner's own signals.
+  await upon(async () => waitsSaid(events).length >= 1 && (await server.runs.get("run-1")).runner === null, "the first refused end released");
+  const [at, polled] = [await epoch(), beats.count];
+  await upon(() => beats.count >= polled + 20, "20 more polls");
+  const row = await server.runs.get("run-1");
+  const stop = (await server.commands("run-1", 0)).find((one) => one.kind === "stop");
+  // Inside its backoff on an unmoved clock: one refusal, one try, no claim; it reads running while its end retries (the
+  // branch of claimable that honours backoff_until), not parked (whose stop branch admits it at once).
+  assert.deepEqual({ waits: waitsSaid(events), tries: stop.tries, claims: (await epoch()) - at, state: row.state }, { waits: [BACKOFF_MS], tries: 1, claims: 0, state: "running" }, "no claim inside the backoff");
+  // Past the backoff: exactly one more claim and one more refusal, at the next step's wait.
+  clock.skewMs += BACKOFF_MS;
+  await releasedAfter(server, 2);
+  const polledAgain = beats.count;
+  await upon(() => beats.count >= polledAgain + 20, "20 more polls");
+  assert.deepEqual({ waits: waitsSaid(events), claims: (await epoch()) - at }, { waits: [BACKOFF_MS, 2 * BACKOFF_MS], claims: 2 }, "one claim (and its release) and one refusal for the step");
+  assert.deepEqual(starts, ["runner-a"], "the retried claim started no loop");
+});
+
+test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   let refusing = false;
   const { server, clock, now, sent, requests, events, starts } = await runOf(t, { onEnd: async () => {
     if (refusing) throw new Error("the journal refused the end (a test's refusal)");
@@ -246,7 +386,7 @@ test("a stop whose end the journal refuses never leaves the run stopped with its
   assert.equal(starts.length, loops, "the retried claim started no loop");
 });
 
-test("a journal that never takes the stopped end: the backoff doubles from 5 s to its 5 min cap, each try said by name, and after 11 tries at the cap the run ends stopped on its row alone with one error naming it", { timeout: 120_000, skip: RELEASE_WAIT_SKIP }, async (t) => {
+test("a journal that never takes the stopped end: the backoff doubles from 5 s to its 5 min cap, each try said by name, and after 11 tries at the cap the run ends stopped on its row alone with one error naming it", { timeout: LONG_TEST_MS }, async (t) => {
   assert.deepEqual([runnerModule.END_RETRY_BACKOFF_MS, runnerModule.END_RETRY_CAP_MS, runnerModule.END_RETRY_AT_CAP], [BACKOFF_MS, CAP_MS, AT_CAP], "the stated defaults");
   const { server, clock, sent, requests, events } = await runOf(t, { onEnd: async () => {
     throw new Error("the journal refused the end (a test's refusal)");
@@ -261,10 +401,10 @@ test("a journal that never takes the stopped end: the backoff doubles from 5 s t
     clock.skewMs += expected[tries - 1];
   }
   // The 18th refusal gives up: the run ends stopped on its row alone, and one error names it and why.
-  const row = await until(async () => {
+  const row = await upon(async () => {
     const now = await server.runs.get("run-1");
     return now.state === "stopped" && now;
-  }, "the run ended at the give-up", 30_000);
+  }, "the run ended at the give-up");
   assert.equal(row.backoffUntil, null);
   const gaveUp = events.filter((event) => event.type === "error" && event.runId === "run-1" && event.message.startsWith("run run-1 ended without withdrawing: journal unreadable or refusing"));
   assert.equal(gaveUp.length, 1, JSON.stringify(events.filter((event) => event.type === "error").map((event) => event.message).slice(-3)));
@@ -282,7 +422,7 @@ test("a journal that never takes the stopped end: the backoff doubles from 5 s t
   assert.deepEqual(sent, [], "the call was never sent");
 });
 
-test("a journal that cannot be read when the stop ends the run: the run is released with a backoff, not ended, and once it reads again the next claim ends it withdrawn", { timeout: 60_000, skip: RELEASE_WAIT_SKIP }, async (t) => {
+test("a journal that cannot be read when the stop ends the run: the run is released with a backoff, not ended, and once it reads again the next claim ends it withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   // The loop's own end is refused too, so the runner ends the run itself (endRun), whose read of the journal throws.
   let unreadable = false;
   const { server, clock, sent, requests, events } = await runOf(t, {
@@ -305,9 +445,9 @@ test("a journal that cannot be read when the stop ends the run: the run is relea
   assert.equal(requests.length, asked, "the retried claim made no model request");
 });
 
-test("a stop row whose tries a failed resume raised is a stop all the same: the next claim only ends the run, withdrawn, with no model request and no tool run", { timeout: 60_000 }, async (t) => {
+test("a stop row whose tries a failed resume raised is a stop all the same: the next claim only ends the run, withdrawn, with no model request and no tool run", { timeout: LONG_TEST_MS }, async (t) => {
   const { server, runnerStore, runner, spawn, clock, now, sent, requests, starts } = await runOf(t);
-  await runner.close();
+  await closeRunner(runner, clock);
   const stop = await server.command("run-1", { kind: "stop" });
   // As a resume that threw counts its waking row (runner.ts resumeFailed: store.retry, then a parked release with a
   // backoff), here on the stop row.
@@ -323,9 +463,9 @@ test("a stop row whose tries a failed resume raised is a stop all the same: the 
   assert.ok(!starts.includes("runner-b"), "the claim after the failed resume started no loop: it only ended the run");
 });
 
-test("an allow written just after a stop (its write raced the stop's) never runs the call: the runner reads the stop first, and the stopped end refuses the allow, the call withdrawn", { timeout: 60_000 }, async (t) => {
-  const { server, runner, spawn, sent } = await runOf(t);
-  await runner.close();
+test("an allow written just after a stop (its write raced the stop's) never runs the call: the runner reads the stop first, and the stopped end refuses the allow, the call withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, runner, spawn, clock, sent } = await runOf(t);
+  await closeRunner(runner, clock);
   const ask = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask").data;
   // The two rows as the race leaves them, with no runner holding the run: the stop, then the allow.
   const stop = await server.command("run-1", { kind: "stop" });
@@ -343,16 +483,16 @@ test("an allow written just after a stop (its write raced the stop's) never runs
 // run: a cancel is the run's end from its 202 on, whoever holds the run then. Here the cancel's row is written while no
 // runner holds the parked run (its runner gone); the next claim only ends it cancelled, never as its cut turn reads, and
 // no paid turn follows a cancel.
-test("a cancel row written while no runner holds the run: the next claim only ends it cancelled, its waiting call canceled, with no model request and no tool run", { timeout: 60_000 }, async (t) => {
-  const { server, runner, spawn, sent, requests } = await runOf(t);
-  await runner.close();
+test("a cancel row written while no runner holds the run: the next claim only ends it cancelled, its waiting call canceled, with no model request and no tool run", { timeout: LONG_TEST_MS }, async (t) => {
+  const { server, runner, spawn, clock, sent, requests } = await runOf(t);
+  await closeRunner(runner, clock);
   const cancel = await server.command("run-1", { kind: "cancel" });
   const asked = requests.length;
   spawn("runner-b");
-  const row = await until(async () => {
+  const row = await upon(async () => {
     const now = await server.runs.get("run-1");
     return now.state === "stopped" && now.runner === null && now;
-  }, "the run ended", 30_000);
+  }, "the run ended");
   assert.deepEqual([row.state, row.summary], ["stopped", "cancelled"], "ended cancelled, in the cancel's own words");
   const taken = (await server.commands("run-1", 0)).find((one) => one.id === cancel.id);
   assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row was taken: ${JSON.stringify(taken)}`);
@@ -364,29 +504,29 @@ test("a cancel row written while no runner holds the run: the next claim only en
   assert.deepEqual(sent, [], "the waiting call was never sent");
 });
 
-test("a stopped end with no call to withdraw still ends stopped on the run's row alone when the journal refuses it, with no backoff", { timeout: 60_000 }, async (t) => {
+test("a stopped end with no call to withdraw still ends stopped on the run's row alone when the journal refuses it, with no backoff", { timeout: LONG_TEST_MS }, async (t) => {
   // Stopped before it is claimed, its one call allowed: nothing waits for an answer when its end is refused.
   const { server, events } = await runOf(t, { onEnd: async () => {
     throw new Error("the journal refused the end (a test's refusal)");
   } }, { permission: "allow", parks: false, before: (server) => server.command("run-1", { kind: "stop" }) });
-  const row = await until(async () => {
+  const row = await upon(async () => {
     const now = await server.runs.get("run-1");
     return now.state === "stopped" && now;
-  }, "the run ended stopped", 30_000);
+  }, "the run ended stopped");
   assert.equal(row.backoffUntil, null);
   assert.deepEqual(waitsSaid(events), [], "no retry");
   assert.equal((await read(server)).status, "cancelled");
   assert.deepEqual((await entriesOf(server)).filter((entry) => entry.kind === "agentrun.answer"), []);
 });
 
-test("a stopped end whose claim was lost (Fenced) writes nothing and is not retried here, as before", { timeout: 60_000 }, async (t) => {
+test("a stopped end whose claim was lost (Fenced) writes nothing and is not retried here, as before", { timeout: LONG_TEST_MS }, async (t) => {
   let fencing = false;
   const { server, events } = await runOf(t, { onEnd: async () => {
     if (fencing) throw new Fenced("run-1", 0);
   } });
   fencing = true;
   await server.command("run-1", { kind: "stop" });
-  await until(() => events.some((event) => event.type === "error" && event.runId === "run-1" && /fenced/.test(event.step)), "the runner said the end was fenced", 30_000);
+  await upon(() => events.some((event) => event.type === "error" && event.runId === "run-1" && /fenced/.test(event.step)), "the runner said the end was fenced");
   const row = await server.runs.get("run-1");
   assert.notEqual(row.state, "stopped", JSON.stringify(row));
   assert.equal(row.backoffUntil, null);

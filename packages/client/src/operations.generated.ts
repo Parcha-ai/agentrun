@@ -456,6 +456,8 @@ export type RunSummary = {
     completion_condition: string;
     asked_at: string;
     expires_at: string;
+  } | {
+    kind: "stopped";
   } | null;
   imported_from?: {
     source: "claude-code" | "codex" | "pi";
@@ -750,6 +752,8 @@ export type Run = {
     completion_condition: string;
     asked_at: string;
     expires_at: string;
+  } | {
+    kind: "stopped";
   } | null;
   imported_from?: {
     source: "claude-code" | "codex" | "pi";

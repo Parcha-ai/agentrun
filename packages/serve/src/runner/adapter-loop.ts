@@ -3879,7 +3879,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A call that only nests calls (a harness's own: Codex's `exec`) still open when the run ends: nothing will end it now
     // (a stop while its call waited, a crash whose next drive never resumed its CLI's thread), so it ends with the run,
     // interrupted, after the rows of its calls (their withdrawals above it in this commit). Its own end on its way is
-    // written first.
+    // written first. Marked `withRun`: a park or a stop failed nothing, so its row reads interrupted, never failed.
     while (ownWrites.size > 0) await Promise.allSettled([...ownWrites]);
     const cutOpen = ends.openNests();
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
@@ -3889,7 +3889,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await on.commit(async (tx) => {
         for (const answer of withdrawn) await tx.appendEntry(conversation.id, { kind: KINDS.answer, data: answer as unknown as JsonValue });
         for (const callId of recordEnds) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "refused", output: notRun, at: now() } as unknown as JsonValue });
-        for (const callId of cutOpen) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "interrupted", at: now() } as unknown as JsonValue });
+        for (const callId of cutOpen) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "interrupted", withRun: true, at: now() } as unknown as JsonValue });
         // A turn the run ends while it is open (a stop or cancel cut it, or the run failed in it) ends with the run.
         if (cliRecord?.openTurn()) await tx.appendEntry(conversation.id, { kind: KINDS.turnEnd, data: { status: data.state === "failed" ? "failed" : data.state === "stopped" ? "interrupted" : "completed" } as unknown as JsonValue });
         if (failedWith !== undefined) await tx.appendEntry(conversation.id, { kind: PI_ASSISTANT, model: [cliErrorAnswer(specNow?.adapter.id ?? "cli", failedWith, now())] as never });

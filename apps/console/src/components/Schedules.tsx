@@ -1,3 +1,4 @@
+import { agentHash } from "@/components/AgentPage";
 import { ArrowLeft, Blocks, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
@@ -363,7 +364,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       {composioNote && <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{composioNote}</p>}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
-        <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(runs.target.agent_id)}`} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
+        <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={agentHash(runs.target.agent_id)} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
         <dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
         <dt className="caps text-label text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
         {hook ? <>

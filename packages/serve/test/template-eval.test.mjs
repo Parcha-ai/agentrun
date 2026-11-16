@@ -25,7 +25,9 @@ const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 // The faux's state, in this file's process (each test file runs in a process of its own), which the runs' processes
 // inherit: the flaky case's count, and every input a grader run was given.
 const STATE = await scratch();
-process.env.AGENTRUN_TEST_EVAL_COUNTER = join(STATE, "counter");
+// The server's zone: a run's day is told in it (environment.ts), so the clock tests name a zone west of UTC.
+process.env.TZ = "America/Los_Angeles";
+process.env.AGENTRUN_TEST_EVAL_COUNTER =join(STATE, "counter");
 process.env.AGENTRUN_TEST_EVAL_GRADER_LOG = join(STATE, "graders.jsonl");
 /** Resolves once `path` exists, or `ended` settles (the process that would make it is gone): told by its folder's
  *  watch, never polled. The watch is set before the first look, so a file made in between is not missed. */
@@ -528,23 +530,24 @@ async function clockPackage(t, now, today, mark = "CLOCK-CASE") {
 }
 
 test("a case's now is its runs' clock: the environment line names its day, and its llm graders are told it", { timeout: 300_000 }, async (t) => {
-  const report = await evalTemplate({ dir: await clockPackage(t, "2026-11-14T09:00:00Z", "2026-11-14"), cases: ["clock"], serve: { faux: FAUX } });
+  const report = await evalTemplate({ dir: await clockPackage(t, "2026-11-14T09:00:00Z", "Saturday 14 November 2026"), cases: ["clock"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
-  assert.match(run.answer, /^Today: 2026-11-14 \(CLOCK-CASE\)/, "the environment line says the case's day");
+  assert.match(run.answer, /^Today: Saturday 14 November 2026 \(CLOCK-CASE\)/, "the environment line says the case's day");
   assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
   const graded = graderInputs().filter((input) => input.includes("CLOCK-CASE"));
   assert.equal(graded.length, 1);
-  assert.match(graded[0], /^The run ran on a clock set to 2026-11-14T09:00:00Z: its date was 2026-11-14 \(UTC\), whatever today's date is where you are\.$/m);
+  assert.match(graded[0], /^The run ran on a clock set to 2026-11-14T09:00:00Z: its date was Saturday 14 November 2026 \(America\/Los_Angeles\), whatever today's date is where you are\.$/m);
 });
 
 test("a case without now runs on the real clock, and its graders are told no clock", { timeout: 300_000 }, async (t) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const dayNow = () => new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date()).replace(",", "");
+  const today = dayNow();
   const report = await evalTemplate({ dir: await clockPackage(t, undefined, today, "REAL-CLOCK"), cases: ["clock"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
-  // A run that crossed midnight UTC says the next day.
-  assert.ok([today, new Date().toISOString().slice(0, 10)].some((day) => run.answer.startsWith(`Today: ${day} `)), run.answer);
+  // A run that crossed midnight in the zone says the next day.
+  assert.ok([today, dayNow()].some((day) => run.answer.startsWith(`Today: ${day} `)), run.answer);
   const graded = graderInputs().filter((input) => input.includes("REAL-CLOCK"));
   assert.equal(graded.length, 1);
   assert.doesNotMatch(graded[0], /clock set to/);

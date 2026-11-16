@@ -523,7 +523,7 @@ async function stopEnded(server, runId) {
 }
 
 /** Run `runId` of `harness` after its stop was accepted: followed until its journal holds the stop's end (bounded, failing
- *  by name), then read with nothing pending. A stop is a command the run's runner applies, so it has ended only once that
+ *  by name), then read with no call pending (kind stopped when it reads input_required). A stop is a command the run's runner applies, so it has ended only once that
  *  end is written; what status word a stopped run then reads (cancelled, or input_required as main's stop left it) is
  *  not this test's. */
 async function stoppedRun(server, runId, harness) {
@@ -532,7 +532,8 @@ async function stoppedRun(server, runId, harness) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   const read = await follow(server.api, runId, ["input_required", "completed", "failed", "cancelled"], { deadlineMs: 60_000 }).catch((error) => assert.fail(`${harness}: the stopped run never settled: ${error.message}`));
-  assert.equal((await server.api("GET", `/runs/${runId}`)).body.pending, null, `${harness}: nothing pending once stopped`);
+  const once = (await server.api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual(once.pending, once.status === "input_required" ? { kind: "stopped" } : null, `${harness}: no call pending once stopped`);
   return read;
 }
 
@@ -607,7 +608,7 @@ test("a person's cancel of a run parked on an MCP call reads its call withdrawn 
   assert.deepEqual(await answer.refused(runId, pending.id, { decision: "allow" }), [409, `The tool call ${pending.id} was already canceled with its run.`]);
 });
 
-test("a person's stop of a run parked on an MCP call leaves it input_required and idle with nothing pending, its end's outcome stopped (main's stop)", { timeout: 120_000 }, async (t) => {
+test("a person's stop of a run parked on an MCP call leaves it input_required and idle with pending kind stopped, its end's outcome stopped (main's stop)", { timeout: 120_000 }, async (t) => {
   const { server, answer, fake, extra, content } = await parkingServer(t, "pi");
   const { api } = server;
   const runId = await started(api, "stopped-literal-pi", ["mcp:fake/add"], content, { extra });
@@ -619,7 +620,7 @@ test("a person's stop of a run parked on an MCP call leaves it input_required an
   const row = await server.store.runs.get(runId);
   assert.deepEqual([row.state, row.outcome], ["stopped", "stopped"], "the run's row");
   const view = (await api("GET", `/runs/${runId}`)).body;
-  assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null]);
+  assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }]);
   assert.match(rows.find((one) => one.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn when the run was stopped: mcp:fake\/add /);
   await refusedAsWithdrawn(answer, runId, pending.id, "pi");
   assert.equal(calls(fake).length, 0, "the server saw nothing");

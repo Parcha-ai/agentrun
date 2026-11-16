@@ -211,7 +211,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : undefined;
     const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
     assert.equal(built.session.system[0], environmentLine(), "the date line first");
-    assert.match(built.session.system[0], /^Today is \d{4}-\d{2}-\d{2} \(UTC\)\./);
+    assert.match(built.session.system[0], /^Today is [A-Z][a-z]+ \d{1,2} [A-Z][a-z]+ \d{4} \([A-Za-z_\/]+\)\./);
     assert.equal(built.session.system[1], "Answer.", "then the revision's instructions");
   });
 }
@@ -475,6 +475,11 @@ test("a CLI's absolute path under its working directory is the run's folder: a w
   // itself. The CLI is handed no bash at all, granted or not.
   assert.deepEqual(built.session.tools.map((tool) => tool.name).filter((name) => name.startsWith("bash")), [], "no bash-family tool");
   assert.deepEqual(built.session.tools.map((tool) => tool.name).filter((name) => ["read", "write"].includes(name)).sort(), ["read", "write"], "the file tools stay");
+});
+
+test("a CLI run's opening message is saved as inputs/message.md in the run's folder, as on pi", async (t) => {
+  const { dir } = await specOn(t, "opencode");
+  assert.equal(readFileSync(join(runFolder(dir, "agent-1", RUN), "inputs", "message.md"), "utf8"), "Write a file.");
 });
 
 test("Mode 2 (the server's Archil settings saved): the CLI still works in the run's scratch on this machine, a write to <cwd>/x.txt lands as x.txt in the run's folder on the Archil disk, and bash runs as Archil exec, at most 295 s", async (t) => {

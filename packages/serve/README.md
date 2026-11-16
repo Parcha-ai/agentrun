@@ -7,6 +7,19 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 
 `npx @parcha/agentrun` starts it, with its console, on your machine; the container image runs it on a server (below).
 
+Already use Claude Code or Codex? Choose **Connect agent** in the console and select your coding agent from the
+dropdown. Its skill asks whether to connect for future jobs, import past history, or both, then confirms the source
+project and machine. No destination model key is needed for this connection: a live agent uses its existing native
+sign-in and configuration. Turn **Self-improving** On separately to supply checked notes and skills to later runs;
+imported history stays historical and does not automatically train the agent.
+
+For a source on a different laptop, VM or container, choose **Connection setup → Another machine** and use the
+matching [Python source connector](../../connector/README.md). Remote execution currently needs the server and
+connector from the same reviewed development checkout; the published observation-only CLI does not include it.
+The source worker must stay online. See [Native agents](../../docs/native-agents.md) for setup, history scopes and
+runtime limits. Connected agents use ordinary agent revisions and the existing checked learning pipeline; managed
+adapter isolation is unchanged.
+
 ## Quick start (no key, no network)
 
 Node 24.22.3 or later. In a checkout of this repository:
@@ -1302,7 +1315,9 @@ Keyless Exa, where `web_search` resolves to it, searches through Exa's public MC
 the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
 from the run, and no key. It goes to Exa over IPv4, straight from the run's process. Exa is a third party: its free,
 keyless use has a rate limit it does not publish, and its own terms. Past that limit the search is tried once more, and
-then is a tool error in our words (above): the model reads why and answers without it. A search ends at 60 s, its retry
+then is a tool error in our words (above): the model reads why and answers without it, and the run's later searches
+are held for the wait. Exa answers its daily count running out the same way, naming no wait, so a second limit naming no
+wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
 included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
 relies on. Keyless Exa is the default for a harness with no native search when the server holds no Parallel key; `off`
@@ -2361,7 +2376,9 @@ A run names up to `limits.max_files_per_run`, 20, ready files in `file_ids`: an 
 `422` at `file_ids` before anything starts. Each is copied, never linked, into the run's `work/inputs/` at its `path`,
 folders kept, before the run's process starts, whatever its harness; a name already taken gets a suffix (`notes-2.txt`,
 `docs-2/`), the same for the same files in the same order. The run reads them as any file of its workspace, and
-`GET /v2/runs/{id}/files` lists them. An agentic run is told of them in its first message, on every harness: after the
+`GET /v2/runs/{id}/files` lists them. A run's opening message is saved beside them as `inputs/message.md`, its
+`content` byte for byte, so an agent can name it to a subagent instead of copying it (a run with no text `content` has
+none; an upload at that path takes `message-2.md`); the files line never names it. An agentic run is told of them in its first message, on every harness: after the
 input's `content` and a blank line, one line,
 `Files for this run: "inputs/notes.txt" (32 B), "inputs/docs/plan.md" (1.5 KB).`, each file by the path the run's tools
 take, quoted as a JSON string with a control, format or separator character as its `\uXXXX` escape (so no name forges an
@@ -2589,12 +2606,23 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 Open the link the server prints, once, in a browser. `/` is the console (`apps/console` in the repository), on the
 server's own origin, under a CSP that allows that origin only, but for the provider icons on the Keys page (below):
 
-- **Mission Control**: the store's counts and the latest runs.
-- **Agents**: each agent with its kind and harness, archived ones behind **Archived**. **New agent** and an agent's page:
-  a name, a description, a prompt (with its model, thinking level and tools) or a workflow, sent to `POST /v2/agents`;
-  an edit is `PUT /v2/agents/{id}/definition` with `If-Match` set to the revision it started from (412 when another came
-  first). Its revisions, with **Make current** (`POST /v2/agents/{id}/current`), and **Archive** or **Unarchive**.
-- **Playground**: a run of an agent, on the revision you pick, with its input, followed as it goes.
+- **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
+  server-run agent and without a model-provider key. Its introduction is dismissible. Connect agent and Query use
+  the coding-agent selector; the page refreshes when you return from your coding agent.
+- **Agents**: **Build** opens a description composer and local starter templates; **Connected agents** lists definitions,
+  with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
+  including **API playground**. Choosing a template prepares its full definition without creating or running it.
+  Each agent opens an overview beside its runs, versions and supported workflow, learning and analytics tabs.
+- **Learning Dojo** (`#/dojo`): learning across connected agents, read from this server. It shows retained notes,
+  learned skills and workflow drafts, pending reviews, and recent changes with their source runs. Open an agent's
+  Learning tab to inspect its knowledge, enable learning, or review a pending change. Counts say when a read is
+  incomplete; missing results are not shown as zero.
+- **API playground**: create an agent with `POST /v2/agents`, edit its definition with
+  `PUT /v2/agents/{id}/definition`, query runs with `GET /v2/runs` (or one agent's runs), or start a run on the revision
+  you pick and follow it live. Query links retain the agent, state and archive filters. Build descriptions and
+  templates carry into the editable create request. Edits preserve other configuration and use `If-Match` (412 when
+  another revision came first). Definition management does not require a model-provider key. The existing detailed
+  editor remains available at `#/agents/{id}/edit`, including making an older revision current.
 - **Runs**: every run, newest first, filtered by agent and by state, archived runs behind **Archived**; the address
   keeps the filters. A run's page follows `GET /v2/runs/{id}/timeline` with a long poll, sends messages (an answer while
   it waits on `ask_person`), stops or cancels the run, shows its files and a workflow's graph, and has **Archive** or
@@ -2603,6 +2631,11 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   or **Sign in** with OAuth), **Preview** its tools and protocol, then **Save**; each saved one with its tool count and
   its credential's state, **Refresh**, **Change** (a credential left empty keeps the saved one) and **Delete**. An
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
+
+A run that reports learning also has a **Learning result** panel: the outcome, the grader's reasons for keeping or
+rejecting each proposed item, validation problems, seed and merge revisions, and reported grading usage. Its changed
+files remain available beside the result. The agent's Learning tab refreshes after returning to the console and
+while visible, without replacing an open edit or review.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password
@@ -2663,6 +2696,20 @@ token still works for scripts meanwhile). Serve it over https where you can: on 
 cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
 ## Importing your sessions
+
+For completed history on another machine, use **Connect agent → Another machine** with **History only** scope.
+The matching source connector previews the selected project and runtime, then uploads only with the source
+operator's approval and a destination owner grant that permits history. It starts no execution worker or paid task.
+See [the remote history guide](../../docs/native-agents.md#import-selected-history). Imports remain history, not live
+connections or automatic learning.
+
+The separate local-store CLI importer below requires an approved maintenance window. Verify the source machine,
+this server's actual data directory, store configuration, seal key and supervisor without exposing credentials.
+Preview the scope with a dry run and inspect active work before stopping the existing server and runners through
+their supervisor. Import into the same store, then restart and verify that service, including after an import failure.
+Never bypass the store lock. This local-store operation has no server endpoint that reads sessions from the browser's
+machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
+connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
 `agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
 `~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
@@ -2749,6 +2796,17 @@ Learning is off unless an agent's definition says `learning: true` (an agentic o
 definition that sets it keeps it on its revision, `false` included, and an edit that leaves it out keeps the agent's; one
 that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
 turns learning off for every run it starts, whatever the agent says.
+
+The console uses this existing loop: run, reflect, validate and grade the proposal, retain accepted knowledge, then
+seed later runs from that knowledge. It reads `GET /v2/agents/{id}/learning` for the agent's retained knowledge and
+history, and `GET /v2/runs/{id}/learning` and its `/diff` for an individual result. Observation requires no model key;
+producing new learning requires an agentic run through this server with learning enabled and a configured model.
+
+Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream. A
+run made directly in an external harness needs that harness to persist compatible learning results through a host
+integration before the console can display them. Learning Dojo shows this server's actual reflection results, not inferred
+training scores from imported conversations. Before/after cost and duration are observations, not an accuracy
+evaluation.
 
 An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`), in Claude Code's
 auto-memory format:
@@ -3152,7 +3210,13 @@ nothing asked of the provider, and its bound is that count when it is below the 
 (`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
 token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
 gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
-that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it.
+that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it. On any route
+with no count (a Claude model through a gateway), a Messages request on pi or claude-agent that carries the session's
+last answered request unchanged, apart from the messages it adds, is bounded by what the provider billed that request's
+whole input at (its answer's input, cache read and cache write tokens) plus the bytes of the messages it adds, each
+image among them at what it is billed as, when that is below its byte bound: the earlier request's system prompt, tools
+and messages bill alike in the later one, and what it adds is bounded as the byte bound bounds any body. A request that
+differs in anything else, or adds a document, keeps its other bounds.
 
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
 step is sent only when the run's spend plus that step's least (its whole input bound at the cache-write price, and a
@@ -3160,21 +3224,22 @@ step is sent only when the run's spend plus that step's least (its whole input b
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
 screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
-tokens, so it needs $0.052 and the whole run $0.110;
+tokens, so it needs $0.052; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
+needs $0.082;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
 $0.030 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
-| Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
+| Through a gateway (OpenRouter): the byte bound, then the last bill | $0.06 | $0.09 | about $0.012 |
 | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. A run a cent under the
 five-step figure does not get every step: straight to Anthropic it parks before its last step, its words naming that
-figure; through a gateway ($0.11, a fraction of a cent under the $0.110 it needs) the wrap-up refuses its last screenshot
-and it answers.
+figure; through a gateway ($0.08) the wrap-up refuses its last screenshot, the answer's request carries the refusal in
+place of a screenshot and fits, and it answers.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself

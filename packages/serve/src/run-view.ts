@@ -402,6 +402,12 @@ export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number },
   return !rows.some((r) => isMessageRow(r) && placeOf(r.id) > at);
 };
 export const stopped = (run: Pick<RunView, "meta" | "rows">) => stoppedAt(run.meta, run.rows);
+/** A turn a person's stop ended, where the run still stands: statusOf's stop read (input_required and idle, by the stop
+ *  mark, stopped). The run read, the run list and the run.needs_input webhook all say `pending` kind stopped by this
+ *  one test, so they never disagree. A turn its harness ended on its own reads the same pair with no stop mark, and is
+ *  not this. */
+export const stoppedTurn = (run: Pick<RunView, "meta" | "rows">, read: { status: Status; state: State }): boolean =>
+  read.status === "input_required" && read.state === "idle" && stopped(run);
 
 /** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
 export const waitingApproval = (run: Pick<RunView, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
@@ -466,7 +472,7 @@ export const raisedToGo = (run: RunView): boolean => raisedSince(run) && continu
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
+export type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; held_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "computer"; computer: "desktop" | "phone"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | { kind: "stopped" } | null;
 export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;

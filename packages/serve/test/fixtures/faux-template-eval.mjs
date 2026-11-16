@@ -11,7 +11,7 @@
 // - `Answer:` and the lines after it: the final answer, with `{{last-result}}` the text of the last tool result,
 //   `{{tools}}` the names of the tools the run was given, `{{describe:<tool>}}` that tool's description as the run was
 //   handed it, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned),
-//   `{{today}}` the day its system prompt's environment line names (environment.ts, "Today is <day> (UTC)"), and
+//   `{{today}}` the day its system prompt's environment line names (environment.ts, "Today is <day> (<zone>)"), and
 //   `{{flaky:<a>|<b>}}` <a> the first time any run of this server answers it and <b> after (a count kept in the file
 //   AGENTRUN_TEST_EVAL_COUNTER names).
 // - `Hold until stopped.`: with AGENTRUN_TEST_EVAL_HOLD set, the run writes that file once it holds, so a test knows the
@@ -116,7 +116,7 @@ export default function reply(context, faux) {
     .replaceAll("{{last-result}}", textOf(results.at(-1)?.content ?? ""))
     .replaceAll("{{tools}}", toolsOf(context).join(", "))
     .replace(/\{\{describe:([^}]+)\}\}/g, (_, name) => String(describedOf(context, name)))
-    .replaceAll("{{today}}", /^Today is (\S+) \(UTC\)\./m.exec(system)?.[1] ?? "(no environment line)")
+    .replaceAll("{{today}}", /^Today is (.+?) \([^)]+\)\./m.exec(system)?.[1] ?? "(no environment line)")
     .replace(/\{\{learned:([^}]+)\}\}/g, (_, text) => (system.includes(text) ? "yes" : "no"))
     .replace(/\{\{flaky:([^|}]*)\|([^}]*)\}\}/g, (_, a, b) => flaky(a, b)));
 }

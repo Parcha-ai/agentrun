@@ -15,15 +15,16 @@ describe("the Mission Control stories", () => {
     expect(h).toContain("Running now");
     expect(h.indexOf("Needs you")).toBeLessThan(h.indexOf("Needs input"));
   });
-  it("StartHereFirstRun: the three templates, one click each, and the imported history", () => {
+  it("StartHereFirstRun: a compact introduction alongside the imported history and dashboard", () => {
     const h = html(StartHereFirstRun);
-    expect(h.match(/>Try it</g)).toHaveLength(3);
+    expect(h).toContain("Run an agent here");
     expect(h).toContain("6 imported sessions");
-    expect(h).not.toContain("Recent runs");
+    expect(h).toContain("Recent runs");
   });
-  it("StartHereNoModel: the model step first, no template", () => {
+  it("StartHereNoModel: history and analytics stay available without a model", () => {
     const h = html(StartHereNoModel);
-    expect(h).toContain("Add a model key");
+    expect(h).toContain("No model key needed");
+    expect(h).toContain("Recent runs");
     expect(h).not.toContain(">Try it<");
   });
 });

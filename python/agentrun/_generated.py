@@ -773,6 +773,7 @@ __all__ = [
     "RunPending3",
     "RunPending4",
     "RunPending5",
+    "RunPending6",
     "RunPlace1",
     "RunPlace2",
     "RunResult",
@@ -800,6 +801,7 @@ __all__ = [
     "RunSummaryPending3",
     "RunSummaryPending4",
     "RunSummaryPending5",
+    "RunSummaryPending6",
     "RunSummaryReview",
     "RunSummarySdk",
     "RunSummarySdkUsage",
@@ -2248,7 +2250,7 @@ class RunSummary(_RunSummaryRequired, total=False):
     error: RunError | None
     learning: RunSummaryLearning | None
     review: RunSummaryReview | None
-    pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | None
+    pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | RunSummaryPending6 | None
     imported_from: RunSummaryImportedFrom | None
     trigger: RunSummaryTrigger | None
 
@@ -2491,6 +2493,10 @@ class RunSummaryPending5(TypedDict):
     completion_condition: str
     asked_at: str
     expires_at: str
+
+
+class RunSummaryPending6(TypedDict):
+    kind: Literal["stopped"]
 
 
 class RunSummaryImportedFrom(TypedDict):
@@ -4972,7 +4978,7 @@ class Run(_RunRequired, total=False):
     computer: RunComputer
     learning: RunLearning | None
     review: RunReview | None
-    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | None
+    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
 
@@ -5194,6 +5200,10 @@ class RunPending5(TypedDict):
     completion_condition: str
     asked_at: str
     expires_at: str
+
+
+class RunPending6(TypedDict):
+    kind: Literal["stopped"]
 
 
 class RunImportedFrom(TypedDict):
