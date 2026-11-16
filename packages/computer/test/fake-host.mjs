@@ -125,7 +125,8 @@ const START = Date.now();
  *  - stale: the listing reads each machine as its create made it, running, forever: it keeps a deleted machine, and
  *    shows create's end and labels after a timer moved (E2B's Sandbox.list, read live 11-14). get stays current.
  *  - clock ({ now() }) with the vendor's own timers on it: idle, the ms after which it ends a machine no exec or
- *    keepalive reached; backstop, ending a machine at its request's backstopAt (a janitor's vendor delete timer);
+ *    keepalive reached; backstop, the vendor's delete timer set from the request's backstopAt, read back as endsAt, which
+ *    ends the machine there (facts.backstop is the claim alone: a host claiming it without this one lies);
  *  - keepalive: the host has keepalive, which restarts the idle timer; its first keepaliveFails calls throw.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
@@ -570,6 +571,7 @@ export function fakeHost({
 				m.hidden = unlisted;
 				m.flaps = [...flaps];
 				m.request = req;
+				if (backstop) m.endsAt = new Date(req.backstopAt);
 				if (stale) m.listedAs = { ...view(m), state: "running" };
 				if (req.command) {
 					// The entrypoint's words: the daemon, the wait, the home, the display, the nonce, then --gate <path> or not,

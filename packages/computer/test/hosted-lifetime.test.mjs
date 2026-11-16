@@ -60,6 +60,24 @@ test("create gives a janitor's host backstopAt, five minutes past the most the d
 	assert.deepEqual(fake.events.filter(({ what }) => what.startsWith("ended")), [{ machine: ref.id, what: "ended (backstop)" }]);
 });
 
+test("provider.backstop, Core, on the run's shared computer: a host claiming backstop whose vendor timer reads the request's backstopAt passes; one claiming it with no such timer fails in words; one claiming none passes, observed", async () => {
+	const cases = conformanceCases.filter((one) => one.id === "provider.backstop");
+	assert.deepEqual(cases.map((one) => [one.level, one.computer]), [["core", "shared"]]);
+	const run = async (facts, fakeOptions) => (await runConformance(provider(fakeHost({ facts, ...fakeOptions })), { image: "img", cases, cleanupTimeoutMs: 2_000, caseTimeoutMs: 20_000 })).results[0];
+	const janitor = { lifetime: "janitor", backstop: true };
+	const honest = await run(janitor, { backstop: true });
+	assert.equal(honest.status, "pass", honest.reason);
+	const lying = await run(janitor, {});
+	assert.equal(lying.status, "fail");
+	assert.match(
+		lying.reason,
+		/^Fakehost claims backstop \(facts\.backstop\), but its vendor timer reads \d{4}-\d\d-\d\dT[\d:.]+Z, not \d{4}-\d\d-\d\dT[\d:.]+Z, the request's backstopAt \(within 60 s\): set it from req\.backstopAt at create, and read it back as Machine\.endsAt$/,
+	);
+	const none = await run({ lifetime: "janitor" }, {});
+	assert.equal(none.status, "pass", none.reason);
+	assert.deepEqual(none.observed, ["its host claims no backstop (facts.backstop): nothing to read back"]);
+});
+
 test("a host that declares an idle timer and no keepalive is refused when the provider is made, in words; so is an idleMs that is not a whole number of ms", () => {
 	const quiet = fakeHost({ facts: { idleMs: 5 * MINUTE } });
 	assert.throws(() => provider(quiet), {

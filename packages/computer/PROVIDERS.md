@@ -35,7 +35,9 @@ AgentRun needs two things from your API:
   If your API keeps no labels, declare `labels: "machine"` in your facts. AgentRun then writes them to a file in the
   machine that only root can read, and you list by the name create gives the machine, or list every machine where your
   API takes no name. Your timer must end machines (`lifetime: "vendor"`): a machine whose create stopped before the
-  file was written carries no label the janitor can find.
+  file was written carries no label the janitor can find. A janitor host may keep labels in the machine too if it sets
+  its vendor's delete timer from `req.backstopAt` and declares `backstop: true`. Its `get` must read that timer back as
+  `endsAt`, which the Core case `provider.backstop` checks.
 
 ### Exec shapes that work
 
@@ -188,7 +190,7 @@ vendor whose size is its image's refuses them in its own `check`.
 
 - `state` is `starting`, `running`, `stopped` (there but not running, such as paused) or `gone` (being deleted,
   ended, or failed).
-- `endsAt` is when your timer ends it, with `lifetime: "vendor"`.
+- `endsAt` is when your timer ends it, with `lifetime: "vendor"` or `backstop: true`.
 - `createdAt` is when your API made it. Of two racing creates' machines, AgentRun keeps the oldest.
 - `why` is your API's words for a machine that failed to start, which is `gone`.
 

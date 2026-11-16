@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
-import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
+import { BACKSTOP_MARGIN_MS, type HostCall, type Machine, type MachineHost, type MachineRequest } from "../host.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
 import type { KindCapabilities } from "../kinds.js";
@@ -170,11 +170,6 @@ const LISTED_ROUNDS = 2;
 const LISTED_POLL_MAX_MS = 1_000;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
-/**
- * How far past the most a deadline may reach a janitor's host sets its vendor's own delete timer (MachineRequest.backstopAt):
- * the janitor ends the machine first while the server runs, and the vendor's clock may be off from this one.
- */
-export const BACKSTOP_MARGIN_MS = 300_000;
 /**
  * With labels kept in the machine: what a machine of a request's name with no label file must be older than, past the
  * longest a create takes to write the file (#unfiledMs), before a sweep of the name takes it: another instance's longer
@@ -334,10 +329,12 @@ export class HostedProvider implements ComputerProvider {
 		if (idleMs !== undefined && !host.keepalive) {
 			throw new Error(`${label} declares an idle timer (facts.idleMs ${idleMs}) and no keepalive, so a quiet computer would end under its run: give the host keepalive, the vendor's call that restarts the timer`);
 		}
-		// A machine whose create was cut off before its labels were written carries none the janitor lists: only the vendor's
-		// timer ends it.
-		if (host.facts.labels === "machine" && host.facts.lifetime !== "vendor") {
-			throw new Error(`${label} keeps no labels (facts.labels "machine"), so its lifetime must be the vendor's: a machine whose create stopped before its labels were written has none the janitor lists, and only a vendor's timer ends it`);
+		// A machine whose create was cut off before its labels were written carries none the janitor lists: only a vendor's
+		// timer ends it, at its deadline (lifetime vendor) or at the backstop.
+		if (host.facts.labels === "machine" && host.facts.lifetime !== "vendor" && host.facts.backstop !== true) {
+			throw new Error(
+				`${label} keeps no labels (facts.labels "machine"), so a vendor timer must end its machines: a machine whose create stopped before its labels were written has none the janitor lists. Declare lifetime "vendor", or set the vendor's delete timer from req.backstopAt and declare backstop: true`,
+			);
 		}
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);

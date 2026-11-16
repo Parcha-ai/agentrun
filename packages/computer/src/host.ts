@@ -104,6 +104,12 @@ export interface MachineHost {
 	check?(spec: Partial<ComputerSpec>): Refusal[];
 }
 
+/**
+ * How far past the most a deadline may reach MachineRequest.backstopAt is: the janitor ends the machine first while the
+ * server runs, and the vendor's clock may be off from the server's.
+ */
+export const BACKSTOP_MARGIN_MS = 300_000;
+
 /** A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words. */
 export class HostError extends Error {
 	readonly code: ComputerErrorCode;
@@ -133,9 +139,9 @@ export interface MachineRequest {
 	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
 	lifetimeMs: number;
 	/**
-	 * An ISO time a margin past the most the machine's deadline may reach (create + maxLifetimeMs, plus BACKSTOP_MARGIN_MS,
-	 * ./hosted/provider.ts). A janitor's host whose vendor has a delete or stop timer of its own sets it here, so the
-	 * machine still ends when the server that made it is gone. A vendor-lifetime host ignores it.
+	 * An ISO time a margin past the most the machine's deadline may reach: create + maxLifetimeMs + BACKSTOP_MARGIN_MS. A
+	 * janitor's host whose vendor has a delete or stop timer of its own sets it here (facts.backstop), so the machine still
+	 * ends when the server that made it is gone. A vendor-lifetime host ignores it.
 	 */
 	backstopAt: string;
 	/**
@@ -172,7 +178,7 @@ export interface Machine {
 	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
 	 */
 	state: "starting" | "running" | "stopped" | "gone";
-	/** With facts.lifetime "vendor": when the vendor's timer ends it. */
+	/** With facts.lifetime "vendor", or facts.backstop: when the vendor's timer ends it. */
 	endsAt?: Date;
 	/**
 	 * When the vendor made it, by its clock, where it says. Two creates of one request on two provider instances can each
@@ -217,6 +223,11 @@ export interface HostFacts {
 	isolation: ComputerCapabilities["isolation"];
 	/** Who ends a machine at its deadline: the vendor's timer, or the janitor by label. */
 	lifetime: "vendor" | "janitor";
+	/**
+	 * A janitor's host claims its create sets the vendor's own delete or stop timer from req.backstopAt, and get reads it
+	 * back as endsAt (the Core case provider.backstop checks it). Only this lets a janitor's host keep labels "machine".
+	 */
+	backstop?: true;
 	/** The vendor's hard cap of a machine's life; the adapter's maxLifetimeMs may only lower it. */
 	maxLifetimeMs: number;
 	/**
@@ -239,7 +250,7 @@ export interface HostFacts {
 	 * the packed labels'. "machine": the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in
 	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as
 	 * JSON, what a run's output keeps (OUTPUT_MAX, ./hosted/process.ts). Only with
-	 * lifetime "vendor": a machine whose labels were never written is ended by the vendor's timer alone.
+	 * lifetime "vendor" or backstop: a machine whose labels were never written is ended by the vendor's timer alone.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
 	/**

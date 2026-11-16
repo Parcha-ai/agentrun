@@ -231,8 +231,12 @@ test("a machine of the request's name with no file and no createdAt is never old
 	assert.equal(left.deleted, false);
 });
 
-test("a host that keeps no labels takes only the vendor's lifetime: a machine whose labels were never written has none the janitor lists", () => {
-	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor" } }).host), /keeps no labels \(facts\.labels "machine"\), so its lifetime must be the vendor's/);
+test("a host that keeps no labels needs a vendor timer: lifetime vendor, or a janitor's backstop; a janitor without one is refused, naming both", () => {
+	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor" } }).host), {
+		message:
+			'Fakehost keeps no labels (facts.labels "machine"), so a vendor timer must end its machines: a machine whose create stopped before its labels were written has none the janitor lists. Declare lifetime "vendor", or set the vendor\'s delete timer from req.backstopAt and declare backstop: true',
+	});
+	assert.doesNotThrow(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor", backstop: true } }).host));
 });
 
 test("extend rewrites the file's deadline after the vendor's timer moves; with a timer the host can't move, there is no extend", async () => {
