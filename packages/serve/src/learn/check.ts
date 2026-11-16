@@ -3,6 +3,7 @@
 // which is the grader's. The host reads the copy itself (regular files only, never a link followed) and hands each change
 // here with its bytes; nothing the checker refuses is ever written to git. Every problem it reports is printable: its
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
+import { placeholderValue } from "@parcha/agentrun-dsl";
 import { hiddenCharacter } from "./invisible.js";
 import { compiledLineBytes, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
@@ -242,27 +243,46 @@ export function answerTierProblems(doc: unknown): string[] {
   return problems;
 }
 
-/** The state keys a value reads: the head of each `{path}` (or optional `{path?}`) in its strings, at any depth, the key
- *  after `state.` for a `{state.…}` one (interpolateValue tries both). */
-function readHeads(value: unknown, out: string[] = [], depth = 0): string[] {
+/** The key each page mark stands for (pageStateOf). */
+const pageKeyOf = new WeakMap<object, string>();
+/** A state holding a page at each of `pages` and nothing else, as a static read sees it: a page has every path (its
+ *  fields are the run's), so any path under one reads the page itself. */
+function pageStateOf(pages: ReadonlySet<string>): Record<string, unknown> {
+  const state: Record<string, unknown> = Object.create(null);
+  for (const key of pages) {
+    const mark: object = new Proxy(Object.create(null), { get: (_target, prop) => (typeof prop === "string" ? mark : undefined) });
+    pageKeyOf.set(mark, key);
+    state[key] = mark;
+  }
+  return state;
+}
+/** The page keys a value reads: each `{path}` (or `{path?}`) in its strings, at any depth, resolved by the engine's own
+ *  lookup (the DSL's placeholderValue, which interpolation reads through: the path as written, so a real `state` key
+ *  first, then the path after `state.`) over pageStateOf. A key holding compact facts is absent there, so a
+ *  `{state.x}` read falls back to `x` as the engine may when its `state` key lacks `x`. */
+function pagesRead(value: unknown, state: Record<string, unknown>, out = new Set<string>(), depth = 0): Set<string> {
   if (depth > 32) return out;
   if (typeof value === "string") {
     for (const match of value.matchAll(/\{([a-zA-Z0-9_.$]+)\??\}/g)) {
-      const [head, next] = match[1]!.split(".");
-      out.push(head === "state" && next ? next : head!);
+      const read = placeholderValue(state, match[1]!);
+      const key = read !== null && typeof read === "object" ? pageKeyOf.get(read) : undefined;
+      if (key !== undefined) out.add(key);
     }
-  } else if (Array.isArray(value)) value.forEach((one) => readHeads(one, out, depth + 1));
-  else if (isObject(value)) Object.values(value).forEach((one) => readHeads(one, out, depth + 1));
+  } else if (Array.isArray(value)) value.forEach((one) => pagesRead(one, state, out, depth + 1));
+  else if (isObject(value)) Object.values(value).forEach((one) => pagesRead(one, state, out, depth + 1));
   return out;
 }
 
 /** Why a draft's model step off the fast tier reads a page (compact state): an agent, decide or extract step with no
  *  `"tier": "fast"` whose `state` map names a key that may hold a page a call step fetched (a call's result, a map's
  *  collected one, a pick or sift over pages, a composed workflow's answer when it is one, the key or anything under it),
- *  or, with no `state` map, which reads the whole state while such a key is in it. Read in run order: a key holds a page
- *  from the step that fetched it until a model step writes over it; a loop's body is read twice, its second pass seeing
- *  its first's writes; a map's body sees `item` as a page when its list is one; a composed workflow's child sees an input
- *  key as a page when its value reads one. Pages reach a step on the agent's model only through a fast-tier step's
+ *  or, with no `state` map, which reads the whole state while such a key is in it (pagesRead: the engine's own lookup).
+ *  Read in run order: a key holds a page from the step that fetched it until a model step writes over it; a parallel's
+ *  branches each start from the same state and their writes merge, so a key one branch replaced is no page after it; a
+ *  route runs one branch, so a key stays a page unless every branch replaced it; a loop's body is read pass after pass,
+ *  each on every page its passes may leave, until the marks stop changing (within its maxIters); a map's body sees
+ *  `item` as a page when its list is one, and its failedAs rows are short errors, never pages; a composed workflow's
+ *  child sees an input key as a page when its value reads one. Pages reach a step on the agent's model only through a fast-tier step's
  *  output: chain14b's drafts fed whole pages to the answering step (4.1 requests a run at ~70k cached tokens each,
  *  $0.364 a served run), where the research shape (a fast extract's compact facts to the answering step) booked ~$0.08.
  *  One line each, in words the compile retry acts on. */
@@ -283,17 +303,37 @@ export function compactStateProblems(doc: unknown): string[] {
       for (const step of Array.isArray(node.steps) ? node.steps : []) state = walk(step, state, depth + 1);
       return state;
     }
-    if (kind === "parallel" || kind === "route") {
-      const bodies = kind === "parallel" ? (Array.isArray(node.branches) ? node.branches : []) : childNodes(node);
-      if (kind === "route") wrote(false);
-      const from = new Set(after);
-      for (const body of bodies) for (const one of walk(body, from, depth + 1)) after.add(one);
-      return after;
+    if (kind === "parallel") {
+      // Every branch starts from the same state and the engine merges their writes (disjoint, or the run fails): a key
+      // stays a page when no branch replaced it, and a page a branch wrote is one.
+      const outs = (Array.isArray(node.branches) ? node.branches : []).map((body) => walk(body, after, depth + 1));
+      const merged = new Set([...after].filter((one) => outs.every((out) => out.has(one))));
+      for (const out of outs) for (const one of out) if (!after.has(one)) merged.add(one);
+      return merged;
+    }
+    if (kind === "route") {
+      // One branch runs, after the choice is recorded: a page on any branch's way out is one.
+      wrote(false);
+      const bodies = childNodes(node);
+      if (!bodies.length) return after;
+      const merged = new Set<string>();
+      for (const body of bodies) for (const one of walk(body, after, depth + 1)) merged.add(one);
+      return merged;
     }
     if (kind === "loop") {
-      const first = walk(node.body, after, depth + 1);
-      const second = walk(node.body, new Set([...after, ...first]), depth + 1);
-      return new Set([...first, ...second]);
+      // Any pass may be the last (do-while, up to maxIters): walk the body again on every page its passes may leave
+      // until the marks stop changing. The set read grows on each further pass, so it stops within one pass a key the
+      // workflow names, and never past maxIters; each pass's way out holds the ones before it.
+      const passes = typeof node.maxIters === "number" && node.maxIters >= 1 ? Math.floor(node.maxIters) : Number.POSITIVE_INFINITY;
+      let read = after;
+      let out = walk(node.body, read, depth + 1);
+      for (let pass = 2; pass <= passes; pass++) {
+        const next = new Set([...read, ...out]);
+        if (next.size === read.size) break;
+        read = next;
+        out = walk(node.body, read, depth + 1);
+      }
+      return out;
     }
     if (kind === "map") {
       const itemsPage = typeof node.itemsPath === "string" && after.has(node.itemsPath.split(".")[0]!);
@@ -304,16 +344,15 @@ export function compactStateProblems(doc: unknown): string[] {
       const result = typeof node.resultPath === "string" && node.resultPath ? node.resultPath.split(".")[0] : isNode(node.body) && typeof node.body.as === "string" && node.body.as ? node.body.as : undefined;
       // Each item's result, or its whole state (the state around the map too) when nothing picks one key.
       wrote(result !== undefined ? out.has(result) : out.size > 0);
-      if (typeof node.failedAs === "string" && node.failedAs) {
-        if (itemsPage) after.add(node.failedAs);
-        else after.delete(node.failedAs);
-      }
+      // Its failed items' rows are short error records, never the items.
+      if (typeof node.failedAs === "string" && node.failedAs) after.delete(node.failedAs);
       return after;
     }
     if (kind === "workflow") {
       const child = isObject(node.workflow) ? node.workflow : {};
       const input = isObject(node.input) ? node.input : {};
-      const seen = new Set(Object.entries(input).filter(([, value]) => readHeads(value).some((head) => after.has(head))).map(([name]) => name));
+      const state = pageStateOf(after);
+      const seen = new Set(Object.entries(input).filter(([, value]) => pagesRead(value, state).size > 0).map(([name]) => name));
       const out = walk(child.root, seen, depth + 1);
       const path = isObject(child.output) && typeof child.output.path === "string" ? child.output.path.split(".")[0]! : "";
       wrote(!!path && out.has(path));
@@ -323,7 +362,7 @@ export function compactStateProblems(doc: unknown): string[] {
     if (kind === "pick" || kind === "sift") return wrote(typeof node.itemsPath === "string" && after.has(node.itemsPath.split(".")[0]!)), after;
     if (TIERED_KINDS.has(kind) && node.tier !== "fast") {
       const label = JSON.stringify(String(node.label ?? "(no label)").slice(0, 64));
-      const read = node.state === undefined ? [...after] : [...new Set(readHeads(node.state))].filter((head) => after.has(head));
+      const read = node.state === undefined ? [...after] : [...pagesRead(node.state, pageStateOf(after))];
       if (read.length) {
         const what = node.state === undefined
           ? `the whole run state (it has no "state" map), the page${read.length > 1 ? "s" : ""} ${read.map((one) => JSON.stringify(one.slice(0, 64))).join(", ")} included`
