@@ -203,9 +203,10 @@ Over a cap is refused, never cut.
 - Compact state. A model step off the fast tier (an agent, decide, extract or report step with no `"tier": "fast"`,
   the answering step among them) never reads a page a call step fetched: a draft is refused when such a step's
   `state` map reads a key that may hold a page, or, with no `state` map, when the whole state it reads holds one. A
-  placeholder is resolved by the DSL's own lookup (`placeholderValue`, which interpolation reads through: the path as
-  written, so a real `state` key first, then the path after `state.`) over a state holding only the pages, each with
-  every path. A page is a call's `as`; a map's collected result when its body's is one (a map over pages sees `item`
+  string's placeholders are the ones interpolation fills (the DSL's `placeholdersOf`: a marked `{x?}` only as the
+  whole string, literal text inside a longer one), each resolved by the DSL's own lookup (`placeholderValue`, which
+  interpolation reads through: the path as written, so a real `state` key first, then the path after `state.`) over a
+  state holding only the pages, each with every path. A page is a call's `as`; a map's collected result when its body's is one (a map over pages sees `item`
   as one; its `failedAs` rows are short errors, never pages); a pick's or sift's over pages; a composed workflow's
   answer when its own is one, its child seeing a page through an input that reads one. Steps are read in run order: a
   model step writing a page's key ends it; a parallel's branches start from the same state and their writes merge, so
@@ -249,7 +250,9 @@ Over a cap is refused, never cut.
   map, the draft as the DSL's optional placeholder `"draft": "{answer?}"`: null on the first pass, before any draft
   exists, and the failed draft on the second. The DSL sends a step with a map only the keys it names, each pass a
   fresh model session, so a map without the draft never sees it; naming it unmarked (`"{answer}"`) fails the first
-  pass; and a step with no map reads the whole state, the pages included (compact state, above). A draft whose model
+  pass; and a step with no map reads the whole state, the pages included (compact state, above). The draft's path
+  resolves by `placeholderValue` to the answer's key itself: `"{state.answer?}"` reads a real `state` key's
+  `answer` first, which the run's input or a fast step may write, on both passes, so it is no draft read. A draft whose model
   step writing the answer in the loop does not read it so is refused. A quote found first costs no
   re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. The check
   is a step of the top-level chain after the loop, never inside it: a `quote_missing` escalate anywhere in the loop's
