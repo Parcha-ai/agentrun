@@ -180,25 +180,17 @@ Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only
 
 - A vendor that builds images from a running machine (a snapshot, a blueprint, a template): `prepareImage` boots the
   vendor's base, runs `install.sh` there as root, then snapshots or registers the result.
-- A vendor that builds images from a Dockerfile (Hyperbrowser's remote builder), or starts computers from the
-  account's registry (Vercel Sandbox, from Vercel Container Registry): `prepareImage` has the vendor build the box
-  Dockerfile as it is, from a context of the recipe's three files (the Dockerfile, `install.sh`, `agentrun-archil`),
-  or pushes that build to the registry. Both run amd64 alone, which it builds. Vercel never runs an image's
-  `ENTRYPOINT` or `CMD`, and Hyperbrowser takes them as launch defaults: the box's `sleep infinity` suits both.
-- A vendor that needs its own base or its agent in the image (Blaxel's and Baseten's sandbox API) builds
-  `vendorDockerfile(base, { agent, start })` from `box/recipe.mjs`: `FROM` the base as root, the agent's lines, then
-  the box Dockerfile's `COPY` and `RUN` lines, so `install.sh`'s checked step (sudo taken away, every check) runs
-  after the agent; then the vendor's `ENTRYPOINT`, `[]` to keep the base's, or by default the box's `CMD` with any
-  inherited `ENTRYPOINT` cleared. A vendor with no custom image (Fly Sprites) can't take the box image at all.
-- Any base is Debian: `install.sh` installs Debian's packages through apt, and its first step reads `/etc/os-release`
-  and refuses another base in words, before it installs anything (Ubuntu has apt, but not Debian's `firefox-esr`).
-- It is idempotent by name. The name carries the box recipe's hash (`boxRecipeHash()`, which covers `install.sh`), so
-  a second call finds the image by that name and answers it, with no build and no `onWait`. The name is the vendor's
-  own form: `agentrun-box-<hash>` where it takes a name (a Hyperbrowser team image), the tag `agentrun-box:<hash>`
-  where it takes a repository (Vercel); `vendorDockerfile`'s `hash` in place of the recipe's for its file. Where the
-  vendor has no get by name, `prepareImage` lists its images and takes the one of that name. A name the vendor refuses
-  as taken, or one it is still making (VCR's `Preparing`), is another build of it: wait for that one. One whose build
-  failed is a failure in the vendor's words, never built over.
+- A vendor that takes an image from its own registry (Vercel Sandbox, from Vercel Container Registry): push the box
+  image there, built from `box/Dockerfile` as it is, under the tag `agentrun-box:<hash>`.
+- A vendor that builds from a Dockerfile on its side (Hyperbrowser's remote builder): send `box/Dockerfile` with the
+  rest of the recipe (`RECIPE` in `box/recipe.mjs`: `install.sh` and `agentrun-archil`) as the build's context, and
+  name the result `agentrun-box-<hash>`, a name and not an OCI tag.
+- A vendor that needs its own base image (Blaxel, Baseten, Fly Sprites) doesn't fit these paths yet.
+- It is idempotent by name. The name or tag carries the box recipe's hash (`boxRecipeHash()`, which covers
+  `install.sh`), so a second call finds the image by it and answers it, with no build and no `onWait`. Where the vendor
+  has no get by name, `prepareImage` lists its images and takes the one of that name, in any state. A name the vendor
+  refuses as taken, or one it is still making (VCR's `Preparing`, a build under way), is another build of it: wait for
+  that one, bounded by `ctx.signal`. One whose build failed is a failure in the vendor's words, never built over.
 - It calls `ctx.onWait("build" | "pull", tag)` once, and only when it really builds or pulls.
 - It answers the image a create then names: ok with it, or an error in the vendor's words.
 

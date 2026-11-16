@@ -445,14 +445,18 @@ vendor lists one while it is still being made, wait for it, bounded by `ctx.sign
 ends the same when run twice on one machine, so a retried build is safe. A first build takes minutes, once per account and recipe. The Core case `provider.prepare-image` calls
 `prepareImage` twice and fails a second call that builds, pulls or answers another image.
 
-If your vendor builds images from a Dockerfile (Hyperbrowser's remote builder, `hx vm image build --remote`), or starts
-computers from your account's registry (Vercel Sandbox, from Vercel Container Registry: `vercel vcr build docker .
-agentrun-box:<hash> --push`), build the box Dockerfile as it is. Its context is the recipe's three files: the
-Dockerfile, `install.sh` and `agentrun-archil`. Name the image by the recipe's hash: `agentrun-box-<hash>` where the
-vendor takes a name (a Hyperbrowser team image is a name, not an OCI tag), the tag `agentrun-box:<hash>` where it takes
-a repository (Vercel). Find it by that name before you build; where there's no get by name, list the images and take
-the one of that name. The provider in `test/conformance-image.test.mjs` runs this on the fake host, with an in-memory
-builder:
+Two more shapes take `box/Dockerfile` as it is, with no other base, layer or entrypoint:
+
+- **Your vendor takes an image from its own registry** (Vercel Sandbox, from Vercel Container Registry): build the box
+  image and push it there under the tag `agentrun-box:<hash>` (`vercel vcr build docker . agentrun-box:<hash> --push`,
+  run in `box/`).
+- **Your vendor builds from a Dockerfile on its side** (Hyperbrowser, `hx vm image build --remote`, which uploads the
+  build context): send `box/Dockerfile` with the rest of `RECIPE` (`install.sh` and `agentrun-archil`) as the context,
+  and name the result `agentrun-box-<hash>`. A Hyperbrowser team image is a name, not an OCI tag.
+
+Either way, find the image by that tag or name before you build, so a second call is no build. The provider in
+`test/conformance-image.test.mjs` runs this on the fake host, with an in-memory builder that finds images only by
+listing them, as Hyperbrowser does:
 
 ```ts
 async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void } = {}): Promise<Result<string>> {
@@ -475,14 +479,18 @@ async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag:
 
 An image of that name the vendor is still making (VCR's `Preparing`, a Hyperbrowser build under way) is another
 server's build of it: `ready` waits for it, bounded by `ctx.signal`, and nothing builds again. One that failed (VCR's
-`Error`) is a failure, in the vendor's words and with the next step; building over it would hide why. Both vendors run
-amd64 alone, which the box Dockerfile builds. Vercel never runs an image's `ENTRYPOINT` or `CMD`, and Hyperbrowser
-takes them as launch defaults: the box's `sleep infinity` suits both, for the adapter starts what a computer runs
-through exec.
+`Error`) is a failure, in the vendor's words and with the next step; building over it would hide why.
 
-A vendor that needs its own base or its agent in the image (Blaxel's and Baseten's sandbox API) builds
-`vendorDockerfile(base, { agent, start })` from `box/recipe.mjs` instead, named by the `hash` it answers. Any base must
-be Debian: `install.sh` refuses another in words. Fly Sprites take no custom image, so no Archil mount and no desktop.
+What the two vendors say, read 11-16:
+- Vercel ([concepts/images](https://vercel.com/docs/sandbox/concepts/images)): VCR serves an image to Sandbox only once
+  it has an optimized `linux/amd64` build, and reads `Ready` (`Preparing` until then; a create before it answers
+  `image_not_ready`). Sandbox never runs an image's `ENTRYPOINT` or `CMD`, which suits the box: the adapter starts what
+  a computer runs through exec.
+- Hyperbrowser ([sandboxes/custom-images](https://hyperbrowser.ai/docs/sandboxes/custom-images)): `--remote` uploads
+  the build context and runs its Dockerfile in a remote builder; images are amd64. There is no get by name, only the
+  list (`hx vm image list`), and a build is followed by its build id (`hx vm image status <build-id>`, `wait`).
+
+A vendor that needs its own base image (Blaxel, Baseten, Fly Sprites) doesn't fit this path yet.
 
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 

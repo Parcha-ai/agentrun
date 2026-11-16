@@ -3,10 +3,7 @@
 # (python:3.12-slim, Debian). The Dockerfile copies this file and agentrun-archil into one folder and runs it, and that is
 # all it does. A vendor that builds images in its own account (a snapshot, a blueprint, a template) does the same: it
 # boots that base, puts both files in one folder there, runs `sh install.sh` as root, and snapshots the machine under a
-# name that carries the recipe's hash (recipe.mjs). A vendor that builds from a Dockerfile builds that one; one that
-# needs its own base or agent in the image builds recipe.mjs's vendorDockerfile, which runs this. Any base must be
-# Debian: the packages are Debian's, through apt, so the first step refuses another in words. The Dockerfile's comment
-# says what each part of the image is for.
+# name that carries the recipe's hash (recipe.mjs). The Dockerfile's comment says what each part of the image is for.
 #
 #   sh install.sh            the whole build
 #   sh install.sh checked    the last step alone: any sudo taken away, then every check. recipe.mjs's onImage runs it on
@@ -24,15 +21,6 @@ ARCHIL_SHA256_ARM64=10ed430e51c268af095dd9e6c7aa6cdbb951d2430d62a76458719db168f4
 HELPER=/usr/local/sbin/agentrun-archil
 
 here=$(dirname "$0")
-
-# The base is Debian, read from its os-release file: apt is how every package comes in, and Debian's names them (Ubuntu
-# has apt, but no firefox-esr). Another base is refused here, before anything is installed.
-debian() {
-	grep -Eqs "^ID=[\"']?debian[\"']?\$" "$1" && return 0
-	name="$(sed -n "s/^PRETTY_NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}\$/\1/p" "$1" 2>/dev/null || :)"
-	echo "install.sh builds on Debian (its packages are Debian's, through apt), and this base is ${name:-unnamed} by $1: start FROM python:3.12-slim, debian:bookworm-slim or a vendor's base built on Debian" >&2
-	exit 1
-}
 
 # A coding agent's tools, FUSE, nftables and the archil client (checked by sha256), the tool user, and /workspace.
 packages() {
@@ -93,7 +81,7 @@ checked() {
 }
 
 case "$*" in
-"") debian /etc/os-release; packages; desktop; helper; checked ;;
+"") packages; desktop; helper; checked ;;
 checked) checked ;;
 *) echo "usage: sh install.sh [checked]" >&2; exit 2 ;;
 esac
