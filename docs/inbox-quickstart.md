@@ -40,8 +40,8 @@ make each app password, the ports, and why Outlook isn't offered: [Your mail acc
    You see the whole package, its instructions included, before anything is stored.
 3. Tick **I trust Parcha-ai** and press **Install**.
 4. Press **Configure** and enter your name and your email address.
-5. Open the menu on the arrow beside **Run**, choose **API playground**, and press **Apply** there. Your name and
-   address come along. (**Run** itself hands the setup to a coding agent such as Claude Code or Codex instead.)
+5. Press **Apply**. With no mailbox saved, Apply stays off and the page links you to **Settings → Email** (step 3).
+   (**Set it up with an agent** hands the setup to a coding agent such as Claude Code or Codex instead.)
 
 The assistant runs on Codex. It starts from the moment you apply: mail already in your inbox starts nothing.
 
