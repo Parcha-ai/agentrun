@@ -1705,9 +1705,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const composioLeft = async (name: string, dropped: ComposioDropped) =>
     "unusable" in dropped && (dropped.mcp || dropped.cleanup.remove.length) ? composioNote(name, dropped.cleanup, dropped.mcp ?? false, true)
       : await composioForget(options.composioControl ?? {}, "key" in dropped ? dropped.key : "", dropped.mcp, name, stopping.signal, dropped.cleanup);
-  // The MCP servers' saves (the Composio preset's and the ordinary ones) and deletes, one at a time, Composio's calls
-  // included: a delete never removes there an auth config or account that a save still at Composio reuses (it would find
-  // no record of it yet), and a save never reuses one a delete is removing. A failure of one never stops the next.
+  // The Composio preset's saves, the saves of the servers it made, and the MCP servers' deletes, one at a time, Composio's
+  // calls included: a delete never removes there an auth config or account that a save still at Composio reuses (it would
+  // find no record of it yet), and a save never reuses one a delete is removing. A failure of one never stops the next.
   let composioLast: Promise<unknown> = Promise.resolve();
   const inComposioTurn = <T>(work: () => Promise<T>): Promise<T> => {
     const turn = composioLast.then(work, work);
@@ -3748,11 +3748,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
         const body = await bodyOf(req);
-        // In the Composio turn: a save that moves a preset server off Composio removes there what its save made (the MCP
-        // server, then what no other saved server uses), as a delete does, with the key it was saved with, and says so.
+        const saving = (dropped?: (left: ComposioDropped) => void) => mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, dropped);
+        // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
+        if (!(await mcpServers.composioPreset(id))) {
+          const saved = await saving();
+          await refreshMcpMeta();
+          return send(res, 200, saved);
+        }
+        // A preset server's, in the Composio turn: a save that moves it off Composio removes there what its save made (the
+        // MCP server, then what no other saved server uses), as a delete does, with the key it was saved with, and says so.
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
-          const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left));
+          const saved = await saving((left) => (over.dropped = left));
           await refreshMcpMeta();
           return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
         });

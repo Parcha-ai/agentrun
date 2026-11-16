@@ -358,7 +358,8 @@ export class McpServersOverStore {
       // new address names the same Composio MCP server, which still stands on it.
       const before = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
       await this.store.settings.remove(composioMadeKey(name));
-      if (before && leftMcp) {
+      // Only for a caller in the Composio turn (`dropped`), so no preset save still at Composio is counted out.
+      if (before && leftMcp && dropped) {
         const others = (await this.composioRecords()).filter(([other]) => other !== name);
         const done = cleanupOf(before, others.map(([other, record]): [string, ComposioMade] => [other, record]));
         await this.handOver(others, done.handover);
@@ -455,6 +456,13 @@ export class McpServersOverStore {
     const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
     if (credential && removed) void this.track(this.signIns.revoke(credential.set as TokenSet, removed.url, this.stopped.signal));
     return preset ? { composio: composioHandleOf(removed, cleanup) } : {};
+  }
+
+  /** Whether `name` is a Composio preset server now (auth headers, source composio): a save of it takes the Composio turn,
+   *  since one that moves it off Composio removes there what the preset made for it. */
+  async composioPreset(name: string): Promise<boolean> {
+    const row = await this.store.mcp.server(name);
+    return row !== undefined && row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
   }
 
   /** Writes each record a cleanup passes a thing to (composio-made.ts `handover`), for its own row of `others`. */
