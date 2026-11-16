@@ -2273,9 +2273,12 @@ both servers and sends nothing; `DELETE` forgets the account.
 **The trigger.** `{kind: "email", mailbox?: "INBOX", every_s?: 60, accept?}` reads the mailbox every `every_s` seconds
 and starts a run for each new message its `accept` takes (a rule's `where` reads `/from`, `/to`, `/subject`, `/text`).
 It watches from when it is made or turned on: the messages already there, and any that came while it was off, start no
-runs, and its note says so ("Watching INBOX from now: the 3 messages already there won't start runs."). Mail this server
-sent starts none. A mail server out of reach is said in `last_check` and tried at the next time; one that refuses the
-sign-in 3 times in a row turns the trigger off (`sign_in_refused`) until the account is fixed and it is turned on again.
+runs, and its note says so ("Watching INBOX from now: the 3 messages already there won't start runs."). Its first check
+runs at once; its result is `last_check` (null until it lands). When the first checks fail, the first that signs in says
+"Couldn't check INBOX until now; watching from now: ...". An edit of its filter or `every_s` keeps its place. Mail this
+server sent starts none. A mail server out of reach is said in `last_check` and tried at the next time; one that refuses the
+sign-in 3 times in a row (its first check's among them) turns the trigger off (`sign_in_refused`) until the account is
+fixed and it is turned on again.
 
 **The tools.** `email_search`, `email_read`, `email_draft`, `email_send` and `email_file`, host tools on every harness.
 Reading leaves mail unread, `email_draft` sends nothing, and `email_file` files under a label or folder and never deletes.
