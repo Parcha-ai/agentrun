@@ -37,6 +37,12 @@ const made = (result) => {
 	assert.equal(result.ok, true, result.ok ? "" : `${result.error.code}: ${result.error.message}`);
 	return result.value;
 };
+/** Waits for step (a deferred an onStep resolves), failing in words if the create it waits on answers first. */
+const reached = (step, create, what) => {
+	let came = false;
+	step.promise.then(() => (came = true));
+	return Promise.race([step.promise, create.then((result) => came || assert.fail(`the create answered before ${what}: ${JSON.stringify(result)}`))]);
+};
 const fileOf = (m) => (m.file === undefined ? undefined : JSON.parse(m.file));
 const reads = (fake) => (fake.labelRuns ?? []).filter((run) => !run.write).length;
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -158,7 +164,7 @@ test("the label script, run by sh: write replaces the file from stdin, 0600 in a
 	}
 });
 
-test("two instances, one request: a sweep of the request's name leaves another instance's machine with no labels written yet, and takes it once it is older than any create's write", async () => {
+test("two instances, one request: a sweep of the request's name leaves another instance's machine with no labels written yet, and takes it once it is older than any create's write", { timeout: 20_000 }, async () => {
 	const gate = deferred();
 	const held = deferred();
 	let holding = false;
@@ -174,7 +180,7 @@ test("two instances, one request: a sweep of the request's name leaves another i
 	});
 	const requestId = `two-instances-${++requests}`;
 	const a = provider(fake.host).create(SPEC, { requestId });
-	await held.promise;
+	await reached(held, a, "its first label run");
 	const [mine] = fake.machines.values();
 	assert.equal(mine.name, nameOf(requestId));
 	assert.equal(mine.file, undefined, "A's machine has no label file yet");
@@ -200,7 +206,7 @@ test("two instances, one request: a sweep of the request's name leaves another i
 	assert.equal((await a).ok, false, "A's create finds its machine gone");
 });
 
-test("a retry of a request on another instance, while the first create has not written its labels yet, waits for them and answers that computer: no second machine", async () => {
+test("a retry of a request on another instance, while the first create has not written its labels yet, waits for them and answers that computer: no second machine", { timeout: 20_000 }, async () => {
 	const gate = deferred();
 	const held = deferred();
 	const waiting = deferred();
@@ -220,9 +226,9 @@ test("a retry of a request on another instance, while the first create has not w
 	});
 	const requestId = `retry-unwritten-${++requests}`;
 	const a = provider(fake.host).create(SPEC, { requestId });
-	await held.promise;
+	await reached(held, a, "its first label run");
 	const b = provider(fake.host).create(SPEC, { requestId });
-	await waiting.promise;
+	await reached(waiting, b, "its third read of the first create's machine");
 	assert.equal(fake.machines.size, 1, "B makes no machine of its own while A's has no labels");
 	gate.resolve();
 	const [first, second] = [made(await a), made(await b)];
