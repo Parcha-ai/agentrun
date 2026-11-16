@@ -309,23 +309,6 @@ test("options.domain names the domain the key goes to, as COMPUTER_E2B_DOMAIN do
 	}
 });
 
-test("options.apiUrl is the API every SDK call goes to, beside the domain, for a vendor that runs E2B's API at its own URL; anything but an https URL is refused", async () => {
-	const rec = recorder();
-	const apiUrl = "https://cube.example.com:3000";
-	const provider = await create({ apiKey: KEY, domain: "cube.example.com", apiUrl, daemonPath: DAEMON_PATH, Sandbox: rec.Sandbox, timeouts: TIMEOUTS });
-	await provider.list({});
-	const opts = rec.calls.find(([name]) => name === "Sandbox.list")[1];
-	assert.equal(opts.apiUrl, apiUrl);
-	assert.equal(opts.domain, "cube.example.com", "the sandboxes' own domain, as given");
-	for (const bad of ["http://cube.example.com:3000", "cube.example.com", "https://cube.example.com/?k=v", "", 443]) {
-		await assert.rejects(create({ apiKey: KEY, apiUrl: bad, Sandbox: rec.Sandbox }), /E2B API URL must be an https URL/, bad);
-	}
-	// What a provider that builds on E2B's host gives it: its Sandbox class, the connection options and its request bound.
-	const host = new e2b.E2BHost(rec.Sandbox, e2b.connectionOptions({ apiKey: KEY, domain: "cube.example.com", apiUrl }), 2_000);
-	await assert.rejects(host.get("i0000000000000000001", { timeoutMs: 1_000 }), { name: "AuthenticationError" });
-	assert.equal(rec.calls.findLast(([name]) => name === "Sandbox.getInfo")[2].apiUrl, apiUrl);
-});
-
 test("create() asks E2B for the lifetime as its timeout in whole seconds, the labels, no internet, no public traffic, and kill at the timeout", async () => {
 	const calls = [];
 	const Sandbox = {

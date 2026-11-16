@@ -811,7 +811,7 @@ test("release waits until get answers none: a machine the vendor still reads gon
 	assert.match(stuck.error.message, /read it gone/);
 });
 
-test("a vendor's record of a deleted machine (a tombstone: Runloop's shutdown, Blaxel's TERMINATED) is undefined from get and left out of list, so release ends at once; read gone, it holds release to goneMs", async () => {
+test("a vendor's record of a deleted machine (a tombstone: Hyperbrowser's closed, Blaxel's TERMINATED) is undefined from get and left out of list, so release ends at once; read gone, it holds release to goneMs", async () => {
 	// The vendor keeps the record for longer than goneMs. A host that reads it gone (lingers, state gone):
 	const kept = setup({}, { lingers: { reads: 10_000, lists: 10_000, state: "gone" } });
 	const waited = await kept.provider.release(made(await create(kept.provider)), "delete");

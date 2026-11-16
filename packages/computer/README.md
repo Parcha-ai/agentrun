@@ -1738,8 +1738,7 @@ option, never the key. It reads no setting from the environment (see [Settings](
 `E2B_API_KEY`, and the conformance module the `COMPUTER_E2B_API_KEY` it reads, never `E2B_API_KEY`, whose value may be
 another team's on a shared host. The SDK reads `E2B_API_KEY`, `E2B_DOMAIN`, `E2B_API_URL` and `E2B_DEBUG` from
 `process.env` whenever it is not given them (`index.mjs:1140-1152`, `1177-1191`), so every call is given the key, the
-domain (`options.domain`, default `e2b.app`), the API URL (`options.apiUrl`, an https URL, default
-`https://api.<domain>`) and `debug: false` explicitly: with
+domain (`options.domain`, default `e2b.app`), the API URL `https://api.<domain>` and `debug: false` explicitly: with
 debug on, the SDK fakes a create and skips a kill (`index.mjs:5402`, `6021-6024`). The SDK also takes
 `E2B_SANDBOX_URL` when it is given no sandbox URL, and no option clears it (`index.mjs:1152`, `1183-1185`): it would
 send every call into a sandbox, the upload and the bridge with it, there. So the provider refuses to start while it is

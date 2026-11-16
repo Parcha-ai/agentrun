@@ -38,7 +38,7 @@ export interface MachineHost {
 	/**
 	 * One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a
 	 * HostError not_found), and for a record the vendor keeps of a machine that is deleted and will not come back
-	 * (Runloop's shutdown, Blaxel's TERMINATED), which list leaves out too. gone is one still being destroyed: it holds
+	 * (Hyperbrowser's closed, Blaxel's TERMINATED), which list leaves out too. gone is one still being destroyed: it holds
 	 * the wait after a delete, so a host that reads a kept record gone waits out goneMs on every delete.
 	 */
 	get(id: string, ctx: HostCall): Promise<Machine | undefined>;
