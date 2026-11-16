@@ -439,10 +439,11 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	#labelsOver(spec: ComputerSpec): { bytes: boolean; why: string } | undefined {
 		const { count, bytes: max, packed } = this.host.facts.labels ?? {};
-		// A name and two ISO times, as long as create's and as random: a packed map deflates them as it does create's, give
-		// or take a byte, and create packs its own before the host's call (#packedOver).
-		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const labels = this.#labelsOf(spec, name, new Date().toISOString(), new Date(Date.now() + this.#maxLifetimeMs).toISOString());
+		// Stand-ins as long as create's name and deadlines and as mixed, fixed so a spec's answer never changes (attach and a
+		// retry check the spec again): a packed map deflates them as it does create's, give or take a byte, and create packs
+		// its own before the host's call (#packedOver).
+		const name = "computer-5f3a9c1e7b2d";
+		const labels = this.#labelsOf(spec, name, "2026-11-16T04:15:29.481Z", "2026-11-17T04:05:29.481Z");
 		if (packed) {
 			const why = this.#packedOver(labels, name);
 			return why === undefined ? undefined : { bytes: true, why };
