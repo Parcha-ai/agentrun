@@ -39,7 +39,9 @@ make each app password, the ports, and why Outlook isn't offered: [Your mail acc
 2. Paste `github:Parcha-ai/agentrun-templates/templates/inbox-assistant@main` and press **Read it**.
    You see the whole package, its instructions included, before anything is stored.
 3. Tick **I trust Parcha-ai** and press **Install**.
-4. Press **Configure**, enter your name and your email address, and press **Apply**.
+4. Press **Configure** and enter your name and your email address.
+5. Open the menu on the arrow beside **Run**, choose **API playground**, and press **Apply** there. Your name and
+   address come along. (**Run** itself hands the setup to a coding agent such as Claude Code or Codex instead.)
 
 The assistant runs on Codex. It starts from the moment you apply: mail already in your inbox starts nothing.
 
@@ -87,8 +89,9 @@ Microsoft sign-in, which AgentRun doesn't do yet.
 AgentRun also connects Gmail through [Composio](tutorials/composio.md). Pick by where your server runs and what your
 account allows:
 
-- **This page's email account** keeps your mail between your computer and your provider: the app password is sealed
-  on your computer and no other service sees your mail. It works on a laptop with no public address (the trigger
+- **This page's email account** connects your computer straight to your provider over IMAP: the app password is
+  sealed on your computer and no service sits in between. The assistant's model still reads the emails it handles,
+  so their text goes to OpenAI on your ChatGPT plan. It works on a laptop with no public address (the trigger
   checks the inbox every minute), with any IMAP provider. The inbox template uses it.
 - **Composio's Gmail** signs in with Google through Composio, so it fits a Google account whose admin turned app
   passwords off but allows Composio. Your mail goes through Composio, you need a Composio API key, and its triggers
