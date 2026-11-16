@@ -77,7 +77,8 @@ test("email_send on allow: a run's first 5 sends go unasked; the 6th asks, sayin
   // The pause let the run's claim go: the 7th send is asked on a new host, the count read from the run's record.
   const seventh = await until(async () => {
     const now = await settled(api, runId);
-    return now.status !== "input_required" || now.pending?.id !== sixth.pending.id ? now : undefined;
+    // The run's view can read "working" a moment after the allow: only a new ask or its end settles it.
+    return (now.status === "input_required" && now.pending?.id !== sixth.pending.id) || ["completed", "failed"].includes(now.status) ? now : undefined;
   }, 55_000);
   assert.equal(faux.sent().length, 6, "the approved 6th sent");
   assert.equal(seventh?.status, "input_required", `the 7th asks too: ${JSON.stringify(seventh?.pending)}`);

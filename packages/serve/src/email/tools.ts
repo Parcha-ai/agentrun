@@ -16,7 +16,7 @@
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
 import { forModel } from "../result.js";
-import type { ToolBinding, ToolEntry, ToolHost } from "../tools.js";
+import type { AskContext, ToolBinding, ToolEntry, ToolHost } from "../tools.js";
 import { isObject } from "../validate.js";
 import { isGmailAccount, keepsSentCopy, keptAccount, NO_ACCOUNT, openAccount, type OpenedAccount } from "./account.js";
 import { EMAIL_ANSWER_MAX_CHARS, emailError, emailText } from "./answer.js";
@@ -36,6 +36,9 @@ const THREAD_IDS = 50;
 const THREAD_READ_MAX = 20;
 const THREAD_READ_BYTES = 10 * EMAIL_ANSWER_MAX_CHARS;
 const THREAD_OMITTED_MAX = 100;
+/** The most emails a run sends before each one after asks a person, whatever email_send's setting: two auto-responders
+ *  answering each other stop there. */
+export const SEND_CAP = 5;
 /** The most addresses a draft or a send names, to and cc together. */
 const MAX_RECIPIENTS = 50;
 /** The longest text a draft or a send carries. */
@@ -186,6 +189,22 @@ class Mail {
     if (!thread.size) return [];
     const inside = new Set(await session.uids(session.threadQuery([...thread])));
     return found.filter((uid) => inside.has(uid));
+  }
+
+  /** The thread's people, lowercased: the account's own address and every From, To and Cc of the thread's messages (those
+   *  `allows` takes), across the account's mailboxes; undefined when the run reads the whole account. */
+  async people(session: ImapSession): Promise<Set<string> | undefined> {
+    const ids = await this.thread(session);
+    if (!ids) return undefined;
+    const people = new Set([this.account.address.trim().toLowerCase()]);
+    if (!ids.size) return people;
+    for (const path of await session.searchable()) {
+      await session.open(path);
+      for (const head of await session.heads(path, await session.uids(session.threadQuery([...ids])))) {
+        if (inThread(head, ids) && (await this.allows(session, head))) for (const one of [head.from, ...head.to, ...head.cc]) people.add(one.trim().toLowerCase());
+      }
+    }
+    return people;
   }
 
   /** Whether `m` is in the run's scope. On a thread: a message linked to the one that started the run (by its ids,
@@ -360,6 +379,45 @@ async function send(mail: Mail, args: Record<string, unknown>, runId: string) {
   return { sent: true, message_id: built.messageId, ...(rejected.length ? { rejected } : {}), ...(notes.length ? { note: notes.join("; ") } : {}) };
 }
 
+/** "a", "a and b", "a, b and c". */
+const listed = (names: readonly string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+
+/** Why an email_send its setting allows asks a person anyway (tools.ts ToolEntry.asks), or nothing: the run has sent
+ *  SEND_CAP emails or more (its record's count, across pauses); or, on a run that reads only its email's thread (email_read's
+ *  scope), it sends to someone outside the thread's people (Mail.people), each named. Both, when both. A thread that can't
+ *  be read asks too, saying so. A call whose arguments don't read asks nothing: the tool refuses it in its own words. */
+export async function sendAsks(args: Record<string, unknown>, ctx: AskContext): Promise<string | undefined> {
+  const why: string[] = [];
+  const sent = await ctx.ran(EMAIL_SEND);
+  if (sent >= SEND_CAP) why.push(`this run has sent ${sent} emails`);
+  const outside = await outsideWords(ctx.host, args);
+  if (outside) why.push(outside);
+  return why.length ? why.join("; ") : undefined;
+}
+
+/** The recipients of the send `args` outside the run's thread, in words; nothing on a run that reads the whole account. */
+async function outsideWords(host: ToolHost, args: Record<string, unknown>): Promise<string | undefined> {
+  const scope = await scopeOf(host, EMAIL_READ);
+  if (scope.kind === "mailbox" || !host.store || !host.sealKey) return undefined;
+  let recipients: string[];
+  try {
+    const letter = letterOf(args);
+    recipients = [...new Set([...letter.to, ...letter.cc].map((one) => one.toLowerCase()))];
+  } catch {
+    return undefined;
+  }
+  try {
+    const account = await openAccount(host.store, host.sealKey);
+    if (!account) return undefined;
+    const mail = new Mail(account, scope, threadOf(host));
+    const people = await withMail(mail, (session) => mail.people(session));
+    const outside = people ? recipients.filter((one) => !people.has(one)) : [];
+    return outside.length ? `${listed(outside)} ${outside.length === 1 ? "is" : "are"} outside this email's thread` : undefined;
+  } catch (error) {
+    return `its recipients couldn't be checked against this email's thread (${(error as Error)?.message ?? String(error)})`;
+  }
+}
+
 /** The names email_file refuses whatever the account flags: the trash and junk folders by their usual names. */
 const BINS = new Set(["trash", "junk", "spam", "[gmail]/trash", "[gmail]/spam", "\\trash", "\\junk"]);
 /** A folders server's answer to an explicit archive: false, a filing that would keep the message in the inbox. */
@@ -446,7 +504,7 @@ const TOOLS: Record<string, { description: string; properties: Record<string, un
     run: (mail, args) => draft(mail, args),
   },
   [EMAIL_SEND]: {
-    description: "Send an email from the server's account, as plain text; in_reply_to (a message_id) threads it as a reply. A copy is filed in Sent. Answers JSON {sent: true, message_id, rejected?, note?}: rejected, the addresses the mail server refused (the rest got it; nobody is sent to again), and note says so.",
+    description: `Send an email from the server's account, as plain text; in_reply_to (a message_id) threads it as a reply. A copy is filed in Sent. Answers JSON {sent: true, message_id, rejected?, note?}: rejected, the addresses the mail server refused (the rest got it; nobody is sent to again), and note says so. Past ${SEND_CAP} sends in a run, each send asks a person first; so does one, on a run an email started, to anyone outside that email's thread.`,
     properties: { to: ADDRESSES, cc: ADDRESSES, subject: STRING, text: { type: "string", description: "The message, as plain text." }, in_reply_to: { type: "string", description: "The message_id it answers." } },
     required: ["to", "subject", "text"],
     replay: "unsafe",

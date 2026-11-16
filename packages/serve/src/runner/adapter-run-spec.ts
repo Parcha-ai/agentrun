@@ -26,6 +26,7 @@ import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isWebHostTool } from "../tool-list.js";
+import { ASKED_BECAUSE } from "../refusal-words.js";
 import { type ArgumentsOf, deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
@@ -303,7 +304,7 @@ export type RunPermissions = {
   readonly refresh: () => Promise<void>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -315,9 +316,17 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   const gate = runGate({ ...where, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
+  // The host the run's tools bind through, once the spec has made it (askedOn): a tool's own ask reads it.
+  let host: ToolHost | undefined;
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
     current = await storeSettings(store);
     const decision = await gate.decide(call.tool, call.args, options);
+    // A call its setting allows that its tool asks about itself (ToolEntry.asks: email_send past its cap, or to someone
+    // outside the run's thread): put to a person with the tool's reason on its card, whatever the setting; where no one
+    // can approve, refused in those words. No tool's name is read here: the reason is the tool's.
+    const asksOf = decision === "allow" && host && options.ran ? toolOf(call.tool)?.asks : undefined;
+    const because = asksOf ? await asksOf((call.args ?? {}) as Record<string, unknown>, { host: host!, ran: options.ran! }) : undefined;
+    if (because !== undefined) return approvers ? { ask: { [ASKED_BECAUSE]: because } } : { deny: noApproverText(gate.askedAs(call.tool, call.args), options.replayed ? "unknown" : "no", because) };
     // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings: one set to deny refuses the
     // whole call in the gate's words before any node runs, nothing sent; the actions set to ask are put to a person on the
     // call's one card, up front, each with its arguments' shape (learnedAskShown), and the person's allow passes the
@@ -349,7 +358,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
+  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -664,6 +673,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const web = deps.webFakes?.(runRow.agentId);
   const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(web ? { web } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.

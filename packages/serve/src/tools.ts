@@ -173,6 +173,10 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
  *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
 export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
+/** What a tool's own ask (ToolEntry.asks) reads: the run's host, and how many calls of a tool the run has run to a good
+ *  end, from the run's record (its journal), so a pause and a new host count them all. */
+export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number> };
+
 export type ToolEntry = {
   /** One line, for capabilities. */
   summary: string;
@@ -192,6 +196,9 @@ export type ToolEntry = {
   /** No agent whose place is a sandbox may name it: it writes the run's work/ from this machine by paths a box's command
    *  could turn through a link (runnable.ts). */
   runnerOnly?: true;
+  /** On the runner, before the intent of a call its setting allows: why this call asks a person anyway, in words (shown
+   *  on its approval), or nothing. No setting lifts it; where no one can approve, the call is refused in those words. */
+  asks?(args: Record<string, unknown>, ctx: AskContext): Promise<string | undefined>;
 };
 
 const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
@@ -199,12 +206,13 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
   bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
 });
 
-/** An email tool (email/tools.ts emailEntry), its binding loaded at its first bind. */
+/** An email tool (email/tools.ts emailEntry), its binding loaded at its first bind; email_send's own ask (sendAsks) too. */
 const emailTool = (name: string, summary: string): ToolEntry => ({
   summary,
   needs: [],
   nodes: false,
   bind: async (host) => (await import("./email/tools.js")).emailEntry(name, summary).bind(host),
+  ...(name === EMAIL_SEND ? { asks: async (args: Record<string, unknown>, ctx: AskContext) => (await import("./email/tools.js")).sendAsks(args, ctx) } : {}),
 });
 
 /** web_fetch, bound under `name`. */

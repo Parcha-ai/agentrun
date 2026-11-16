@@ -28,7 +28,7 @@ import type { CostParts } from "@parcha/agentrun-kernel";
  *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
-import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
+import { ASKED_BECAUSE, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -481,18 +481,19 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
 /** The tools whose approval card says what the call does in words: email_send's to whom and what, email_file's which
  *  message and where. */
 const SUMMARIES: Record<string, (args: unknown) => string | undefined> = { [EMAIL_SEND]: sendSummary, [EMAIL_FILE]: fileSummary };
-/** A call's approval summary, where its tool has one (SUMMARIES), redacted as its arguments are. */
+/** A call's approval summary, where its tool has one (SUMMARIES), then why it asks when its tool asked about it itself
+ *  (the card's ASKED_BECAUSE, the gate's), redacted as its arguments are. */
 function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
   const summarize = Object.hasOwn(SUMMARIES, approval.tool) ? SUMMARIES[approval.tool]! : undefined;
-  if (!summarize) return {};
   let args: unknown;
   try {
     args = JSON.parse(approval.args_json);
   } catch {
     return {};
   }
-  const summary = summarize(args);
-  return summary === undefined ? {} : { summary: redact(summary) };
+  const because = typeof args === "object" && args !== null && typeof (args as Record<string, unknown>)[ASKED_BECAUSE] === "string" ? ((args as Record<string, unknown>)[ASKED_BECAUSE] as string) : undefined;
+  const parts = [summarize?.(args), because === undefined ? undefined : `Asks because ${because}.`].filter((part): part is string => part !== undefined);
+  return parts.length ? { summary: redact(parts.join("\n\n")) } : {};
 }
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
