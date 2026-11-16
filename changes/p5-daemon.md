@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-computer
+kind: feature
+---
+A machine the server cannot reach can dial it: `computerd attach` opens the attach socket (`spec/computer/attach.md`) with the machine's token from `AGENTRUN_ATTACH_URL` and `AGENTRUN_ATTACH_TOKEN`, and bridges each socket to init's as `computerd stdio` does, a text message a line. It pings every 20 s, closes with 4408 after 60 s with nothing heard, and redials as attach.md's close codes say; it stops on 401/4401, 4400 and 426/4426 with exit codes 3, 4 and 5. Its WebSocket client is the standard library's alone (the daemon still has no dependency), fuzz-tested on masking, fragments, ping and pong, close codes, and truncated and oversized frames. No line it logs holds the token.
+The box image's `install.sh` writes `/usr/local/bin/agentrun-dial`, which the Dockerfile's `CMD` runs when the create set `AGENTRUN_ATTACH_URL`: it fetches the server's `computerd` with the token, checks it against `AGENTRUN_DAEMON_SHA256` before anything runs, starts `computerd init $AGENTRUN_INIT_ARGS` in a clean environment without the token, and becomes `computerd attach`. The recipe's hash covers `install.sh` and the Dockerfile, so this is a new box image.
