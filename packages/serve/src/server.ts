@@ -1685,7 +1685,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The email trigger's account, its password opened as it polls (email/account.ts): never kept in the engine.
     // A feed trigger's reach: where its reads may go, as an MCP server's requests may (mcp-oauth.ts feedAt), and a test's
     // or an eval's route to its fake feeds (feedsAt).
-    credentials: async (kind) => (kind === "email" ? openAccount(store, sealKey) : kind === "feed" ? { ...(await mcpServers.feedReach()), ...(options.feedsAt ? { route: options.feedsAt } : {}) } : undefined),
+    credentials: async (kind) => (kind === "email" ? openAccount(store, sealKey) : kind === "feed" ? { ...(await mcpServers.outboundReach()), ...(options.feedsAt ? { route: options.feedsAt } : {}) } : undefined),
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
     // (trigger-targets.ts, over the run write half and the run view): targetIssues, start, message, statusOf, runOf. The
