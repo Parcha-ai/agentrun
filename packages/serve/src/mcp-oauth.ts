@@ -105,6 +105,22 @@ export const systemNetwork: OAuthNetwork = {
   },
 };
 
+/** The authorization endpoints, by host, that give a refresh token only when the sign-in asks for offline access in
+ *  their own words, and the parameters that ask: Google's, which gives one only with access_type=offline, and on a
+ *  sign-in again only with prompt=consent. The page the owner opens there carries them (askingOffline); any other
+ *  authorization server's is the SDK's, unchanged. */
+const OFFLINE_ACCESS: Readonly<Record<string, Readonly<Record<string, string>>>> = { "accounts.google.com": { access_type: "offline", prompt: "consent" } };
+
+/** `url`, the authorization page the owner opens (the discovered authorization endpoint, as the SDK builds it), with
+ *  what its host asks for a refresh token (OFFLINE_ACCESS), each once; any other host's, as it is. */
+function askingOffline(url: URL): URL {
+  const asks = Object.hasOwn(OFFLINE_ACCESS, url.hostname) ? OFFLINE_ACCESS[url.hostname] : undefined;
+  if (!asks) return url;
+  const out = new URL(url);
+  for (const [key, value] of Object.entries(asks)) out.searchParams.set(key, value);
+  return out;
+}
+
 /** A request the address check refused before anything was sent (checked's words): no try again reaches it. */
 export class EndpointRefused extends Error {
   override name = "EndpointRefused";
@@ -469,7 +485,7 @@ export class McpSignIns {
       saveClientInformation: (client) => void (entry.client = client),
       tokens: () => undefined,
       saveTokens: (tokens) => hooks.saved?.(tokens),
-      redirectToAuthorization: (url) => hooks.redirect?.(url),
+      redirectToAuthorization: (url) => hooks.redirect?.(askingOffline(url)),
       saveCodeVerifier: (verifier) => void (entry.verifier = verifier),
       codeVerifier: () => entry.verifier ?? "",
       // Checked before anything discovery found is used: registration, the page the owner opens, the code exchange.
