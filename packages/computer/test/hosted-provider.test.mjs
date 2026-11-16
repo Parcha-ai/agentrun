@@ -1439,6 +1439,34 @@ test("facts.labels.packed: the adapter's real labels (a deadline, an image ref, 
 	assert.equal(none.error?.code, "refused");
 	assert.match(none.error.message, /^labels: a Fakehost computer keeps its labels packed, and its labels pack into 2 labels of \d+ bytes in all, past the 100 bytes it keeps/);
 	assert.deepEqual(small.fake.calls, [], "no host call");
+	// A map past what unpackLabels inflates (1 MiB of JSON) is refused, though it deflates to almost nothing.
+	assert.match(packLabels({ a: "x".repeat(1 << 20) }, name).problem, /as JSON, past the 1048576 a packed map holds/);
+	const most = { a: "x".repeat((1 << 20) - 8) };
+	assert.deepEqual(unpackLabels(packLabels(most, name).labels), most, "at the bound: read back");
+});
+
+test("facts.labels.packed at the edge: whatever check() let through, create never gives the host labels that don't fit; one whose own deadlines pack a part longer is refused before any host call", async () => {
+	const spec = { ...SPEC, image: "ghcr.io/parcha-ai/agentrun-box@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" };
+	// The real map's one part, from a create on a packed host with room.
+	const roomy = packedHost(fakeHost(), { packed: {} });
+	made(await create(new HostedProvider(roomy, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), spec));
+	const part = VALUES.packLabels(roomy.requests[0].labels, roomy.requests[0].name).labels["agentrun-0"].length;
+	// One name and one part: the part's room steps across the map's length, so some creates land on the edge.
+	const sizes = [];
+	for (let valueBytes = part - 6; valueBytes <= part + 6; valueBytes++) {
+		const fake = fakeHost();
+		const host = packedHost(fake, { count: 2, packed: { valueBytes } });
+		const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const result = await create(provider, spec);
+		if (result.ok) sizes.push(["made", valueBytes]);
+		else {
+			assert.equal(result.error.code, "refused", result.error.message);
+			assert.match(result.error.message, /keeps its labels packed, and its labels pack into 3 labels/);
+			assert.equal(host.requests.length, 0, `${valueBytes}: no labels that don't fit reach the host`);
+			sizes.push(["refused", valueBytes]);
+		}
+	}
+	assert.ok(sizes.some(([what]) => what === "made") && sizes.some(([what]) => what === "refused"), JSON.stringify(sizes));
 });
 
 test("Archil: a higher epoch fences the create: nothing mounted, init never starts, and the machine is deleted", async () => {

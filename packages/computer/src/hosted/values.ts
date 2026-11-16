@@ -24,6 +24,8 @@ export function dateOf(value: unknown, unit: "ms" | "s" = "ms"): Date | undefine
 export const PACKED_NAME = "agentrun";
 /** The packed map's parts: agentrun-0, agentrun-1, and on. */
 const PART = `${PACKED_NAME}-`;
+/** The most bytes of a packed map's JSON: unpackLabels inflates no more. */
+const PACKED_JSON_MAX = 1 << 20;
 
 /**
  * A machine's labels as a vendor whose labels can't hold them as they are stores them (facts.labels.packed): a cap of 5
@@ -31,10 +33,12 @@ const PART = `${PACKED_NAME}-`;
  * filters on, holds name; the whole map, as JSON, deflated and base64url, goes in parts of at most valueBytes. Every name
  * is at most 11 bytes of [a-z0-9-], every value [A-Za-z0-9_-] with a letter or digit at each end, and no "=", so a
  * host of a string list stores each as name=value. unpackLabels reads the map back exactly. A map that does not fit
- * room (count, bytes and valueBytes, of the packed labels) is refused in words.
+ * room (count, bytes and valueBytes, of the packed labels), or whose JSON is past PACKED_JSON_MAX, is refused in words.
  */
 export function packLabels(labels: Record<string, string>, name: string, room: HostFacts["labels"] = {}): { labels: Record<string, string> } | { problem: string } {
-	const payload = deflateRawSync(JSON.stringify(labels)).toString("base64url");
+	const json = Buffer.from(JSON.stringify(labels));
+	if (json.length > PACKED_JSON_MAX) return { problem: `its labels come to ${json.length} bytes as JSON, past the ${PACKED_JSON_MAX} a packed map holds` };
+	const payload = deflateRawSync(json).toString("base64url");
 	const { count, bytes, packed } = room;
 	// base64url can begin or end with - or _, which a Kubernetes value can't: each part is wrapped in a letter.
 	const size = (packed?.valueBytes ?? payload.length + 2) - 2;
@@ -54,7 +58,7 @@ export function unpackLabels(stored: Record<string, string>): Record<string, str
 	for (let part = 0; stored[`${PART}${part}`] !== undefined; part++) payload += stored[`${PART}${part}`]?.slice(1, -1);
 	if (payload === "") return undefined;
 	try {
-		const map: unknown = JSON.parse(inflateRawSync(Buffer.from(payload, "base64url"), { maxOutputLength: 1 << 20 }).toString());
+		const map: unknown = JSON.parse(inflateRawSync(Buffer.from(payload, "base64url"), { maxOutputLength: PACKED_JSON_MAX }).toString());
 		return typeof map === "object" && map !== null && !Array.isArray(map) && Object.values(map).every((value) => typeof value === "string") ? (map as Record<string, string>) : undefined;
 	} catch {
 		return undefined;

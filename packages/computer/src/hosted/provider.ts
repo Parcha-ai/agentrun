@@ -186,6 +186,8 @@ const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu", "owner", "cpus", "memoryMb"]);
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
+/** What makes a computer's labels smaller, in words: the list only where its network is one. */
+const shorterWords = (labels: Record<string, string>) => `give a shorter image, mount folder${labels[NETWORK_LABEL]?.startsWith("allow:") ? ", network list" : ""} or labels`;
 const alive = (state: Machine["state"]) => state !== "gone";
 /** The codes of a create the vendor refused, which made nothing. */
 const REFUSED_CREATE: ReadonlySet<ComputerError["code"]> = new Set(["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"]);
@@ -432,17 +434,18 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * Why a spec's labels, with the adapter's own (#labelsOf, as create gives them, each deadline an ISO time at its
-	 * longest), are more, or come to more bytes, than the vendor takes (facts.labels); undefined when they fit.
+	 * longest), are more, or come to more bytes, or pack into more, than the vendor takes (facts.labels); undefined when
+	 * they fit.
 	 */
 	#labelsOver(spec: ComputerSpec): { bytes: boolean; why: string } | undefined {
 		const { count, bytes: max, packed } = this.host.facts.labels ?? {};
-		// An ISO time is 24 bytes whenever it is; a packed map's deflate reads one of today's as create's would.
-		const at = new Date().toISOString();
-		const labels = this.#labelsOf(spec, "computer-000000000000", at, at);
-		const shorter = `give a shorter image, mount folder${labels[NETWORK_LABEL]?.startsWith("allow:") ? ", network list" : ""} or labels`;
+		// A name and two ISO times, as long as create's and as random: a packed map deflates them as it does create's, give
+		// or take a byte, and create packs its own before the host's call (#packedOver).
+		const name = `computer-${randomBytes(6).toString("hex")}`;
+		const labels = this.#labelsOf(spec, name, new Date().toISOString(), new Date(Date.now() + this.#maxLifetimeMs).toISOString());
 		if (packed) {
-			const fit = packLabels(labels, "computer-000000000000", this.host.facts.labels);
-			return "problem" in fit ? { bytes: true, why: `${a(this.#label)} computer keeps its labels packed, and ${fit.problem}: ${shorter}` } : undefined;
+			const why = this.#packedOver(labels, name);
+			return why === undefined ? undefined : { bytes: true, why };
 		}
 		const keys = Object.keys(labels);
 		if (count !== undefined && keys.length > count) {
@@ -454,7 +457,13 @@ export class HostedProvider implements ComputerProvider {
 		const sizes = Object.entries(labels).map(([key, value]) => [key, Buffer.byteLength(key) + Buffer.byteLength(value)] as const);
 		const bytes = sizes.reduce((sum, [, size]) => sum + size, 0);
 		if (bytes <= max) return undefined;
-		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): ${shorter}` };
+		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): ${shorterWords(labels)}` };
+	}
+
+	/** Why labels don't fit packed (facts.labels.packed), in words; undefined when they fit or the host keeps them as they are. */
+	#packedOver(labels: Record<string, string>, name: string): string | undefined {
+		const fit = this.host.facts.labels?.packed ? packLabels(labels, name, this.host.facts.labels) : { labels };
+		return "problem" in fit ? `${a(this.#label)} computer keeps its labels packed, and ${fit.problem}: ${shorterWords(labels)}` : undefined;
 	}
 
 	/** A host call bounded by ms, the caller's signal when given. */
@@ -634,6 +643,9 @@ export class HostedProvider implements ComputerProvider {
 		const deadline = new Date(now + lifetimeMs).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		const labels = this.#labelsOf(spec, name, deadline, maxDeadline);
+		// check() packed stand-ins; these deflate a byte apart from them, so the host is never given labels that don't fit.
+		const over = this.#packedOver(labels, name);
+		if (over !== undefined) return this.#fail("refused", `labels: ${over}`);
 		const archil = spec.mount?.kind === "archil";
 		const user = this.#userOf(spec);
 		const commands = hostedCommands({
