@@ -481,3 +481,49 @@ test("a trigger an earlier server kept with a credential below the config's top 
   assert.ok(gone.status === 204 || gone.status === 200, JSON.stringify(gone.body));
   assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 0, "the delete removes both");
 });
+
+test("a refusal of Composio's that quotes the config as JSON, a sealed value holding a quote and a backslash: the answer and the log hold neither its raw nor its escaped form, and say Composio's words were withheld", async (t) => {
+  const core = `fake-hubspot-dev-${randomBytes(10).toString("hex")}`;
+  const key = `${core}"q\\b`;
+  const config = { app_id: "4242", developer_api_key: key };
+  const s = await setup(t, { composio: { fail: { path: "/upsert", status: 400, body: { error: { message: `Invalid trigger config: ${JSON.stringify(config)}` } } } } });
+  const res = await s.api("POST", "/triggers", { ...dealTrigger(key), source: { ...dealTrigger(key).source, config } });
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  const said = JSON.stringify(res.body);
+  assert.ok(!said.includes(core), "the refusal's answer holds no form of the value");
+  assert.match(res.body.error.fields[0].message, /\(HTTP 400\)/, "the step's status, in this server's words");
+  assert.match(res.body.error.fields[0].message, /withheld/, "Composio's own words are withheld");
+  assert.ok(!s.lines.some((l) => l.includes(core)), "no log line holds any form of the value");
+});
+
+test("a call that carries only the key: a refusal quoting the key JSON-escaped or percent-encoded holds no form of it", async (t) => {
+  const core = `fake-composio-${randomBytes(10).toString("hex")}`;
+  const apiKey = `${core}"q\\b+=/`;
+  const composio = await startFakeComposio({ apiKey, toolkits: { hubspot: { no_auth: false, tools: TOOLS } }, fail: { path: "/toolkits/hubspot", status: 400, body: { error: { message: `bad key ${JSON.stringify(apiKey)} at ?api_key=${encodeURIComponent(apiKey)}` } } } });
+  t.after(() => composio.close());
+  const server = await serve(t, { composioControl: { baseUrl: composio.baseUrl } });
+  const res = await server.api("PUT", "/settings/mcp-servers/hs/composio", { api_key: apiKey, toolkit: "hubspot", tools: ["HUBSPOT_LIST_DEALS"], user_id: "agentrun-qa" });
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.ok(!JSON.stringify(res.body).includes(core), `the refusal holds no form of the key: ${JSON.stringify(res.body)}`);
+  assert.match(res.body.error.fields[0].message, /\[the key\]/, "the key's place is said");
+});
+
+test("an Idempotency-Key replay of a run create gives back its input as sent, a nested {kind: composio, config} in it too; a trigger create's replay is still masked", async (t) => {
+  const s = await setup(t);
+  const input = { content: "inspect", item: { kind: "composio", config: { token: "example" } } };
+  const first = await s.api("POST", "/agents/triage/runs", { input }, { "idempotency-key": "run-nested" });
+  assert.ok([201, 202].includes(first.status), JSON.stringify(first.body));
+  const replay = await s.api("POST", "/agents/triage/runs", { input }, { "idempotency-key": "run-nested" });
+  assert.equal(replay.headers.get("idempotent-replayed"), "true");
+  assert.equal(JSON.stringify(replay.body.input), JSON.stringify(first.body.input), "the replay's input is byte for byte the first answer's");
+  assert.deepEqual(replay.body.input, input, "and it is the input as sent");
+  const record = JSON.parse(readFileSync(join(s.server.data, ".idempotency.json"), "utf8"));
+  const [, kept] = record.entries.find(([slot]) => slot.endsWith("\nrun-nested"));
+  assert.equal(kept.answer.body.input.item.config.token, "example", "the record keeps the run's input as sent");
+  const key = fakeKey();
+  const made = await s.api("POST", "/triggers", dealTrigger(key), { "idempotency-key": "deal-still" });
+  const again = await s.api("POST", "/triggers", dealTrigger(key), { "idempotency-key": "deal-still" });
+  assert.equal(again.headers.get("idempotent-replayed"), "true");
+  assert.equal(again.body.source.config.developer_api_key, MASK, "the trigger create's replay is masked");
+  assert.equal(again.body.id, made.body.id);
+});
