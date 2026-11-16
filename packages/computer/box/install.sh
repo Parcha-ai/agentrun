@@ -3,10 +3,10 @@
 # (python:3.12-slim, Debian). The Dockerfile copies this file and agentrun-archil into one folder and runs it, and that is
 # all it does. A vendor that builds images in its own account (a snapshot, a blueprint, a template) does the same: it
 # boots that base, puts both files in one folder there, runs `sh install.sh` as root, and snapshots the machine under a
-# name that carries the recipe's hash (recipe.mjs). A vendor that pulls a registry image, or needs its own agent in the
-# image, builds recipe.mjs's vendorDockerfile, which runs it on the vendor's base. Any base must be Debian: the packages
-# are Debian's, through apt, so the first step refuses another in words. The Dockerfile's comment says what each part of
-# the image is for.
+# name that carries the recipe's hash (recipe.mjs). A vendor that builds from a Dockerfile builds that one; one that
+# needs its own base or agent in the image builds recipe.mjs's vendorDockerfile, which runs this. Any base must be
+# Debian: the packages are Debian's, through apt, so the first step refuses another in words. The Dockerfile's comment
+# says what each part of the image is for.
 #
 #   sh install.sh            the whole build
 #   sh install.sh checked    the last step alone: any sudo taken away, then every check. recipe.mjs's onImage runs it on

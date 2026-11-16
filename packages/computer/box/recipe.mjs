@@ -9,8 +9,9 @@
 // before a template's steps, sudo among what it adds (install.sh says so), so on the image install.sh's last step runs
 // again, as root, and the Dockerfile's USER and CMD are the template's.
 //
-// And a vendor's Dockerfile (vendorDockerfile): the box image on the vendor's base, with its agent where the vendor needs
-// one, which prepareImage builds and pushes to the account's registry under that file's recipe hash.
+// And a vendor's Dockerfile (vendorDockerfile): the box image on the vendor's own base, with its agent where the vendor
+// needs one in the image, which prepareImage has built under that file's recipe hash. A vendor that builds from a
+// Dockerfile on our base (Hyperbrowser, Vercel) builds this folder's Dockerfile as it is.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -48,7 +49,7 @@ export function onImage(image, dockerfile = readFileSync(join(here, "Dockerfile"
 }
 
 /**
- * The box image on a vendor's base, for a vendor that pulls a registry image or needs its own agent in the image
+ * The box image on a vendor's base, for a vendor that needs its own base or agent in the image
  * (spec/computer/provider.md, "prepareImage"): FROM the base, as root; the agent's instructions; the box Dockerfile's
  * COPY and RUN lines, so install.sh's whole build runs once and its checked step comes after the agent; then the start
  * lines. With none given they clear any ENTRYPOINT the base has, which would take the box's CMD as its arguments, and

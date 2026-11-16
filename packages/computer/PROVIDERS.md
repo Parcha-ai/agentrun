@@ -441,38 +441,41 @@ vendor lists one while it is still being made, wait for it, bounded by `ctx.sign
 ends the same when run twice on one machine, so a retried build is safe. A first build takes minutes, once per account and recipe. The Core case `provider.prepare-image` calls
 `prepareImage` twice and fails a second call that builds, pulls or answers another image.
 
-If your vendor pulls a registry image (AWS AgentCore's ECR, by tag or digest), or needs its own agent in the image
-(Blaxel's and Baseten's sandbox API as the entrypoint), build a Dockerfile instead: `vendorDockerfile(base, { agent,
-start })` in `box/recipe.mjs` writes it. It starts `FROM` your vendor's base, as root, adds your `agent` lines, then
-runs `install.sh` once, after them, so its checked step comes last; `start` is your `ENTRYPOINT` (`[]` keeps the base's;
-none clears the base's and is the box's `CMD`). The base must be Debian: `install.sh` refuses another in words. Push the build to the
-account's registry under the `hash` it answers, the recipe's with that file in it, and look that tag up first. The
-registry provider in `test/conformance-image.test.mjs` runs this on the fake host:
+If your vendor builds images from a Dockerfile (Hyperbrowser's remote builder, `hx vm image build --remote`), or starts
+computers from your account's registry (Vercel Sandbox, from Vercel Container Registry: `vercel vcr build docker .
+agentrun-box:<hash> --push`), build the box Dockerfile as it is. Its context is the recipe's three files: the
+Dockerfile, `install.sh` and `agentrun-archil`. Name the image by the recipe's hash: `agentrun-box-<hash>` where the
+vendor takes a name (a Hyperbrowser team image is a name, not an OCI tag), the tag `agentrun-box:<hash>` where it takes
+a repository (Vercel). Find it by that name before you build; where there's no get by name, list the images and take
+the one of that name. The provider in `test/conformance-image.test.mjs` runs this on the fake host, with an in-memory
+builder:
 
 ```ts
 async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void } = {}): Promise<Result<string>> {
-	const { dockerfile, hash } = vendorDockerfile(VENDOR_BASE, { agent: VENDOR_AGENT, start: VENDOR_ENTRYPOINT });
-	const tag = `${this.repository}:${hash}`; // a new base, agent, entrypoint or install.sh is a new tag
+	const name = `agentrun-box-${boxRecipeHash()}`; // Vercel: the tag agentrun-box:<hash> in your project's VCR
 	const vendor = (this.host as VendorHost).client;
 	try {
-		const found = await vendor.findImage(tag, ctx); // the tag's digest, or undefined
-		if (found) return ok(found); // a second call ends here: no build, no onWait
-		ctx.onWait?.("build", tag);
+		const found = (await vendor.listImages(ctx)).find((image) => image.name === name && image.status === "ready");
+		if (found) return ok(found.name); // a second call ends here: no build, no onWait
+		ctx.onWait?.("build", name);
 		const box = (file: string) => readFile(new URL(`../box/${file}`, import.meta.url));
-		// your vendor's builder, or one of yours: build this context, push the tag, answer its digest
-		const context = { Dockerfile: dockerfile, "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") };
-		return ok(await vendor.buildAndPush(tag, context, ctx));
+		const context = { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") };
+		return ok(await vendor.build(name, context, ctx)); // the vendor's builder; it answers once the image is ready
 	} catch (error) {
-		return fail(codeOfError(this.host, error), `building the box image ${tag}: ${error instanceof Error ? error.message : String(error)}`);
+		return fail(codeOfError(this.host, error), `building the box image ${name}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 ```
 
-Two servers that build one tag at once each push a build of the same recipe, and the registry keeps the last: no
-refusal to catch, and either digest serves. Build
-for your vendor's architecture (AgentCore's is arm64; `install.sh` takes both). If your image is fixed when something
-of yours deploys (Cloudflare Containers' Worker), build the same Dockerfile at that deploy, and have no
-`prepareImage`. Fly Sprites take no custom image, so they carry no Archil mount and no desktop.
+An image of that name the vendor is still making (VCR's `Preparing`, a Hyperbrowser build under way) is another
+server's build of it: wait for it, bounded by `ctx.signal`, and don't build again. One that failed (VCR's `Error`) is a
+failure, in the vendor's words. Both vendors run amd64 alone, which the box Dockerfile builds. Vercel never runs an
+image's `ENTRYPOINT` or `CMD`, and Hyperbrowser takes them as launch defaults: the box's `sleep infinity` suits both,
+for the adapter starts what a computer runs through exec.
+
+A vendor that needs its own base or its agent in the image (Blaxel's and Baseten's sandbox API) builds
+`vendorDockerfile(base, { agent, start })` from `box/recipe.mjs` instead, named by the `hash` it answers. Any base must
+be Debian: `install.sh` refuses another in words. Fly Sprites take no custom image, so no Archil mount and no desktop.
 
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 

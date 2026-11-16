@@ -1,10 +1,10 @@
 // provider.prepare-image, the twice-call case: a provider with prepareImage() is asked for its image twice in one run,
 // and the second call finds the image the first made by its name, with no build and no pull. The providers here sit on
 // the fake host (test/fake-host.mjs) with an in-memory vendor that builds images by name, the shape PROVIDERS.md's
-// worked example has: boot the base, run box/install.sh, snapshot. And PROVIDERS.md's registry example, on an in-memory
-// registry: build box/recipe.mjs's vendorDockerfile, push it under its hash, find that tag first. No network, no vendor.
+// worked example has: boot the base, run box/install.sh, snapshot. And PROVIDERS.md's Dockerfile example, on an
+// in-memory builder: find the image by name in the vendor's list, or build the box Dockerfile under that name. No
+// network, no vendor.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -194,83 +194,76 @@ test("two servers that build the same recipe at once both answer its image: the 
 	assert.deepEqual(refusing.deleted, ["vm-1"]);
 });
 
-// --- the registry path: a vendor that pulls a registry image, or needs its own agent in the image ---
-
-const { vendorDockerfile } = await import("../box/recipe.mjs");
-/** The vendor's base, its agent and the entrypoint that starts it: a sandbox API the vendor needs as the first process. */
-const VENDOR = { base: "vendor.example/base:bookworm", agent: ["COPY --from=vendor.example/sandbox-agent:1.4 /sandbox-agent /usr/local/bin/sandbox-agent"], start: ['ENTRYPOINT ["/usr/local/bin/sandbox-agent"]'] };
-const REPOSITORY = "registry.example/acct-1/agentrun-box";
+// --- the Dockerfile path: a vendor that builds the box Dockerfile itself (Hyperbrowser's remote builder; Vercel's
+// `vercel vcr build docker . agentrun-box:<hash> --push`) and starts computers from it by name ---
 
 /**
- * A vendor whose computers start from an image in the account's registry, in memory: its tags and their digests, and
- * every build its builder ran (the Dockerfile and the context's files). A build pushes its tag and answers the digest.
+ * A vendor whose builder takes a Dockerfile and its context and makes an image under a name, in memory: its images by
+ * name, each ready or preparing, found only by listing them all (Hyperbrowser has no get by name), and every build it
+ * ran. A build answers once the image is ready, with the name a create then names.
  */
-function registry() {
-	const account = { tags: new Map(), builds: [] };
+function builder() {
+	const account = { images: [], builds: [] };
 	const live = (ctx) => ctx?.signal?.throwIfAborted();
 	account.client = {
-		findImage: async (tag, ctx) => (live(ctx), account.tags.get(tag)),
-		buildAndPush: async (tag, context, ctx) => {
+		listImages: async (ctx) => (live(ctx), account.images.map((image) => ({ ...image }))),
+		build: async (name, context, ctx) => {
 			live(ctx);
-			account.builds.push({ tag, context });
-			const digest = `${tag.slice(0, tag.lastIndexOf(":"))}@sha256:${createHash("sha256").update(context.Dockerfile).digest("hex")}`;
-			account.tags.set(tag, digest);
-			return digest;
+			account.builds.push({ name, context });
+			account.images.push({ name, status: "ready" });
+			return name;
 		},
 	};
 	return account;
 }
 
-/** PROVIDERS.md's registry example on the fake host: the box image on the vendor's base, found by its tag (findsByTag) or built and pushed. */
-function registryProvider(account, { findsByTag }) {
+/** PROVIDERS.md's Dockerfile example on the fake host: the box image found by its name in the list (findsByName), or built. */
+function dockerfileProvider(account, { findsByName }) {
 	const host = Object.assign(fakeHost().host, { client: account.client });
 	return new (class extends HostedProvider {
 		async prepareImage(ctx = {}) {
-			const { dockerfile, hash } = vendorDockerfile(VENDOR.base, { agent: VENDOR.agent, start: VENDOR.start });
-			const tag = `${REPOSITORY}:${hash}`;
+			const name = `agentrun-box-${recipeHash()}`;
 			const vendor = this.host.client;
 			try {
-				const found = findsByTag ? await vendor.findImage(tag, ctx) : undefined;
-				if (found) return { ok: true, value: found };
-				ctx.onWait?.("build", tag);
+				const found = findsByName ? (await vendor.listImages(ctx)).find((image) => image.name === name && image.status === "ready") : undefined;
+				if (found) return { ok: true, value: found.name };
+				ctx.onWait?.("build", name);
 				const box = (file) => readFile(new URL(file, BOX));
-				return { ok: true, value: await vendor.buildAndPush(tag, { Dockerfile: dockerfile, "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") }, ctx) };
+				const context = { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") };
+				return { ok: true, value: await vendor.build(name, context, ctx) };
 			} catch (error) {
-				return { ok: false, error: { code: codeOfError(this.host, error), message: `building the box image ${tag}: ${error instanceof Error ? error.message : String(error)}` } };
+				return { ok: false, error: { code: codeOfError(this.host, error), message: `building the box image ${name}: ${error instanceof Error ? error.message : String(error)}` } };
 			}
 		}
 	})(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 }
 
-test("on the registry path, a prepareImage that finds its tag passes: one build of the vendor's Dockerfile, pushed under the recipe's hash, and both calls answer its digest", async () => {
-	const account = registry();
-	const report = await run(registryProvider(account, { findsByTag: true }));
+test("on the Dockerfile path, a prepareImage that finds its name in the vendor's list passes: one build of the box Dockerfile and its context, and both calls answer the name", async () => {
+	const account = builder();
+	// Another recipe's image in the list is not this one.
+	account.images.push({ name: "agentrun-box-000000000000", status: "ready" });
+	const report = await run(dockerfileProvider(account, { findsByName: true }));
 	const [result] = report.results;
 	assert.equal(result.status, "pass", result.reason);
-	const { dockerfile, hash } = vendorDockerfile(VENDOR.base, { agent: VENDOR.agent, start: VENDOR.start });
-	const tag = `${REPOSITORY}:${hash}`;
-	const digest = account.tags.get(tag);
-	assert.match(digest, new RegExp(`^${REPOSITORY}@sha256:[0-9a-f]{64}$`));
-	assert.deepEqual(result.observed, [`the first prepareImage was told onWait(build ${tag}) and answered ${digest}`]);
+	assert.deepEqual(result.observed, [`the first prepareImage was told onWait(build ${NAME}) and answered ${NAME}`]);
 	assert.equal(account.builds.length, 1);
 	const [{ context }] = account.builds;
-	assert.equal(context.Dockerfile, dockerfile);
-	assert.deepEqual(Object.keys(context).sort(), ["Dockerfile", "agentrun-archil", "install.sh"], "the context is the Dockerfile and what it copies");
-	assert.deepEqual(context["install.sh"], readFileSync(new URL("install.sh", BOX)));
-	// The next run on an account that has the tag builds nothing.
-	const again = await run(registryProvider(account, { findsByTag: true }));
+	// The box Dockerfile as it is, with the two files it copies: a builder that uploads a context builds it unchanged.
+	assert.deepEqual(Object.keys(context), ["Dockerfile", "install.sh", "agentrun-archil"]);
+	for (const file of Object.keys(context)) assert.deepEqual(context[file], readFileSync(new URL(file, BOX)), file);
+	// The next run on an account that has the image builds nothing.
+	const again = await run(dockerfileProvider(account, { findsByName: true }));
 	assert.equal(again.results[0].status, "pass", again.results[0].reason);
-	assert.deepEqual(again.results[0].observed, [`the first prepareImage found ${digest} and was told no onWait`]);
+	assert.deepEqual(again.results[0].observed, [`the first prepareImage found ${NAME} and was told no onWait`]);
 	assert.equal(account.builds.length, 1, "no build on the next run");
 });
 
-test("on the registry path, a prepareImage that builds and pushes every call fails Core in the same words", async () => {
-	const account = registry();
-	const [result] = (await run(registryProvider(account, { findsByTag: false }))).results;
-	const tag = `${REPOSITORY}:${vendorDockerfile(VENDOR.base, { agent: VENDOR.agent, start: VENDOR.start }).hash}`;
+test("on the Dockerfile path, a prepareImage that builds every call fails Core in the same words", async () => {
+	const account = builder();
+	const [result] = (await run(dockerfileProvider(account, { findsByName: false }))).results;
 	assert.equal(result.status, "fail");
-	assert.equal(result.reason, `the second prepareImage was told onWait(build ${tag}): it must find the image the first made by its name (one that carries the box recipe's hash) and answer it with no build and no pull`);
-	assert.equal(account.builds.length, 2, "a build and a push for each call");
+	assert.equal(result.reason, `the second prepareImage was told onWait(build ${NAME}): it must find the image the first made by its name (one that carries the box recipe's hash) and answer it with no build and no pull`);
+	assert.equal(account.builds.length, 2, "a build for each call");
 });
 
 test("a build cancelled by the caller's signal still deletes its machine: the delete has its own deadline", async () => {

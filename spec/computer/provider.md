@@ -178,23 +178,24 @@ Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only
 
 - A vendor that builds images from a running machine (a snapshot, a blueprint, a template): `prepareImage` boots the
   vendor's base, runs `install.sh` there as root, then snapshots or registers the result.
-- A vendor that pulls a registry image at create or deploy (by tag or digest), or whose own agent must be in the image
-  (its entrypoint, or a layer): `prepareImage` builds a Dockerfile, `vendorDockerfile(base, { agent, start })` in
-  `box/recipe.mjs`, and pushes it to the account's registry. The file starts `FROM` the vendor's base (or ours), as
-  root, then the vendor's agent's instructions, then the box Dockerfile's `COPY` and `RUN` lines: the agent goes in
-  before `install.sh`, so its checked step (sudo taken away, every check) runs last. Then the start lines: the vendor's
-  `ENTRYPOINT` where its agent must be the first process, none to keep the base's own, or by default the box
-  Dockerfile's `CMD` with the base's `ENTRYPOINT` cleared (it would take the `CMD` as its arguments). The build's context is that file, `install.sh` and `agentrun-archil`.
+- A vendor that builds images from a Dockerfile (Hyperbrowser's remote builder), or starts computers from the
+  account's registry (Vercel Sandbox, from Vercel Container Registry): `prepareImage` has the vendor build the box
+  Dockerfile as it is, from a context of the recipe's three files (the Dockerfile, `install.sh`, `agentrun-archil`),
+  or pushes that build to the registry. Both run amd64 alone, which it builds. Vercel never runs an image's
+  `ENTRYPOINT` or `CMD`, and Hyperbrowser takes them as launch defaults: the box's `sleep infinity` suits both.
+- A vendor that needs its own base or its agent in the image (Blaxel's and Baseten's sandbox API) builds
+  `vendorDockerfile(base, { agent, start })` from `box/recipe.mjs`: `FROM` the base as root, the agent's lines, then
+  the box Dockerfile's `COPY` and `RUN` lines, so `install.sh`'s checked step (sudo taken away, every check) runs
+  after the agent; then the vendor's `ENTRYPOINT`, `[]` to keep the base's, or by default the box's `CMD` with any
+  inherited `ENTRYPOINT` cleared. A vendor with no custom image (Fly Sprites) can't take the box image at all.
 - Any base is Debian: `install.sh` installs Debian's packages through apt, and its first step reads `/etc/os-release`
   and refuses another base in words, before it installs anything (Ubuntu has apt, but not Debian's `firefox-esr`).
 - It is idempotent by name. The name carries the box recipe's hash (`boxRecipeHash()`, which covers `install.sh`), so
-  a second call finds the image by that name and answers it, with no build and no `onWait`. A name the vendor refuses
-  as taken is another build of it: wait for that one. A registry image's tag is `vendorDockerfile`'s `hash`, the
-  recipe's with that file in the box Dockerfile's place, so a new base, agent or start line is a new tag; it looks the
-  tag up before it builds, and answers its digest where the vendor pins images by digest.
-- A vendor whose image is fixed when something of ours deploys (Cloudflare Containers: the Worker's `image`) builds the
-  same Dockerfile at that deploy, and has no `prepareImage`. A vendor with no custom image at all (Fly Sprites) can't
-  take the box image: no Archil mount and no desktop there.
+  a second call finds the image by that name and answers it, with no build and no `onWait`. The name is the vendor's
+  own form: `agentrun-box-<hash>` where it takes a name (a Hyperbrowser team image), the tag `agentrun-box:<hash>`
+  where it takes a repository (Vercel); `vendorDockerfile`'s `hash` in place of the recipe's for its file. Where the
+  vendor has no get by name, `prepareImage` lists its images and takes the one of that name. A name the vendor refuses
+  as taken, or one it is still making (VCR's `Preparing`), is another build of it: wait for that one.
 - It calls `ctx.onWait("build" | "pull", tag)` once, and only when it really builds or pulls.
 - It answers the image a create then names: ok with it, or an error in the vendor's words.
 
