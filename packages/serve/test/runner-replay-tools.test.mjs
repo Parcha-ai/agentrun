@@ -5,7 +5,7 @@
 //   - the replay run has the agent's credentials as a served run does: the per_run token the claimed run was handed,
 //     sealed for the replay alone; nothing of it is printed or logged;
 //   - a write whose arguments the recording does not have is never sent: that input is skipped (skipped_write), neither
-//     wrong nor failed, and a check whose every input was skipped holds the revision in those words.
+//     wrong nor failed, and a check whose every input was skipped had nothing to check it on: it stops in those words.
 // The runner is a local install's (mcpLoopback): the fake MCP server listens on loopback.
 // The agent's earlier runs are real runs of the agent (no learning, so no workflow serves them): each calls the write
 // itself, which is what its journal records, and each is an input of the revision's check.
@@ -176,8 +176,8 @@ test("a write whose arguments the recording does not have is never sent: the inp
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write }, { decided: "hold", source: "check", n: 0, skipped_write: 5 });
-  assert.match(decided.reason, /^every one of its 5 inputs needs a write the recording doesn't have: a check never runs a write, so nothing was checked: held/);
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write, stopped: decided.check.stopped }, { decided: "hold", source: "check", n: 0, skipped_write: 5, stopped: true });
+  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because each needs a write the recording doesn't have (a check never runs a write). It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
   assert.deepEqual(decided.check.skipped_tools, [{ tool: "mcp:fake/delete_thing", inputs: 5, no_read_only_hint: false }], "a destructive tool: a write, never a missing hint");
   assert.doesNotMatch(decided.reason, /readOnlyHint/);
 });
@@ -197,6 +197,6 @@ test("an MCP tool its server lists with no annotations stops every input: held, 
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write, skipped_tools: decided.check.skipped_tools }, { decided: "hold", source: "check", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }] });
-  assert.equal(decided.reason, "nothing was checked on its 5 inputs: add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server: held; the agent's next run recompiles it once with the inputs it did not agree on");
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write, skipped_tools: decided.check.skipped_tools, stopped: decided.check.stopped }, { decided: "hold", source: "check", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }], stopped: true });
+  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
 });

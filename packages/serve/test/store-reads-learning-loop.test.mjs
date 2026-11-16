@@ -73,6 +73,23 @@ test("the loop's read: compile turns newest first with their standing, a failed 
   assert.deepEqual(at(D2, "classify").points.map((p) => p.run_id), ["r5"], "each revision its own step");
 });
 
+// Review on #3032: a draft its check had nothing to run on stops, and the loop shows why as its compile's draft error.
+test("a draft its check had nothing to check it on: its stop's reason is the compile's draft error; a recompile's stop on numbers adds none", async () => {
+  const runs = [runOf("r1", 1, { path: "agent" }), runOf("r2", 2, { path: "agent" })];
+  const kept = {
+    r1: { compiled: { workflow: "sort-invoice", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: D1 } },
+    r2: { compiled: { workflow: "sort-invoice", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: D2 } },
+  };
+  const bar = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  const nothing = "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts";
+  const promotions = [
+    { workflow: "sort-invoice", digest: D1, at: new Date(T0).toISOString(), decided: "hold", source: "check", reason: nothing, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [], stopped: true } },
+    { workflow: "sort-invoice", digest: D2, at: new Date(T0 + 1).toISOString(), decided: "hold", source: "check", reason: "checked on 6 of the agent's inputs: held, and this was the recompile's check, so it stops", check: { ...bar, attempt: 2, n: 6, agreed: 1, alone: 6, of: [], stopped: true } },
+  ];
+  const { compiles } = await agentLoopOverStore(storeOf({ runs, promotions, kept }), "sorter");
+  assert.deepEqual(compiles.map((one) => [one.run_id, one.digest, one.promoted, one.draft_errors]), [["r2", D2, false, []], ["r1", D1, false, [nothing]]]);
+});
+
 test("a guarded step keeps its newest LOOP_POINTS_MAX runs' p", async () => {
   const runs = Array.from({ length: LOOP_POINTS_MAX + 5 }, (_, i) => runOf(`r${i}`, i, guarded("workflow", D1, [row("classify", 0.123456)])));
   const { guards } = await agentLoopOverStore(storeOf({ runs }), "sorter");
