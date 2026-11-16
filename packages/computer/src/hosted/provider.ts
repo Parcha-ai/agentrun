@@ -825,14 +825,15 @@ export class HostedProvider implements ComputerProvider {
 	 * Calls the host's keepalive on the machine every idleMs / 3 (facts.idleMs), from create or attach until release or
 	 * the delete of a create that gave up, one call at a time: a tick while the host's last call has not settled, even
 	 * past its timeout, is skipped. One that fails is told through onNote and the next tries again; a machine the vendor
-	 * no longer has stops it. The timer holds no process open.
+	 * no longer has stops it. The timer holds no process open. An attach calls once at once too (now): a computer a
+	 * restarted server finds may have been quiet for most of its idle window already.
 	 */
-	#keepAlive(ref: ComputerRef): void {
+	#keepAlive(ref: ComputerRef, now = false): void {
 		const { idleMs } = this.host.facts;
 		const keepalive = this.host.keepalive?.bind(this.host);
 		if (idleMs === undefined || keepalive === undefined || this.#kept.has(ref.id)) return;
 		let calling = false;
-		const timer = setInterval(async () => {
+		const keep = async () => {
 			if (calling) return;
 			calling = true;
 			let call: Promise<void> = Promise.resolve();
@@ -842,9 +843,11 @@ export class HostedProvider implements ComputerProvider {
 			if (kept.ok || this.#kept.get(ref.id) !== timer) return;
 			if (kept.error.code === "not_found") this.#unkeep(ref.id);
 			else this.#onNote?.({ computer: ref.name, note: `${kept.error.message}; the next keepalive tries again in ${seconds(idleMs / 3)}` });
-		}, idleMs / 3);
+		};
+		const timer = setInterval(keep, idleMs / 3);
 		timer.unref();
 		this.#kept.set(ref.id, timer);
+		if (now) void keep();
 	}
 
 	#unkeep(id: string): void {
@@ -1271,7 +1274,7 @@ export class HostedProvider implements ComputerProvider {
 			kind = opened.value.hello.kind;
 		} else if (archil !== undefined) found.push(`mount: ${name} is ${machine.state}, so its mount cannot be read back from inside`);
 		if (found.length > 0) return this.#fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
-		this.#keepAlive(ref);
+		this.#keepAlive(ref, true);
 		return ok({
 			...ref,
 			spec: {

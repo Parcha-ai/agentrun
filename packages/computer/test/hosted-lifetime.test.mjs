@@ -122,12 +122,14 @@ test("attach keeps a computer it did not make alive (a restarted server); a crea
 	await tick(t, 10_000);
 	assert.deepEqual(keepalives(fake), [ref.id], "the first provider's, before the restart is attached");
 	made(await restarted.attach({ id: ref.id }));
+	await tick(t, 0);
+	assert.deepEqual(keepalives(fake), [ref.id, ref.id], "the attach's own, at once: a quiet computer a restarted server finds may be near its idle limit");
 	await tick(t, 10_000);
-	assert.deepEqual(keepalives(fake), [ref.id, ref.id, ref.id], "both providers hold it now");
+	assert.deepEqual(keepalives(fake), [ref.id, ref.id, ref.id, ref.id], "both providers hold it now");
 	fake.vanish(ref.id);
 	await tick(t, 10_000);
 	await tick(t, 30_000);
-	assert.equal(keepalives(fake).length, 5, "one more from each, which reads it not found, then none");
+	assert.equal(keepalives(fake).length, 6, "one more from each, which reads it not found, then none");
 
 	const failing = fakeHost({ facts: { idleMs: 30_000 }, keepalive: true, install: 1 });
 	assert.equal((await create(provider(failing))).ok, false, "the install fails, so create gives up and deletes the machine");

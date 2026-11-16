@@ -127,7 +127,7 @@ declares `backstop: true` claims it does, and its `get` reads the timer back as 
 `provider.backstop` holds that `endsAt` to the request's `backstopAt`, within 60 s, on the run's shared computer, and
 only that claim lets a janitor's host keep its labels in the machine. A vendor that ends
 or pauses a quiet machine is declared with `HostFacts.idleMs`, its window, and a `keepalive(id, ctx)`, its cheapest call
-that restarts the timer: the adapter calls it every `idleMs / 3` from create or attach until release, and refuses a host
+that restarts the timer: the adapter calls it every `idleMs / 3` from create or attach until release, and once at attach, and refuses a host
 with `idleMs` and no `keepalive`.
 
 ## The descriptor
