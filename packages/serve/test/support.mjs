@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import dnsPromises from "node:dns/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -77,7 +79,28 @@ const launchCodes = new Map();
 export const launchFor = (server) => (server?.launchCode ? launchCodes.set(server.baseUrl, server.launchCode) : undefined, server);
 /** The server's startServe, its launch code registered for the test client (launchFor): every test starts a server
  *  through this one, so the client's secret writes open that server's launch link with accounts off. */
-export const startServe = async (options) => launchFor(await startServeBuilt(options));
+// No test asks the system resolver for an example webhook host: a test's server answers those names from its own
+// resolver (webhookLookup below), so what a CI runner's resolver says of them (NXDOMAIN, late or at once) never reaches
+// a test. A lookup of one on the system resolver from this process fails the file, naming the host.
+const EXAMPLE_HOOK = /(^|\.)hooks\.example(\.com)?$/i;
+const systemLookup = dnsPromises.lookup;
+const systemAsked = [];
+dnsPromises.lookup = function lookup(host, ...rest) {
+  if (EXAMPLE_HOOK.test(String(host))) systemAsked.push(String(host));
+  return systemLookup.call(this, host, ...rest);
+};
+syncBuiltinESMExports();
+after(() => assert.deepEqual(systemAsked, [], `the system resolver was asked for ${[...new Set(systemAsked)].join(", ")}: a test's server answers example webhook hosts from its webhookLookup (support.mjs startServe)`));
+
+/** A test server's outbound webhook resolver (ServeOptions.webhookLookup): an example name (example, *.example,
+ *  example.com and its subdomains) does not resolve, answered at once as the reserved names are; any other name is the
+ *  system's. */
+export const webhookLookup = async (host) => {
+  if (/(^|\.)example(\.com)?$/i.test(host)) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host });
+  return (await systemLookup(host, { all: true })).map((one) => one.address);
+};
+
+export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, ...options }));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
