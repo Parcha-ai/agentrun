@@ -128,7 +128,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             </>
           )}>
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}|${form.add?.preset ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} taken={servers ?? []} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}|${form.add?.preset ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} taken={servers} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} settings={settings} settingsBusy={settingsBusy} settingsProblem={settingsProblem?.server === s.name ? settingsProblem.problem : null} onSettings={(edit) => void saveSettings(s.name, edit)} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })}
@@ -469,6 +469,8 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   );
 }
 
+/** The credential inputs a preset clears: the token, header rows, OAuth scopes and client. */
+const CREDENTIAL_FIELD = /^mcp-(token|scopes|client-id|client-secret|header-(name|value)-\d+)$/;
 const secret = { type: "password", autoComplete: "new-password", spellCheck: false, autoCapitalize: "off", autoCorrect: "off", "data-1p-ignore": true, "data-lpignore": "true" } as const;
 const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"], ["github_app", "GitHub App"]];
 /** A server's one secret ("mcp:<server>"), as its row says it: by the kind of credential it is. */
@@ -478,7 +480,7 @@ const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. A new
  *  server's form offers the URL presets (MCP_URL_PRESETS): one fills the name (the first free one of `taken`), address,
  *  credential and toolkit, and says its note; `add.preset` opens the form with one filled. */
-function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; taken?: readonly Pick<McpServer, "name">[]; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; taken: readonly Pick<McpServer, "name">[] | null; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
   const linked = saved ? undefined : urlPresetOf(add?.preset);
   const [preset, setPreset] = useState<McpPreset | undefined>(linked);
@@ -502,6 +504,10 @@ function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCan
     if (saved) return named !== saved.toolkit ? { toolkit: named } : {};
     return named ? { toolkit: named } : {};
   };
+  // A new server's name already saved would replace that server (a save is a PUT to its name): refused, and so is any
+  // new one while the saved servers are unread (`taken` null), whose names aren't known yet.
+  const clash = !saved && !!taken?.some((s) => s.name === name.trim());
+  const addable = !!saved || (!!taken && !clash);
   const [preview, setPreview] = useState<McpPreview | null>(null);
   // `given`: the refusal its row opened it with (a sign-in that needs a Client ID), kept until the next try.
   const [problem, setProblem] = useState<Problem | null>(given ?? null);
@@ -532,7 +538,7 @@ function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCan
   useEffect(() => {
     if (needsClient && type === "oauth") (form.current?.elements.namedItem("mcp-client-id") as HTMLInputElement | null)?.focus();
   }, [needsClient, type]);
-  const startSignIn = () => act(() => {
+  const startSignIn = () => addable && act(() => {
     const scopes = value("mcp-scopes").split(/\s+/).filter(Boolean);
     const client = value("mcp-client-id");
     // Its source and toolkit go with the sign-in: the server writes them for the server the sign-in saves.
@@ -549,14 +555,20 @@ function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCan
   };
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (!addable) return;
     if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
     // No prices are sent: this form sets none, and the server keeps the saved ones for the tools still listed at the same
     // address when a PUT has none.
     void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth(), kind()); form.current?.reset(); onSaved(); });
   };
-  const canSave = !busy && !!name.trim() && !!url.trim() && (!!saved || !!preview);
+  const canSave = !busy && addable && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   // A preset fills the form as typing would: a new preview is asked for, and anything filled stays the owner's to change.
+  // A credential typed for another server (a token, headers, scopes, a client) is cleared: it never goes to the preset's
+  // address. Presets wait for the saved servers (`taken`), so the name picked is a free one.
   const choose = (p: McpPreset) => {
+    if (!taken) return;
+    for (const el of Array.from(form.current?.elements ?? [])) if (el instanceof HTMLInputElement && CREDENTIAL_FIELD.test(el.name)) el.value = "";
+    setHeaderRows(1);
     setPreset(p); setName(freeName(p.name, taken)); setUrl(p.url); setType(p.auth); setToolkit(p.name); setProblem(null); edited();
   };
   const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-small text-muted-foreground">Saved. {what}</span>;
@@ -568,9 +580,10 @@ function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCan
           <span className="caps block text-small font-semibold">Presets</span>
           <div className="flex flex-wrap gap-2">
             {MCP_URL_PRESETS.map((p) => (
-              <Button key={p.id} type="button" size="sm" variant={preset?.id === p.id ? "solid" : "outline"} aria-pressed={preset?.id === p.id} disabled={busy || (!writable && p.auth !== "none")} onClick={() => choose(p)}>{p.label}</Button>
+              <Button key={p.id} type="button" size="sm" variant={preset?.id === p.id ? "solid" : "outline"} aria-pressed={preset?.id === p.id} disabled={busy || !taken || (!writable && p.auth !== "none")} onClick={() => choose(p)}>{p.label}</Button>
             ))}
           </div>
+          {!taken && <p className="text-small text-muted-foreground">The presets wait for the saved servers to be read, so the name one picks is free.</p>}
           {preset && <p role="note" data-mcp-preset={preset.id} className="text-small text-muted-foreground">{preset.note}</p>}
           {preset?.readOnly && (
             <div className="flex items-center gap-2">
@@ -583,7 +596,8 @@ function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCan
       )}
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Name</span>
         <span className="-mt-1 mb-2 block text-small text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
-        <Input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} /></label>
+        <Input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} />
+        {clash && <span role="alert" className="mt-1 block text-small text-destructive-text">{name.trim()} is saved already: saving would replace it. Change it from its row, or choose another name.</span>}</label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
         <Input name="mcp-url" value={url} onChange={(e) => { setUrl(e.target.value); if (problem?.needsClient) setProblem(null); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
       <div className="block"><span className="caps mb-2 block text-small font-semibold">Source</span>
@@ -633,7 +647,7 @@ function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCan
         <div className="space-y-2">
           <Said problem={problem} />
           {/* With OAuth chosen the form's own Sign in is there: one button, not two. */}
-          {problem.signIn && type !== "oauth" && writable && <Button type="button" size="sm" variant="primary" disabled={busy || !name.trim()} onClick={() => void startSignIn()}>Sign in</Button>}
+          {problem.signIn && type !== "oauth" && writable && <Button type="button" size="sm" variant="primary" disabled={busy || !addable || !name.trim()} onClick={() => void startSignIn()}>Sign in</Button>}
         </div>
       )}
       {preview && (
@@ -654,7 +668,7 @@ function ServerForm({ v2, saved, add, given, writable, taken = [], signIn, onCan
           : type === "oauth" && needsSignIn
           ? <Button type="submit" size="sm" variant="primary" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
           : type === "oauth"
-          ? <Button type="button" size="sm" variant={saved ? "outline" : "primary"} disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
+          ? <Button type="button" size="sm" variant={saved ? "outline" : "primary"} disabled={busy || !addable || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
           : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
         {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant={problem?.signIn && type !== "oauth" && writable ? "outline" : "primary"} disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>

@@ -9,3 +9,5 @@ Settings → MCP servers: the add form offers five URL presets above "Or any MCP
 - Linear (`https://mcp.linear.app/mcp`) and Notion (`https://mcp.notion.com/mcp`), with Sign in.
 
 Preview and Save are the same as for any address. `#/settings/mcp?add=<name>&preset=<id>` (`parallel`, `firecrawl`, `github-token`, `linear` or `notion`) opens the form with that preset filled. A preset id that is none of these opens the plain form.
+
+Choosing a preset clears a token, header rows, scopes or client typed for another server, so none of them goes to the preset's address. The presets wait until the saved servers have been read. A new server whose name is already saved can't be saved or signed in, because saving it would replace that server.
