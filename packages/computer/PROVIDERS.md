@@ -641,7 +641,9 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
 
 `--before <file>` records every machine listed with `agentrun.computer=1`. `--after <file>` deletes each new machine
 that carries a conformance run's label (`agentrun.conformance`) and reads it back gone. It leaves alone everything
-recorded before, and any new machine without that label, which belongs to someone else on the account. It prints
+recorded before, and any new machine without that label, which belongs to someone else on the account. With
+`labels: "machine"`, labels are read only in a machine of a box image or of `--image <image>`, the image your run
+started from. It prints
 `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` and exits 0 when every swept machine is gone, 1 when one is
 still there, and 2 on a usage error. It reaches your API through the conformance module's `createHost({ env })`, which
 reads the same settings as the run and needs no live switch. If one account holds more than one place to list, such as
