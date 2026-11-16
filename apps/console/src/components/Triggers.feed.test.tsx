@@ -286,4 +286,34 @@ describe("Triggers: editing a feed trigger", () => {
     await list.click(/^Save feed$/);
     expect(s.calls.filter((c) => c.method === "PATCH").at(-1)!.body).toEqual({ source: { kind: "feed", urls: [PULLS], every_s: 300, items: "", id: "/id" } });
   });
+
+  it("keeps a pointer's spaces as typed: an unchanged \"/data \" sends no PATCH, and an edited one is sent with its spaces", async () => {
+    const SPACED: Trigger = { ...BASE, id: "trg_p", name: "spaced", source: { kind: "feed", urls: [PULLS], every_s: 300, items: "/data ", id: "/number" } };
+    const s = server({ triggers: [SPACED] });
+    const same = await open(s.v2, { trigger: "trg_p", edit: true }, 60);
+    expect(same.field("items")!.value).toBe("/data ");
+    await same.click(/^Save feed$/);
+    expect(s.calls.some((c) => c.method === "PATCH")).toBe(false);
+    const t = await open(s.v2, { trigger: "trg_p", edit: true }, 60);
+    await t.set("items", "/data/rows ");
+    await t.click(/^Save feed$/);
+    expect(s.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ source: { kind: "feed", urls: [PULLS], every_s: 300, items: "/data/rows ", id: "/number" } }]);
+  });
+});
+
+describe("Triggers: a refused pointer behind a closed JSON list disclosure", () => {
+  it("opens the disclosure on submit and shows the server's words under the pointer's field", async () => {
+    const said = "items is a JSON Pointer: empty, or starting with /";
+    const s = server({ create: () => json(422, { error: { code: "input_invalid", message: `source.items: ${said}`, retryable: false, fields: [{ field: "source.items", reason: "invalid", message: said }] } }) });
+    const t = await open(s.v2, { trigger: null, kind: "feed" }, 60);
+    const details = () => t.host.querySelector("details[data-json-list]") as HTMLDetailsElement;
+    expect(details().open).toBe(false);
+    await t.set("urls", PULLS);
+    await t.set("items", "data");
+    await fillRun(t);
+    await t.click(/^Create feed trigger$/);
+    expect(details().open).toBe(true);
+    expect(t.issue("source.items")).toBe(said);
+    expect(t.went).toEqual([]);
+  });
 });
