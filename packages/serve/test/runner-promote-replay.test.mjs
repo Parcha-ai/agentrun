@@ -182,12 +182,18 @@ async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, fl
   return { server, gw, logs, start, startPinned, launchOf, ended, replays, seed, dir, proxy, restart };
 }
 
-test("a new digest with graded inputs replays before it serves: the agent takes the run meanwhile; within the bar, the next run is served first", { timeout: 180_000 }, async (t) => {
+test("a new digest with graded inputs replays before it serves: the agent takes the run meanwhile, its tool never given the revision; within the bar, the next run is served first", { timeout: 180_000 }, async (t) => {
   const { server, gw, logs, start, replays } = await world(t);
   const first = await start("run-1", "What is six times seven");
   assert.equal(first.state, "ended");
   assert.equal(first.metrics?.path, "agent", `the agent took the run while its workflow replays: ${JSON.stringify(first.metrics)}`);
   assert.ok(logs.some((line) => /replaying it on the agent's last 6 graded inputs/.test(line)), logs.join("\n"));
+  // Nothing of the workflow serves while its only revision replays: the agent's learned_workflow tool is not given it to
+  // run in the workflow's place either (chain14b: four runs ran a replaying draft through the tool).
+  const asked = gw.requests.filter((request) => !isNode(request));
+  assert.ok(asked.length > 0, "the agent took the run");
+  assert.deepEqual(asked.filter((request) => offers(request.body, "learned_workflow")).length, 0, "no learned_workflow tool: no revision of it is promoted");
+  assert.ok(logs.some((line) => line.includes(`the learned_workflow tool leaves out answer: ${DIGEST} is not promoted, and no revision of it serves`)), logs.join("\n"));
   // One replay run a graded input, each the workflow alone: path replay, answered, at workflow cost, no end-of-run turn.
   const runs = await until(async () => {
     const all = await replays();
@@ -578,4 +584,28 @@ test("a revision that adds a required input field leaves its champion serving th
   await reviseOn(w, "served-0", DIGEST, wide, seed);
   const run = await start("run-1", "What is six times seven");
   assert.deepEqual([run.metrics?.path, run.metrics?.workflow_digest], ["workflow", DIGEST], JSON.stringify(run.metrics));
+});
+
+test("a held revision whose input the champion does not take: the agent takes the run, and its learned_workflow tool runs the champion, never the held revision", { timeout: 180_000 }, async (t) => {
+  const w = await world(t);
+  const { server, gw, logs, seed, dir, ended, launchOf } = w;
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "dry_run", reason: "promoted on its passing dry run", commit: seed }, (was) => was === undefined);
+  // The revision on the folder's main takes a `query` where the champion takes a `question`; its replay held it.
+  const renamed = { ...answerFlow, schemas: { ...answerFlow.schemas, In: { type: "object", required: ["query"], properties: { query: { type: "string" } } } } };
+  await reviseOn(w, "served-0", DIGEST, renamed, seed);
+  const main = (await seedOf(dir, "agent-1")).sha;
+  const held = workflowDigest({ workflow: JSON.stringify(renamed) });
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: held, at: new Date().toISOString(), decided: "hold", source: "replay", reason: "replayed on 6 graded inputs: more than 2 pts under the agent", commit: main }, (was) => was === undefined);
+  // A run whose input the held revision takes and the champion does not: nothing serves it first.
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launchOf("What is six times seven", main), input: { content: "What is six times seven?", query: "What is six times seven" } } });
+  const run = await ended("run-1");
+  assert.equal(run.metrics?.path, "agent", JSON.stringify(run.metrics));
+  // The agent's tool runs the champion (its input line names `question`), never the held revision (`query`).
+  const tools = gw.requests.filter((request) => !isNode(request)).map((request) => (request.body?.tools ?? []).find((tool) => tool?.name === "learned_workflow"));
+  assert.ok(tools.length > 0 && tools.every(Boolean), "the agent is offered the learned_workflow tool on every turn");
+  for (const tool of tools) {
+    assert.match(tool.description, /question/, tool.description);
+    assert.doesNotMatch(tool.description, /query/, `the held revision is never the agent's to run: ${tool.description}`);
+  }
+  assert.ok(logs.some((line) => line.includes(`the learned_workflow tool runs answer's champion at ${DIGEST}, not ${held}, which is not promoted`)), logs.join("\n"));
 });
