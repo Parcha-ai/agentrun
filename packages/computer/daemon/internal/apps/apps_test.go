@@ -31,7 +31,8 @@ const helperWindow = "apps-test-window"
 // writes its url to <dir>/handed and ends, as a launcher that hands the url to the instance that runs; "dialog" shows a
 // dialog of its own, "Close <class>", and runs on, as Firefox's "already running" box when its second launch can't
 // reach the first; "spawn" starts a process in a session of its own that shows that dialog and ignores TERM
-// ("stubborn"), and runs on until TERM.
+// ("stubborn"), and runs on until TERM; "leave" starts a process in a session of its own that shows that dialog a moment
+// later ("late") and ends at once, exit code 0, leaving it behind.
 const helperSingle = "apps-test-single"
 
 // TestMain runs the guard when process.start starts this binary as one, as computerd does, and the test apps.
@@ -82,6 +83,13 @@ func single(dir, class, second string, url []string) int {
 		defer stop()
 		<-ctx.Done()
 		return 0
+	case "leave":
+		child := exec.Command(os.Args[0], helperSingle, dir, class, "late")
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		return exit(child.Start())
+	case "late":
+		time.Sleep(500 * time.Millisecond)
+		return exit(showWindow(strings.ToLower(class), class, true))
 	}
 	return 2
 }
@@ -155,7 +163,7 @@ type world struct {
 	conn    *x11.Conn
 	table   *process.Table
 	call    func(method string, params any) (any, error)
-	// locks is each helperSingle app's folder, by its second launch's way: "hand", "dialog" or "spawn".
+	// locks is each helperSingle app's folder, by its second launch's way: "hand", "dialog", "spawn" or "leave".
 	locks map[string]string
 }
 
@@ -186,9 +194,10 @@ func setup(t *testing.T, window time.Duration) *world {
 	write(t, filepath.Join(dir, "test.window.desktop"), fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Test Window\nExec=%q %s test TestWindow\nStartupWMClass=TestWindow\n", self, helperWindow))
 	write(t, filepath.Join(dir, "quiet.desktop"), "[Desktop Entry]\nType=Application\nName=Quiet\nExec=sleep 60\n")
 	// Apps that run once (helperSingle), each with a folder of its own for its lock: one that hands a later launch's url
-	// to the instance that runs, one that shows a dialog instead, one whose dialog is a stubborn process it started.
+	// to the instance that runs, one that shows a dialog instead, one whose dialog is a stubborn process it started, one
+	// whose dialog is a process it started and left.
 	locks := map[string]string{}
-	for _, second := range []string{"hand", "dialog", "spawn"} {
+	for _, second := range []string{"hand", "dialog", "spawn", "leave"} {
 		lock := filepath.Join(t.TempDir(), second)
 		if err := os.Mkdir(lock, 0o700); err != nil {
 			t.Fatal(err)
@@ -218,7 +227,7 @@ func setup(t *testing.T, window time.Duration) *world {
 	}
 	// Whatever a test left running ends with it.
 	t.Cleanup(func() {
-		for _, id := range []string{"test.window", "quiet", "single.hand", "single.dialog", "single.spawn"} {
+		for _, id := range []string{"test.window", "quiet", "single.hand", "single.dialog", "single.spawn", "single.leave"} {
 			_, _ = w.call("apps.terminate", map[string]any{"id": id})
 		}
 	})
@@ -382,6 +391,25 @@ func TestAppsLaunchAURLEndsADialogItsLaunchStarted(t *testing.T) {
 	}
 	if kindOf(err) != rpc.KindUnsupported || !strings.Contains(err.Error(), `"Close SingleSpawn"`) || !strings.Contains(err.Error(), "That launch was ended,") {
 		t.Fatalf("apps.launch with a url into the running app: %v (%q), want unsupported, its dialog ended", err, kindOf(err))
+	}
+}
+
+// A launcher may end at once, exit code 0, and leave a process of its own that shows the dialog a moment later: it ran
+// under the launch's guard, so it is the launch's. The call waits while it runs, refuses once its dialog shows, and ends it.
+func TestAppsLaunchAURLEndsADialogItsLauncherLeft(t *testing.T) {
+	w := setup(t, 5*time.Second)
+	if _, err := w.call("apps.launch", map[string]any{"id": "single.leave"}); err != nil {
+		t.Fatalf("apps.launch single.leave: %v", err)
+	}
+	got, err := w.call("apps.launch", map[string]any{"id": "single.leave", "url": "https://example.com/two"})
+	if err == nil {
+		t.Fatalf("apps.launch with a url into the running app answered %v (opened), though its launcher left only a dialog", got)
+	}
+	if kindOf(err) != rpc.KindUnsupported || !strings.Contains(err.Error(), `"Close SingleLeave"`) || !strings.Contains(err.Error(), "That launch was ended,") {
+		t.Fatalf("apps.launch with a url into the running app: %v (%q), want unsupported, its dialog ended", err, kindOf(err))
+	}
+	if n := w.shown("SingleLeave"); n != 1 {
+		t.Fatalf("after the refused hand-over, %d windows of the app show, not 1: its dialog outlived the launch", n)
 	}
 }
 

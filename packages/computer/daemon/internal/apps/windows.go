@@ -3,11 +3,14 @@ package apps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
 )
 
@@ -218,10 +221,66 @@ func ownerByPid(byPid map[int]string, pid int) string {
 	return ""
 }
 
-// dialogOf is a dialog the launch whose process is pid showed: a window of the app's that is new (not in had), made by
-// that process or one it started, whose EWMH type is a dialog (_NET_WM_WINDOW_TYPE_DIALOG). Its title (WM_NAME) and the
-// window; nil for none.
-func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, pid int) (string, *window, error) {
+// launchTree is one launch's processes: its launcher (root) and the guard it runs under (guard; 0 when the launcher ended
+// before it was read). A launch's guard is a child subreaper that keeps what the launcher started (Orphans "keep"), so a
+// process the launcher started is still under it, and the launch's, once the launcher has ended.
+type launchTree struct {
+	root, guard int
+	// since is the guard's start time, so a pid the system hands out again is never taken for it.
+	since uint64
+}
+
+// treeOf reads the launch's guard: the launcher's parent, while that is a child of this daemon's, as each guard is.
+func treeOf(root int) launchTree {
+	t := launchTree{root: root}
+	if parent := parentOf(root); parent > 1 && parentOf(parent) == os.Getpid() {
+		if since, ok := proctree.Started(parent); ok {
+			t.guard, t.since = parent, since
+		}
+	}
+	return t
+}
+
+// guarded is the launch's guard while it runs, else 0.
+func (t launchTree) guarded() int {
+	if t.guard > 1 && proctree.Running(t.guard, t.since) {
+		return t.guard
+	}
+	return 0
+}
+
+// owns is whether process pid is the launch's: the launcher or one it started, under its guard or in its group.
+func (t launchTree) owns(pid int) bool {
+	if pid <= 1 {
+		return false
+	}
+	if descends(pid, t.root) {
+		return true
+	}
+	if guard := t.guarded(); guard != 0 && descends(pid, guard) {
+		return true
+	}
+	group, err := syscall.Getpgid(pid)
+	return err == nil && group == t.root
+}
+
+// lingers is whether a process of the launch's still runs: one under its guard, or in its group. A launcher that ended
+// and left one has not handed anything over yet: what it left may still show a window.
+func (t launchTree) lingers() bool {
+	if guard := t.guarded(); guard != 0 {
+		for _, d := range proctree.Descendants(guard) {
+			if !proctree.Zombie(d) {
+				return true
+			}
+		}
+	}
+	err := syscall.Kill(-t.root, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// dialogOf is a dialog the launch showed: a window of the app's that is new (not in had), made by a process of the
+// launch's, whose EWMH type is a dialog (_NET_WM_WINDOW_TYPE_DIALOG). Its title (WM_NAME) and the window; nil for none.
+func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, t launchTree) (string, *window, error) {
 	c, err := g.display.Conn()
 	if err != nil {
 		return "", nil, err
@@ -238,7 +297,7 @@ func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, pid int) 
 		return "", nil, nil
 	}
 	for _, w := range s.of(app) {
-		if had[w.id] || !descends(w.pid, pid) {
+		if had[w.id] || !t.owns(w.pid) {
 			continue
 		}
 		if p, err := c.GetProperty(w.id, typ); err == nil && slices.Contains(p.Cardinals(), dialog) {

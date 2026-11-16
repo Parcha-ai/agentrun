@@ -185,6 +185,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 	g.mu.Lock()
 	g.launched[e.ID] = append(g.launched[e.ID], launch{id: started.ID, pid: started.Pid})
 	g.mu.Unlock()
+	tree := treeOf(started.Pid)
 	deadline := time.Now().Add(g.window)
 	for {
 		now, err := g.look()
@@ -199,7 +200,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 		// its second launch passes a url to the first over a session bus only, and an app here has none), or its launcher
 		// failed. The launch is ended, so its dialog goes, and the call fails in words.
 		if handOff {
-			title, dialog, err := g.dialogOf(now, e.ID, had, started.Pid)
+			title, dialog, err := g.dialogOf(now, e.ID, had, tree)
 			if err != nil {
 				return nil, err
 			}
@@ -214,15 +215,15 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url failed (%s), so the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, g.ended(started.ID), e.ID)
 			}
 		}
-		// A new window of the app's; or, when it had one before and the launch ended (a second launch of a single-
-		// instance app hands its work to the first), the one it has.
+		// A new window of the app's; or, when it had one before and the launch ended leaving nothing that runs (a second
+		// launch of a single-instance app hands its work to the first), the one it has.
 		var pick *window
 		for i := range shown {
 			if !had[shown[i].id] {
 				pick = &shown[i]
 			}
 		}
-		if pick == nil && len(shown) > 0 && !runs {
+		if pick == nil && len(shown) > 0 && !runs && !tree.lingers() {
 			pick = &shown[len(shown)-1]
 		}
 		if pick != nil {
