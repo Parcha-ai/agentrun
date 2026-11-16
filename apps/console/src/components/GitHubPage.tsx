@@ -1,4 +1,4 @@
-import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { Github } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -115,6 +115,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
               <p className="font-mono">GitHub's connection could not be read: {loadError}</p>
             </Banner>
           )}
+          <SettingsSection title="Connection">
           {connection === undefined && !loadError && <p className="font-mono text-body text-muted-foreground">Loading...</p>}
           {connection === null && (
             <section aria-label="Connect GitHub" className="border bg-card p-4">
@@ -149,6 +150,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
                 )}
             </section>
           )}
+          </SettingsSection>
           {opening && (
             <form data-github-manifest ref={form} method="post" action={opening.action} hidden>
               <input type="hidden" name="manifest" defaultValue={opening.manifest} />

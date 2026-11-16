@@ -237,8 +237,10 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
   - A page of data (Mission Control, a list, a table) is fluid: its tables stretch and its card grids take more columns.
   - A form's fields flow in columns: `formColumnsClass` on the box that holds them (one column, two from `xl`, three
     from `2xl`), filled top to bottom so the order read is the order Tab takes.
-  - A Settings page puts what it is (its title and sentence) in a column of its own beside its settings from `xl`:
-    `settingsPageClass`, `settingsIntroClass` and `settingsBodyClass`. One that is a table (Tools) keeps the title above.
+  - A Settings page keeps its title and sentence above, then its sections one under another, each a
+    `SettingsSection`: from `xl` a row with the section's name, sentence and adding actions on the left and its
+    settings on the right. Every box on every Settings page starts at one edge and has one width. One that is a
+    table (Tools) is full width.
   - A reading column (a run's report and timeline) is centred, at most `max-w-4xl`.
   - A line of prose is at most `max-w-prose`. Never write a width as a number (`max-w-[1100px]`).
 - A page works at 390px wide with no sideways scroll. A wide table scrolls inside its own panel, and so does a row

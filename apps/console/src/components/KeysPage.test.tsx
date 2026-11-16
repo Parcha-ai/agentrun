@@ -226,16 +226,16 @@ describe("KeysPage", () => {
     expect(page.input("MONID_API_KEY").value).toBe("");
   });
 
-  it("lists a model provider's key under Model keys, before the tools' keys, and saves it through its own route; with none, no headings", async () => {
+  it("lists a model provider's key under Model keys, before the tools' keys, and saves it through its own route; with none, the one section keeps its name", async () => {
     const plain = view({});
     const anthropic: ToolKey = servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"], check: null });
     const { v2, calls } = server([{ ...plain, keys: [...plain.keys.map((k) => ({ ...k, kind: "tool" as const })), anthropic] }]);
     const page = await open(v2);
     expect([...page.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Model keys", "Tool keys"]);
-    const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
+    const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > div > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
     expect([labels("Model keys"), labels("Tool keys")]).toEqual([["Anthropic"], ["Parallel", "Monid", "Browserbase"]]);
-    expect(page.host.querySelector('section[aria-label="Model keys"] > p')?.textContent).toBe("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
-    expect(page.host.querySelector('section[aria-label="Tool keys"] > p')).toBeNull();
+    expect(page.host.querySelector('section[aria-label="Model keys"] h2 + div p')?.textContent).toBe("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
+    expect(page.host.querySelector('section[aria-label="Tool keys"] h2 + div')).toBeNull();
     expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses pi, claude-agent");
     await page.click(page.row("Anthropic"), /^Paste$/);
     await page.type("ANTHROPIC_API_KEY", FAKE);
@@ -245,7 +245,7 @@ describe("KeysPage", () => {
     act(() => root?.unmount());
     document.body.innerHTML = "";
     const older = await open(server([plain]).v2);
-    expect(older.host.querySelectorAll("h2")).toHaveLength(0);
+    expect([...older.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Tool keys"]);
     expect(older.host.textContent).not.toContain("We recommend an OpenRouter key");
     expect(older.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search");
   });

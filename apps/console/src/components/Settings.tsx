@@ -1,14 +1,33 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { tabClass, tabListClass } from "@/components/ui/tabs";
 
 export type SettingsPage = "keys" | "tools" | "mcp" | "github" | "computers" | "workspace" | "webhook";
 export const SETTINGS_PAGES: { id: SettingsPage; label: string }[] = [{ id: "keys", label: "Tool keys" }, { id: "tools", label: "Tools" }, { id: "mcp", label: "MCP servers" }, { id: "github", label: "GitHub" }, { id: "computers", label: "Computers" }, { id: "workspace", label: "Workspace" }, { id: "webhook", label: "Webhook" }];
 
-/** A Settings page across the width it has: from `xl`, what the page is (its title and its sentence) stands in a column
- *  of its own on the left and stays while the settings scroll beside it; under `xl` it is above them. */
-export const settingsPageClass = "p-5 md:p-8 xl:grid xl:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)] xl:items-start xl:gap-x-12";
-export const settingsIntroClass = "max-xl:mb-6 xl:sticky xl:top-8";
-export const settingsBodyClass = "min-w-0 space-y-6";
+/** A Settings page: what the page is (its title and its sentence) above, then its sections, one under another, each a
+ *  `SettingsSection`. Anything else in the body (a notice, an error) stands above the sections, full width. */
+export const settingsPageClass = "p-5 md:p-8";
+export const settingsIntroClass = "mb-6 max-w-prose";
+export const settingsBodyClass = "[&>:not(section)]:mb-6";
+
+/** One section of a Settings page, the same on every page: from `xl` a row, with what the section is on the left (its
+ *  name, a sentence, and the actions that add to it) and its settings on the right. So every box on every page starts
+ *  at one edge and has one width, and a page with one section looks like a page with five. Under `xl`, the name stands
+ *  above. `label` names the section for a reader when its title is not the name tests and readers know it by. */
+export function SettingsSection({ title, titleId, note, aside, label, children }: { title: ReactNode; titleId?: string; note?: ReactNode; aside?: ReactNode; label?: string; children: ReactNode }) {
+  const own = useId();
+  const id = titleId ?? own;
+  return (
+    <section aria-label={label} aria-labelledby={label ? undefined : id} className="border-t py-6 xl:grid xl:grid-cols-[minmax(14rem,20rem)_minmax(0,1fr)] xl:items-start xl:gap-x-10">
+      <div className="max-xl:mb-3">
+        <h2 id={id} className="caps text-small font-semibold">{title}</h2>
+        {note && <div className="mt-1.5 space-y-1.5 text-body text-muted-foreground">{note}</div>}
+        {aside && <div className="mt-3 flex flex-wrap items-center gap-2">{aside}</div>}
+      </div>
+      <div className="min-w-0 space-y-3">{children}</div>
+    </section>
+  );
+}
 
 /** Settings: a tab per page this server offers (`offered`), above the page. One page alone needs no tabs. */
 export function Settings({ active, offered, children }: { active: SettingsPage; offered: SettingsPage[]; children: ReactNode }) {

@@ -1,4 +1,4 @@
-import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -110,11 +110,9 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in" }: { v2: C
             </Banner>
           )}
           {groups.map((g) => (
-            <section key={g.label} aria-label={g.label}>
-              {groups.length > 1 && <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">{g.label}</h2>}
-              {g.kind === "model" && <p className="mb-2 text-body text-muted-foreground">{KEY_ADVICE}</p>}
+            <SettingsSection key={g.label} label={g.label} title={g.label} note={g.kind === "model" ? <p>{KEY_ADVICE}</p> : undefined}>
               <ul className="border">{g.keys.map(row)}</ul>
-            </section>
+            </SettingsSection>
           ))}
         </div>
       </div>

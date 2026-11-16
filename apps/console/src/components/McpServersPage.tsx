@@ -1,4 +1,4 @@
-import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { Plug } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
@@ -57,18 +57,10 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   return (
     <div className="h-full overflow-auto">
       <div className={settingsPageClass}>
-        <div className={`flex flex-col items-start gap-3 ${settingsIntroClass}`}>
-          <div>
-            <p className="caps text-label text-muted-foreground">Settings</p>
-            <h1 className="mt-1 text-2xl font-semibold">MCP servers</h1>
-            <p className="mt-2 text-lead text-muted-foreground">A remote MCP server's tools, for any agent you grant them to in its Tools step. A saved credential is never shown again.</p>
-          </div>
-          {!form && !composio && (
-            <div className="flex gap-2">
-              <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>
-              <Button size="sm" disabled={!writable} onClick={() => setComposio(true)}>Add from Composio</Button>
-            </div>
-          )}
+        <div className={settingsIntroClass}>
+          <p className="caps text-label text-muted-foreground">Settings</p>
+          <h1 className="mt-1 text-2xl font-semibold">MCP servers</h1>
+          <p className="mt-2 text-lead text-muted-foreground">A remote MCP server's tools, for any agent you grant them to in its Tools step. A saved credential is never shown again.</p>
         </div>
         <div className={settingsBodyClass}>
           {signIn && (
@@ -82,12 +74,19 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
               <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
             </Banner>
           )}
+          <SettingsSection title="Servers" aside={!form && !composio && (
+            <>
+              <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>
+              <Button size="sm" disabled={!writable} onClick={() => setComposio(true)}>Add from Composio</Button>
+            </>
+          )}>
           {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
           {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
           {composio && <ComposioForm v2={v2} onClose={() => setComposio(false)} onSaved={load} />}
           {servers && (servers.length
             ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
             : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
+          </SettingsSection>
           <PrivateHosts v2={v2} />
         </div>
       </div>
@@ -168,9 +167,7 @@ function PrivateHosts({ v2 }: { v2: Client }) {
     if (hosts && draft.trim() && (await save([...hosts, draft.trim()]))) setDraft("");
   };
   return (
-    <section aria-labelledby="mcp-private-hosts" className="space-y-3 border bg-card p-4">
-      <h2 id="mcp-private-hosts" className="caps text-small font-semibold">Private network hosts</h2>
-      <p className="text-body text-muted-foreground">Off by default. A host listed here may run an MCP server's sign-in on your private network (10.x, 172.16–31.x, 192.168.x, 100.64–127.x, fc00::/7), over https only; never this machine, loopback or a link-local address such as cloud metadata.</p>
+    <SettingsSection titleId="mcp-private-hosts" title="Private network hosts" note={<p>Off by default. A host listed here may run an MCP server's sign-in on your private network (10.x, 172.16–31.x, 192.168.x, 100.64–127.x, fc00::/7), over https only; never this machine, loopback or a link-local address such as cloud metadata.</p>}>
       {loadError && (
         <div role="alert">
           <p className="font-mono text-body text-destructive-text">The private network hosts could not be read. {loadError.text}</p>
@@ -178,13 +175,13 @@ function PrivateHosts({ v2 }: { v2: Client }) {
         </div>
       )}
       {hosts && (hosts.length
-        ? <ul aria-label="Allowed private network hosts" className="border bg-background">{hosts.map((host) => (
+        ? <ul aria-label="Allowed private network hosts" className="border">{hosts.map((host) => (
             <li key={host} data-host={host} className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0">
               <span className="break-all font-mono text-body">{host}</span>
               <Button size="sm" disabled={busy} onClick={() => void save(hosts.filter((h) => h !== host))}>Remove</Button>
             </li>
           ))}</ul>
-        : <p className="border bg-background px-3 py-3 font-mono text-body text-muted-foreground">No host is allowed: a sign-in on a private network is refused.</p>)}
+        : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No host is allowed: a sign-in on a private network is refused.</p>)}
       {hosts && (
         <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
           <Input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" />
@@ -192,7 +189,7 @@ function PrivateHosts({ v2 }: { v2: Client }) {
         </form>
       )}
       {problem && <Said problem={problem} />}
-    </section>
+    </SettingsSection>
   );
 }
 

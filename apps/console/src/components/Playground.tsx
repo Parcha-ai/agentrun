@@ -1,5 +1,5 @@
 import { ToolBlockers } from "@/components/ToolBlockers";
-import { ArrowRight, Copy, Play } from "lucide-react";
+import { ArrowRight, Copy, Eye, EyeOff, Play } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -68,9 +68,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
-  // In a short viewport (a phone in landscape) the code and response panel is folded so the form gets the height, and
-  // Show code swaps the two. Taller viewports show both, as before.
-  const [showCode, setShowCode] = useState(false);
+  // The code and response panel folds to one bar, so the form gets the room while a person fills it in: its own button
+  // hides it and shows it again, and an answer opens it. It starts open where the two panels stand side by side (a wide,
+  // tall window, the grid's own condition below), and folded where they would stack, a phone: there the form comes
+  // first. A short viewport (a phone in landscape) has room for one panel only: open, the code takes the form's place.
+  const [showCode, setShowCode] = useState(() => !(typeof window !== "undefined" && typeof window.matchMedia === "function") || window.matchMedia("(min-width: 1024px) and (min-height: 501px)").matches);
+  const codePanel = useId();
   const [result, setResult] = useState<StartResult | null>(initialResult);
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
@@ -111,17 +114,17 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           </div>
         )}
         <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
-        <span className="flex-1" />
-        <span className="caps text-label text-muted-foreground">Live API</span>
-        <Button type="button" size="xs" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="hidden text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</Button>
       </div>
-      {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
-        <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
+      {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width.
+          With the code panel folded, one column at any size. Where the two stood side by side, the button that shows
+          the panel again floats where the one that hid it was, at the top right, over the Request header's free end;
+          where they stacked (a phone), it is a bar under the form, where the panel's own header was. */}
+      <div className={cn("relative grid min-h-0 flex-1 grid-cols-1", showCode ? "lg:[@media(min-height:501px)]:grid-cols-2" : "grid-rows-[minmax(0,1fr)_auto]")}>
+        <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b", showCode ? "lg:border-b-0 lg:border-r short:hidden" : "lg:[@media(min-height:501px)]:border-b-0")}>
           {agents.length === 0 ? (
             // No agents: a form that cannot send helps no one. The way to the first agent, then what a request takes.
             <>
-              <header className="flex items-center justify-between border-b px-5 py-3 md:px-8"><span className="pb-1 text-lead font-semibold">Request</span></header>
+              <header className={cn("flex items-center justify-between border-b px-5 py-3 md:px-8", !showCode && "lg:[@media(min-height:501px)]:min-h-[57px] lg:[@media(min-height:501px)]:pr-80")}><span className="pb-1 text-lead font-semibold">Request</span></header>
               <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-8">
                 <div className="border border-primary/50 bg-primary/5 p-5">
                   <p className="caps text-label text-primary-text">No agents yet</p>
@@ -144,7 +147,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             </>
           ) : (
             <>
-            <header className="flex items-center justify-between border-b px-5 py-3 md:px-8">
+            <header className={cn("flex items-center justify-between border-b px-5 py-3 md:px-8", !showCode && "lg:[@media(min-height:501px)]:min-h-[57px] lg:[@media(min-height:501px)]:pr-80")}>
               <span className="text-lead font-semibold">Request</span>
               <span role="group" aria-label="Request as" className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("min-h-6 border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
             </header>
@@ -200,17 +203,26 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             </>
           )}
         </section>
-        <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "short:hidden")}>
-          <header className="flex items-center justify-between border-b px-5 py-3 md:px-8">
-            <span role="group" aria-label="Show" className="flex gap-4 text-body">
+        <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "lg:[@media(min-height:501px)]:absolute lg:[@media(min-height:501px)]:right-8 lg:[@media(min-height:501px)]:top-3")}>
+          <header className={cn("flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 md:px-8", showCode ? "border-b py-3" : "py-2 lg:[@media(min-height:501px)]:p-0")}>
+            <span role="group" aria-label="Show" className={cn("flex gap-4 text-body", !showCode && "hidden")}>
               <button type="button" aria-pressed={pane === "code"} onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>
-              <button type="button" aria-pressed={pane === "response"} onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
+              <button type="button" aria-pressed={pane === "response"} onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono max-sm:hidden", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
             </span>
-            {pane === "code" && <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>}
+            <span className="ml-auto flex items-center gap-2">
+              <Button type="button" size="sm" className="max-sm:px-2" aria-expanded={showCode} aria-controls={codePanel} onClick={() => setShowCode((s) => !s)}>
+                {showCode ? <EyeOff aria-hidden /> : <Eye aria-hidden />} {showCode ? "Hide code and response" : "Show code and response"}
+              </Button>
+            </span>
           </header>
+          {/* Folded, the panel stays in the page, hidden: a run followed here keeps its place. */}
+          <div id={codePanel} className={cn("flex min-h-0 flex-1 flex-col", !showCode && "hidden")}>
           {pane === "code" ? (
             <>
-              <div role="group" aria-label="Code in" className="flex gap-5 border-b px-5 text-small md:px-8">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" aria-pressed={lang === l} onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
+              <div className="flex items-center justify-between gap-3 border-b px-5 md:px-8">
+              <div role="group" aria-label="Code in" className="flex gap-5 text-small">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" aria-pressed={lang === l} onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
+                <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
+              </div>
               <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-8">{code}</pre>
               <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-8">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
@@ -235,6 +247,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-small text-primary-text hover:bg-accent md:px-8">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
             </>
           )}
+          </div>
         </section>
       </div>
     </div>

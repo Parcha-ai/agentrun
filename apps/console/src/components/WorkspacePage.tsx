@@ -1,4 +1,4 @@
-import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { HardDrive } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
@@ -116,6 +116,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
         </div>
         <div className={settingsBodyClass}>
           {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
+          <SettingsSection title="Disk">
           <section aria-label="Archil" className="border p-4">
             <div className="flex flex-wrap items-center gap-3">
               <HardDrive className="size-4 text-muted-foreground" aria-hidden />
@@ -170,6 +171,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
               <Button type="submit" size="sm" variant="solid" disabled={busy}>{busy ? "Saving" : view.on ? "Save" : "Turn on"}</Button>
             </form>
           </section>
+          </SettingsSection>
         </div>
       </div>
     </div>

@@ -27,6 +27,13 @@
   code, pre, kbd, samp, .font-mono, .caps, svg.wf { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
 }
 
+/* On a touch screen every field's text is 16px. A phone's browser (iOS) zooms the page into a field whose text is
+   smaller the moment it takes focus, and stays zoomed after: the page is then cut off on both sides. Unlayered and
+   !important, so it wins over a field's own size class; a mouse-first screen keeps the dense sizes. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), textarea, select { font-size: 16px !important; }
+}
+
 @layer components {
   /* Mono caps: buttons, tabs, chips and small labels. */
   .caps { @apply font-mono uppercase tracking-[0.06em]; }

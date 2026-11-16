@@ -1,4 +1,4 @@
-import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { TriangleAlert, Webhook as WebhookIcon } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
@@ -82,6 +82,7 @@ export function WebhookPage({ v2 }: { v2: Client }) {
               <Button type="button" variant="outline" className="mt-3" onClick={() => setSecret(null)}>Done</Button>
             </section>
           )}
+          <SettingsSection title="Endpoint">
           <section className="border bg-card p-4" aria-label="Webhook URL">
             <div className="flex items-center gap-2">
               <WebhookIcon className="size-4 text-muted-foreground" aria-hidden />
@@ -110,15 +111,12 @@ export function WebhookPage({ v2 }: { v2: Client }) {
             )}
             {tested && <p className="mt-3 font-mono text-body" aria-label="Test send">Test send: {outcome(tested)}</p>}
           </section>
-          <section aria-label="Deliveries">
-            <div className="flex items-center justify-between">
-              <h2 className="caps text-small font-semibold text-muted-foreground">Last deliveries</h2>
-              <Button type="button" variant="ghost" onClick={load}>Refresh</Button>
-            </div>
+          </SettingsSection>
+          <SettingsSection label="Deliveries" title="Last deliveries" aside={<Button type="button" size="sm" onClick={load}>Refresh</Button>}>
             {attempts.length === 0
-              ? <p className="mt-2 border p-4 text-body text-muted-foreground">No message has been tried yet.</p>
+              ? <p className="border p-4 text-body text-muted-foreground">No message has been tried yet.</p>
               : (
-                <ul className="mt-2 border">
+                <ul className="border">
                   {attempts.map((a, i) => (
                     <li key={`${a.webhook_id}:${a.at}:${i}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 text-body last:border-b-0">
                       <span className="w-[170px] shrink-0 text-muted-foreground">{when(a.at)}</span>
@@ -131,7 +129,7 @@ export function WebhookPage({ v2 }: { v2: Client }) {
                   ))}
                 </ul>
               )}
-          </section>
+          </SettingsSection>
         </div>
       </div>
     </div>
