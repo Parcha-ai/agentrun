@@ -10,7 +10,7 @@ import { anchorsOf, brokenLinks, trackedFiles } from './check-doc-anchors.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('headings make the fragments GitHub makes: code spans, quotes, &, colons, repeats, setext and <a id> anchors', () => {
+test('headings make the fragments GitHub makes: code spans, quotes, &, colons, repeats, setext, and <a id> anchors outside comments', () => {
   const text = [
     '# The `labels: "machine"` option',
     '## "Quoted" and \'single\' words',
@@ -23,6 +23,12 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     '## &#65;PI &amp; numeric \\*escapes\\*',
     '<a id="custom-anchor"></a>',
     '<a name="old-name"></a>',
+    '',
+    '<!-- <a id="commented-out"></a> -->',
+    '',
+    '<!-- an old note --><a id="after-comment"></a>',
+    '',
+    'Text <!-- <a name="inline-commented"></a> --> and <a id="inline-anchor"></a> here.',
     '',
     'A setext heading',
     '----------------',
@@ -39,7 +45,9 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     '```',
   ].join('\n');
   assert.deepEqual([...anchorsOf(text)].sort(), [
+    'after-comment',
     'api--numeric-escapes',
+    'inline-anchor',
     'custom-anchor',
     'exec--files',
     'notes',

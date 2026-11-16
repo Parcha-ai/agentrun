@@ -1,10 +1,10 @@
 // Every relative link in a tracked Markdown file lands: a renamed heading once left 16 links in
 // packages/computer/SCORECARD.md pointing at a fragment nothing made. Each file is read by marked's lexer (GitHub-flavoured
-// Markdown, as the console renders it), so code, comments and escapes are what Markdown says they are. A link's path,
+// Markdown), so code, comments and escapes are what Markdown says they are. A link's path,
 // relative to the linking file or, with a leading /, to the repo root, must be a tracked file or directory. Its #fragment,
 // in a Markdown target or the same file, must be made by a heading there, by GitHub's slug rule (the heading's text, lower
 // case, with every character but letters, digits, `_`, `-` and spaces dropped, spaces turned to `-`; a repeated slug gets
-// `-1`, `-2`, ...), or by an `<a id>` or `<a name>` anchor. Not read: links with a scheme, and front matter.
+// `-1`, `-2`, ...), or by an `<a id>` or `<a name>` anchor outside an HTML comment. Not read: links with a scheme, and front matter.
 // `node scripts/check-doc-anchors.mjs` exits non-zero with one line per broken link; check-doc-anchors.test.mjs runs it on
 // this tree and on planted breaks.
 import { execFileSync } from 'node:child_process';
@@ -96,7 +96,11 @@ export function anchorsOf(text) {
   for (const { token } of tokensOf(text)) {
     // A setext heading's line breaks render as spaces.
     if (token.type === 'heading') anchors.add(slug(plain(token.tokens).trim().replace(/[ \t]*\n[ \t]*/g, ' ')));
-    else if (token.type === 'html') for (const m of token.raw.matchAll(/<a\s[^>]*?\b(?:id|name)\s*=\s*["']([^"']+)["']/gi)) anchors.add(m[1]);
+    // An anchor inside an HTML comment renders nothing; a comment with no end runs to the end of its HTML.
+    else if (token.type === 'html') {
+      const html = token.raw.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+      for (const m of html.matchAll(/<a\s[^>]*?\b(?:id|name)\s*=\s*["']([^"']+)["']/gi)) anchors.add(m[1]);
+    }
   }
   return anchors;
 }
