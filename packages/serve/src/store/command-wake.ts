@@ -1,12 +1,13 @@
-// A wake for command rows: a hint to read now, not a source of truth. An in-process bus keyed by a store's `where` (two
-// handles on the same data share one), so a write through one handle wakes the readers of the others without waiting for
-// their poll. It reaches handles in this process only: a row another process writes wakes nothing here, and the reader's
-// poll finds it.
+// A wake for command rows and new runs: a hint to read now, not a source of truth. An in-process bus keyed by a store's
+// `where` (two handles on the same data share one), so a write through one handle wakes the readers of the others without
+// waiting for their poll. It reaches handles in this process only: a row another process writes wakes nothing here, and
+// the reader's poll finds it.
 
-/** What woke a listener: a command row was written for the run, or one was taken, refused or answered. */
+/** What woke a listener: a command row was written for the run, or one was taken, refused or answered; or the run was
+ *  queued (a new run a runner may claim now). */
 export interface CommandWake {
   readonly runId: string;
-  readonly what: "written" | "answered";
+  readonly what: "written" | "answered" | "queued";
 }
 
 type Listener = (event: CommandWake) => void;

@@ -1,7 +1,7 @@
 // The computer as an agent's code sees it: one typed `computer` object. This file is the source of computer.d.ts
 // (scripts/generate-computer-surface.mjs renders it, with the protocol's types it names) and of the per-step tools'
-// schemas (computer_observe, computer_act, computer_screenshot, computer_script). Every surface answers through one
-// core (core.ts): a script's call, a per-step tool and the claim's MCP endpoint return the same values.
+// schemas (computer_observe, computer_act, computer_screenshot). Every surface answers through one core (core.ts): a
+// script's call, a per-step tool and the claim's MCP endpoint return the same values.
 //
 // A member of Computer marked `@group <name> [<name> ...]` exists only on a computer that declares one of those groups
 // (its hello), so a model is never offered what the computer can't do. The steps are the protocol's own (UiStep): one step language for a
@@ -176,6 +176,13 @@ export interface Computer {
 		/** Run a command: a string runs in sh -c, a list is the program and its arguments. */
 		run(command: string | string[], options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<RunResult>;
 	};
+	/** @group processes */
+	readonly processes: {
+		/** Start a program that runs on after the call (an app on the desktop, a server), the way shell.run can't: it ends
+		 *  everything its command started. Answers once it started; it and what it starts run until they exit or the
+		 *  computer ends. A string runs in sh -c, a list is the program and its arguments. */
+		start(command: string | string[], options?: { cwd?: string; env?: Record<string, string> }): Promise<{ pid: number }>;
+	};
 	/** @group files */
 	readonly files: {
 		/** A file's text (UTF-8), or with base64 its bytes. */
@@ -190,7 +197,7 @@ export interface Computer {
 
 /** computer_observe: observe an app's window (or, with no ui group, the screen). */
 export interface ObserveArgs {
-	/** Default: the app in front. */
+	/** Default: the app in front. With no ui group, opened or brought in front first. */
 	app?: string;
 	/** Add the window's picture (always, with no ui group). */
 	image?: boolean;
@@ -200,7 +207,7 @@ export interface ObserveArgs {
 
 /** computer_act: run steps on an app, and check a condition after them. */
 export interface ActArgs {
-	/** Default: the state's app, else the app in front. */
+	/** Default: the state's app, else the app in front. With no ui group, opened or brought in front first. */
 	app?: string;
 	/** The state a step's point was read from. Default: the last observed. */
 	state?: string;
@@ -218,14 +225,4 @@ export interface ActArgs {
 export interface ScreenshotArgs {
 	/** [x, y, w, h] in screen pixels. */
 	region?: Rect;
-}
-
-/** computer_script: run JavaScript against the `computer` object. */
-export interface ScriptArgs {
-	/** An async function's body; `return` what you need. */
-	code: string;
-	/** For the run's timeline. */
-	title?: string;
-	/** Default 120000, at most 600000. */
-	timeoutMs?: number;
 }

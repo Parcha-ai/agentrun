@@ -17,6 +17,7 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, client, follow, retried, scratch, serve } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const SDK = "@anthropic-ai/claude-agent-sdk";
 const PIN = "0.3.286";
@@ -102,6 +103,7 @@ async function fakeRegistry(t, { hold, holdMcp, ...given } = {}) {
   const hits = [];
   let ready = false;
   const server = createServer(async (req, res) => {
+    if (stranger(req, res)) return;
     hits.push(req.url);
     const path = decodeURIComponent(req.url.split("?")[0]).slice(1);
     const tgz = /^-\/(.+)\/(\d[^/]*)\.tgz$/.exec(path);
@@ -633,16 +635,20 @@ console.log(JSON.stringify({ url: served.baseUrl, token: served.token }));
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await until("npm runs on the data", async () => (await npmOn(data)).length > 0, 120_000);
-  // The crash: npm first (it would outlive its server), then the server, with the run waiting on the install.
-  for (const pid of await npmOn(data)) process.kill(pid, "SIGKILL");
+  // The crash: the server first, with the run waiting on the install, then the npm it leaves behind. Killed the other way
+  // round, the live server sees its npm die and answers it (a failed mark, the run's claim let go) in the time before its
+  // own kill lands, which a crash never does.
+  const orphans = await npmOn(data);
   child.kill("SIGKILL");
   await new Promise((resolve) => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once("exit", resolve)));
+  for (const pid of [...orphans, ...(await npmOn(data))]) try { process.kill(pid, "SIGKILL"); } catch {}
+  await until("npm is gone", async () => (await npmOn(data)).length === 0, 30_000);
   letGo();
   assert.equal(installedIn(data), undefined, "the crash left Claude Code uninstalled");
   // The next server recovers the run: it installs Claude Code before the run's process starts, and the run answers.
   const next = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, data });
   const { rows, last } = await follow(next.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
-  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.equal(last.status, "completed", JSON.stringify([(await next.api("GET", `/runs/${run.body.run_id}`)).body.error, ...rows.slice(-3)]));
   assert.equal(rows.findLast((row) => row.kind === "final_answer")?.text, "Claude answered.");
   assert.equal(installedIn(data), PIN);
   await next.close();

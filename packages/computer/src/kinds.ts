@@ -8,7 +8,7 @@
 // once in its descriptor module: loading this loads descriptors (data) alone, never a provider module or a vendor SDK.
 import type { DescriptorKey, DescriptorSetting, HostCommand, ParkedConfiguration, ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
-import type { MountKind } from "./mount.js";
+import type { MountKind, Unmounted } from "./mount.js";
 import type { ComputerKind, Group, HelloResult } from "./protocol.js";
 import type { ComputerCapabilities, NetworkForm } from "./provider.js";
 import type { Result } from "./result.js";
@@ -122,6 +122,8 @@ export interface ProviderEntry {
 	readonly settings?: readonly DescriptorSetting[];
 	/** The mount kinds its computers take; [] cannot mount the run's folder. */
 	readonly mounts: readonly MountKind[];
+	/** Why its computers take none of these mount kinds, each in one sentence (descriptor.ts). */
+	readonly unmounted?: Unmounted;
 	/**
 	 * The network forms its computers make, its descriptor's: ["none"], a remote computer whose programs run in a network
 	 * of their own; ["open"], the vendor's own network, which no allowlist of this server reaches; Docker's all three.

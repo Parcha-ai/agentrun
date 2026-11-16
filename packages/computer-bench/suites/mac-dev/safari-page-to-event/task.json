@@ -1,0 +1,87 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.safari.page-to-event",
+  "version": 1,
+  "title": "Add an invitation from a web page to Calendar",
+  "split": "heldout",
+  "tags": ["safari", "calendar", "cross-app", "dates", "demo"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Safari", "com.apple.iCal"] },
+  "params": {
+    "title": { "pick": ["Book club", "Open studio night", "Neighborhood cleanup", "Chess meetup"] },
+    "where": { "pick": ["Room 2, Riverside Library", "The Long Hall, 14 Mill Lane", "Community garden gate"] },
+    "slot": {
+      "pick": [
+        { "say": "9:00 to 10:00 AM", "h": 9, "m": 0, "len": 60, "want": "09:00 60m" },
+        { "say": "11:30 AM to 12:00 PM", "h": 11, "m": 30, "len": 30, "want": "11:30 30m" },
+        { "say": "2:00 to 3:30 PM", "h": 14, "m": 0, "len": 90, "want": "14:00 90m" },
+        { "say": "4:15 to 5:00 PM", "h": 16, "m": 15, "len": 45, "want": "16:15 45m" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Close windows an earlier try left on the run's folder.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The calendar exists and is empty, so the event is not there yet.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Write the invitation page, dated tomorrow.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open it in a new Safari window: the agent starts on it.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "start"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "Safari is showing an invitation. Add it to Calendar, in the calendar \"computer-bench {{nonce}}\", with the invitation's title, date and time.",
+  "budget": { "steps": 40, "usd": 2, "wall_s": 500 },
+  "checks": [
+    {
+      "id": "one-event",
+      "kind": "exec",
+      "why": "Exactly one event of the calendar has the invitation's title.",
+      "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "when",
+      "kind": "exec",
+      "why": "The event starts on the invitation's date (tomorrow when setup ran, one day after today when the check runs) at its start time and lasts until its end time, not from the doors-open time; an all-day event fails.",
+      "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "when"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "+1d {{slot.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the calendar and its events.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "teardown"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Close the invitation's windows.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Remove the run's folder.",
+      "params": { "argv": ["sh", "-c", "rm -rf /tmp/computer-bench-{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Make the event at tomorrow's date, computed from the Mac's clock.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "make"], "timeoutMs": 60000 }
+    }
+  ]
+}

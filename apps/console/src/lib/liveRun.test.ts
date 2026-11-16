@@ -23,7 +23,7 @@ describe("messageOffer", () => {
 });
 
 describe("readHarness", () => {
-  type Row = { revision: string; definition: { harness?: string } };
+  type Row = { revision: string; definition: { harness?: string; output_schema?: Record<string, unknown> } };
   const pages = (...p: Row[][]) => ({
     listRevisions: async (_agent: string, cursor?: string | null) => {
       const at = cursor ? Number(cursor) : 0;
@@ -37,6 +37,12 @@ describe("readHarness", () => {
     const v2 = pages([{ revision: "r2", definition: { harness: "codex" } }], [{ revision: "r1", definition: { harness: "pi" } }]);
     expect(await readHarness(v2, run("r1"))).toEqual({ state: "read", id: "pi" });
     expect(await readHarness(v2, run("r2"))).toEqual({ state: "read", id: "codex" });
+  });
+  it("carries that revision's output schema, which the Report reads the run's output with", async () => {
+    const schema = { type: "object", properties: { report: { type: "string", contentMediaType: "text/markdown" } } };
+    const v2 = pages([{ revision: "r2", definition: { harness: "pi" } }], [{ revision: "r1", definition: { harness: "codex", output_schema: schema } }]);
+    expect(await readHarness(v2, run("r1"))).toEqual({ state: "read", id: "codex", outputSchema: schema });
+    expect(await readHarness(v2, run("r2"))).toStrictEqual({ state: "read", id: "pi" });
   });
   it("none named on that revision is the default, pi", async () => {
     expect(await readHarness(pages([{ revision: "r1", definition: {} }]), run("r1"))).toEqual({ state: "read", id: undefined });

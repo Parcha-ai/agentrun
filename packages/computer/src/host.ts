@@ -1,67 +1,105 @@
-// The machine host: what a vendor writes to put computers on its machines. A vendor answers seven calls about its own
-// machines (create, get, list, delete, exec, errorCode, and its static facts); hostedProvider (./hosted/provider.ts)
-// owns everything else a ComputerProvider does: the spec's check, the daemon's upload, install and start, the stdio
-// bridge, the read-back and the probe, labels, list and attach, the deadline and extend, delete-then-wait-gone, the
-// sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the contract a new
-// vendor reads (PROVIDERS.md, "The MachineHost half").
-import type { MountKind } from "./mount.js";
-import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, NetworkPolicy, Refusal } from "./provider.js";
-import type { ComputerErrorCode, Result } from "./result.js";
+// The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
+// and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
+// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
+// spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels, list and
+// attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and the words
+// of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven members").
+import type { ProviderDescriptor } from "./descriptor.js";
+import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
+import type { ComputerErrorCode } from "./result.js";
 
 /**
- * One vendor's machines. Every call answers a Result: an expected failure (the vendor refused, the machine is not
- * there) is a result with a code from errorCode, never a throw. A call that throws is read through errorCode as well.
- * The adapter bounds each call by ctx.timeoutMs and ctx.signal; a host passes both on to its vendor call when it can.
+ * One vendor's machines. Every call answers its value or throws: a failure whose code the host knows throws a
+ * HostError with that code, and any other error is read through errorCode (default "vendor"); an AbortError or a
+ * TimeoutError the adapter reads itself. The adapter bounds each call by ctx.timeoutMs and ctx.signal; a host passes
+ * both on to its vendor call when it can.
  */
 export interface MachineHost {
-	/** The provider's descriptor id ("e2b"): the vendor named by every error of code vendor. */
-	readonly id: string;
+	/**
+	 * The provider's descriptor (./descriptors): its id names the vendor of every error of code vendor, its label is the
+	 * vendor in words, and capabilities() and check() read its network forms, mount kinds and unmounted kinds, and its
+	 * configuration of the adapter's kind: the groups and GPUs.
+	 */
+	readonly descriptor: HostDescriptor;
 	readonly facts: HostFacts;
 	/**
-	 * Makes one machine, by its options, and answers once the vendor has its id. It does not wait for the machine to run
-	 * (the adapter polls get while it is starting) or to be listed (the adapter waits for that too). The machine carries
-	 * req.name where the vendor can find it again by listing: the vendor's native name, or a label. An answer that never
-	 * comes is not a machine the adapter forgets: it lists by req.labels and deletes what it finds.
+	 * Makes one machine, by its options, and answers its id once the vendor has one. It does not wait for the machine to
+	 * run (the adapter polls get while it is starting) or to be listed (the adapter waits for that too), except where the
+	 * vendor applies a machine's settings only once it is ready: there it may wait for ready within ctx.timeoutMs, set
+	 * them, and answer then (PROVIDERS.md, create). The machine
+	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. An answer that
+	 * never comes is not a machine the adapter forgets: it lists by req.labels and deletes what it finds.
 	 */
-	create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>>;
-	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, not an error). */
-	get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>>;
+	create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }>;
+	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a HostError not_found). */
+	get(id: string, ctx: HostCall): Promise<Machine | undefined>;
 	/**
-	 * Every machine of the account that carries all of these labels, every page, each as get reads it (network included,
-	 * where the vendor reads one back), within ctx.timeoutMs in all. A machine the vendor is deleting may still be listed.
+	 * The machines of the account the vendor's listing shows for these labels, every page, within ctx.timeoutMs in all.
+	 * The listing finds; get answers: the adapter takes only the ids from it and reads each one it keeps by get, for its
+	 * state, labels and end, so a listing may be stale (one still showing a deleted machine, or an end from before a
+	 * timer moved: E2B's). It may answer more machines than carry all the labels (a vendor that filters by some, or
+	 * none): the adapter keeps those whose get does. A listing may lag a create: two creates of one request on two
+	 * provider instances can then both make a machine, and the adapter deletes every one but the oldest (createdAt), so
+	 * a vendor may see a second create deleted.
 	 */
-	list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>>;
-	/** Deletes a machine; not found is ok. It answers once the vendor took the delete: the adapter waits for gone. */
-	delete(id: string, ctx: HostCall): Promise<Result<void>>;
+	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
+	/**
+	 * Deletes a machine; not found is ok. It answers once the vendor took the delete: the adapter then waits until get
+	 * answers none, twice running (a machine get reads gone is still going, and holds the wait).
+	 */
+	delete(id: string, ctx: HostCall): Promise<void>;
 	/**
 	 * Starts argv in the machine as root (the vendor's own command user when it is root, else one with passwordless
-	 * sudo), the vendor's agent's own process, outside the computer's tools. With opts.stdin, the process reads what
-	 * write() gives until end(). No command timeout: the adapter kills it, or it ends. Answers once it has started.
+	 * sudo), the vendor's agent's own process, outside the computer's tools, and answers once it has started.
+	 *
+	 * exec is the whole protocol: the adapter installs and starts its daemon through it, then talks to the daemon over
+	 * one exec'd process's stdin and stdout for the computer's whole life (the stdio bridge, spec/computer/stdio.md). So:
+	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr bytes come
+	 *   back as the process writes them, while it runs. Not request and response, never held until the process exits.
+	 * - Byte-exact. Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
+	 *   nothing added or dropped. A client that hands output over as text breaks this (E2B's commands.run does).
+	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
+	 *   on the stream, are off.
+	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process itself.
+	 * The process reads what write() gives until end(); the adapter ends stdin at once where it gives none. The exec
+	 * pre-check (conformance --exec-stream, src/conformance/exec-stream.ts) checks each of these on a machine made by
+	 * hand, with exec alone.
 	 */
-	exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>>;
+	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
 	/**
 	 * Puts bytes at path in the machine, as root. Optional: a vendor with no file API leaves it out, and the adapter
 	 * streams the file through exec's stdin.
 	 */
-	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<Result<void>>;
-	/** The code of an error the vendor's client threw: one of ComputerErrorCode, "vendor" for anything else. */
-	errorCode(error: unknown): ComputerErrorCode;
-	/** Vendor settings a machine takes once it runs and before the daemon goes in (egress rules, an idle timer). */
-	prepare?(id: string, ctx: HostCall): Promise<Result<void>>;
-	/** Stops a machine, keeping it; declared with facts.release "stop". It answers once the machine reads stopped (or gone with stopDeletes). */
-	stop?(id: string, ctx: HostCall): Promise<Result<void>>;
+	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void>;
 	/**
-	 * Moves the vendor's own timer (facts.lifetime "vendor") so the machine ends at want.end, never past want.most, the
-	 * most it may live. A refusal (limit, in words) when no timer the vendor takes lands there without moving the end
-	 * earlier than it is or past want.most: nothing moves then. The adapter reads the end back with get.
+	 * The code of an error the vendor's client threw: one of ComputerErrorCode. Optional: the adapter reads a HostError's
+	 * own code, an AbortError as "aborted" and a TimeoutError as "timeout" itself, and anything else a host does not map
+	 * is "vendor".
 	 */
-	setTimer?(id: string, want: { end: Date; most: Date }, ctx: HostCall): Promise<Result<void>>;
-	/** Replaces some labels of a machine (the janitor's deadline label, at extend); facts.lifetime "janitor". */
-	setLabels?(id: string, labels: Record<string, string>, ctx: HostCall): Promise<Result<void>>;
-	/** The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. */
-	check?(spec: ComputerSpec): Refusal[];
-	/** Settings' test, where a list would make something (an app); default: one list by the adapter's label, counted. */
-	testConnection?(ctx: HostCall): Promise<Result<{ detail: string }>>;
+	errorCode?(error: unknown): ComputerErrorCode;
+	/**
+	 * Moves the machine's end to endsAt, never past its agentrun.computer.max-deadline label, the most it may live: the
+	 * vendor's own timer (facts.lifetime "vendor"), or the janitor's deadline label (facts.lifetime "janitor"). A refusal
+	 * (a HostError limit, in words) when no end the vendor takes lands there without moving it earlier than it is or past
+	 * the most: nothing moves then. The adapter reads the end back with get (deadlineOf, the deadline label: a vendor that
+	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. Optional: a host without
+	 * it has no extend.
+	 */
+	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
+	/**
+	 * The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. The
+	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
+	 */
+	check?(spec: Partial<ComputerSpec>): Refusal[];
+}
+
+/** A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words. */
+export class HostError extends Error {
+	readonly code: ComputerErrorCode;
+	constructor(code: ComputerErrorCode, message: string) {
+		super(message);
+		this.code = code;
+	}
 }
 
 /** Every call's bound: the adapter's timeout for this kind of call, and the caller's signal when it has one. */
@@ -70,7 +108,10 @@ export interface HostCall {
 	timeoutMs: number;
 }
 
-/** What create asks of the vendor: the adapter fills every field but the ones facts.specFields leaves out. */
+/**
+ * What create asks of the vendor. A size (cpus, memoryMb) is passed whenever the spec gives one: a vendor whose size is
+ * its image's refuses it in its own check.
+ */
 export interface MachineRequest {
 	/** computer-<12 hex digits>, from the create's request id: the vendor's native name, or a label it lists by. */
 	name: string;
@@ -78,55 +119,45 @@ export interface MachineRequest {
 	image: string;
 	/** The caller's labels and the adapter's own (agentrun.computer*, the Archil mount's), every one to be read back. */
 	labels: Record<string, string>;
-	/** With facts.lifetime "vendor": the vendor's timer, the spec's lifetime. Absent for a janitor's machine. */
-	lifetimeMs?: number;
+	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
+	lifetimeMs: number;
 	/**
-	 * The vendor's network for the machine: "open" only for an Archil computer's root, which reaches Archil; its tools'
-	 * network is init's own, none, read from inside.
+	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
+	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts). Its tools' own network
+	 * is init's, loopback alone, read from inside, either way.
 	 */
-	network: "none" | "open";
+	egress: boolean;
 	/** facts.daemon "pid1" alone: the machine's main process (the entrypoint that waits for the daemon, then becomes init). */
 	command?: readonly string[];
+	/** A GPU computer's GPUs; the adapter records them in a label too, so no vendor reads them back. */
 	gpu?: GpuSpec;
 	cpus?: number;
 	memoryMb?: number;
-	workdir?: string;
+	/** With facts.user: the spec's user, uid:gid. */
 	user?: string;
 }
 
-/** One machine as the vendor reads it back. */
+/**
+ * One machine as the vendor reads it back. The adapter holds the rest itself: what create asked is in the labels, what
+ * runs is read from inside (the daemon's hello and sha256, the network probe).
+ */
 export interface Machine {
 	id: string;
 	/** Every label it carries, the adapter's own included. */
 	labels: Record<string, string>;
-	/** starting: not yet running; going: being deleted or ended; failed: the vendor gave up on it (why says how). */
-	state: "starting" | "running" | "stopped" | "going" | "failed";
-	/** The vendor's own read of its network; absent when the vendor reads none back (the probe stands for it then). */
-	network?: NetworkPolicy;
-	/** What the vendor resolved the image to, by its own name (a template's id, a snapshot). */
-	image?: { resolved?: string };
+	/**
+	 * starting: not yet running; stopped: there, not running, and not being deleted (paused, asleep): listed, so the
+	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
+	 */
+	state: "starting" | "running" | "stopped" | "gone";
+	/** With facts.lifetime "vendor": when the vendor's timer ends it. */
+	endsAt?: Date;
 	/**
 	 * When the vendor made it, by its clock, where it says. Two creates of one request on two provider instances can each
 	 * make a machine before either is listed: the oldest is kept, by this, or by the lowest id where a machine has none.
 	 */
 	createdAt?: Date;
-	/** With facts.lifetime "vendor": when the vendor's timer ends it. */
-	endsAt?: Date;
-	/**
-	 * With facts.lifetime "vendor": the vendor's timer was moved past where create set it (by an extend), so endsAt,
-	 * held to the most the machine may live, stands for its deadline: the vendor keeps no label change.
-	 */
-	timerMoved?: boolean;
-	/**
-	 * The vendor's own create options read back wrong, in words, one each ("lifecycle onTimeout: declared ..."). Held at
-	 * create and at attach alike, so only what holds for the machine's whole life: a timer an extend moved is timerMoved,
-	 * never drift (create refuses a machine whose timer reads moved before any extend).
-	 */
-	drift?: string[];
-	/** The size the vendor reads back, in CPUs and MiB: attach reports it. */
-	size?: { cpus?: number; memoryMb?: number };
-	gpu?: GpuSpec;
-	/** The vendor's words for a failed state. */
+	/** The vendor's words for a machine that is gone because it failed: a create stops in them. */
 	why?: string;
 }
 
@@ -144,9 +175,22 @@ export interface MachineProcess {
 	kill(): Promise<void>;
 }
 
-/** What a vendor's machines are, static: with the adapter's options, capabilities() is built from these alone. */
+/**
+ * What the host reads of its provider's descriptor: its id and label, its network forms and mounts, and its
+ * configurations, each kind's groups and GPUs.
+ */
+export type HostDescriptor = Pick<ProviderDescriptor, "id" | "label" | "network" | "mounts" | "unmounted" | "capabilities">;
+
+/**
+ * What a vendor's machines are, static: with its descriptor (network, mounts, each kind's groups and GPUs) and the
+ * adapter's options, capabilities() is built from these alone.
+ */
 export interface HostFacts {
-	/** child: the vendor's agent is the machine's first process and starts init; pid1: init is the machine's main process. */
+	/**
+	 * child: the vendor's agent is the machine's first process and starts init, after the adapter closes the session
+	 * buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a path socket. pid1:
+	 * init is the machine's main process (Modal's, whose sandbox ends when it does), started by request.command.
+	 */
 	daemon: "child" | "pid1";
 	isolation: ComputerCapabilities["isolation"];
 	/** Who ends a machine at its deadline: the vendor's timer, or the janitor by label. */
@@ -156,22 +200,20 @@ export interface HostFacts {
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
-	/** Whether get reads the network back from the vendor. */
-	networkReadBack: boolean;
-	/** The network forms its computers take: of its descriptor's. */
-	network: NetworkForm[];
-	/** The mount kinds it takes: of its descriptor's. */
-	mounts?: MountKind[];
-	/** How release may end one; "stop" needs host.stop. */
-	release: Array<"stop" | "delete">;
-	stopDeletes?: boolean;
-	gpu?: GpuCapability;
-	/** What spec.user may ask for, beside the daemon user. */
+	/** Whether its desktops run WINDOW_MANAGER (xfwm4, which its image has) once the display answers. Default none. */
+	windowManager?: boolean;
+	/** What spec.user may ask for, beside the daemon user: with it, the spec's user goes in MachineRequest.user. */
 	user?: Array<"root" | "uid">;
-	/** The spec's size and place fields the vendor takes, passed in MachineRequest; any other is refused. */
-	specFields?: Array<"cpus" | "memoryMb" | "workdir" | "user">;
-	/** The vendor's label rules: how many labels a machine takes, and the names it takes. */
-	labelRules?: { max?: number; key?: RegExp };
-	/** The runtime a machine of this request runs: "gvisor" only where the vendor runs one (a pid1 host's GPU). */
-	runtime?(req: MachineRequest): "vm" | "gvisor";
+	/**
+	 * The most a machine's labels may be, the adapter's own with the caller's: count, how many; bytes, every name and
+	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
+	 * Absent: no bound.
+	 */
+	labels?: { count?: number; bytes?: number };
+	/**
+	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
+	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a
+	 * directory, before the daemon's upload, so the computer's user can change nothing root runs. Default none.
+	 */
+	rootOnly?: readonly string[];
 }

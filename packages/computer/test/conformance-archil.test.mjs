@@ -4,7 +4,7 @@
 // loaded and nothing reaches Archil here: the object API and the SDK's constructor are fakes.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fakeObjects } from "./fake-modal.mjs";
+import { fakeObjects } from "./fake-archil.mjs";
 
 const { ARCHIL_ENV, archilRunFolder, archilSettings } = await import("../dist/conformance/archil.js");
 

@@ -13,7 +13,8 @@ import { kindOf, serves, sweep } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
 
 const orgo = await import("../dist/orgo.js");
-const { CAPABILITIES, create, MOUNT, OrgoProvider } = orgo;
+const { create, OrgoProvider } = orgo;
+const { ORGO } = await import("../dist/descriptors/orgo.js");
 const { orgoName } = await import("../dist/orgo-names.js");
 
 const RUN = "run-7f3a";
@@ -61,10 +62,10 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	const built = create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch });
 	assert.ok(built instanceof OrgoProvider);
 	assert.equal(built.id, "orgo");
-	assert.deepEqual(MOUNT, []);
+	assert.deepEqual(ORGO.mounts, []);
 	assert.deepEqual(
-		CAPABILITIES,
-		[{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], image: "linux", options: {}, persistence: { keepsState: true, resume: true } }],
+		ORGO.capabilities,
+		[{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"], image: "linux", options: {}, persistence: { keepsState: true, resume: true } }],
 		"what a built provider declares, known without building one: the Linux desktop alone, by its image, keeping an agent's own computer; Windows and macOS are parked",
 	);
 	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
@@ -97,7 +98,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 		isolation: "vm",
 		os: "linux",
 		daemon: "child",
-		groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"],
+		groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"],
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
 		mount: [],

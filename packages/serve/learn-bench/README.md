@@ -14,8 +14,8 @@ A job is a folder here, `learn-bench/<job>/`:
 | File | What |
 |---|---|
 | `job.yaml` | `template` (a folder under `templates/`; absent for a job with its own `agent.md`), `parameters` and `grants` (the apply's, checked as a template eval case's are), `fakes` (an MCP server's name to its fixture file in the job: one fixture for the whole series), `deny` (tool gate names set to deny on the agent, in both arms), `harnesses`, `steps`: `[{id, kind}]` in order, `kind` one of `teach`, `repeat`, `change`, `plant`, and `reuse: true` for a job that measures workflow reuse: it runs at least 3 steps after the earliest step a workflow can be kept (the teach step's skill asked for as a workflow once it served 3 runs, #2282). |
-| `steps/<id>/prompt.md` | Front matter `description` and `max_cost_usd`, as an eval case's prompt (no `runs`: one run per step per arm). The body is the run's input. |
-| `steps/<id>/graders/*.md` | The template eval's graders: `llm`, `regex`, `tool_used`, `file_exists`, `schema`. Nothing new. |
+| `steps/<id>/prompt.md` | Front matter `description`, `max_cost_usd` and, for a template with `inputs`, `input` (the run's typed fields), as an eval case's prompt (no `runs`: one run per step per arm). The body is the run's input's content. |
+| `steps/<id>/graders/*.md` | The template eval's graders: `llm`, `regex`, `tool_used`, `file_exists`. Nothing new. A template's output schema needs none: a step is held to it as an eval run is. |
 | `fixtures/` | The fakes' fixtures, copied into every step's case. |
 | `agent.md` | Only for a job with no template: a template manifest (name, version, description, harness, tools, learning) and the instructions as its body. |
 
@@ -42,8 +42,8 @@ They feed staleness and wrong keeps. Every other grader is named freely.
 
    Every agent runs on the series' harness and the runner place, with the job's `deny` tools denied and the bench's
    model for the harness.
-4. **Grade each step** as the template eval grades a run: `gradeDeterministic`, and an `llm` grader as a grader-agent run
-   on `graderInput`, read with `verdictOf`.
+4. **Grade each step** as the template eval grades a run: `outputVerdict` for a template with an output schema,
+   `gradeDeterministic`, and an `llm` grader as a grader-agent run on `graderInput`, read with `verdictOf`.
 5. **Add the bench's metrics:**
    - cost per run and its trend;
    - the follow rate on `repeat` steps;

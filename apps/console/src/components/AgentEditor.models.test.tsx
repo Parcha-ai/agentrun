@@ -27,14 +27,16 @@ describe("AgentEditor, the Model field", () => {
   it("on pi, names the server's default without the gateway's prefix, the full id in its title; the placeholder is a value a save takes", () => {
     const html = settings(agentOn("pi"));
     expect(html).toContain(`Empty uses the server&#x27;s default (<span title="agent-model/gpt-6-luna">gpt-6-luna</span>).`);
-    expect(html).toContain('placeholder="provider/model"');
+    // A picker, whose list a server's `models` fills (AgentEditor.modelPicker.test.tsx): no free-text box until Custom.
+    expect(html).toContain('id="agent-model"');
+    expect(html).not.toContain('placeholder="provider/model"');
   });
   it("from a server that does not name each harness's default, offers none to claude-agent or codex", () => {
     for (const harness of ["claude-agent", "codex"]) {
       const html = settings(agentOn(harness));
       expect(html, harness).toContain("No default for this harness yet: add a model key in Settings → Model keys, or choose a model here.");
       expect(html, harness).not.toContain("gpt-6-luna");
-      expect(html, harness).toContain('placeholder="provider/model"');
+      expect(html, harness).toContain('id="agent-model"');
     }
   });
 });

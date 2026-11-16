@@ -148,3 +148,23 @@ describe("exampleInput", () => {
     expect(e.fields).toEqual([{ name: "id", note: "The ticket." }, { name: "owner" }]);
   });
 });
+
+// An agent whose input_schema the form shows as fields: the message (when there is one) and the typed fields go out as
+// one input; an input_schema the form can't show is typed as JSON, as a workflow's is.
+describe("startBody, an agent with typed input", () => {
+  it("sends the message and the typed fields as one input, and no content when the message is empty and optional", () => {
+    expect(startBody("agentic", { text: "Look into it.", typed: { fields: { company: "Acme", limit: 5 }, contentRequired: false } })).toEqual({
+      ok: true, body: { input: { content: "Look into it.", company: "Acme", limit: 5 } },
+    });
+    expect(startBody("agentic", { text: " ", typed: { fields: { company: "Acme" }, contentRequired: false } })).toEqual({ ok: true, body: { input: { company: "Acme" } } });
+  });
+  it("still asks for the message when the schema requires it", () => {
+    expect(startBody("agentic", { text: "", typed: { fields: { company: "Acme" }, contentRequired: true } })).toMatchObject({ ok: false, field: "input" });
+  });
+  it("takes the whole input as JSON for a schema the form can't show", () => {
+    expect(startBody("agentic", { text: '{"company":"Acme","filters":{"since":"2026"}}', json: true, maxCostUsd: "1" })).toEqual({
+      ok: true, body: { input: { company: "Acme", filters: { since: "2026" } }, max_cost_usd: 1 },
+    });
+    expect(startBody("agentic", { text: "{company", json: true })).toMatchObject({ ok: false, field: "input" });
+  });
+});

@@ -77,7 +77,7 @@ function server(views: (Computers | Response)[], write: (call: Call) => Response
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
 async function open(v2: ReturnType<typeof createClient>, writable = true) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -102,6 +102,19 @@ async function open(v2: ReturnType<typeof createClient>, writable = true) {
 }
 
 describe("Settings → Computers", () => {
+  it("pastes into the clicked provider's field without saving or filling its other occurrence", async () => {
+    vi.stubGlobal("navigator", { clipboard: { readText: () => Promise.resolve(FAKE) } });
+    const { v2, calls } = server([view()]);
+    const p = await open(v2);
+    const target = p.row("Desktop", "E2B");
+    await p.click(p.key(target, "E2B_API_KEY"), /^Paste$/);
+    expect(target.querySelector<HTMLInputElement>('input[name="E2B_API_KEY"]')?.value).toBe(FAKE);
+    expect(p.row("Sandbox", "E2B").querySelector("input")).toBeNull();
+    expect(p.button(target, /^Save$/)?.disabled).toBe(false);
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+    expect(p.host.innerHTML).not.toContain(FAKE);
+  });
+
   it("is a Settings tab, at #/settings/computers", () => {
     expect(SETTINGS_PAGES.map((p) => p.label)).toContain("Computers");
     expect(route("#/settings/computers")).toEqual({ section: "settings", settings: "computers" });

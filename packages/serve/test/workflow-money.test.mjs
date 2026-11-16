@@ -14,6 +14,7 @@ import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { sessionSpendOf } from "@parcha/agentrun-kernel";
+import { o200kTokens } from "@parcha/agentrun-kernel/host";
 import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -262,9 +263,23 @@ test("a workflow run's served cost is its booking, never the $0 its model nodes'
   assert.equal(eight(row.costUsd), booked, "the row's stored cost is the same booking");
 });
 
+/** `n` letters a to z, each after a space but the first, from a fixed sequence: o200k_base reads each as one token (a
+ *  run of one letter it reads as far fewer, about one in eight). */
+const spacedLetters = (n) => {
+  const out = [];
+  for (let i = 0, x = 1; i < n; i++) {
+    x = (x * 1103515245 + 12345) % 2147483648;
+    out.push(String.fromCharCode(97 + ((x >>> 16) % 26)));
+  }
+  return out.join(" ");
+};
+
 test("a tiered model past its threshold: the hold and the booking are the tier price, not the base price (#1861)", async (t) => {
-  const input = THRESHOLD + 128_000; // past the tier; the question's bytes bound the hold's input
-  const question = "A".repeat(input);
+  // Past the tier as o200k_base counts it: gpt-6.1-sol's request through a gateway on Messages is held on its local count
+  // (with its margin), not its bytes, so the question is text that count reads past the threshold.
+  const question = spacedLetters(THRESHOLD + 128_000);
+  const input = await o200kTokens(question);
+  assert.ok(input > THRESHOLD, `the question alone counts past the threshold: ${input} > ${THRESHOLD}`);
   const { server, store } = await worldWith(t, { capUsd: 20, question, usage: { input_tokens: input, output_tokens: 100 } });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
@@ -328,6 +343,46 @@ test("a workflow under a small cap parks at it once its booked spend leaves no r
   assert.equal(eight(budgets.at(-1)?.pending?.spent_usd ?? 0), spent, `its park says that booked spend: ${JSON.stringify(budgets.at(-1)?.pending)}`);
 });
 
+test("a ChatGPT plan tier and a paid tier on one model id: the paid tier's requests are held and booked at its price, and the run parks at its cap", async (t) => {
+  // The default tier is chatgpt/gpt-6.1-sol on a person's plan ($0, no output limit); the strong tier is
+  // openai/gpt-6.1-sol, paid (output $100 a million, free input, as PRICED). Both ask the provider for gpt-6.1-sol. One
+  // plan step, then three paid ones under $0.12: the plan step holds $0, the first two paid steps fit (each needs the
+  // 1,024-token least, $0.1024, and books $0.01), and the third does not, so the run parks before it is sent.
+  const id = "gpt-6.1-sol";
+  const tiers = [];
+  const fetch = submitOrigin({ input_tokens: 100, output_tokens: 100 });
+  const providerOf = (tier) => {
+    tiers.push(tier);
+    const plan = tier === "default";
+    return {
+      modelId: id,
+      named: plan ? "chatgpt/gpt-6.1-sol" : "openai/gpt-6.1-sol",
+      api: "anthropic-messages",
+      origin: "https://faux.invalid",
+      credential: () => "not-a-secret-x",
+      policy: anthropicPolicy({ model: id, tools: [] }),
+      price: plan ? () => 0 : (_m, u) => (u.output ?? 0) * PER_TOKEN,
+      capModel: plan ? { id, api: "anthropic-messages", price: null, outputCeiling: null, plan: true } : { ...PRICED, id },
+      ...(plan ? { plan: true } : {}),
+      fetch,
+    };
+  };
+  const step = (n, tier) => ({ node: "extract", label: `answer-${n}`, instructions: "Answer the question.", out: "Answer", as: `a${n}`, ...(tier ? { tier } : {}) });
+  const workflow = { ...answerFlow(), name: "plan-and-paid", output: { schemaId: "Answer", path: "a4" }, root: { node: "chain", steps: [step(1), step(2, "strong"), step(3, "strong"), step(4, "strong")] } };
+  const { server, store } = await worldWith(t, { capUsd: CAP_THREE, question: "What is six times seven?", workflow, providerOf });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.deepEqual([...new Set(tiers)].sort(), ["default", "strong"], "both tiers are resolved");
+  const { requests, turns } = await sessionRecords(store);
+  assert.equal(row.state, "parked", `the paid tier never passes the cap: the run parks: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  assert.equal(turns.length, 3, `the plan step and two paid steps ran, never the third paid one: ${JSON.stringify(turns)}`);
+  assert.equal(requests[0]?.heldUsd, 0, `the plan step is held at $0: ${JSON.stringify(requests[0])}`);
+  const paid = requests.slice(1);
+  assert.equal(paid.length, 2, `two paid requests were held: ${JSON.stringify(requests)}`);
+  for (const request of paid) assert.ok(request.heldUsd >= 1024 * PER_TOKEN, `a paid request is held at its price, never the plan's $0: ${JSON.stringify(request)}`);
+  assert.equal(await spendFromRecords(store), 0.02, "the paid steps booked at $0.01 each, the plan step at $0");
+  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.12 cap/, `the park names the booked spend: ${row.summary}`);
+});
+
 test("a person's stop while a model node streams counts what it streamed and 1,024 tokens, never the hold", async (t) => {
   // A model node's request streams some text, then a person stops the run before it finishes: the stopped request's cost
   // is unknown, so the run books it at what it can have cost — its (free) input, each streamed byte as a token, and 1,024
@@ -380,14 +435,18 @@ test("a person's stop whose request is still being booked when the node ends: th
   await acting;
   assert.equal(row.state, "stopped", `the person's stop ends the run: ${JSON.stringify(row)}`);
   assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), "the stopped request is booked at what streamed and 1,024 tokens, not at its $1 hold");
-  assert.equal(row.costUsd, eight((14 + 1024) * PER_TOKEN), "and the run's cost says so");
+  // The run's cost is its booking's, by the one rule a pi run's is (metrics.ts runCostOf): a request stopped while it
+  // streamed has no price of its own (the provider may bill what it streamed), so the cost is unknown, never the cap's
+  // estimate stored as a charge; the stored cost and the view say the same.
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual([row.costUsd, view?.cost?.usd], [null, null], `the stored cost and the view read it unknown alike: ${JSON.stringify(view?.cost)}`);
   assert.equal(closes[0], "after settle", `the run closed nothing before its bookings settled: ${JSON.stringify(closes)}`);
 });
 
 // The same stop, the provider's side never ending: the run's end waits for the stopped request's booking only so long
-// (CLOSE_MS), then is written anyway. The request, never booked, counts at its hold and bound, the most it can have cost
-// (never less), and a line names it.
-test("a person's stop whose request is never booked: the run still ends, the request counts at its hold and bound, and a line says so", async (t) => {
+// (CLOSE_MS), then is written anyway. The request, never booked, counts at its hold, the most it can have cost (never
+// less), and a line names it.
+test("a person's stop whose request is never booked: the run still ends, the request counts at its hold, and a line says so", async (t) => {
   const origin = stallingOrigin("Half of one.md", new Promise(() => {}));
   const warned = [];
   t.mock.method(console, "warn", (line) => void warned.push(String(line)));
@@ -402,7 +461,7 @@ test("a person's stop whose request is never booked: the run still ends, the req
   assert.equal(row.state, "stopped", `the run still ends: ${JSON.stringify(row)}`);
   const [asked] = (await sessionRecords(store)).requests;
   assert.ok(asked?.heldUsd > 0.5, `the request was held at most of the cap: ${JSON.stringify(asked)}`);
-  assert.equal(await spendFromRecords(store), eight(asked.heldUsd + (asked.boundUsd ?? 0)), "unbooked, it counts at its hold and bound, never less");
+  assert.equal(await spendFromRecords(store), eight(asked.heldUsd), "unbooked, it counts at its hold, its worst case, never less");
   assert.ok(warned.some((line) => /run-1: 1 model request\(s\) still unbooked/.test(line)), `a line names it: ${JSON.stringify(warned)}`);
 });
 

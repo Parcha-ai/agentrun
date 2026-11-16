@@ -10,20 +10,6 @@ public struct RouteUnavailable: Error, Sendable {
 	}
 }
 
-/// A person took the computer back during an act that takes, or took, the foreground route: the step it stops answers
-/// aborted and runs nothing, as input.actions stops at its next action.
-struct TakenOver: Error {
-	let message: String
-}
-
-/// What the take-over check of one act compares against: when the act began, and where the pointer was then or where
-/// the foreground route last left it. Armed once a step took the foreground route: from then on every step checks.
-struct TakeOverWatch {
-	var since: Double = 0
-	var pointer: Point?
-	var armed = false
-}
-
 /// The timings the engine settles and polls by.
 public struct Timing: Sendable {
 	/// Two looks this far apart that are the same count as settled.
@@ -58,8 +44,16 @@ public actor UIEngine {
 	var looks = 0
 	var lookMs = 0.0
 	var frameMs = 0.0
-	/// The act running now, for the take-over check.
-	var takeOver = TakeOverWatch()
+	/// The act running now, for the take-over check (TakeOverWatch, input.actions' rule too). Armed once a step took the
+	/// foreground route: from then on every step checks.
+	var takeOver: TakeOverWatch?
+	var takeOverArmed = false
+	/// The running step's mark (Marks), which only that step moves.
+	var stepMark: UInt64?
+	/// The apps whose changes the platform tells (Platform.changes), by id: the pid the engine watches.
+	var watched: [String: Int32] = [:]
+	/// The engine's latest read of a window whose app tells its changes, and the target it was asked for.
+	var latest: (asked: Target?, view: View)?
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -88,7 +82,9 @@ public actor UIEngine {
 	/// A look at the target's window, under the policy. With ui.tree off it is the window alone, found in the window
 	/// server's list, with no nodes; with ui.image off as well there is nothing to look with. The image's hash is read
 	/// when there are no nodes, or when framed (a look kept as a state): reading it is a window capture, the slow part.
-	func look(_ target: Target?, framed: Bool = false) async throws -> View {
+	/// Only an observe's look reads every node's actions and settable (details): an act reads them for the elements its
+	/// steps act on, when each step runs.
+	func look(_ target: Target?, framed: Bool = false, details: Bool = false) async throws -> View {
 		let start = clock.now()
 		defer {
 			looks += 1
@@ -97,18 +93,21 @@ public actor UIEngine {
 		if let app = target?.app { try policy.check(app) }
 		let resolved: ResolvedTarget
 		let snapshot: Snapshot
+		var at: Double?
 		switch (ax.feature, platform.capture.feature) {
 		case (.on, _):
 			var found = try ax.resolve(target)
 			try policy.check(found.app.id)
+			at = watch(found)
 			do {
-				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes, details: details)
 			} catch let gone as RPCError where gone.kind == .notFound && target?.window == nil {
 				// A target that names no window is the app's main one: when the app swapped it between finding and
 				// reading it (a first-run window giving way to the real one), the look follows the new main window.
 				found = try ax.resolve(target)
 				try policy.check(found.app.id)
-				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+				at = watch(found)
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes, details: details)
 			}
 			resolved = found
 		case (.off, .on):
@@ -118,8 +117,35 @@ public actor UIEngine {
 		case (.off(let tree), .off(let image)):
 			throw RPCError.denied("ui.tree is off here: \(tree); and ui.image is off: \(image). Without either, Computerd cannot see a window")
 		}
-		let view = View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: nil)
-		return framed || snapshot.nodes.isEmpty ? await self.framed(view) : view
+		let view = View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: nil, at: at)
+		let answer = framed || snapshot.nodes.isEmpty ? await self.framed(view) : view
+		latest = at == nil ? nil : (target, answer)
+		return answer
+	}
+
+	/// Watches the app's changes, where the platform tells them, before its window is read: the time the read begins,
+	/// after which every change is told. nil for an app that tells none.
+	func watch(_ found: ResolvedTarget) -> Double? {
+		guard let changes = platform.changes, changes.watch(found.pid) else {
+			watched[found.app.id] = nil
+			return nil
+		}
+		watched[found.app.id] = found.pid
+		return clock.now()
+	}
+
+	/// The app told a change at `time` or after; true where the platform tells none.
+	func told(_ pid: Int32, since time: Double) -> Bool {
+		guard let changes = platform.changes else { return true }
+		return (changes.lastChange(pid) ?? -.infinity) >= time
+	}
+
+	/// The engine's latest read of the window a target names, when it was asked for by the same target (one that names
+	/// its app) and the app told no change since the read began: what an observe just before an act read, for the act's
+	/// first look.
+	func unchanged(_ target: Target?) -> View? {
+		guard target?.app != nil, let (asked, view) = latest, asked == target, let at = view.at, !told(view.target.pid, since: at) else { return nil }
+		return view
 	}
 
 	/// The look with its image's hash, read now if it has none.
@@ -157,7 +183,7 @@ public actor UIEngine {
 			empty = "ui.tree is off here: \(reason)"
 			edge = edge ?? Limits.defaultImageEdge
 		}
-		let view = try await look(params.target, framed: true)
+		let view = try await look(params.target, framed: true, details: true)
 		var image: UiImage?
 		if let edge {
 			let shot = try await platform.capture.window(view.target, maxEdge: edge, maxBytes: Limits.maxChunkBytes)
@@ -316,14 +342,22 @@ public actor UIEngine {
 
 		let started = clock.now()
 		(looks, lookMs, frameMs) = (0, 0, 0)
-		takeOver = TakeOverWatch(since: started, pointer: platform.capture.cursor())
+		takeOver = TakeOverWatch(call: "act", unit: "step", platform: platform)
+		takeOverArmed = false
 		var spent: [String] = []
-		// A wait for a window may begin with none: its app's window not there yet is what it waits for, never not_found.
+		// The steps act on the window as the engine last read it, when its app told no change since (an observe just
+		// before): the settle after each step reads it again. A wait for a window may begin with none: its app's window
+		// not there yet is what it waits for, never not_found.
 		let first: View?
-		do {
-			first = try await look(target)
-		} catch let none as RPCError where none.kind == .notFound && waitsForWindow && params.steps.isEmpty {
-			first = nil
+		if !params.steps.isEmpty, let unchanged = unchanged(target) {
+			first = unchanged
+			spent.append("first look unchanged")
+		} else {
+			do {
+				first = try await look(target)
+			} catch let none as RPCError where none.kind == .notFound && waitsForWindow && params.steps.isEmpty {
+				first = nil
+			}
 		}
 		let app = target?.app ?? first?.target.app.id
 		let appName = first?.target.app.name ?? app ?? "the app"
@@ -343,7 +377,7 @@ public actor UIEngine {
 			}
 			let (at, looked) = (clock.now(), looks)
 			do {
-				if takeOver.armed { try checkTakeOver() }
+				if takeOverArmed { try takeOver?.check(platform) }
 				let (route, verified, after) = try await run(step, view: current, state: params.state, held: held, foreground: foreground)
 				results.append(.ran(route: route, verified: verified))
 				view = after
@@ -364,7 +398,7 @@ public actor UIEngine {
 			}
 		}
 
-		var read = try await final(&aim, reuse: refused ? nil : settled)
+		var read = try await final(&aim, reuse: refused ? nil : settled, from: params.steps.isEmpty ? first : nil)
 		// A set holds: the final view is read again setHoldMs after the first, where an app that took the value back (the
 		// Finder's name field outside its rename mode shows the new name, then the old one, and renames nothing) answers
 		// false. The hold is waited out even when the window closed: a value that cannot be read after it is not verified.
@@ -451,11 +485,11 @@ public actor UIEngine {
 
 	/// The act's own window, settled or one look: the aimed one, or the app's next main window once it closed (which
 	/// the act then follows); nil when none is left.
-	func aimed(_ aim: inout Aim, settled: Bool) async throws -> View? {
+	func aimed(_ aim: inout Aim, settled: Bool, from first: View? = nil) async throws -> View? {
 		if aim.closed { return nil }
 		let window = aim.window
 		do {
-			return settled ? try await settle(window) : try await look(window)
+			return settled ? try await settle(window, from: first) : try await look(window)
 		} catch let none as RPCError where none.kind == .notFound {
 			if aim.windowless { return nil }
 			guard let app = aim.app else { throw none }
@@ -481,10 +515,10 @@ public actor UIEngine {
 	/// The act's final view, read after its last settle: its own window, and for a window expect the app's main window,
 	/// each settled. Every verdict of the act reads this one view: a set's hold, the expect, and the state it answers. A
 	/// look that is not final (a poll's) only says when to read it again. The first read takes the look the last step
-	/// settled on, when one did.
-	func final(_ aim: inout Aim, reuse: View? = nil) async throws -> (own: View?, front: View?) {
+	/// settled on, when one did, and an act with no steps settles from its first look.
+	func final(_ aim: inout Aim, reuse: View? = nil, from first: View? = nil) async throws -> (own: View?, front: View?) {
 		let own: View?
-		if let reuse { own = reuse } else { own = try await aimed(&aim, settled: true) }
+		if let reuse { own = reuse } else { own = try await aimed(&aim, settled: true, from: first) }
 		guard aim.waitsForWindow, !aim.closed, aim.window?.window != nil else { return (own, own) }
 		return (own, try await frontLook(aim, settled: true))
 	}
@@ -521,8 +555,7 @@ public actor UIEngine {
 	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View?) {
 		let target = view.target
 		if case .nav(let nav) = step {
-			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
-			throw RPCError.unsupported("nav \(nav.rawValue): no route takes it here")
+			throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(FeatureName.navOff)")
 		}
 		let (node, element) = try self.element(step.ref, in: view)
 		// A step on a disabled control is refused, so its text never goes to whatever has the focus.
@@ -533,6 +566,7 @@ public actor UIEngine {
 			throw RPCError(.refused, "\(into) is not a text field: nothing was typed")
 		}
 		if let point = step.point { try await bind(point, view: view, state: state, held: held) }
+		mark(step, element: element, target: target)
 
 		let attempts: [Attempt]
 		switch step {
@@ -737,7 +771,7 @@ public actor UIEngine {
 			}
 			// The foreground route takes the person's own pointer and keys: a person at them since the act began keeps
 			// them, and nothing is sent.
-			if attempt.route == .foreground { try checkTakeOver() }
+			if attempt.route == .foreground { try takeOver?.check(platform) }
 			let check: Check
 			do {
 				check = try await attempt.run()
@@ -748,8 +782,8 @@ public actor UIEngine {
 			let after = try await settleAfterStep(view.target)
 			if attempt.route == .foreground {
 				// Read once the step settled: the pointer the route moved is where it reads by then.
-				takeOver.armed = true
-				takeOver.pointer = platform.capture.cursor()
+				takeOverArmed = true
+				takeOver?.pointer = platform.capture.cursor()
 			}
 			switch check {
 			case .readback(let holds):
@@ -762,29 +796,40 @@ public actor UIEngine {
 		throw denied ? RPCError.denied(words) : RPCError.unsupported(words)
 	}
 
-	/// A person who used the keyboard or the mouse since the act began, or whose pointer is no longer where it was
-	/// (where the foreground route left it, once it took it), has the computer: the act stops before its next step, as
-	/// input.actions stops before its next action.
-	func checkTakeOver() throws {
-		if let used = platform.person.lastInput(), used > takeOver.since {
-			throw TakenOver(message: "someone used the keyboard or the mouse while this act ran (\(Int(clock.now() - used)) ms ago): the person has the computer, so the act stopped before this step and sent it nothing; observe and try again")
-		}
-		let limit = InputRun.takeOverPixels
-		if let left = takeOver.pointer, let now = platform.capture.cursor(), abs(now.x - left.x) > limit || abs(now.y - left.y) > limit {
-			throw TakenOver(message: "someone moved the pointer to (\(Int(now.x)), \(Int(now.y))) while this act ran (it was at (\(Int(left.x)), \(Int(left.y)))): the person has the computer, so the act stopped before this step and sent it nothing; observe and try again")
-		}
-	}
-
 	// MARK: elements and points
 
-	/// The element a step's ref names, and its node, if the element is still in the window. A look capped short of it
-	/// asks the tree whether it still exists.
+	/// The element a step's ref names, and its node with its actions and settable read now, if the element is still in
+	/// the window. A look capped short of it asks the tree whether it still exists.
 	func element(_ ref: String?, in view: View) throws -> (RawNode?, ElementHandle?) {
 		guard let ref else { return (nil, nil) }
 		let handle = store.handle(ref)!
-		if let seen = view.node(handle) { return (seen, handle) }
-		if view.truncated, ax.exists(handle), let seen = store.lastSeen(ref) { return (seen, handle) }
-		throw RPCError.stale("\(ref) is gone: its element is no longer in the window. Observe again for fresh refs")
+		guard var node = view.node(handle) ?? (view.truncated && ax.exists(handle) ? store.lastSeen(ref) : nil) else {
+			throw RPCError.stale("\(ref) is gone: its element is no longer in the window. Observe again for fresh refs")
+		}
+		(node.actions, node.settable) = ax.details(handle)
+		return (node, handle)
+	}
+
+	/// Marks the step's place for the live view (Marks): its element, else its point, else (a key or text to the window's
+	/// focus) where the last step was.
+	func mark(_ step: Step, element: ElementHandle?, target: ResolvedTarget) {
+		let frame = element.flatMap { ax.frame($0) }.flatMap { $0.area > 0 ? $0 : nil }
+		let marks = platform.marks
+		let kind: Marks.Kind
+		switch step {
+		case .press, .click, .perform: kind = .press
+		case .type, .set: kind = frame == nil ? .point : .type
+		case .key, .scroll, .drag, .nav: kind = .point
+		}
+		if let frame {
+			stepMark = marks.mark(kind, at: frame.center, box: kind == .type ? frame : nil, now: clock.now())
+		} else if let point = step.point {
+			stepMark = marks.mark(kind, at: target.toScreen(point), now: clock.now())
+		} else if let last = marks.lastPoint {
+			stepMark = marks.mark(.point, at: last, now: clock.now())
+		} else {
+			stepMark = nil
+		}
 	}
 
 	/// The middle of an element on screen, scrolled into its window's view when it is outside it.
@@ -794,7 +839,11 @@ public actor UIEngine {
 		}
 		if !target.window.bounds.contains(frame.center) {
 			try? ax.scrollToVisible(element)
-			if let moved = ax.frame(element) { frame = moved }
+			if let moved = ax.frame(element) {
+				frame = moved
+				// The step's mark was read before the scroll: it follows the element to where the pointer goes.
+				if let stepMark { platform.marks.move(stepMark, to: moved.center, box: moved) }
+			}
 		}
 		guard target.window.bounds.contains(frame.center) else {
 			throw RouteUnavailable("\(ref) is outside its window's visible area: scroll to it first")
@@ -876,10 +925,16 @@ public actor UIEngine {
 		}
 	}
 
-	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look.
-	func settle(_ target: Target?) async throws -> View {
+	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look. Apart is the time
+	/// between the end of one look and the start of the next, however long a look took: an app answers a look on the
+	/// thread it draws on, so the quiet is time it is left alone to draw. A settle starts from `first` when the act
+	/// already took that look and nothing ran since. An app that tells its changes settles on them instead (settleTold).
+	func settle(_ target: Target?, from first: View? = nil) async throws -> View {
 		let until = clock.now() + timing.settleMaxMs
-		var last = try await look(target)
+		let pid: Int32? = if let first { first.at == nil ? nil : first.target.pid } else { target?.app.flatMap { watched[$0] } }
+		if let pid, timing.quietMs > 0 { return try await settleTold(target, from: first, pid: pid, until: until) }
+		var last: View
+		if let first { last = first } else { last = try await look(target) }
 		while timing.quietMs > 0 && clock.now() < until {
 			try await sleep(min(timing.quietMs, max(0, until - clock.now())))
 			let next = try await look(target)
@@ -888,6 +943,34 @@ public actor UIEngine {
 			if quiet { break }
 		}
 		return last
+	}
+
+	/// The settle at an app that tells its changes (Platform.changes): it waits until the app told none for quietMs,
+	/// reads the window once, and reads it again only when the app told one after that read began. A read the same as
+	/// the one before settles too, as two looks do: an app may tell changes a person never sees (System Settings remakes
+	/// its sidebar's rows out of view each time its tree is read). The quiet counts from the read it starts from, else
+	/// from now, the step having just been sent. settleMaxMs bounds it as it does two looks.
+	func settleTold(_ target: Target?, from first: View?, pid: Int32, until: Double) async throws -> View {
+		var (pid, last, since) = (pid, first, first?.at ?? clock.now())
+		while true {
+			try await quiet(pid, since: since, until: until)
+			if let last, let at = last.at, !told(pid, since: at) || clock.now() >= until { return last }
+			let next = try await look(target)
+			guard let at = next.at else { return next }
+			if !told(next.target.pid, since: at) || next.fingerprint == last?.fingerprint || clock.now() >= until { return next }
+			(pid, last, since) = (next.target.pid, next, at)
+		}
+	}
+
+
+	/// Waits until the app told no change for quietMs, counted from `since` at the earliest, or until `until`.
+	func quiet(_ pid: Int32, since: Double, until: Double) async throws {
+		while true {
+			let last = max(since, platform.changes?.lastChange(pid) ?? since)
+			let left = min(last + timing.quietMs, until) - clock.now()
+			guard left > 0 else { return }
+			try await sleep(left)
+		}
 	}
 
 	/// The expect holds in this look. text: some node's name, value or desc holds it (never a secure field's value). ref:
@@ -932,7 +1015,7 @@ extension ResolvedTarget {
 }
 
 extension Rect {
-	func intersects(_ other: Rect) -> Bool {
+	public func intersects(_ other: Rect) -> Bool {
 		x < other.x + other.w && other.x < x + w && y < other.y + other.h && other.y < y + h
 	}
 }

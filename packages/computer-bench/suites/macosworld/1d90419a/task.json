@@ -1,0 +1,57 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "macosworld.1d90419a",
+  "version": 1,
+  "title": "Open the System Report",
+  "split": "heldout",
+  "source": {
+    "suite": "macOSWorld",
+    "id": "1d90419a-1022-93ea-d9bf-a6bab0c94eee",
+    "revision": "e2ca8334b3765537e5c1c428ce57990248a1bb5f",
+    "licence": "CC-BY-NC-4.0; ported by reference (our own instruction, setup and checks; no source text copied)",
+    "changes": "Instruction written in our own words. Setup quits System Settings as the source does, and also quits System Information and puts Finder in front, so a System Report window left by an earlier run can't pass. The check is the source's full-score one (System Information is the app in front), read through apps.list by bundle id instead of a System Events process name; the source's partial scores (an About window, System Settings in front) are dropped, as the bench scores pass or fail."
+  },
+  "tags": ["settings", "navigate"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.systempreferences", "com.apple.SystemProfiler", "com.apple.finder"] },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Quit System Settings and System Information, so neither is open at the start.",
+      "params": { "argv": ["osascript", "-e", "if application id \"com.apple.systempreferences\" is running then tell application id \"com.apple.systempreferences\" to quit", "-e", "if application id \"com.apple.SystemProfiler\" is running then tell application id \"com.apple.SystemProfiler\" to quit"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Put Finder in front, so the app in front at the start is not the one the check wants.",
+      "params": { "argv": ["osascript", "-e", "tell application id \"com.apple.finder\" to activate"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Take me to the System Report page of this Mac.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "report-in-front",
+      "kind": "app",
+      "why": "System Information (com.apple.SystemProfiler), the app the System Report button opens, is the app in front. Setup quit it and put Finder in front, so an agent that does nothing fails.",
+      "front": "com.apple.SystemProfiler"
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Quit System Information and System Settings.",
+      "params": { "argv": ["osascript", "-e", "if application id \"com.apple.SystemProfiler\" is running then tell application id \"com.apple.SystemProfiler\" to quit", "-e", "if application id \"com.apple.systempreferences\" is running then tell application id \"com.apple.systempreferences\" to quit"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Open System Information in front, as the System Report button does.",
+      "params": { "argv": ["open", "-b", "com.apple.SystemProfiler"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Give it a moment to come to the front.",
+      "params": { "argv": ["sleep", "2"], "timeoutMs": 10000 }
+    }
+  ]
+}

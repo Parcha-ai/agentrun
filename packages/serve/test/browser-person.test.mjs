@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { personHands, personWaitMs, personWindows, releasedAfterWait } from "../dist/browser-person.js";
 import { browserAsk, handBackTarget, waitingAsk } from "../dist/browser-commands.js";
-import { scratch } from "./support.mjs";
+import { scratch, toolLedger } from "./support.mjs";
 
 /** A run's journal of hand-over entries (their data, in order): the asks' waiting entries and their answers, as the
  *  runner keeps them, read the way the run's process reads them (tools.ts) and the server does (browser-commands.ts). */
@@ -236,13 +236,9 @@ test("two conversations ask: answering the newer leaves the older shown and answ
 test("take-over time counts: what the person used stays held until a charge books it, so take-overs given back with no browser call between them meet the cap", async (t) => {
   const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
   const { browserSpend } = await import("../dist/browser-cost.js");
-  const { paidHolds, useSpend } = await import("../dist/cap.js");
-  // $0.12 an hour under a $0.05 cap: each take-over holds 15 minutes ($0.03) up front.
-  let spent = 0;
-  useSpend({ cap: 0.05, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
-  t.after(() => useSpend(undefined));
-  const base = paidHolds();
-  const spend = browserSpend("browserbase", { usdPerHour: 0.12, minimumS: 60 }, 180, async () => undefined);
+  // $0.12 an hour under a $0.05 cap, on the run's one ledger: each take-over holds 15 minutes ($0.03) up front.
+  const paid = await toolLedger(0.05);
+  const spend = browserSpend("browserbase", { usdPerHour: 0.12, minimumS: 60 }, 180, async () => undefined, () => {}, { paid });
   const root = await scratch(t);
   const clock = fakeClock();
   const gates = createDrivingGates({ timers: clock.timers });
@@ -261,7 +257,8 @@ test("take-over time counts: what the person used stays held until a charge book
   }
   assert.deepEqual(taken.slice(0, 2), ["held", "held"]);
   assert.match(taken[2] ?? "", /^spend_cap_reached: Not sent: this run has spent \$0 and holds \$0\.04 for steps still running, of its \$0\.05 cap, and the next step, taking over the browser, could cost up to \$0\.03 /, "the third is refused: the 20 minutes used are held");
-  assert.ok(Math.abs(paidHolds() - base - 0.04) < 1e-9, `held: ${paidHolds() - base}`);
+  await spend.ledgerIdle();
+  assert.ok(Math.abs(paid.heldUsd() - 0.04) < 1e-9, `held: ${paid.heldUsd()}`);
 });
 
 test("while the cap refuses more of the person's time on a session, a new ask there is refused too, in its own words; and one that waited on a refused first hold is refused in its own words, not the take's", async (t) => {

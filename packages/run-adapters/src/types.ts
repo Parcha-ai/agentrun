@@ -39,6 +39,15 @@ export const HOST_RESULT_MAX_CHARS = 120_000;
  */
 export const CONTENT_FILTERED = "content_filter: the model provider stopped this answer";
 
+/**
+ * What a run on a person's ChatGPT plan ends with once the plan's limit is reached (its 429): the plan's own limit, never
+ * the run's spend cap, so nothing here can raise it and nothing tries again. A harness's model proxy answers its client
+ * these words (`ProviderPolicy.finalError`) and the harness halts the turn with them; a host shows them as they are.
+ */
+export const PLAN_LIMIT_WORDS = "Your ChatGPT plan's limit is reached. Manage usage in your ChatGPT settings, then run it again.";
+/** The code the proxy's answer carries beside PLAN_LIMIT_WORDS. */
+export const PLAN_LIMIT_CODE = "plan_limit_reached";
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;
@@ -53,7 +62,46 @@ export interface HostTool {
    *  way, by the child's key. `model`: the calling session's model as its harness resolves it (pi's: a pi-ai Model, whose
    *  input and input limits a file read sizes an image by); `output`: where the call's output goes while it runs (the
    *  session's live view of the running tool). Each is absent where a harness has none to give. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void; /** The session's other tools, called as calls of their own nested in this one (NestedCalls): given to a tool that `nests`, where the harness has a way to. */ nested?: NestedCalls }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true }>;
+  /** The tool only calls the session's other tools (tools_call, codemode), each as a call of its own nested in this one
+   *  (`context.nested`): each nested call passes the gate as itself and is recorded under its own id, so this call writes
+   *  no intent or outcome of its own. A harness runs it again after a crash, its recorded nested calls answered from their
+   *  records, never run twice. */
+  nests?: true;
+  /** Registered and callable (by the gate, and by a nested call: tools_call, a script), but not listed to the model: a
+   *  catalog tool of a run whose catalog is deferred (tool-deferral.ts), which the model finds with tools_search. */
+  deferred?: true;
+}
+
+/**
+ * A tool's calls of the session's other tools, each a call of its own nested in the calling one: asked about at the gate
+ * as itself (GateCall `nested`), its intent and outcome recorded under `<callId>/<key>` before and after it runs, as a
+ * call the model made is. A call the record finished answers from the record, never runs again.
+ */
+export interface NestedCalls {
+  /** Call tool `name` (a session tool, by its host name) with `args`, under `key`: stable for the same call in a rerun
+   *  of the calling one. A deny answers `refused` with the gate's words; a park holds until the session lets go, then
+   *  rejects. Given `signal`, the call runs on it as well as on the calling one's: a caller that cuts one part of its work
+   *  (a learned workflow's node whose sibling failed) cuts that part's call. */
+  call(name: string, args: Record<string, unknown>, key: string, signal?: AbortSignal): Promise<NestedResult>;
+  /** `value` the first time `key` is asked in this call, and that first value again in every rerun of the call. Given a
+   *  function, it is called only the first time: a rerun reads the recorded value and never calls it, so work it does (a
+   *  model's request, a paid decision) is done and paid for once. */
+  memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T>;
+}
+
+/** A nested call's answer. */
+export interface NestedResult {
+  text: string;
+  isError?: boolean;
+  images?: readonly ToolImage[];
+  structured?: JsonValue;
+  /** The gate refused it: `text` is the gate's words, and nothing of it ran. */
+  refused?: true;
+  /** Its intent was recorded and its outcome lost (a crash cut it): it may or may not have taken effect. */
+  interrupted?: true;
+  /** It was asked and run (or refused) now, in this attempt of the calling call; false when its answer came from the record. */
+  fresh: boolean;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -65,21 +113,10 @@ export interface McpTool {
   annotations?: Record<string, unknown>;
 }
 
-/** What an MCP tool call answers the model: its text, and whether the tool said it failed. */
+/** What an MCP tool call answers: its text, and whether the tool said it failed. */
 export interface McpCallResult {
   content: { type: "text"; text: string }[];
   isError?: boolean;
-  /** The host parked the call for a person's approval: it did not run, and the text says it waits. The harness's own
-   *  client never sees this flag (the door sends `content` and `isError`). */
-  parked?: true;
-}
-
-/** A session's remote MCP servers: each one's granted tools, and the call that reaches them through the host, which holds
- *  their credentials. A harness with its own MCP client points it at the session's model proxy (`/mcp/<server>`). */
-export interface SessionMcp {
-  servers: readonly { name: string; tools: readonly McpTool[] }[];
-  /** Never throws: a failure is an `isError` result the model reads. `callId` is the harness's id for the call. */
-  call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string }): Promise<McpCallResult>;
 }
 
 /** One durable record of a session, in the order it was appended. */
@@ -102,6 +139,12 @@ export interface SessionStore {
 /** The one holder that may write a session. */
 export interface SessionWriter {
   readonly key: string;
+  /** The session's identity across the claims of one holder (a runner's name and a run's id beside the key), for a store
+   *  whose claims a holder can lose and take again. A booking of the session whose cost write is refused (its claim lost
+   *  as its request answered) hands that booking to the next booking of the same scope in this process, which writes it
+   *  before it books any request cut (ModelBooking.bookCut). Absent: nothing is handed on, and such a request is booked
+   *  cut. Never shared by two holders: another runner, as one that died, takes nothing of it. */
+  readonly scope?: string;
   read(): Promise<SessionRecord[]>;
   /** Resolves once the records are durable, in order. Rejects with `SessionFenced`, writing none of them, once a newer
    *  `open` of the key has resolved. */
@@ -119,11 +162,13 @@ export interface SessionSpec {
   label: string;
   executionPath?: string;
   system: string[];
-  /** Exactly these tools; the harness's own stay off. */
+  /** Exactly these tools (a run's remote MCP tools among them, as host tools); the harness's own stay off. */
   tools: HostTool[];
-  /** The remote MCP servers it may call, for a harness that has its own MCP client. */
-  mcp?: SessionMcp;
   context: "fresh" | "fork";
+  /** The host's one verdict on whether the run's catalog tools are deferred (tool-deferral.ts defersCatalog, and both
+   *  tools_search and tools_call allowed). A harness with a tool search of its own (`ownToolSearch`) turns it on exactly
+   *  when this is true; absent, it decides by the names alone. */
+  deferCatalog?: boolean;
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
   thinking?: NodeRequest["thinking"];
@@ -135,8 +180,6 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
-  /** Its `inputTokensMax` is its provider's count, not its bytes (ProxyRequest.inputTokensCounted). */
-  inputTokensCounted?: true;
   /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
@@ -153,15 +196,20 @@ export interface ModelRequest {
    *  release, the time a person used): held at `feeUsd` and booked, never asked of the cap's rule, so a run past its cap
    *  or of unknown spend still counts it (main keeps it so: keepHold). `hold`: a hold-only step: money reserved, not
    *  spent; given back on a lost claim, never booked as cut (its holder's charges book the money, each its own step).
-   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string };
+   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked.
+   *  `under`: the key of the model session whose tool call it runs in (the CLI's session): a request of that session
+   *  still in flight may be the one that asked for the call, unbooked until the call returns (Claude Code books its
+   *  cost after its calls, Codex starts a call with its response open), so the call never waits on it (runBooking).
+   *  Not written on its record. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
-   *  never the session's previous request for the cap's expected pricing, read or replaced. */
+   *  no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
-  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+  /** It carries the host's note (ModelPort.note) in its body: admitted, it holds the note until it ends, and the note is
+   *  told once it is answered (its afterRequest's `ended`), else the host gives it to a later request.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
   inputTokensMaxWithoutNote?: number;
@@ -173,6 +221,13 @@ export interface ModelRequest {
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
   route?: string;
+  /** The reasoning effort its body asks its model at, as its provider names it (the proxy's policy reads it:
+   *  ProviderPolicy.effortOf), when the body names one. What its least output was read at, so words that name its
+   *  figures can name it too. */
+  effort?: string;
+  /** Aborted when the request's client goes (a stop, a cancel, a lost claim): a request still waiting for room under the
+   *  run's cap (runBooking) leaves its line then, admitted for nothing and holding nothing. */
+  signal?: AbortSignal;
 }
 
 /** What a paid request cost, once it completed. */
@@ -186,13 +241,20 @@ export interface ModelUsage {
   estimated?: boolean;
   /** Beside the provider's own figure, what the host's price table makes of the same usage: kept to audit the table. */
   tableUsd?: number | null;
+  /** `plan`: billed to a person's subscription plan (a ChatGPT plan's token), not by the token: `usd` is null. */
+  billing?: "plan";
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
+  /** A cut request its host held a figure for: booked at that hold (runner.ts CUT_AT_HOLD), the most it can have cost. */
+  atMostUsd?: number;
   /** A paid step's hold given back unused (a workflow call node's, its effect never sent the paid request it held for):
    *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
    *  unpriced one. */
   givenBack?: true;
+  /** On a free model (its known price $0 for every token): booked a known $0 however it ended, `usd` 0, set by the
+   *  runner's booking (Admitted.free) on what it tells of the request's end, for a reader to say why it cost nothing. */
+  free?: true;
   /** The ids the provider's response gave the request, by header name (the provider's `request-id`, a gateway's call
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */
@@ -222,15 +284,16 @@ export interface ModelPort {
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
   /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
    *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
-   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+   *  sent it, measured before the note is placed (NoteRequest), so the host prices it as its admission will. */
   note?(model: string, request?: NoteRequest): string | undefined;
   /** The note `note` gave back: the request that took it left before its admission (its client gone, a refusal or an
    *  error before `beforeRequest`), so it was never sent, and the host may give it to the next request at once. */
   noteReturned?(note: string): void;
 }
 
-/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
- *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+/** A request about to take its host's note, as its client sent it: its input bound (the provider's count or the local
+ *  count where the proxy took one, else its bytes) and the output it asks for and needs at least, as the model proxy reads
+ *  them: ModelRequest's figures without the note (its `inputTokensMaxWithoutNote`), the same ones the cap admits it by. */
 export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
@@ -274,6 +337,25 @@ export interface SessionIO {
    *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
    *  keeps no record of calls, and the tool runs as it is. */
   hostTool?(tool: HostTool): HostTool;
+  /** The host's record of a call of the harness's own that runs host tools inside it (Codex's code-mode `exec`): its row,
+   *  and each host tool call it makes nested under it, as a host tool that `nests` (codemode) has its calls on every other
+   *  harness. Absent: the host keeps no record of calls. */
+  ownCalls?: OwnCalls;
+}
+
+/** The record of a call of the harness's own that host tool calls nest in (SessionIO.ownCalls). Each is said from what the
+ *  harness's own stream holds (the call's id, its input, its output), never a made-up id. */
+export interface OwnCalls {
+  /** The call started, `input` what it was given (once per call id: a second says nothing). */
+  opened(callId: string, name: string, input: unknown): Promise<void>;
+  /** The host tool call `callId` runs inside the harness's call `parent`: said before the call reaches the gate, so its
+   *  row (a refused or parked one's too) names its parent. */
+  nestedIn(callId: string, parent: string): void;
+  /** The call ended with `output`, `failed` when the harness's stream says it did not do its work (Codex's "Script failed"),
+   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). A crash leaves an opened call
+   *  open on the host's record: the harness ends it after the resume, from its CLI's answer to it (Codex's recovered exec
+   *  output), so its end comes after the rows of the calls it made. */
+  ended(callId: string, output: string, failed: boolean): Promise<void>;
 }
 
 /** `tool`, a tool the adapter adds of its own, made the host's (SessionIO.hostTool). */
@@ -287,6 +369,9 @@ export interface GateCall {
   /** The call runs again after an earlier attempt whose start the log holds (a replay-safe call a crash cut): that
    *  attempt may have been sent, so a refusal never says nothing was. */
   readonly replayed?: true;
+  /** A call a running tool made (NestedCalls: a script's, tools_call's), part of a call already let through: the cap's
+   *  wrap-up never refuses one, so a call in flight is never cut short, as pi's nested call is not. */
+  readonly nested?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */
@@ -385,8 +470,6 @@ export interface AdapterFacts {
   readonly recoversCutAnswers?: number;
   /** What one run of it holds in memory, in MiB: the host admits runs by it. */
   readonly runMib: number;
-  /** Whether it binds a session's remote MCP servers (its own MCP client, at the session's gateway). */
-  readonly mcp: boolean;
   /** The thinking levels it takes, lowest first: a run's level above its highest runs at that highest. */
   readonly thinking: readonly ("low" | "medium" | "high" | "xhigh" | "max")[];
   /** Its own web search, when the provider runs it: `native`, the provider's search through the session's proxy (its
@@ -395,20 +478,34 @@ export interface AdapterFacts {
   readonly webSearch?: "native" | "live";
   /** Its model is its own, chosen on its own wire's settings, never the host's default for the other harnesses. */
   readonly ownModel: boolean;
+  /** It runs the model's scripts itself (Codex's code mode, its nested calls the host's tools): the host offers no
+   *  `codemode` of its own beside it. Absent: the host's codemode is offered. */
+  readonly ownCodemode?: true;
+  /** It defers a run's MCP tools behind a tool search of its own (Claude Code's ToolSearch), so the host offers no
+   *  `tools_search` or `tools_call` beside it. Absent: the host's are offered when a run's catalog tools are deferred. */
+  readonly ownToolSearch?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its
    *  own setup errors carry when installing (`install`) or the pinned build (`pins`) is the fix. */
   readonly install: { npmLine: string; spec: string; codes: { install: string; pins: string } };
-  /** The problems its own MCP client has with a tool's input schema (`tool` as it names it, `mcp__<server>__<tool>`):
-   *  shapes it drops or retypes, measured on its pinned build, so a grant of that tool would offer the model another
-   *  tool than the one granted. None: its client takes any schema the kernel's check does. */
+  /** The problems it has with a host tool's input schema (`tool` by its name, a run's MCP tool's `mcp__<server>__<tool>`):
+   *  shapes it drops or retypes, measured on its pinned build, so a grant of an MCP tool would offer the model another
+   *  tool than the one granted. None: it takes any schema the kernel's check does. */
   schemaProblems?(tool: string, schema: Record<string, unknown>): string[];
-  /** A name its client calls a session's MCP tool by beside `mcp__<server>__<tool>` (OpenCode's `<server>_<tool>`). */
-  readonly toolAlias?: RegExp;
+  /** The host's name for a host tool the model names its own way on this harness's tool channel (Claude's
+   *  `mcp__hands__<name>`, OpenCode's `hands_<name>`, Codex's `mcp_<server>__<tool>`). Absent: the model's name is the
+   *  host's (pi's). A name already the host's comes back as it is. */
+  readonly hostName?: (given: string) => string;
   /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
    *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
   readonly nativeTools?: Readonly<Record<string, string>>;
+  /** The input tokens its first model request carries before the agent's own prompt and the person's message: its own
+   *  system prompt and tool definitions, as measured on its pinned build (the constant beside its pin says how). A host
+   *  prices a cap's least step on it before any run (a save's warning that a cap is below one step and an answer). A
+   *  count of what was measured, with o200k_base or from billing (the constant says which). Absent: not measured, read
+   *  as 0 (a floor). */
+  readonly baseInputTokens?: number;
   /** The policy its model proxy applies, for a host that serves the same route itself (a test's faux harness). */
   policy(options: { model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
 }
@@ -425,22 +522,11 @@ export interface SessionPort {
   api: "anthropic-messages" | "openai-responses";
 }
 
-export interface AdapterCapabilities {
-  /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
-   *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
-  mcpClient?: McpClient;
-}
-
-/** A harness's own MCP client, as its adapter declares it: the `_meta` key of a `tools/call` that carries the harness's
- *  own id for the call (Claude Code's `claudecode/toolUseId`, Codex's `callId`), the id its timeline and gate know the
- *  call by. The route reads that key and no other. */
-export interface McpClient {
-  callIdMeta: string;
-}
-
 export interface AgentAdapter {
   readonly id: string;
-  capabilities(): AdapterCapabilities;
+  /** Tools the harness runs itself beside the session's host tools (pi's subagent tool, its browser's): offered to the
+   *  model as the host tools are, so the host's tools_search lists them and a nested call reaches one by its name. */
+  readonly ownTools?: readonly { readonly name: string; readonly description: string; readonly inputSchema: Record<string, unknown> }[];
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];
   /** Opens the session, restoring it from `io.writer` when its key has records. */

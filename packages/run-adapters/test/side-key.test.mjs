@@ -99,21 +99,3 @@ test("the booking keeps a side request's label: its runner.request record and it
   assert.equal(booking.spentUsd(), 0.004, 'both in the one spend');
   assert.equal(booking.turns(), 2, 'both counted as the session\'s requests');
 });
-
-test("a side key opens the model routes only: the session's MCP door at /mcp/<server> stays behind the session's key", { timeout: 30_000 }, async (t) => {
-  const mcp = { servers: [{ name: 'fake', tools: [{ name: 'add', description: 'Adds.', inputSchema: { type: 'object' } }] }], call: async () => ({ content: [{ type: 'text', text: 'ran' }] }) };
-  const p = await startModelProxy({
-    policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: () => 0.002, log: () => {},
-    hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, fetch: provider(), mcp: { session: mcp, client: { callIdMeta: 'claudecode/toolUseId' } },
-  }, KEY);
-  t.after(() => p.close());
-  assert.equal(typeof p.sideKey, 'function', 'the proxy mints a side key');
-  const list = (key) => new Promise((resolve, reject) => {
-    const { hostname, port } = new URL(p.url);
-    const req = request({ host: hostname, port, method: 'POST', path: '/mcp/fake', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${key}` } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
-    req.on('error', reject);
-    req.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
-  });
-  assert.equal(await list(KEY), 200, "the session's key opens its MCP door");
-  assert.equal(await list(p.sideKey(LABEL)), 401, 'a side key does not');
-});

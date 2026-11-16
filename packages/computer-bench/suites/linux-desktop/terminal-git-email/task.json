@@ -1,0 +1,82 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "linux.terminal.git-email",
+  "version": 1,
+  "title": "Set a git repository's own user.email in the terminal",
+  "split": "heldout",
+  "tags": ["terminal", "xfce4-terminal", "git", "config"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal and git, and xdotool, which setup places the window with.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v git && command -v xdotool"] }
+    ]
+  },
+  "params": {
+    "who": {
+      "pick": [
+        { "old": "build-bot@old.example", "new": "maria.lopez@example.org" },
+        { "old": "ci@legacy.example", "new": "kenji.sato@example.net" },
+        { "old": "root@localhost.example", "new": "amara.okafor@example.com" },
+        { "old": "dev@temp.example", "new": "lukas.berg@example.io" },
+        { "old": "admin@box.example", "new": "sofia.rossi@example.eu" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Make a git repository whose own user.email is the old address, and keep the global user.email as it was before the run (empty when none is set), which a check compares.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && git init -q $d/repo-{{nonce}} && git -C $d/repo-{{nonce}} config user.email {{who.old}} && { git config --global --get user.email || true; } > $d/global-email-before"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in the run's folder, its pid kept beside the folder so teardown stops this terminal and no other.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "In the terminal window, set the user.email of the git repository /tmp/computer-bench-{{nonce}}/repo-{{nonce}} to {{who.new}}, for that repository only (not your global git config).",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "repo-email",
+      "kind": "exec",
+      "why": "The repository's own config (git config --local) says the new address. Setup set it to {{who.old}} there, which a global setting can't override, so an agent that does nothing fails, and so does one that sets it only globally.",
+      "argv": ["git", "-C", "/tmp/computer-bench-{{nonce}}/repo-{{nonce}}", "config", "--local", "--get", "user.email"],
+      "stdout": { "equals": "{{who.new}}" }
+    },
+    {
+      "id": "global-email-kept",
+      "kind": "exec",
+      "why": "The global user.email is what it was before the run: an agent that also sets it globally, which the instruction forbids, fails.",
+      "argv": ["sh", "-c", "[ \"$(git config --global --get user.email)\" = \"$(cat /tmp/computer-bench-{{nonce}}/global-email-before)\" ] && echo kept || echo changed"],
+      "stdout": { "equals": "kept" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's terminal (by the pid setup kept: a desktop may have other terminals open) and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -f /tmp/computer-bench-{{nonce}}-*.pid; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type the command into the terminal and run it.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "git -C /tmp/computer-bench-{{nonce}}/repo-{{nonce}} config user.email {{who.new}}" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 1500 }
+        ]
+      }
+    }
+  ]
+}

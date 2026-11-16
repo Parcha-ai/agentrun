@@ -99,7 +99,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  const { max_concurrent_runs, models: _models, free_models: _free, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
   assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: `anthropic/${MODEL}`, run_memory_mib: 288 });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -178,7 +178,8 @@ test("a claude-agent run writes where its CLI works: a relative path, the CLI's 
   // The host's own folder stays, empty: the run's shell scratch (its TMPDIR, run-tools.ts TMP_DIR) swept at the end. The
   // sweep runs as the session closes, after the end commit the follow saw: the list is read once it is done (bounded).
   for (let i = 0; i < 100 && (await filesUnder(work)).some((path) => path.startsWith(`.agentrun${sep}`)); i++) await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.deepEqual((await filesUnder(work)).sort(), [".agentrun", ".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
+  // inputs/message.md is the run's opening message, saved by the server (uploads.ts placeRunInputs), not the CLI's.
+  assert.deepEqual((await filesUnder(work)).sort(), [".agentrun", ".learning", join(".learning", "note.md"), "hello.md", "inputs", join("inputs", "message.md")], "and nothing else: the CLI keeps no file of its own there");
   assert.ok(!existsSync(join(runDir(data, runId), "escape.md")), "the path out was not written");
   assert.ok(told.some((text) => /escape\.md: outside the workspace/.test(text)), `the path out is refused: ${told.join(" | ")}`);
   assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);

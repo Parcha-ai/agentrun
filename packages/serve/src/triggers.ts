@@ -26,7 +26,7 @@ import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeli
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
-import { second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
+import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type StartResult, type StartWhy, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
@@ -45,8 +45,8 @@ const FULL_RETRY_S = 30;
 export const SOURCE_KINDS: readonly string[] = TRIGGER_ADAPTERS.map((a) => a.id);
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
-/** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start. */
-export const PAYLOAD_KEPT_BYTES = 16 * 1024;
+/** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start (trigger-adapter.ts). */
+export { PAYLOAD_KEPT_BYTES };
 /** How late a missed time may be and still fire once, by default: an hour. */
 export const CATCHUP_WINDOW_S = 3600;
 /** The failed tries in a row that turn a trigger off. */
@@ -72,8 +72,45 @@ export const SEEN_KEPT = 5_000;
 /** The highest max_active_runs a trigger may set (the store's CHECK holds the same). */
 export const MAX_ACTIVE_RUNS = 100;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
+/** A polled source's trigger setting its last check is kept in (TriggerAdapter.poll), with the sign-ins refused in a row. */
+export const LAST_CHECK = "last_check";
+/** The sign-ins a polled source's server refuses in a row that turn its trigger off. */
+export const REFUSALS_TO_STOP = 3;
+/** How long a trigger's create, edit or turn-on waits for its source's start (trigger-adapter.ts `start`): one not taken
+ *  by then is taken at its first check. */
+export const START_WAIT_MS = 10_000;
+/** Whether `adapter`'s firings are events from outside (pushed, or found by a poll), each its own, never a time. */
+const eventful = (adapter: TriggerAdapter | undefined) => adapter?.delivery === "push" || adapter?.poll !== undefined;
+/** A polled trigger's last check as kept (LAST_CHECK), when it reads. */
+function checkOf(text: string | undefined): { at: string; ok: boolean; message: string; refused: number } | undefined {
+  if (!text) return undefined;
+  try {
+    const value = JSON.parse(text) as { at?: unknown; ok?: unknown; message?: unknown; refused?: unknown };
+    return typeof value.at === "string" && typeof value.ok === "boolean" && typeof value.message === "string" ? { at: value.at, ok: value.ok, message: value.message, refused: Number.isSafeInteger(value.refused) ? (value.refused as number) : 0 } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 /** Why a message_run trigger turned itself off: the run it messages is gone. */
 const RUN_DELETED = "its run was deleted";
+
+/** What a source's sender keeps of a trigger, set up from here (composio-triggers.ts: Composio's trigger instance): made
+ *  before the trigger is kept and undone when it is not, kept in step as the owner turns the trigger on and off (and as
+ *  the server turns it off itself: offThere), removed after it. What it could not do there is answered beside the change (`said`, by its source's name: `{composio: {done:
+ *  false, note}}`), and the change here holds. */
+export type TriggerUpstream = {
+  /** A trigger `id` of `source` being made (on or not): what it needs there made, then `keep` (the trigger's save here)
+   *  given the source to keep, with what was made named in it; what `keep` answers is answered. When `keep` throws, what
+   *  was made is undone and its refusal thrown. Throws the refusal when it can't be made. */
+  make<T>(source: Source, id: string, enabled: boolean, keep: (source: Source) => Promise<T>): Promise<T>;
+  /** A PATCH's source for the trigger that keeps `was`: the source to keep, or the refusal (thrown) of a change to what
+   *  was made there. */
+  patched(was: Source, given: Source): Source;
+  /** The trigger `id` of `source`, turned on or off here: the same there. */
+  turned(source: Source, id: string, on: boolean): Promise<Json | undefined>;
+  /** The trigger `id` of `source`, deleted here: removed there. */
+  removed(source: Source, id: string): Promise<Json | undefined>;
+};
 
 /** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
  *  required: server.ts targetIssues and start). */
@@ -87,7 +124,9 @@ export type TriggerFailed = { trigger_id: string; name: string; firing_key: stri
 /** A run's provenance, kept with its launch row: the trigger that started it, and the firing. `name`: the trigger's name as
  *  it was at the firing, put on the run so its Timeline row names the trigger without a store read (runs.ts
  *  servedTriggerRow); a rename pushes the new name (server.ts triggerChanged). */
-export type RunTrigger = { id: string; firing_key: string; name?: string };
+/** `attrs`: what its source said of the event that fired it (the firing's attrs, server-written), which the run's tools
+ *  may read (an email's Message-ID: email/tools.ts reads the thread it started). */
+export type RunTrigger = { id: string; firing_key: string; name?: string; attrs?: Record<string, string> };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
@@ -95,20 +134,23 @@ export type TriggerDeps = {
   store: Pick<Store, "triggers" | "runs" | "agents">;
   /** The refusal of a trigger of source `kind` made or turned on here, when it cannot be (the connection it needs is not
    *  there: GitHub not connected). Undefined, or no such dep, when it can. */
-  unavailable?(kind: string): ApiError | undefined;
+  unavailable?(kind: string): ApiError | undefined | Promise<ApiError | undefined>;
+  /** A polled source's credentials, read as it polls (the email account, opened); undefined when there are none. */
+  credentials?(kind: string): Promise<unknown>;
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
    *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
    *  refused. */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string): Promise<{ run_id: string }>;
+  /** `previous` false: the run is handed no previous result (its adapter's previousResult). */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string, previous?: boolean): Promise<{ run_id: string }>;
   /** Queues `input` for the target's run as a command row (answers false) under `key`, as the trigger's (`from`), within
    *  `bound` (store.triggers.message: at most `max` of this trigger's rows untaken for the run, else skipped with
    *  `reason`); ApiError when refused. */
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin, bound: { max: number; reason: string }): Promise<void | { skipped: string }>;
   /** An adapter's sealed settings (over the store): a trigger's minted secret made (at its create or a rotation) and shown
    *  once, durable before it is answered; a trigger's settings removed with it. Undefined for an adapter that keeps none. */
-  settings(adapterId: string): { mint(scope: string, field: string): Promise<string>; set(scope: string, field: string, value: string, as?: "utf8"): Promise<void>; remove(scope: string): Promise<void> } | undefined;
+  settings(adapterId: string): { mint(scope: string, field: string): Promise<string>; set(scope: string, field: string, value: string, as?: "utf8"): Promise<void>; remove(scope: string): Promise<void>; get(scope: string, field: string): string | undefined } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
   /** The run the store started under origin `key`, if one: a firing left due by a server that went down mid-start. A run
@@ -126,6 +168,8 @@ export type TriggerDeps = {
   /** The address people and senders reach this server at (AGENTRUN_PUBLIC_URL), with no trailing slash: a pushed
    *  trigger's hook_url starts with it. None: the hook's path alone. */
   publicUrl?: string;
+  /** What source `kind`'s sender keeps of its triggers, when it is set up from here (TriggerUpstream); none for the rest. */
+  upstream?(kind: string): TriggerUpstream | undefined;
 };
 
 const REAL_CLOCK: TriggerClock = {
@@ -192,23 +236,11 @@ function settingsOf(body: Json, issues: InputIssue[]): { catchup_window_s?: numb
 const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s", "max_active_runs"];
 
 /** Why a trigger of `source` and `target` takes no max_active_runs, if it does not: any start_run trigger of a pushed
- *  source does, with or without accept (set, each event starts its own run up to the cap); a schedule keeps the overlap
- *  skip, and a message_run target starts no run to bound. */
+ *  or polled source does, with or without accept (set, each event starts its own run up to the cap); a schedule keeps
+ *  the overlap skip, and a message_run target starts no run to bound. */
 function capIssues(adapters: readonly TriggerAdapter[], source: Source, target: Target | undefined): InputIssue[] {
-  if (adapterIn(adapters, source.kind)?.delivery !== "push") return [{ field: "max_active_runs", reason: "not_allowed", message: "Only a trigger of a pushed source (a webhook) takes max_active_runs: a schedule keeps the overlap skip. Set it to null to clear it." }];
+  if (!eventful(adapterIn(adapters, source.kind))) return [{ field: "max_active_runs", reason: "not_allowed", message: "Only a trigger of a pushed or polled source (a webhook, an email) takes max_active_runs: a schedule keeps the overlap skip. Set it to null to clear it." }];
   if (target?.kind === "message_run") return [{ field: "max_active_runs", reason: "not_allowed", message: "max_active_runs bounds the runs a trigger starts, and a message_run target starts none. Set it to null to clear it." }];
-  return [];
-}
-
-/** What is wrong with the secret a rotation gives for a trigger of `source`: a source whose sender gives its secret
- *  (Composio's) needs one, a string (the store checks its length and form); any other takes none, it is minted. A create
- *  never takes one: Composio makes the secret once the trigger's URL is registered, so a composio trigger starts with none
- *  and refuses every request until it is set. */
-function givenSecretIssues(adapter: TriggerAdapter | undefined, source: Source, secret: unknown): InputIssue[] {
-  const gives = adapter?.givesSecret?.(source) === true;
-  if (gives && secret === undefined) return [{ field: "secret", reason: "missing", message: "This trigger's sender gives its secret (Composio's webhook subscription secret): send it as secret." }];
-  if (!gives && secret !== undefined) return [{ field: "secret", reason: "not_allowed", message: "This trigger's secret is made by this server: send no secret." }];
-  if (gives && typeof secret !== "string") return [{ field: "secret", reason: "wrong_type", message: "secret is a string" }];
   return [];
 }
 
@@ -260,6 +292,10 @@ export class Triggers {
   private waiting = false;
   /** The triggers whose day-kept keys are at their cap, said once until they are under it again. */
   private readonly seenFull = new Set<string>();
+  /** The polled triggers whose poll is running: one at a time each. */
+  private readonly polling = new Set<string>();
+  /** Each polled trigger's count of starts taken (takeStart): a poll or a start that sees it changed keeps nothing. */
+  private readonly starts = new Map<string, number>();
   private closed = false;
 
   constructor(private readonly deps: TriggerDeps) {
@@ -311,35 +347,40 @@ export class Triggers {
     const agentId = await this.agentOf(target);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
-    if (enabled) this.needAvailable(source.kind);
+    if (enabled) await this.needAvailable(source.kind);
     // Never made on for an archived agent: told before anything is minted (the store's own refusal is the backstop).
     if (enabled) await this.needAgentOn(agentId);
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
-    // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
-    const minted = await this.mint(source, id);
     const name = typeof body.name === "string" ? body.name.trim() : id;
-    let row: TriggerRow;
-    try {
-      row = await this.store.triggers.create({ id, agentId, name, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(source));
-    } catch (error) {
-      throw (await this.scopeTaken(error, source, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
-    }
+    const keep = async (kept: Source): Promise<{ row: TriggerRow; minted: Record<string, string> }> => {
+      try {
+        // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
+        const minted = await this.mint(kept, id);
+        const row = await this.store.triggers.create({ id, agentId, name, enabled, source: kept, target, nextAt: enabled ? nextAfter(this.adapter(kept), kept, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(kept));
+        return { row, minted };
+      } catch (error) {
+        throw (await this.scopeTaken(error, kept, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
+      }
+    };
+    // What its sender keeps of it is made first (Composio's instance), the trigger saved after, and what was made undone
+    // there when it is not saved (the sender's own steps, one project's at a time).
+    const upstream = this.deps.upstream?.(source.kind);
+    const { row, minted } = upstream ? await upstream.make(source, id, enabled, keep) : await keep(source);
+    // Where a polled source starts watching: from now, taken before its first time is armed.
+    if (enabled) await this.takeStart(asTrigger(row), "created");
     // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
     await this.arm();
     // What it minted, shown this once, by field: a webhook's `secret`.
     return { ...(await this.view(asTrigger(row))), ...(minted as { secret?: string }) };
   }
 
-  /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. One whose sender gives its
-   *  secret (Composio's) takes it as `given` and shows nothing: none is made for it. */
-  async rotate(id: string, given?: unknown): Promise<Record<string, string>> {
+  /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. */
+  async rotate(id: string): Promise<Record<string, string>> {
     const trigger = await this.need(id);
     const adapter = this.adapter(trigger.source);
     if (!mints(adapter)) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
-    const issues = givenSecretIssues(adapter, trigger.source, given);
-    if (issues.length) throw invalid(issues);
-    return this.mint(trigger.source, id, given as string | undefined);
+    return this.mint(trigger.source, id);
   }
 
   /** Whether `id` is a trigger of the pushed source `kind` that is on: the one a request delivered for `kind` may fire. */
@@ -370,6 +411,12 @@ export class Triggers {
     return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.enabled && t.source.kind === kind).map((t) => ({ id: t.id, source: t.source }));
   }
 
+  /** Every trigger of source `kind`, on or off, with its name and source: what a source's sender keeps of them is shared
+   *  between some (composio-triggers.ts: one Composio instance per server, event and config). */
+  async ofKind(kind: string): Promise<{ id: string; name: string; enabled: boolean; source: Source }[]> {
+    return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.source.kind === kind).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, source: t.source }));
+  }
+
   /** Every trigger of source `kind` that is on, turned off because the connection it needs is gone (`disabled: {reason:
    *  "connection_lost", detail}`), and said; how many. They are kept: on again once it is back. */
   async turnOff(kind: string, detail: string): Promise<number> {
@@ -380,6 +427,7 @@ export class Triggers {
       this.deps.say({ condition: "trigger_connection_lost", trigger: t.id, detail });
     }
     if (on.length) await this.arm();
+    await this.offThere(on);
     return on.length;
   }
 
@@ -391,6 +439,7 @@ export class Triggers {
     const off = await this.store.agents.archive(agentId, true, { at: iso(this.clock.now()), reason: "agent_archived", detail: archivedDetail(name) });
     for (const t of off) this.deps.say({ condition: "trigger_agent_archived", trigger: t.id, agent: agentId });
     if (off.length) await this.arm();
+    await this.offThere((await Promise.all(off.map((t) => this.find(t.id)))).filter((t): t is Trigger => t !== undefined));
     return off;
   }
 
@@ -421,8 +470,8 @@ export class Triggers {
   }
 
   /** Refused as its connection says when a trigger of `kind` cannot be on here (unavailable). */
-  private needAvailable(kind: string): void {
-    const refusal = this.deps.unavailable?.(kind);
+  private async needAvailable(kind: string): Promise<void> {
+    const refusal = await this.deps.unavailable?.(kind);
     if (refusal) throw refusal;
   }
 
@@ -460,7 +509,7 @@ export class Triggers {
   async update(id: string, body: Json) {
     const was = await this.need(id);
     const issues = unknownFields(body, WRITABLE);
-    const source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
+    let source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
     const target = body.target === undefined ? undefined : targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
     // A cap kept, or set, needs a pushed source and a target that starts runs: a PATCH that aims a capped trigger at a run
@@ -473,8 +522,9 @@ export class Triggers {
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
     const trigger = await this.need(id);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
-    // Whose secret it keeps (the sender's, or one this server made) is fixed with its scheme: make a new trigger for the other.
-    if (source && (this.adapter(source).givesSecret?.(source) === true) !== (this.adapter(trigger.source).givesSecret?.(trigger.source) === true)) throw invalid([{ field: "source.signature", reason: "not_allowed", message: "A trigger's signature cannot move between a secret its sender gives (composio) and one this server makes: make a new trigger for the other." }]);
+    // What its sender keeps of it stays as it was made (Composio's instance): only what reads it here changes.
+    const upstream = this.deps.upstream?.(trigger.source.kind);
+    if (source && upstream) source = upstream.patched(trigger.source, source);
     const now = this.clock.now();
     const enabled = typeof body.enabled === "boolean" ? body.enabled : trigger.enabled;
     const adapter = this.adapter(trigger.source);
@@ -485,7 +535,7 @@ export class Triggers {
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again: TriggerPatch = enabled && !trigger.enabled ? { failuresInARow: 0, disabled: null } : {};
     const scopeSource = source ?? trigger.source;
-    if (enabled && (!trigger.enabled || source)) this.needAvailable(scopeSource.kind);
+    if (enabled && (!trigger.enabled || source)) await this.needAvailable(scopeSource.kind);
     if (enabled) await this.scopeFree(scopeSource, trigger.id);
     // A trigger belongs to its target's agent: aimed at another agent (or another agent's run), it moves to that agent,
     // whose one name per trigger and list of triggers it joins.
@@ -502,15 +552,65 @@ export class Triggers {
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
+    // A polled source with a start (trigger-adapter.ts) takes a new one when turned on again or when the edit changed
+    // where it reads; any other edit keeps its cursor. One without forgets its cursor and last check: its next poll its first.
+    const start = adapter.start;
+    const edited = source;
+    const moved = edited !== undefined && start !== undefined && start.on.some((field) => JSON.stringify(edited[field]) !== JSON.stringify(trigger.source[field]));
+    if (enabled && start && (!trigger.enabled || moved)) await this.takeStart(asTrigger(row), trigger.enabled ? "edited" : "enabled");
+    else if (enabled && !start && (!trigger.enabled || source) && adapter.poll) await this.deps.settings(adapter.id)?.remove(id);
     await this.arm();
-    return this.view(asTrigger(row));
+    // Turned on or off by the owner: the same at its sender, once it holds here; what could not be done there is said.
+    const said = upstream && enabled !== trigger.enabled ? await upstream.turned(row.source as Source, id, enabled) : undefined;
+    return { ...(await this.view(asTrigger(row))), ...said };
   }
 
-  async remove(id: string): Promise<void> {
+  /** Trigger `trigger`'s polled source started from now (its adapter's start, waited on at most START_WAIT_MS): its old
+   *  cursor and last check forgotten, the start's cursor and check kept (no refusal counted), its note a skipped history
+   *  line. A start not taken leaves no cursor, so its first poll takes it. Never throws: the create or edit stands. */
+  private async takeStart(trigger: Trigger, why: StartWhy): Promise<void> {
+    const adapter = this.adapter(trigger.source);
+    const start = adapter.start;
+    if (!start) return;
+    const generation = (this.starts.get(trigger.id) ?? 0) + 1;
+    this.starts.set(trigger.id, generation);
+    const now = this.clock.now();
+    try {
+      const settings = this.deps.settings(adapter.id);
+      await settings?.remove(trigger.id);
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<StartResult>((done) => {
+        timer = setTimeout(() => done({ check: { ok: false, message: start.unchecked(trigger.source, why) }, note: start.unchecked(trigger.source, why) }), START_WAIT_MS);
+        timer.unref?.();
+      });
+      const taken = start.take(trigger.source, { trigger: trigger.id, why, credentials: async () => this.deps.credentials?.(adapter.id) }).catch((error: unknown): StartResult => {
+        const message = String((error as Error)?.message ?? error);
+        return { check: { ok: false, message }, note: start.unchecked(trigger.source, why) };
+      });
+      const result = await Promise.race([taken, late]).finally(() => clearTimeout(timer));
+      // Turned off, deleted, moved (an edit of where it reads: start.on) or started again meanwhile: this start is not its
+      // own any more. An edit of anything else (accept, every_s) keeps it: that edit took no start of its own, and the
+      // cursor removed above would otherwise stay gone, its first poll starting from then and skipping the mail between.
+      const current = await this.find(trigger.id);
+      const readsAt = (source: Source) => [source.kind, ...start.on.map((field) => source[field])];
+      if (this.closed || this.starts.get(trigger.id) !== generation || !current?.enabled || JSON.stringify(readsAt(current.source)) !== JSON.stringify(readsAt(trigger.source))) return;
+      for (const [field, value] of Object.entries(result.cursor ?? {})) await settings?.set(trigger.id, field, value);
+      await settings?.set(trigger.id, LAST_CHECK, JSON.stringify({ at: iso(now), ok: result.check.ok, message: result.check.message, refused: 0 }));
+      const at = Math.floor(now / 1000) * 1000;
+      await this.record(current, { key: firingKey(adapter.id, trigger.id, `start\n${second(now)}\n${why}\n${generation}`), by: adapter.id, nominalAt: at, status: "skipped", reason: result.note });
+      if (!result.check.ok) this.deps.say({ condition: "trigger_check_failed", trigger: trigger.id, error: result.check.message });
+    } catch (error) {
+      this.deps.say({ condition: "trigger_start_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) });
+    }
+  }
+
+  /** The trigger deleted, and what its sender keeps of it removed after (said, when it could not be: the delete holds). */
+  async remove(id: string): Promise<Json | undefined> {
     const trigger = await this.need(id);
     await this.store.triggers.remove(id);
     if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
     await this.arm();
+    return this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
   }
 
   /** Run now: one firing per Idempotency-Key, driven before the answer. `created` false: the key's firing, as it stands. */
@@ -578,6 +678,7 @@ export class Triggers {
       await this.store.triggers.update(t.id, { enabled: false, nextAt: null, disabled: { at: iso(now), reason: "source_unreadable", detail } });
       this.deps.say({ condition: "trigger_source_unreadable", trigger: t.id, error: detail });
     }
+    await this.offThere(triggers);
   }
 
   /** Records `trigger`'s firings up to now and moves its next time on from the last nominal one, in one write. Of the
@@ -589,6 +690,7 @@ export class Triggers {
     // A pushed source has no next time, so it is never here.
     const clock = adapter.clock?.(trigger.source);
     if (!clock) return;
+    if (adapter.poll) return this.pollDue(trigger, adapter, clock, now);
     const by = adapter.id;
     const windowMs = (trigger.catchupWindowS ?? CATCHUP_WINDOW_S) * 1000;
     const first = trigger.nextAt!;
@@ -623,6 +725,80 @@ export class Triggers {
     await this.prune(trigger);
   }
 
+  /** A polled source's time come: its next time moved on from the latest that has come (a time it was not there for is no
+   *  `missed` row: what came meanwhile is still there to read), then its poll, after none still running for it, off the
+   *  timer, so a slow server never holds the other triggers. */
+  private async pollDue(trigger: Trigger, adapter: TriggerAdapter, clock: Clock, now: number): Promise<void> {
+    const last = clock.latest(trigger.nextAt!, now);
+    const next = clock.next(last);
+    await this.store.triggers.update(trigger.id, { nextAt: next !== null && Number.isFinite(next) && Math.abs(next) <= DATE_MAX_MS ? next : null });
+    if (this.polling.has(trigger.id)) return;
+    this.polling.add(trigger.id);
+    void this.polled(trigger, adapter, last, now).finally(() => this.polling.delete(trigger.id));
+  }
+
+  /** One poll of `trigger`'s source for its time `nominalAt`: each event it found recorded in order (its note a skipped
+   *  history line; one it leaves, skipped and said; one its accept does not take, an ignored row kept for its day; any
+   *  other due, and driven), its cursor kept once they are, then its last check, and at the REFUSALS_TO_STOPth refused
+   *  sign-in in a row the trigger turned off. A poll that throws is a failed check. */
+  private async polled(trigger: Trigger, adapter: TriggerAdapter, nominalAt: number, now: number): Promise<void> {
+    const settings = this.deps.settings(adapter.id);
+    // A start taken while it polled (an edit, a turn-on) is newer than anything this poll found.
+    const generation = this.starts.get(trigger.id);
+    const restarted = () => this.starts.get(trigger.id) !== generation;
+    let result: PollResult;
+    try {
+      result = await adapter.poll!(trigger.source, { trigger: trigger.id, setting: (field) => settings?.get(trigger.id, field), credentials: async () => this.deps.credentials?.(adapter.id) });
+    } catch (error) {
+      result = { check: { ok: false, message: String((error as Error)?.message ?? error) } };
+    }
+    if (this.closed) return;
+    try {
+      // Edited, turned off or deleted while it polled: nothing it found is kept.
+      const current = await this.find(trigger.id);
+      if (!current || !current.enabled || JSON.stringify(current.source) !== JSON.stringify(trigger.source) || restarted()) return;
+      const by = adapter.id;
+      const at = Math.floor(nominalAt / 1000) * 1000;
+      if (result.note) await this.record(current, { key: firingKey(by, trigger.id, `note\n${second(nominalAt)}`), by, nominalAt: at, status: "skipped", reason: result.note });
+      const events = result.events ?? [];
+      let cursor = events.length ? undefined : result.cursor;
+      let full = false;
+      for (const event of events) {
+        const key = firingKey(by, trigger.id, event.key);
+        const attrs = event.attrs && Object.keys(event.attrs).length ? { attrs: event.attrs } : {};
+        const refused = event.left ? undefined : adapter.takes?.(current.source, event);
+        try {
+          if (event.left) await this.record(current, { key, by, nominalAt: at, status: "skipped", reason: event.left, ...attrs });
+          else if (refused) await this.record(current, { key, by, nominalAt: at, status: "ignored", shown: false, ...attrs });
+          else {
+            const recorded = await this.record(current, { key, by, nominalAt: at, status: "due", payload: cut(event.text), ...attrs }, { room: true });
+            if (recorded.created) void this.inTurn(trigger.id, key);
+          }
+        } catch (error) {
+          // Full (DUE_KEPT firings still due): this event and those after it wait for the next poll, the cursor before it.
+          if (!(error instanceof ApiError && error.code === "rate_limited")) throw error;
+          full = true;
+          break;
+        }
+        cursor = event.cursor;
+      }
+      if (!full && events.length) cursor = result.cursor ?? cursor;
+      if (restarted()) return;
+      for (const [field, value] of Object.entries(cursor ?? {})) await settings?.set(trigger.id, field, value);
+      const refusals = result.refused ? (checkOf(settings?.get(trigger.id, LAST_CHECK))?.refused ?? 0) + 1 : 0;
+      if (result.refused && refusals >= REFUSALS_TO_STOP) {
+        await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "sign_in_refused", detail: result.refused.detail } });
+        this.deps.say({ condition: "trigger_sign_in_refused", trigger: trigger.id, refused: refusals });
+        await this.arm();
+      }
+      const message = full ? `${result.check.message} ${DUE_KEPT} firings are still waiting for their runs: the rest wait for the next check.` : result.check.message;
+      await settings?.set(trigger.id, LAST_CHECK, JSON.stringify({ at: iso(now), ok: result.check.ok, message, refused: refusals }));
+      if (!result.check.ok) this.deps.say({ condition: "trigger_check_failed", trigger: trigger.id, error: result.check.message });
+    } catch (error) {
+      this.deps.say({ condition: "trigger_poll_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) });
+    }
+  }
+
   /** A firing taken from due to its end: skipped when its trigger's last run is active, else its run started (or its
    *  message sent). A failed try keeps it due under the backoff table, or ends it failed. Each step reads the trigger and
    *  the firing again: either may be edited or deleted meanwhile. */
@@ -653,7 +829,8 @@ export class Triggers {
       if (now.target.kind === "message_run") return void (await this.send(now, firing));
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.target, this.inputOf(now, firing), { id: triggerId, firing_key: key, name: now.name }, this.originOf(now), this.titleOf(now, firing));
+        const attrs = firing.attrs as Record<string, string> | null | undefined;
+        started = await this.deps.start(now.target, this.inputOf(now, firing), { id: triggerId, firing_key: key, name: now.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, this.originOf(now), this.titleOf(now, firing), carriesPrevious(this.adapter(now.source)));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -683,9 +860,10 @@ export class Triggers {
       await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
       await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
       this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
+      await this.offThere([trigger]);
       return;
     }
-    const bound = adapterIn(this.adapters, firing.by)?.delivery === "clock" ? { max: 1, reason: "A message from this trigger is already waiting." } : { max: DUE_KEPT, reason: `${DUE_KEPT} messages from this trigger are already waiting for its run.` };
+    const bound = adapterIn(this.adapters, firing.by)?.delivery === "clock" && !eventful(adapterIn(this.adapters, firing.by)) ? { max: 1, reason: "A message from this trigger is already waiting." } : { max: DUE_KEPT, reason: `${DUE_KEPT} messages from this trigger are already waiting for its run.` };
     let skipped: string | undefined;
     try {
       skipped = (await this.deps.message(target, this.inputOf(trigger, firing), firing.key, this.originOf(trigger), bound))?.skipped;
@@ -742,7 +920,10 @@ export class Triggers {
       if (attempts <= BACKOFF_MS.length) {
         const wait = Math.max(BACKOFF_MS[attempts - 1]!, error instanceof ApiError ? (error.extra.retry_after_ms ?? 0) : 0);
         const settled = await this.store.triggers.settle(triggerId, key, { attempts, retryAt: this.clock.now() + wait, error: errorOf(error), reason: errorOf(error).message, waitsOn: null }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
-        if (settled?.paused) this.deps.say({ condition: "trigger_auto_paused", trigger: triggerId, firing: key });
+        if (settled?.paused) {
+          this.deps.say({ condition: "trigger_auto_paused", trigger: triggerId, firing: key });
+          await this.pausedThere(triggerId);
+        }
         return;
       }
       await this.failed(triggerId, key, errorOf(error));
@@ -768,8 +949,34 @@ export class Triggers {
   /** A failed firing: one more in its trigger's streak, the trigger turned off at FAILURES_TO_PAUSE, and trigger.failed
    *  queued (after the firing is written: a start finds one not yet queued and queues it, under the same webhook-id). */
   private async failed(triggerId: string, key: string, error: { code: string; message: string }, runId?: string, reason?: string): Promise<void> {
-    await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}) }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
+    const settled = await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}) }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
     await this.notifyFailed(triggerId, key);
+    if (settled?.paused) await this.pausedThere(triggerId);
+  }
+
+  /** Trigger `triggerId`, turned off by its failure streak: off at its sender too (offThere). */
+  private async pausedThere(triggerId: string): Promise<void> {
+    const trigger = await this.find(triggerId);
+    if (trigger && !trigger.enabled) await this.offThere([trigger]);
+  }
+
+  /** Triggers the server turned off itself (their agent archived, a failure streak, a connection or a run gone, a source
+   *  that no longer reads): off at their sender too, as an owner's pause is, by its own rule (Composio's instance only
+   *  once no trigger holding it is on). What could not be done there is said, with what to do by hand; the change here
+   *  holds either way. */
+  private async offThere(triggers: readonly { id: string; source: Source }[]): Promise<void> {
+    for (const t of triggers) {
+      const upstream = this.deps.upstream?.(t.source.kind);
+      if (!upstream) continue;
+      try {
+        const said = await upstream.turned(t.source, t.id, false);
+        for (const [where, what] of Object.entries(isObject(said) ? said : {})) {
+          if (isObject(what) && typeof what.note === "string") this.deps.say({ condition: "trigger_off_upstream_failed", trigger: t.id, upstream: where, note: what.note });
+        }
+      } catch (error) {
+        this.deps.say({ condition: "trigger_off_upstream_failed", trigger: t.id, upstream: t.source.kind, note: String((error as Error)?.message ?? error) });
+      }
+    }
   }
 
   private async notifyFailed(triggerId: string, key: string): Promise<void> {
@@ -807,7 +1014,7 @@ export class Triggers {
    *  most SEEN_KEPT of them; past it the oldest go, said once each time the cap is reached. */
   private async prune(trigger: Trigger): Promise<void> {
     const cap = this.deps.seenKept ?? SEEN_KEPT;
-    const over = await this.store.triggers.prune(trigger.id, { history: HISTORY_KEPT, dayMs: DAY_MS, keepByKey: (by) => by === "manual" || adapterIn(this.adapters, by)?.delivery === "push", kept: cap });
+    const over = await this.store.triggers.prune(trigger.id, { history: HISTORY_KEPT, dayMs: DAY_MS, keepByKey: (by) => by === "manual" || eventful(adapterIn(this.adapters, by)), kept: cap });
     if (over > 0) {
       if (!this.seenFull.has(trigger.id)) this.deps.say({ condition: "trigger_seen_full", trigger: trigger.id, kept: cap });
       this.seenFull.add(trigger.id);
@@ -860,9 +1067,12 @@ export class Triggers {
   private async view(trigger: Trigger) {
     const [last] = await this.store.triggers.firings(trigger.id);
     const adapter = adapterIn(this.adapters, trigger.source.kind);
-    const hook = adapter?.push ? `/v2/hooks/${adapter.settings?.scope === "server" ? adapter.id : trigger.id}` : undefined;
+    const hook = adapter?.push ? `/v2/hooks/${adapter.hookOf?.(trigger.source) ?? (adapter.settings?.scope === "server" ? adapter.id : trigger.id)}` : undefined;
+    // A polled source's last check: when, whether it read, in words; null before its first.
+    const check = adapter?.poll ? checkOf(this.deps.settings(adapter.id)?.get(trigger.id, LAST_CHECK)) : undefined;
     return {
       ...(hook ? { hook_url: `${this.deps.publicUrl ?? ""}${hook}` } : {}),
+      ...(adapter?.poll ? { last_check: check ? { at: check.at, ok: check.ok, message: check.message } : null } : {}),
       id: trigger.id, name: trigger.name, enabled: trigger.enabled, source: trigger.source, target: trigger.target, catchup_window_s: trigger.catchupWindowS ?? CATCHUP_WINDOW_S,
       max_active_runs: trigger.maxActiveRuns ?? null, failures_in_a_row: trigger.failuresInARow, disabled: trigger.disabled ?? null, next_at: trigger.nextAt === null ? null : iso(trigger.nextAt), last_run_id: trigger.lastRunId,
       created_at: iso(trigger.createdAt), updated_at: iso(trigger.updatedAt), last_firing: last ? firingView(last) : null,
@@ -878,18 +1088,11 @@ export class Triggers {
 
   /** Each field `source`'s adapter mints for its triggers, made now for trigger `id`, by field: none for one that keeps
    *  no trigger-scoped secret. */
-  private async mint(source: Source, id: string, given?: string): Promise<Record<string, string>> {
+  private async mint(source: Source, id: string): Promise<Record<string, string>> {
     const adapter = this.adapter(source);
     if (!mints(adapter)) return {};
     const store = this.deps.settings(adapter.id);
     if (!store) throw new Error(`no sealed settings for ${adapter.id}`);
-    // The sender's own secret, sealed as a minted one is, and never answered; none yet, none made.
-    if (adapter.givesSecret?.(source)) {
-      if (given === undefined) return {};
-      const field = Object.entries(adapter.settings!.fields).find(([, f]) => f.mint)![0];
-      await store.set(id, field, given, "utf8");
-      return {};
-    }
     return Object.fromEntries(await Promise.all(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(async ([field]) => [field, await store.mint(id, field)] as const)));
   }
 
@@ -942,6 +1145,8 @@ export class Triggers {
   private titleOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): string {
     const source = TRIGGER_LABELS[trigger.source.kind as TriggerSource] ?? trigger.source.kind;
     const attrs = firing.attrs as Record<string, string> | undefined;
+    const own = attrs && firing.by === trigger.source.kind ? this.adapter(trigger.source).title?.(attrs) : undefined;
+    if (own) return `${source} ${trigger.name}: ${own}`;
     const event = attrs?.event;
     const action = attrs?.action;
     return `${source} ${trigger.name}${event ? `: ${event}${action ? ` ${action}` : ""}` : ""}`;
@@ -960,7 +1165,7 @@ export class Triggers {
     const adapter = this.adapter(trigger.source);
     const when = local(firing.nominalAt, adapter.zone?.(trigger.source) ?? "UTC");
     const what = `the ${adapter.label} "${trigger.name}"`;
-    const line = firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : adapterIn(this.adapters, firing.by)?.delivery === "push" ? `(From ${what}, received at ${when}.)` : `(Started by ${what} for ${when}.)`;
+    const line = firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : eventful(adapterIn(this.adapters, firing.by)) ? `(From ${what}, received at ${when}.)` : `(Started by ${what} for ${when}.)`;
     // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag, in any case, cannot end
     // the block.
     const payload = firing.payload === null ? "" : `\n\n<trigger-payload source="${firing.by}"${tagAttrs(firing.attrs)} untrusted>\n${firing.payload.replace(/<(\/trigger-payload)/gi, "<\\$1")}\n</trigger-payload>`;

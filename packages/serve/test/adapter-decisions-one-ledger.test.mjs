@@ -24,7 +24,7 @@ after(closeOpenSessions);
 
 /** A decision model whose hold is its input alone: $1 a million input tokens, its output free. */
 const DECIDER = { id: "decider", api: "openrouter", price: { input: 1, output: 0 }, outputCeiling: null };
-const decision = (id, usd) => ({ kind: "decision", id, model: DECIDER, inputTokens: Math.round(usd * 1e6), questions: 1 });
+const decision = (id, usd) => ({ kind: "decision", id, model: DECIDER, inputTokens: Math.round(usd * 1e6) });
 /** The run's own model, priced: its requests here are small, and the scripted origin charges nothing. */
 const SONNET = { id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 };
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
@@ -180,11 +180,8 @@ test("a browser's release at a PARK (a call that asks a person) books on the run
   near(said["run-1"]?.at(-1), 0.0014, `the run's paid calls after its release at its park (${JSON.stringify(said)})`);
 });
 
-test("two runs on one runner: each browser's release books on its own run's ledger and on no other's, and the process-wide cap sees none of it", async (t) => {
+test("two runs on one runner: each browser's release books on its own run's ledger and on no other's", async (t) => {
   const { said } = await releasesAt(t, { runs: { "run-1": 0.0014, "run-2": 0.0021 }, script: [{ say: "done" }] });
   near(said["run-1"]?.at(-1), 0.0014, `run-1's paid calls hold only its own release (${JSON.stringify(said)})`);
   near(said["run-2"]?.at(-1), 0.0021, `run-2's paid calls hold only its own release (${JSON.stringify(said)})`);
-  const processCap = await import("../dist/cap.js");
-  assert.equal(processCap.runCap(), undefined, "the process-wide cap (cap.ts) holds no run");
-  assert.equal(processCap.paidHolds(), 0, "and nothing is held on it");
 });

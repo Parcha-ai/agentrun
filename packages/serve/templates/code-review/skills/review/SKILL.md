@@ -21,7 +21,8 @@ once: your previous findings are your own comments ending in `<!-- fp: <fingerpr
 (a reply that declines one dismisses it). The last head you reviewed is in your last review's
 `<!-- code-review ... head:<sha> -->`.
 
-A diff pasted in the message with no PR number is the whole change: skip to step 3, run no command.
+A diff pasted in the message with no PR number is the whole change (AgentRun saved the run's first message as
+`inputs/message.md`): skip to step 3, run no command.
 
 ## 2. Checkout
 
@@ -39,8 +40,8 @@ dropped it), `last_reviewed_sha` is none and the reviewers review the whole chan
 Don't read REVIEWER.md, DEEP.md or the rules files yourself: the reviewers do. Right after `rev-parse`, in ONE turn,
 make eight `subagent` calls, each with the block below filled in, with nothing added:
 
-- five quick reviewers: `<guide>` is `REVIEWER.md`, with `max_tool_calls: 30` and `effort: medium`;
-- three deep reviewers: `<guide>` is `DEEP.md`, with `max_tool_calls: 90` and `effort: high`. The third one's
+- five quick reviewers: `<guide>` is `REVIEWER.md`, with `effort: medium`;
+- three deep reviewers: `<guide>` is `DEEP.md`, with `effort: high`. The third one's
   `focus:` is the owner's focus, if any, then this lens: `Contracts: for each name the change touches (function, type,
   field, message, example body, record, release step), read every reader and writer of it outside the diff and every
   test asserting its old shape, and check each against the head.`
@@ -50,7 +51,8 @@ Name no `model`. Their `tools`: `["bash", "read"]`; with no checkout `["read", "
 
 ```text
 Review one code change. First `read` .agents/skills/review/<guide> whole and follow it.
-repo: <owner/name>
+owner: <the repository's owner, as your instructions name it>
+repo: <the repository's name alone, as your instructions name it>
 pr: <number>
 base_sha: <sha>
 head_sha: <sha>
@@ -61,8 +63,11 @@ previous_findings: <one line each: fingerprint, active or dismissed, priority, t
 focus: <the owner's focus, or none>
 ```
 
-For a pasted diff, the prompt is the first line, then all the message says of the change (`last_reviewed_sha`,
-`previous_findings`, any rules file), then `diff:` and the diff whole.
+For a diff pasted in the run's first message, the prompt is the first line, then `diff: inputs/message.md`: AgentRun
+saved that message there, diff and all, and each reviewer reads the change there. Never copy it into a call or a file.
+That file holds the first message only: for a diff pasted in a later message, the prompt is the first line, then
+all that message says of the change (`last_reviewed_sha`, `previous_findings`, any rules file), then `diff:` and
+that diff whole.
 
 Each reviewer answers with one `json` block in `findings.schema.json`'s shape. One that fails or gives no JSON counts as
 no answer. With no answer at all, say so in `summary` and post no finding.

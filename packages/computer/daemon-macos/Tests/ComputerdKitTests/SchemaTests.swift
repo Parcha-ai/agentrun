@@ -60,15 +60,18 @@ final class SchemaTests: XCTestCase {
 	}
 
 	/// hello's groups make the kind it declares: a desktop Mac declares every group the desktop setting kind requires,
-	/// or a run that asks for a desktop is refused it (it was, on the mini: no input.pointer, input.keys).
+	/// or a run that asks for a desktop is refused it (it was, on the mini: no input.pointer, input.keys). An attached
+	/// connection with no grant declares them too, or the server closes it at connect.
 	func testHellosGroupsMakeItsDeclaredKind() throws {
-		let hello = Driver(platform: FakeOS().platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil)).hello()
-		XCTAssertEqual(hello.kind, "desktop")
-		let required = try Self.requiredGroups(forMachineKind: hello.kind)
-		XCTAssertEqual(required, ["screen", "input.pointer", "input.keys"], "kinds.md's desktop row")
-		for group in required { XCTAssertTrue(hello.groups.map(\.rawValue).contains(group), "hello declares \(group)") }
-		let order = try Self.load("protocol.json")["groups"]?.arrayStrings ?? []
-		XCTAssertEqual(hello.groups.map(\.rawValue), order.filter { hello.groups.map(\.rawValue).contains($0) }, "in protocol.json's order")
+		for caller in [Caller.local, .attached] {
+			let hello = Driver(platform: FakeOS().platform(), policy: Policy(), caller: caller, machine: MachineInfo(os: "macos", osVersion: nil, device: nil)).hello()
+			XCTAssertEqual(hello.kind, "desktop")
+			let required = try Self.requiredGroups(forMachineKind: hello.kind)
+			XCTAssertEqual(required, ["screen", "input.pointer", "input.keys"], "kinds.md's desktop row")
+			for group in required { XCTAssertTrue(hello.groups.map(\.rawValue).contains(group), "\(caller): hello declares \(group)") }
+			let order = try Self.load("protocol.json")["groups"]?.arrayStrings ?? []
+			XCTAssertEqual(hello.groups.map(\.rawValue), order.filter { hello.groups.map(\.rawValue).contains($0) }, "\(caller): in protocol.json's order")
+		}
 	}
 
 	static var cases: [Case] {
@@ -76,7 +79,7 @@ final class SchemaTests: XCTestCase {
 		let rect = Rect(1, 2, 3, 4)
 		let stat = FileStat(type: .symlink, size: 5, mode: 0o644, mtimeMs: 1, uid: 501, gid: 20, target: "/tmp/x")
 		return [
-			Case(method: "hello", params: [HelloParams(client: "computerd 0.2.0")], results: [
+			Case(method: "hello", params: [["client": "computerd 0.2.0"]], results: [
 				HelloResult(os: "macos", osVersion: "26.1", kind: "desktop", arch: "arm64", groups: Driver.groups, screen: ScreenInfo(width: 1512, height: 982, scale: 2), features: ["ui.tree": .on, "ui.image": .on, "ui.nav": .off("no")], device: Device(maker: "Apple", model: "MacBook Pro")),
 				HelloResult(os: "macos", osVersion: nil, kind: "desktop", arch: "arm64", groups: [], screen: nil, features: nil, device: nil),
 			]),
@@ -162,7 +165,7 @@ final class SchemaTests: XCTestCase {
 		guard let methods = schema["definitions"]?["DaemonMethods"]?["properties"]?.objectValue else {
 			return XCTFail("methods.schema.json has no DaemonMethods")
 		}
-		let served = Set(Driver(platform: FakeOS().platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil)).router().methods)
+		let served = Set(Driver(platform: FakeOS().platform(), policy: Policy(), caller: .local, machine: MachineInfo(os: "macos", osVersion: nil, device: nil)).router().methods)
 		let tested = Set(Self.cases.map(\.method))
 		XCTAssertEqual(served, tested, "every method the driver serves has samples here")
 		for method in served {

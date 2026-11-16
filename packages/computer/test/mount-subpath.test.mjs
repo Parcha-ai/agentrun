@@ -82,4 +82,6 @@ test("a pack holds dist, box, the README, LICENSE and NOTICE, the egress proxy's
 		assert.equal(packed !== undefined, existsSync(join(PACKAGE, path)), `${path}: packed exactly when the build made it`);
 		if (packed) assert.equal(packed.mode & 0o777, 0o755, `${path} is packed executable by everyone`);
 	}
+	// With them, the record of the daemon source they came from, which a checkout without Go matches before it takes them.
+	assert.equal(paths.includes("dist/computerd.json"), existsSync(join(PACKAGE, "dist/computerd.json")), "dist/computerd.json: packed exactly when the build made it");
 });

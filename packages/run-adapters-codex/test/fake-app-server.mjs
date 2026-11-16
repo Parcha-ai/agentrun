@@ -39,7 +39,12 @@
  * `env_key` as its bearer key, streamed back piece by piece. With
  * `FAKE_CODEX_MODEL=responses` the model drives the whole turn, as Codex's
  * does: each step sends the thread's history and dynamic tools, and a
- * `function_call` it answers is called (`modelTurn`). An answer that ends
+ * `function_call` it answers is called (`modelTurn`), and a code-mode `exec` (a
+ * `custom_tool_call` named `exec`) runs its script: here a JSON list of host
+ * tool calls (`[{ "tool", "args" }]`), all at once as `Promise.allSettled`
+ * does, each a nested call under an id of Codex's own (`exec-<uuid>`) whose
+ * `DynamicToolCall` completion line is written as it answers, then the exec's
+ * output (each call's outcome, as JSON). An answer that ends
  * `response.incomplete` is a stream error retried after a backoff, as
  * Codex 0.164's is ("Incomplete response returned, reason: ...").
  *
@@ -78,13 +83,14 @@
  *   file mid-turn (`FAKE_CODEX_TAMPER` does it in every turn);
  * - `turn/interrupt` kills the running command and ends the turn interrupted;
  * - `recall` answers with the code word an earlier message of the thread
- *   ("the code word is …") named, from the rollout it resumed.
+ *   ("the code word is …") named, from the rollout it resumed;
+ * - `thread/start` refuses a dynamic tool named `mcp` or `mcp__…`, as Codex
+ *   0.164 does (its own MCP client's names are reserved).
  */
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { mcpDown, mcpTurn } from './fake-app-server-mcp.js';
 
 const home = process.env.CODEX_HOME;
 if (home && process.argv[2] === 'sandbox') {
@@ -212,8 +218,8 @@ async function stream(text, onPiece) {
 /**
  * `FAKE_CODEX_MODEL=responses`: the turn is the provider's model's, as Codex's is. Each step sends the thread's history (its
  * `response_item` payloads, in order) and its dynamic tools to the provider's `/responses`, then does what the answer says: a
- * `function_call` calls that dynamic tool (its line, `item/tool/call`, its output) and asks the model again; text is said and
- * ends the turn. A resumed thread's history is the rollout it resumed, so the model picks up where it was.
+ * `function_call` calls that dynamic tool (its line, `item/tool/call`, its output; several in one answer, each in turn) and
+ * asks the model again; text is said and ends the turn. A resumed thread's history is the rollout it resumed, so the model picks up where it was.
  */
 /** Codex's stream retries (its `stream_max_retries` default), and what modelTurn returns for a turn interrupted between them. */
 const STREAM_RETRIES = 5;
@@ -231,7 +237,8 @@ async function modelTurn(turnId) {
     });
     if (!res.ok || !res.body) throw new Error(`the model answered ${res.status}`);
     let text = '';
-    let call;
+    const calls = [];
+    const execs = [];
     let completed = false;
     let incomplete;
     // The answer's text, told as it comes (Codex's item/agentMessage/delta), its item started at the first piece.
@@ -244,7 +251,9 @@ async function modelTurn(turnId) {
     };
     const decoder = new TextDecoder();
     let buffer = '';
-    for await (const chunk of res.body) {
+    // As Codex does, the answer is done at its completion event: Codex reads no further and goes on (runs its call), while
+    // the provider may still hold the stream open.
+    read: for await (const chunk of res.body) {
       buffer += decoder.decode(chunk, { stream: true });
       for (let at = buffer.indexOf('\n\n'); at >= 0; at = buffer.indexOf('\n\n')) {
         const data = buffer.slice(0, at).split('\n').filter((line) => line.startsWith('data:')).map((line) => line.replace(/^data: ?/, '')).join('\n');
@@ -254,9 +263,12 @@ async function modelTurn(turnId) {
         if (event.type === 'response.output_text.delta') {
           text += event.delta ?? '';
           piece(event.delta ?? '');
-        } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') call = event.item;
-        else if (event.type === 'response.completed') completed = true;
-        else if (event.type === 'response.incomplete') incomplete = event.response?.incomplete_details?.reason ?? 'unknown';
+        } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') calls.push(event.item);
+        else if (event.type === 'response.output_item.done' && event.item?.type === 'custom_tool_call' && event.item.name === 'exec') execs.push(event.item);
+        else if (event.type === 'response.completed') {
+          completed = true;
+          break read;
+        } else if (event.type === 'response.incomplete') incomplete = event.response?.incomplete_details?.reason ?? 'unknown';
       }
     }
     if (incomplete) {
@@ -272,19 +284,27 @@ async function modelTurn(turnId) {
       continue;
     }
     if (!completed) throw new Error('the model stream was cut');
-    if (call) {
-      const callId = call.call_id;
-      const tool = call.name;
-      let args = {};
-      try {
-        args = call.arguments ? JSON.parse(call.arguments) : {};
-      } catch {}
-      write('response_item', { type: 'function_call', name: tool, arguments: call.arguments ?? '{}', call_id: callId });
-      notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
-      const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
-      const out = result.contentItems?.map((c) => c.text).join('') ?? '';
-      write('response_item', { type: 'function_call_output', call_id: callId, output: out });
-      notify('item/completed', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool, status: result.success ? 'completed' : 'failed' } });
+    if (calls.length) {
+      // Every call the answer made is on the rollout as it streamed in; then each runs, in the model's order, its output
+      // written as it ends (a later call that blocks leaves the earlier ones' outputs written).
+      for (const call of calls) write('response_item', { type: 'function_call', name: call.name, arguments: call.arguments ?? '{}', call_id: call.call_id });
+      for (const call of calls) {
+        const callId = call.call_id;
+        const tool = call.name;
+        let args = {};
+        try {
+          args = call.arguments ? JSON.parse(call.arguments) : {};
+        } catch {}
+        notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
+        const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
+        const out = result.contentItems?.map((c) => c.text).join('') ?? '';
+        write('response_item', { type: 'function_call_output', call_id: callId, output: out });
+        notify('item/completed', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool, status: result.success ? 'completed' : 'failed' } });
+      }
+      continue;
+    }
+    if (execs.length) {
+      for (const exec of execs) await runScript(turnId, exec);
       continue;
     }
     piece('');
@@ -293,6 +313,34 @@ async function modelTurn(turnId) {
     notify('item/completed', { threadId: thread.id, turnId, item: { type: 'agentMessage', id: itemId, text } });
     return text;
   }
+}
+
+/** A code-mode `exec` of the model's: its line, then its script, a JSON list of host tool calls (`[{ tool, args }]`) made all
+ *  at once (`Promise.allSettled`), each a nested call (`item/tool/call` under `exec-<uuid>`, no rollout line of its own until
+ *  Codex writes its `DynamicToolCall` completion, once answered), then the exec's output: each call's outcome, in order, as
+ *  JSON. A call the host never answers (it parked, and the session stopped) leaves the exec with no output. */
+async function runScript(turnId, exec) {
+  write('response_item', { type: 'custom_tool_call', name: 'exec', input: exec.input ?? '', call_id: exec.call_id });
+  let script = [];
+  try {
+    script = JSON.parse(exec.input ?? '[]');
+  } catch {}
+  // A `{ throw }` entry: the script throws once its calls are answered, and Codex's output says it failed, as its code mode does.
+  const thrown = script.find((entry) => typeof entry?.throw === 'string')?.throw;
+  script = script.filter((entry) => typeof entry?.throw !== 'string');
+  const outcomes = await Promise.allSettled(script.map(async ({ tool, args }) => {
+    const callId = `exec-${randomUUID()}`;
+    notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
+    const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args ?? {} });
+    const items = result.contentItems ?? [];
+    const status = result.success === false ? 'failed' : 'completed';
+    write('event_msg', { type: 'item_completed', thread_id: thread.id, turn_id: turnId, item: { type: 'DynamicToolCall', id: callId, tool, arguments: args ?? {}, status, success: result.success !== false, content_items: items } });
+    notify('item/completed', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool, status } });
+    return { tool, ok: result.success !== false, text: items.map((c) => c.text ?? '').join('') };
+  }));
+  const output = JSON.stringify(outcomes.map((o) => (o.status === 'fulfilled' ? o.value : { ok: false, text: String(o.reason?.message ?? o.reason) })));
+  if (thrown !== undefined) write('response_item', { type: 'custom_tool_call_output', call_id: exec.call_id, output: [{ type: 'input_text', text: `Script failed\nWall time 0.0 seconds\nScript error:\n${thrown}` }] });
+  else write('response_item', { type: 'custom_tool_call_output', call_id: exec.call_id, output });
 }
 
 async function say(turnId, text) {
@@ -365,9 +413,6 @@ async function runTurn(turnId, clientId, text) {
     }
     await sleep(300);
     last = 'tampered';
-    await say(turnId, last);
-  } else if (trimmed === 'outputs' || /^mcp\s/.test(trimmed)) {
-    last = await mcpTurn(trimmed, turnId, { thread, write, notify, say, table });
     await say(turnId, last);
   } else if (trimmed === 'recall') {
     const said = thread.lines.map((l) => JSON.stringify(l.payload ?? {})).join('\n');
@@ -447,7 +492,8 @@ async function runTurn(turnId, clientId, text) {
     last = 'Recovered from the log. I will check the actual state before repeating anything.';
     await say(turnId, last);
   } else {
-    const call = /^(call|twice)\s+(\w+)\s*([\s\S]*)$/.exec(trimmed);
+    // A tool's name as a model API takes it: letters, digits, `_` and `-` (a long MCP tool's hashed wire name has a `-`).
+    const call = /^(call|twice)\s+([\w-]+)\s*([\s\S]*)$/.exec(trimmed);
     if (call) {
       const [, verb, tool, rawArgs] = call;
       let args = {};
@@ -504,8 +550,8 @@ async function handle(m) {
     case 'thread/start': {
       const id = randomUUID();
       const path = join(home, 'sessions', '2026', '10', '06', `rollout-2026-10-06T00-00-00-${id}.jsonl`);
-      const down = await mcpDown({ config, table });
-      if (down) return fail(-32603, down);
+      const reserved = (p.dynamicTools ?? []).find((t) => t?.name === 'mcp' || String(t?.name ?? '').startsWith('mcp__'));
+      if (reserved) return fail(-32600, `dynamic tool name is reserved: ${reserved.name}`);
       thread = { id, path, cwd: p.cwd, dynamicTools: p.dynamicTools ?? [], lines: [], planted: projectConfig(p.cwd) };
       return reply({ thread: { id, path }, approvalPolicy: p.approvalPolicy, sandbox: { type: 'readOnly' } });
     }

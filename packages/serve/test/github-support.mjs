@@ -37,6 +37,8 @@ export async function fakeGitHub(t) {
   const tokens = [];
   /** The installation tokens revoked (DELETE /installation/token), by token. */
   const revoked = [];
+  /** Set by a test: `onRevoke(token)`, awaited before a revoke is answered. */
+  const hooks = {};
   // What a test waits on, never a time: a request that arrives, or one whose client went away unanswered.
   const waits = [];
   const fire = (what, url) => {
@@ -133,7 +135,8 @@ export async function fakeGitHub(t) {
       if (req.method === "DELETE" && req.url === "/installation/token") {
         if (!held) return answer(401, { message: "Bad credentials" });
         revoked.push(held.token);
-        return res.writeHead(204).end();
+        // A test's hold on the revoke: GitHub answers once its `onRevoke` has (the client waits, nothing else of the run moves).
+        return Promise.resolve(hooks.onRevoke?.(held.token)).then(() => res.writeHead(204).end());
       }
       const covering = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(req.url);
       if (req.method === "GET" && covering) {
@@ -147,7 +150,7 @@ export async function fakeGitHub(t) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
-  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, revoked, installations, holds, failures, asked: next("asked"), dropped: next("dropped") };
+  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, revoked, hooks, installations, holds, failures, asked: next("asked"), dropped: next("dropped") };
 }
 
 /** A promise and the function that settles it: a hold a test lets go. */

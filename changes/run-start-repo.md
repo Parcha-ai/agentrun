@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-client
-kind: fix
----
-A run started by hand (the console's Send request, `POST /agents/{id}/runs`) now reaches a GitHub repository. Before, only a run a GitHub trigger started, or one whose first message held a `https://github.com/<owner>/<repo>` URL, had one, so every github MCP call of any other run failed with "this run names no GitHub repository". The start body takes an optional `repo` (`owner/name`), which must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`): another is 422 in words naming the repositories the agent is bound to, and a run's reach never grows past its agent's triggers. Left out, an agent bound to exactly one repository takes it, unless the first message names a repository itself. The console's start form has a `repo` field. The refusal a run with no repository gets now says to start it with a repository or bind the agent to one, and no longer reads as a connection problem.

@@ -82,8 +82,10 @@ if [ -n "$locale_set" ]; then LC_ALL=$locale; else unset LC_ALL; fi
 if [ "${1-}" = "--" ]; then
   shift
 else
-  # The server beside this launcher, found by node from this file's real path: a package manager's bin is a link.
-  set -- node --input-type=module -e 'import { realpathSync } from "node:fs"; import { pathToFileURL } from "node:url"; const cli = new URL("../dist/cli.js", pathToFileURL(realpathSync(process.argv[1]))); process.argv[1] = cli.pathname; await import(cli.href);' "$0" "$@"
+  # The server beside this launcher, found by node from this file's real path: a package manager's bin is a link. The
+  # code is CommonJS (no --input-type): a worker thread inherits its process's flags, and Node refuses a worker from a
+  # file that inherits --input-type, as a codemode script's sandbox is.
+  set -- node -e 'const { realpathSync } = require("node:fs"); const { pathToFileURL } = require("node:url"); const cli = new URL("../dist/cli.js", pathToFileURL(realpathSync(process.argv[1]))); process.argv[1] = cli.pathname; import(cli.href).catch((error) => { process.exitCode = 1; console.error(error); });' "$0" "$@"
 fi
 set -- AGENTRUN_SECRETS_FD=3 "AGENTRUN_SECRETS_LEN=$total" "$@"
 for name in $SECRETS; do

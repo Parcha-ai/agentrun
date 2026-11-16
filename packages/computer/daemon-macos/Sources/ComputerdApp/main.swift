@@ -4,50 +4,22 @@
 // grants and to pair.
 //
 //   Computerd                       run (the LaunchAgent starts it so)
-//   Computerd --pair SERVER CODE [NAME]   hands the server and code to the running agent, which pairs
-//   Computerd --unpair
 //   Computerd --until-granted       the grants window, closing once every grant is on
+//
+// Pairing is the computerd command's (Helpers/computerd pair, unpair); it calls the running agent.
 #if os(macOS)
 import AppKit
 import ComputerdKit
 import ComputerdMac
 import Foundation
 
-func fail(_ words: String) -> Never {
-	FileHandle.standardError.write(Data("Computerd: \(words)\n".utf8))
-	exit(1)
-}
-
-/// One control call to the agent, which pairs in the login session and owns the keychain (Control).
-func control(_ method: String, _ params: JSON?) -> JSON {
-	do {
-		return try LocalCall.call(method, params)
-	} catch let error as RPCError {
-		fail(error.message)
-	} catch {
-		fail("\(error)")
-	}
-}
-
 let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
-case "--pair":
-	guard arguments.count == 3 || arguments.count == 4 else { fail("usage: computerd pair https://<server> <code> [name]") }
-	let params = PairParams(server: arguments[1], code: arguments[2], name: arguments.count == 4 ? arguments[3] : nil)
-	let reply = control(Control.pair, try? Coders.json(params))
-	print("paired with \(reply["server"]?.stringValue ?? "?") as computer \(reply["computer"]?.stringValue ?? "?")")
-	exit(0)
-case "--unpair":
-	_ = control(Control.unpair, .object([:]))
-	print("unpaired")
-	exit(0)
-case "--version":
-	print("Computerd \(driverVersion) (protocol \(protocolVersion))")
-	exit(0)
 case nil, "--until-granted":
 	break
 default:
-	fail("unknown argument \(arguments[0])")
+	FileHandle.standardError.write(Data("Computerd: unknown argument \(arguments[0])\n".utf8))
+	exit(1)
 }
 
 signal(SIGPIPE, SIG_IGN)

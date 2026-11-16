@@ -3,30 +3,40 @@
 // from what the SDK slice is handed. The adapter's lifecycle is tested once, against its one fake host
 // (hosted-provider.test.mjs); E2B's own lifecycle is proven live (test/e2b). The Sandbox class here only records what
 // it is given and throws: no sandbox exists, no SDK is loaded unless a test says so, and nothing reaches the network.
+// The one exception is exec: the real SDK's envd client talks to a stand-in envd on 127.0.0.1 (fake-envd.mjs) that runs
+// each command on this machine, so the exec pre-check shows E2B's exec passes every byte through.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, kindRefusals } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
-import { fakeObjects } from "./fake-modal.mjs";
+import { fakeObjects } from "./fake-archil.mjs";
+import { fakeEnvd } from "./fake-envd.mjs";
 
 const e2b = await import("../dist/e2b.js");
 const { E2BProvider, create } = e2b;
 const { providerFor } = registry;
 /** The conformance module's names: the only place E2B settings are read from an environment. */
-const { E2B_ENV: ENV, settingsFromEnv } = await import("../dist/conformance/e2b.js");
+const { E2B_ENV: ENV, settingsFromEnv, createHost } = await import("../dist/conformance/e2b.js");
+const { checkExecStream, formatExecStream } = await import("../dist/conformance/exec-stream.js");
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const KEY = "e2b_fake_computer_key_0123456789";
 const COMPUTER = "agentrun.computer";
 const SPEC = { image: "desktop", lifetimeMs: 600_000, network: "none" };
 const HOUR = 3_600_000;
-const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const LINUX_GROUPS = ["exec", "files", "processes"];
 const BARE = "e2b_bare_key_must_never_be_used";
+/** The public box template release.yml's box-e2b job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
+const BOX_TEMPLATE = `agentrun-oss/agentrun-archil-${createHash("sha256")
+	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.digest("hex")
+	.slice(0, 12)}`;
 const dir = mkdtempSync(join(tmpdir(), "computer-e2b-"));
 const DAEMON_PATH = join(dir, "computerd");
 writeFileSync(DAEMON_PATH, Buffer.from("a stand-in for computerd, linux/amd64\n"));
@@ -87,12 +97,12 @@ async function withProcessEnv(values, fn) {
 	}
 }
 
-test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none read back, envd's port, and Hobby's 1 h cap", () => {
+test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none, open and a list probed from inside, envd's port, and Hobby's 1 h cap", () => {
 	const { provider } = setup();
 	const caps = provider.capabilities();
 	assert.deepEqual(
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, isolation: caps.isolation, network: caps.network, networkReadBack: caps.networkReadBack, release: caps.release, vendorAgentPorts: caps.vendorAgentPorts },
-		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: true, release: ["delete"], vendorAgentPorts: [49983] },
+		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none", "open", "allow"], networkReadBack: false, release: ["delete"], vendorAgentPorts: [49983] },
 	);
 	assert.deepEqual(caps.groups, DESKTOP_GROUPS);
 	assert.equal(caps.maxLifetimeMs, HOUR, "E2B Hobby caps a sandbox at 1 h");
@@ -101,6 +111,13 @@ test("an E2B desktop is kind desktop with daemon child, the desktop groups, netw
 	assert.equal(provider.version, VERSION);
 	assert.equal(provider.stream, undefined, "no stream(): a screen is streamed through agentrun, never a vendor URL");
 	assert.equal(typeof provider.extend, "function");
+});
+
+test("every E2B computer has its system paths made root's alone at create, before the daemon's upload (the adapter's root-only step)", () => {
+	for (const kind of ["desktop", "linux"]) {
+		const { provider } = setup({ kind });
+		assert.deepEqual(provider.host.facts.rootOnly, ["/usr/local", "/usr/bin/envd", "/etc/inittab"], kind);
+	}
 });
 
 test("an E2B computer never takes public traffic: the provider takes no publicStream, has no stream(), and the conformance module reads no such setting", () => {
@@ -127,7 +144,7 @@ test("maxLifetimeMs is Hobby's 1 h by default, Pro's 24 h at most, and check() r
 	assert.match(refused[0].message, /at most 1 h/);
 	const pro = setup({ maxLifetimeMs: 24 * HOUR }).provider;
 	assert.deepEqual(pro.check({ ...SPEC, lifetimeMs: 2 * HOUR }), []);
-	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /24 h/);
+	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /at most 86400000 ms, the longest E2B keeps a computer/);
 	assert.throws(() => setup({ maxLifetimeMs: 0 }), /maxLifetimeMs/);
 	assert.deepEqual(rec.calls, []);
 });
@@ -185,16 +202,18 @@ test("kind linux is the plain template: no display, groups exec, files and proce
 	assert.throws(() => setup({ kind: "android" }), /desktop or linux/);
 });
 
-test("check() takes a template as the image, network none, and labels; it refuses open, an allowlist, sizes, a user and a workdir in words", () => {
+test("check() takes a template as the image, network none, open or a list, and labels; it refuses a malformed list, sizes, a user and a workdir in words", () => {
 	const { provider } = setup();
 	assert.deepEqual(provider.check({ ...SPEC, labels: { run: "r1" } }), []);
 	const fields = (spec) => provider.check(spec).map((r) => r.field);
 	assert.deepEqual(fields({ ...SPEC, image: "" }), ["image"]);
-	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
-	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), ["network"]);
-	assert.match(provider.check({ ...SPEC, network: { allow: ["example.com"] } })[0].message, /allowlists wait for a proxy/);
+	assert.deepEqual(fields({ ...SPEC, network: "open" }), []);
+	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), []);
+	assert.deepEqual(fields({ ...SPEC, network: { allow: ["192.168.0.0/16"] } }), ["network"], "a list the proxy would refuse is refused at check");
+	assert.deepEqual(fields({ ...SPEC, network: "wifi" }), ["network"]);
 	assert.deepEqual(fields({ ...SPEC, cpus: 2 }), ["cpus"]);
 	assert.deepEqual(fields({ ...SPEC, memoryMb: 1024 }), ["memoryMb"]);
+	assert.match(provider.check({ ...SPEC, cpus: 2 })[0].message, /an E2B computer has the size of its template: name a template of the size you need, not cpus/, "E2B's own check: the adapter passes sizes on");
 	assert.deepEqual(fields({ ...SPEC, pids: 10 }), ["pids"]);
 	assert.deepEqual(fields({ ...SPEC, user: "0" }), ["user"]);
 	assert.deepEqual(fields({ ...SPEC, workdir: "/tmp" }), ["workdir"]);
@@ -316,6 +335,30 @@ test("create() asks E2B for the lifetime as its timeout in whole seconds, the la
 	assert.match(opts.metadata[`${COMPUTER}.name`], /^computer-[0-9a-f]{12}$/);
 	assert.equal(opts.metadata[`${COMPUTER}.timeout-ms`], "601000");
 	assert.equal(opts.signal, undefined, "never cancelled: an aborted create could leave a sandbox whose id never came back");
+	assert.equal(opts.metadata[`${COMPUTER}.network`], undefined, "none carries no network label");
+});
+
+test("create() under open or a list asks E2B for internet access, for init's egress proxy, still no public traffic, and records the form in a label", async () => {
+	for (const [network, form] of [
+		["open", "open"],
+		[{ allow: ["Example.com"] }, "allow:example.com"],
+	]) {
+		const calls = [];
+		const Sandbox = {
+			...recorder().Sandbox,
+			list: () => ({ hasNext: true, nextItems: async () => ((Sandbox.listed = true), []), get hasNext() { return !Sandbox.listed; } }),
+			create: async (template, opts) => {
+				calls.push([template, opts]);
+				throw Object.assign(new Error("400: template not found"), { name: "InvalidArgumentError" });
+			},
+		};
+		const provider = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		await provider.create({ ...SPEC, network }, { requestId: `r-net-${form}` });
+		const [, opts] = calls[0];
+		assert.equal(opts.allowInternetAccess, true, form);
+		assert.deepEqual(opts.network, { allowPublicTraffic: false });
+		assert.equal(opts.metadata[`${COMPUTER}.network`], form);
+	}
 });
 
 test("the provider refuses to start while E2B_SANDBOX_URL is set in process.env: the SDK would send every sandbox call there", async () => {
@@ -338,6 +381,46 @@ test("the real SDK, given the provider's connection options, takes none of an am
 		assert.equal(config.debug, false);
 		assert.equal(config.sandboxUrl, undefined);
 	});
+});
+
+test("E2B's exec, through the real SDK's envd client, passes the exec pre-check: every byte comes back as sent, where commands.run's onStdout decodes UTF-8", async (t) => {
+	const sdk = await import("e2b").catch(() => undefined);
+	if (sdk === undefined) return t.skip("the e2b package is not installed here; it is the host's, as Modal's SDK is");
+	const envd = await fakeEnvd();
+	t.after(() => envd.close());
+	const connected = (id) => new sdk.Sandbox({ ...e2b.connectionOptions({ apiKey: KEY, domain: "e2b.app" }), sandboxId: id, envdVersion: "0.5.7", sandboxUrl: envd.url });
+	const unused = (name) => async () => assert.fail(`the pre-check calls exec alone, not ${name}`);
+	const Sandbox = {
+		create: unused("Sandbox.create"),
+		setTimeout: unused("Sandbox.setTimeout"),
+		kill: unused("Sandbox.kill"),
+		list: unused("Sandbox.list"),
+		// exec connects to a sandbox it did not create: getInfo for the time left, then connect.
+		getInfo: async (id) => ({ sandboxId: id, templateId: "base", metadata: {}, startedAt: new Date(), endAt: new Date(Date.now() + HOUR), state: "running" }),
+		connect: async (id) => connected(id),
+	};
+	const host = await createHost({ env: { [ENV.key]: KEY }, Sandbox });
+	const report = await checkExecStream(host, "sbx-exec", { longMs: 2_000, stepMs: 5_000, largeBytes: 1024 * 1024, largeMs: 30_000 });
+	assert.equal(report.pass, true, formatExecStream(report));
+	const start = envd.requests.find((request) => request.method === "Start");
+	assert.equal(start.headers.authorization, `Basic ${Buffer.from("root:").toString("base64")}`, "every process runs as root");
+	assert.equal(start.headers["keepalive-ping-interval"], "50");
+	// Root's command: /bin/sh by its path, no login shell, the argv as its own words, PATH the system's directories alone.
+	const starts = envd.requests.filter((request) => request.method === "Start");
+	for (const { body } of starts) {
+		assert.equal(body.process.cmd, "/bin/sh");
+		assert.deepEqual(body.process.args.slice(0, 3), ["-c", 'exec "$@"', "sh"]);
+		assert.ok(!body.process.args.includes("-l") && !body.process.args.includes("--login"), "no login shell");
+		assert.deepEqual(body.process.envs, { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" });
+	}
+	assert.deepEqual(start.body.process.args.slice(3, 5), ["sh", "-c"], "the argv as given, word for word");
+	assert.ok(!("timeout" in start.headers) && !("connect-timeout-ms" in start.headers), "the stream has no deadline");
+
+	// The SDK's own commands.run, the path exec took before: the byte 0x80 comes back as U+FFFD through onStdout.
+	const decoded = [];
+	const handle = await connected("sbx-exec").commands.run("printf '\\200'", { background: true, onStdout: (text) => decoded.push(Buffer.from(text, "utf8")) });
+	await handle.wait();
+	assert.deepEqual([...Buffer.concat(decoded)], [0xef, 0xbf, 0xbd]);
 });
 
 test("the module never reads E2B_API_KEY, never imports the SDK at load, and names no environment variable: the conformance module's names are COMPUTER_E2B_*", () => {
@@ -388,7 +471,7 @@ test("the registry builds E2B from its options alone, and the conformance module
 	assert.equal(conformance.conformanceImage({ env: { COMPUTER_E2B_TEMPLATE: "my-desktop" } }), "my-desktop");
 	assert.ok(conformance.conformanceNotes.some((note) => /Hobby/.test(note)));
 	const host = await conformance.createHost({ env: { [ENV.key]: KEY }, Sandbox: rec.Sandbox });
-	assert.equal(host.id, "e2b");
+	assert.equal(host.descriptor.id, "e2b");
 	await assert.rejects(conformance.createHost({ env: { E2B_API_KEY: BARE }, Sandbox: rec.Sandbox }), /set COMPUTER_E2B_API_KEY/);
 	assert.deepEqual(rec.calls, []);
 });
@@ -425,13 +508,11 @@ test("the live E2B suite skips when only E2B_API_KEY is set", () => {
 // The loopback block: E2B's envd runs as root in the sandbox and answers on 49983, so the daemon's programs get a network
 // of their own (init --own-network) and run as 2510:2510.
 
-test("the loopback block: network none only, envd's port declared, open refused in words", () => {
+test("the loopback block: envd's port declared, open and a list taken through init's egress proxy alone (it refuses envd's port)", () => {
 	const { provider, rec } = setup();
-	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().network, ["none", "open", "allow"]);
 	assert.deepEqual(provider.capabilities().vendorAgentPorts, [49983]);
-	const refusals = provider.check({ ...SPEC, network: "open" });
-	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
-	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open" }), []);
 	assert.deepEqual(rec.calls, []);
 });
 
@@ -474,5 +555,69 @@ test("the E2B conformance module: mountFor(\"archil\") gives a fresh run folder 
 	await folder.close();
 	assert.equal(objects.objects.size, 0);
 	noToken(objects.calls, "the object API's calls");
+});
+
+// --- the box template: every E2B computer a server makes starts from it ---
+
+/** A Sandbox slice whose create records the template and options it is given, then refuses as E2B does a missing one. */
+function createRecorder() {
+	const calls = [];
+	const Sandbox = {
+		...recorder().Sandbox,
+		list: () => ({ hasNext: true, nextItems: async () => ((Sandbox.listed = true), []), get hasNext() { return !Sandbox.listed; } }),
+		create: async (template, opts) => {
+			calls.push([template, opts]);
+			throw Object.assign(new Error("400: template not found"), { name: "InvalidArgumentError" });
+		},
+	};
+	return { calls, Sandbox };
+}
+
+test("E2B's descriptor says it prepares its image and names no default image: every E2B sandbox and desktop starts from the box template", async () => {
+	const { E2B } = await import("../dist/descriptors/index.js");
+	assert.equal(E2B.prepareImage, true);
+	assert.equal(E2B.defaultImage, undefined, "every E2B computer starts from the template prepareImage answers");
+	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) {
+		assert.equal(name in (await import("../dist/descriptors/index.js")), false, name);
+		assert.equal(name in (await import("../dist/index.js")), false, name);
+	}
+	const { BOX_E2B_PUBLISHER, boxE2bTemplate } = await import("../dist/box-image.js");
+	assert.equal(BOX_E2B_PUBLISHER, "agentrun-oss","the E2B team release.yml's box-e2b job publishes from");
+	assert.equal(boxE2bTemplate(), BOX_TEMPLATE);
+});
+
+test("prepareImage answers the public box template with no SDK call and no wait told, the same for a desktop and a sandbox, and create starts from it", async () => {
+	for (const kind of ["desktop", "linux"]) {
+		const { provider, rec } = setup({ kind });
+		const waits = [];
+		assert.deepEqual(await provider.prepareImage({ onWait: (...said) => waits.push(said) }), { ok: true, value: BOX_TEMPLATE }, kind);
+		assert.deepEqual(await provider.prepareImage(), { ok: true, value: BOX_TEMPLATE }, `${kind}, no context: the same template`);
+		assert.deepEqual(rec.calls, [], "no E2B call: a public template has nothing to pull ahead of create");
+		assert.deepEqual(waits, [], "never told a pull: the claim waits on create alone");
+		assert.deepEqual(provider.check({ ...SPEC, image: BOX_TEMPLATE }), [], "check takes the team/template name");
+		const { calls, Sandbox } = createRecorder();
+		const made = await new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, kind }).create({ ...SPEC, image: BOX_TEMPLATE }, { requestId: `r-box-${kind}` });
+		assert.equal(made.ok, false);
+		assert.deepEqual(calls.map(([template]) => template), [BOX_TEMPLATE], `${kind}: Sandbox.create is given the box template`);
+	}
+});
+
+test("E2B's metadata on an Archil computer of the longest agent id, on the box template: what create gives E2B, counted", async () => {
+	const RUN = "01a1d0b9-3e8b-7352-9497-a407e2909f53";
+	const { calls, Sandbox } = createRecorder();
+	const provider = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, kind: "linux" });
+	const spec = { ...SPEC, image: BOX_TEMPLATE, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: { ...MOUNT, folder: `agents/${"a".repeat(128)}/runs/${RUN}/work` } };
+	assert.deepEqual(provider.check(spec), []);
+	await provider.create(spec, { requestId: "r-box-labels" });
+	assert.equal(calls.length, 1);
+	const { metadata } = calls[0][1];
+	noToken(metadata, "E2B's metadata");
+	const pairs = Object.entries(metadata);
+	const bytes = pairs.reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+	// 9 pairs, 559 bytes of keys and values. E2B documents no cap on a sandbox's metadata, and has no 512-byte one like
+	// Modal's tags: live (11-15) it took and read back 257 pairs, and one value of 64 KiB (65,570 bytes in all), each whole.
+	assert.ok(pairs.length <= 257, `${pairs.length} pairs`);
+	assert.ok(bytes <= 65_570, `${bytes} bytes of keys and values: ${JSON.stringify(metadata)}`);
+	assert.equal(metadata["agentrun.computer.image"], BOX_TEMPLATE);
 });
 

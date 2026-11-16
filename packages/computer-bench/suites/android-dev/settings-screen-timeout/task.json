@@ -1,0 +1,57 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.screen-timeout",
+  "version": 1,
+  "title": "Set the screen timeout in Settings",
+  "split": "dev",
+  "tags": ["settings", "choice"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
+  "params": {
+    "t": {
+      "pick": [
+        { "say": "1 minute", "want": "60000", "start": "300000" },
+        { "say": "2 minutes", "want": "120000", "start": "30000" },
+        { "say": "5 minutes", "want": "300000", "start": "60000" },
+        { "say": "10 minutes", "want": "600000", "start": "120000" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own timeout once (a retried setup keeps the first copy), so teardown puts it back.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || settings get system screen_off_timeout > $f"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Start from a different timeout, so the agent has to change it.",
+      "params": { "argv": ["settings", "put", "system", "screen_off_timeout", "{{t.start}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Using the Settings app, make the screen turn off after {{t.say}} of inactivity.",
+  "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
+  "checks": [
+    {
+      "id": "timeout",
+      "kind": "exec",
+      "why": "Settings writes the chosen timeout to system/screen_off_timeout in milliseconds; {{t.say}} is {{t.want}}. Setup left {{t.start}}, so an agent that does nothing fails.",
+      "argv": ["settings", "get", "system", "screen_off_timeout"],
+      "stdout": { "equals": "{{t.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own timeout back when it was a number, and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; v=$(cat $f 2>/dev/null); case \"$v\" in ''|*[!0-9]*) ;; *) settings put system screen_off_timeout $v ;; esac; rm -f $f"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    { "method": "exec.run", "params": { "argv": ["settings", "put", "system", "screen_off_timeout", "{{t.want}}"], "timeoutMs": 20000 } }
+  ]
+}

@@ -14,16 +14,15 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
-import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
+import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
-import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
+import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
-import { MCP_SERVER } from "./transcript.js";
 import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
@@ -107,7 +106,7 @@ export interface ClaudeAgentAdapterOptions {
   skills?: readonly ClaudeAgentSkill[];
   /** Claude's own WebSearch, and nothing else of the CLI's: the model may call it, and the CLI runs each call as a request
    *  of its own through the session's model proxy with Anthropic's web search server tool, the one hosted tool that proxy
-   *  then admits. Each search the provider reports is booked at `CLAUDE_WEB_SEARCH_USD` on top of `price`, into the
+   *  then admits. Each search the provider reports is booked at `NATIVE_SEARCH_USD` (kernel/host) on top of `price`, into the
    *  session's cost and so its spend cap. WebFetch stays off (it would fetch from the CLI's own process). Default off. */
   webSearch?: boolean;
   /** With `webSearch`: the input tokens a search request may read in beyond its body, added to its input bound, so a cap
@@ -140,6 +139,8 @@ export interface ClaudeAgentAdapterOptions {
   fetch?: typeof fetch;
   /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
   now?: () => Date;
+  /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
+  zone?: string;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -301,34 +302,22 @@ class CallsInFlight {
   }
 }
 
-/** The kernel's tool for a host tool. The host hears of the call (`tool_start`) once its intent is in the session's
- *  records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
-function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    replay: tool.replay,
-    async execute(input, effect) {
-      // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
-      const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
-      const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
+/** The bridge's tool for a host tool (bridgeTool). The host hears of the call (`tool_start`) once its intent is in the
+ *  session's records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
+function claudeTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
+  return bridgeTool(tool, {
+    start: ({ callId, args }) => {
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
-      calls.begin(callId);
+      // A tool that nests calls has no intent of its own to wait for (each of its calls begins here as its own): a pause
+      // never waits on it, so a nested call that parks the run does not hold the pause.
+      if (!tool.nests) calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
-      io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      const result = await tool.call(input, { callId, signal: effect.signal, attempt });
-      if (result.isError) throw new Error(result.text);
-      if (!result.images?.length) return result.text;
-      // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
-      const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
-      if (wrong) throw new Error(wrong);
-      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
+      io.onEvent({ type: "tool_start", callId, name: tool.name, args });
     },
-  };
+    imageProblems: (images) => toolImageProblems(tool.name, images, maxImageBytes),
+  });
 }
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
@@ -370,7 +359,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
 
   return {
     id: CLAUDE_AGENT_ID,
-    capabilities: () => ({ mcpClient: CLAUDE_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -384,16 +372,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         const common = toolSchemaProblems(tool.name, tool.inputSchema);
         problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(tool.name, tool.inputSchema)));
       }
-      for (const server of spec.mcp?.servers ?? []) {
-        if (server.name === MCP_SERVER) problems.push(`the MCP server name ${MCP_SERVER} is the adapter's own`);
-        for (const tool of server.tools) {
-          const name = `mcp__${server.name}__${tool.name}`;
-          if (!TOOL_NAME.test(name)) problems.push(`the MCP tool ${name.slice(0, 80)} is not a name the Claude Agent CLI takes (letters, digits, _ and -, at most 64)`);
-          // A remote tool's schema meets the same checks as the host's: the CLI would drop it without a word.
-          const common = toolSchemaProblems(name, tool.inputSchema);
-          problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(name, tool.inputSchema)));
-        }
-      }
       return problems;
     },
     async open(spec, io) {
@@ -405,9 +383,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const calls = new CallsInFlight();
-      // The remote MCP servers' granted tools, as the CLI names them: its own MCP client calls them at the proxy.
-      const mcpServers = spec.mcp?.servers ?? [];
-      const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)));
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
@@ -420,13 +395,14 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
+          // What the CLI sends with its own tool search on, which the harness turns on as this does (claudeToolSearch).
+          ...(claudeToolSearch(tools.map((t) => t.name), spec.deferCatalog) === "true" ? { toolSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
-          ...(spec.mcp ? { mcp: { session: spec.mcp, tools: [...mcpNames] } } : {}),
         },
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
@@ -440,13 +416,13 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
         },
-        tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
+        tools: tools.map((tool) => claudeTool(tool, io, maxImageBytes, calls)),
+        ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
         disallowedTools: CLAUDE_AGENT_ALSO_OFF.filter((name) => !(webSearch && name === "WebSearch")),
         ...(webSearch ? { providerTools: ["web_search" as const] } : {}),
-        ...(mcpServers.length ? { mcpServers: mcpServers.map((server) => ({ name: server.name, tools: server.tools.map((tool) => tool.name) })) } : {}),
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
@@ -458,6 +434,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
+        ...(options.zone ? { zone: options.zone } : {}),
         // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
@@ -467,11 +444,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
         // The model's message ended inside the turn (the CLI resumes a cut answer itself): what it said so far is one message.
         if (e?.type === "text_end") io.onEvent({ type: "text_end" });
-        // An MCP call, recorded as a built-in's: the host hears of it once its intent is in the session's records.
-        if (e?.type === "tool_start" && typeof e.callId === "string" && typeof e.name === "string" && mcpNames.has(e.name)) {
-          calls.begin(e.callId);
-          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
-        }
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {

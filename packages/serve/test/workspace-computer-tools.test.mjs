@@ -3,9 +3,9 @@
 // provider mounts); otherwise it stays the no-computer Workspace with no computer's shell: none in Mode 1 (the folder is
 // one of this server's own: no bash family), Archil's exec in Mode 2 ("local", bash only). A desktop or a phone adds the
 // computer's tools on top, over its one surface: computer_observe and computer_act on the ui group (ui.observe, ui.act),
-// or on the screen and raw input without it; computer_screenshot; computer_script in serve's isolate; the hand-over. A
-// browser brings none (the run's browser tool drives it). Every computer here is a loopback fake: nothing leaves this
-// process.
+// or on the screen and raw input without it; computer_screenshot; computer_op (a codemode script's `computer` reaches
+// the computer's shell, files, apps and raw input through it); the hand-over. A browser brings none (the run's browser
+// tool drives it). Every computer here is a loopback fake: nothing leaves this process.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +13,11 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { bindComputer } from "@parcha/agentrun-computer/surface";
 import { COMPUTER_TOOLS, NO_SHELL } from "@parcha/agentrun-kernel/kernel";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { computerMcp, localWorkspace, runTools } from "../dist/workspace/index.js";
+import { heldAs } from "../dist/tool-gate.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 const dirs = [];
@@ -29,6 +31,19 @@ function scratch() {
 }
 const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal });
 const names = (run) => run.registry.list().map((def) => def.name);
+/** A call of computer_op: the computer's op `op` with `args`, as a script's `computer` makes it. */
+const op = (tools, name, args = {}) => call(tools, "computer_op", { op: name, args });
+/** A script's `computer` over the run's tools, as codemode binds it (runner/meta-tools.ts scriptComputer): observe, act
+ *  and screenshot by their own tools, every other op by computer_op, each answering its value or throwing its words. */
+const STEP_TOOLS = { observe: "computer_observe", act: "computer_act", screenshot: "computer_screenshot" };
+function scriptComputer(run, tools) {
+  const via = async (op, args) => {
+    const answer = STEP_TOOLS[op] ? await call(tools, STEP_TOOLS[op], args) : await call(tools, "computer_op", { op, args });
+    if (answer.isError) throw new Error(answer.text);
+    return answer.structured;
+  };
+  return bindComputer(via, run.computer.card);
+}
 
 /** The file tools alone: no computer's shell in Mode 1. */
 const FILES = ["read", "write", "edit"];
@@ -138,7 +153,7 @@ test("a phone with the ui group: observe is the outline of its window, act its s
   assert.equal(seen.images, undefined, "no image unless asked");
   assert.equal(seen.structured.id, "s1");
   const acted = await call(tools, "computer_act", { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] });
-  assert.deepEqual(acted.text.split("\n"), ["1. set: semantic, verified", "2. press: semantic, verified", "changed · state s2"]);
+  assert.deepEqual(acted.text.split("\n"), ['1. set @e2 textbox "Title": semantic, verified', '2. press @e3 button "Save": semantic, verified', "changed · state s2"]);
   await call(tools, "computer_act", { steps: [{ click: [320, 260] }] });
   assert.deepEqual(phone.calls.filter(([method]) => method === "ui.act").map(([, params]) => params), [
     { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] },
@@ -178,8 +193,9 @@ test("a person's hold on the computer: runTools hands a desktop's or a phone's p
   const tools = desktop.hostTools(TOOLS);
   assert.equal((await call(tools, "computer_screenshot", {})).isError, false, "a look runs through the hold");
   assert.deepEqual(await call(tools, "computer_act", { steps: [{ click: [1, 1] }] }), { text: "the person had this computer: observe again before you act", isError: true });
-  const script = await call(tools, "computer_script", { code: "await computer.input.act([{ type: 'move', at: [1, 1] }]); return (await computer.screen.shot()).width;" });
-  assert.equal(script.structured, 1280, "a script's calls go through the same hands");
+  const computer = scriptComputer(desktop, desktop.hostTools(desktop.kindTools));
+  await computer.input.act([{ type: "move", at: [1, 1] }]);
+  assert.equal((await computer.screen.shot()).width, 1280, "a script's calls (computer_op's among them) go through the same hands");
   assert.ok(desktop.hands.processes, "the shell's processes never pass through the hold");
   await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root), hello: helloOf("phone", PHONE_GROUPS) }, { mode: 1, context: ctx, hold });
   await runTools(localWorkspace(root), { kind: "browser", browser: { provider: "local-chrome" } }, { mode: 1, context: ctx, hold });
@@ -192,83 +208,59 @@ test("with no computer or a sandbox, a computer tool is refused in words naming 
   assert.match((await run.registry.invoke("computer_observe", {}, { hands: run.hands })).error, /^computer_observe needs a desktop computer: set this agent's computer to desktop/);
 });
 
-test("computer_script: the script's value is the per-step tool's value; text() and image() show beside it; a throw answers its words; the isolate has no network, no process and no require", async () => {
+test("a script's `computer` over the run's tools: its value is the per-step tool's value, an element found by its last look is pressed by ref, its shell is absent on a phone without exec, and a refusal throws its words", async () => {
   const root = scratch();
   const phone = fakeScreen(root, { ui: true });
   const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
-  const tools = run.hostTools(TOOLS);
+  const tools = run.hostTools(run.kindTools);
+  const computer = scriptComputer(run, tools);
   const byTool = await call(tools, "computer_observe", {});
-  const byScript = await call(tools, "computer_script", { code: "return await computer.app().observe();" });
-  assert.equal(JSON.stringify(byScript.structured), JSON.stringify(byTool.structured), "byte-identical values");
-  const found = await call(tools, "computer_script", { code: [
-    "const notes = computer.app('com.example.notes');",
-    "await notes.observe();",
-    "const save = notes.find({ role: 'button', text: 'save' })[0];",
-    "const done = await notes.press(save.ref);",
-    "text('pressed ' + save.ref);",
-    "image(await computer.screen.shot());",
-    "return { state: done.state, steps: done.steps.length };",
-  ].join("\n") });
-  assert.equal(found.isError, false, found.text);
-  assert.deepEqual(found.structured, { state: "s2", steps: 1 });
-  assert.equal(found.text, 'pressed @e3\n{"state":"s2","steps":1}');
-  assert.equal(found.images.length, 1);
-  assert.equal(found.images[0].data, PNG.toString("base64"));
-  const isolated = await call(tools, "computer_script", { code: "return [typeof fetch, typeof process, typeof require, typeof setTimeout, typeof computer.shell];" });
-  assert.deepEqual(isolated.structured, ["undefined", "undefined", "undefined", "undefined", "undefined"], "no network, no process, no modules, no timers; no shell on a phone without exec");
-  const thrown = await call(tools, "computer_script", { code: "text('before');\nthrow new Error('no Save button here');" });
-  assert.equal(thrown.isError, true);
-  assert.match(thrown.text, /no Save button here/);
-  assert.equal((await call(tools, "computer_script", { code: "" })).isError, true);
-});
-
-test("a script that shows output and returns nothing answers its words and images with no value, so a Codex script's nested call keeps them", async () => {
-  const root = scratch();
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root, { ui: true }), hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
-  const tools = run.hostTools(run.kindTools);
-  const shown = await call(tools, "computer_script", { code: "image(await computer.screen.shot()); text('hello');" });
-  assert.equal(shown.isError, false, shown.text);
-  assert.equal(shown.text, "hello");
-  assert.equal(shown.images.length, 1);
-  assert.equal(shown.structured, undefined, "no value: the words and images are the answer");
+  assert.equal(JSON.stringify(await computer.app().observe()), JSON.stringify(byTool.structured), "byte-identical values");
+  const notes = computer.app("com.example.notes");
+  await notes.observe();
+  const save = notes.find({ role: "button", text: "save" })[0];
+  const done = await notes.press(save.ref);
+  assert.deepEqual({ state: done.state, steps: done.steps.length }, { state: "s2", steps: 1 });
+  assert.deepEqual((await computer.apps.list()).apps.map((app) => app.id), ["com.example.notes"], "apps.list through computer_op");
+  assert.equal(computer.shell, undefined, "no shell on a phone without exec");
+  // An op the computer has not (its shell), called by hand: computer_op answers the surface's refusal, and nothing runs.
+  const refused = await op(tools, "shell.run", { command: "id" });
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /can't shell\.run/);
+  assert.equal(phone.calls.filter(([method]) => method === "exec.run").length, 0);
   await run.end();
 });
 
-test("a script's returned image keeps its own pixels, apart from the images it showed", async () => {
-  const root = scratch();
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root, { ui: true }), hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
-  const tools = run.hostTools(run.kindTools);
-  const returned = await call(tools, "computer_script", { code: "return await computer.screen.shot();" });
-  assert.equal(returned.isError, false, returned.text);
-  assert.deepEqual(returned.images, [{ data: PNG.toString("base64"), mimeType: "image/png" }]);
-  assert.ok(!JSON.stringify(returned.structured).includes(PNG.toString("base64")), "the value carries no pixels, the answer's images do");
-  const both = await call(tools, "computer_script", { code: "image({ type: 'image', mimeType: 'image/gif', data: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' });\nreturn await computer.screen.shot();" });
-  assert.equal(both.isError, false, both.text);
-  assert.deepEqual(both.images.map((image) => image.data), [PNG.toString("base64"), "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"], "the returned image first, with its own data, then the shown one");
-  await run.end();
-});
-
-test("a script's shell and files are held to the run's gate: a denied bash, a denied write and an ask refuse in the script, and an allow runs", async () => {
+test("a script's shell and files run through computer_op, and the gate reads each as the run's own tool's call: bash with its command and the directory it runs in, write and read with their path", async () => {
   const root = scratch();
   const computer = fakeScreen(root);
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx });
   const tools = run.hostTools(run.kindTools);
-  const code = "try { await computer.shell.run('echo hi'); return 'ran'; } catch (error) { return String(error.message); }";
-  const before = await call(tools, "computer_script", { code });
-  assert.match(before.structured, /not attached to its scripts yet/, "no gate installed: refused, never run");
-  const seen = [];
-  let verdict = "allow";
-  run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
-  assert.equal((await call(tools, "computer_script", { code })).structured, "ran");
-  assert.deepEqual(seen, [["bash", { command: "echo hi" }]]);
-  await call(tools, "computer_script", { code: "try { await computer.shell.run('cat passwd', { cwd: '/etc' }); } catch (error) {} return 1;" });
-  assert.deepEqual(seen.at(-1), ["bash", { command: "cat passwd", cwd: "/etc" }], "the directory it runs in is what the gate reads");
-  verdict = { deny: "bash is denied for this agent" };
-  assert.match((await call(tools, "computer_script", { code })).structured, /bash is denied for this agent/);
-  verdict = "ask";
-  assert.match((await call(tools, "computer_script", { code: "try { await computer.files.write('/workspace/a.txt', 'x'); return 'wrote'; } catch (error) { return String(error.message); }" })).structured, /write setting asks a person first/);
-  assert.deepEqual(seen.at(-1), ["write", { path: "/workspace/a.txt" }]);
-  assert.equal(computer.calls.filter(([method]) => method === "files.write").length, 0, "a refused write sent nothing");
+  const ran = await op(tools, "shell.run", { command: "cat passwd", cwd: "/etc" });
+  assert.equal(ran.isError, false, ran.text);
+  const [, sent] = computer.calls.filter(([method]) => method === "exec.run").at(-1);
+  assert.equal(sent.cwd, "/etc", "the directory it runs in is the one the gate read");
+  assert.deepEqual(heldAs("computer_op", { op: "shell.run", args: { command: "cat passwd", cwd: "/etc" } }), { tool: "bash", args: { command: "cat passwd", cwd: "/etc" } });
+  assert.equal((await op(tools, "files.write", { path: "/workspace/a.txt", data: "x" })).isError, false);
+  assert.equal(computer.calls.filter(([method]) => method === "files.write").length, 1);
+  assert.deepEqual(heldAs("computer_op", { op: "files.write", args: { path: "/workspace/a.txt", data: "x" } }), { tool: "write", args: { path: "/workspace/a.txt" } }, "the gate reads the path, never the data");
+  for (const read of ["files.read", "files.list", "files.stat"]) assert.equal(heldAs("computer_op", { op: read, args: { path: "/workspace" } })?.tool, "read", read);
+  for (const kind of ["apps.list", "apps.open", "input.act"]) assert.equal(heldAs("computer_op", { op: kind, args: {} }), undefined, `${kind} is the kind's alone`);
+  await run.end();
+});
+
+test("a script's processes.start runs through computer_op, held as bash_background, and opens on the desktop's display", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: { ...helloOf("desktop", DESKTOP_GROUPS), display: ":0" }, check: { readBackOf } }, { mode: 1, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  assert.deepEqual((await op(tools, "processes.start", { command: "mousepad", cwd: "/tmp" })).structured, { pid: 42 });
+  assert.deepEqual(heldAs("computer_op", { op: "processes.start", args: { command: "mousepad", cwd: "/tmp" } }), { tool: "bash_background", args: { command: "mousepad", cwd: "/tmp" } });
+  const [, sent] = computer.calls.filter(([method]) => method === "process.start").at(-1);
+  assert.deepEqual(sent, { argv: ["sh", "-c", "mousepad"], cwd: "/tmp", env: { DISPLAY: ":0" }, orphans: "keep" });
+  await op(tools, "shell.run", { command: "xdotool getactivewindow" });
+  const [, ran] = computer.calls.filter(([method]) => method === "exec.run").at(-1);
+  assert.equal(ran.env.DISPLAY, ":0", "a desktop's shell.run opens on its display too");
   await run.end();
 });
 
@@ -276,9 +268,8 @@ test("under a bash policy a script's shell carries the policy's git lock-down as
   const root = scratch();
   const computer = fakeScreen(root);
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx, bashPolicy: "read-only" });
-  run.computer.guard.install(async () => "allow");
   const tools = run.hostTools(run.kindTools);
-  await call(tools, "computer_script", { code: "try { await computer.shell.run('git status', { env: { GIT_CONFIG_COUNT: '0', MINE: '1' } }); } catch (error) {} return 1;" });
+  await op(tools, "shell.run", { command: "git status", env: { GIT_CONFIG_COUNT: "0", MINE: "1" } });
   const [, sent] = computer.calls.filter(([method]) => method === "exec.run").at(-1);
   assert.equal(sent.env.GIT_CONFIG_NOSYSTEM, "1");
   assert.notEqual(sent.env.GIT_CONFIG_COUNT, "0", "the policy's value, not the script's");
@@ -287,7 +278,81 @@ test("under a bash policy a script's shell carries the policy's git lock-down as
   await run.end();
 });
 
-test("the claim's MCP server: an MCP client lists the run's computer tools and its calls answer what the per-step tools and the script answer, with structuredContent and image blocks", async () => {
+// The agent's computer setting picks the computer's surface (computer-setting.ts surface, carried on the RunComputer):
+// "tools" (or none named), the per-step tools and the hand-over listed; "code", the hand-over listed and the per-step
+// tools bound for a codemode script's nested calls alone. computer_op is bound for scripts alone under both. The same on
+// every harness: the host's codemode calls whichever of them the run binds.
+const listedOf = (run) => run.hostTools(run.kindTools).filter((tool) => !tool.deferred).map((tool) => tool.name);
+test("surface tools: a desktop's and a phone's run lists computer_observe, computer_act, computer_screenshot and the hand-over; computer_op is bound for scripts alone; no computer_script", async () => {
+  for (const [kind, groups] of [["desktop", DESKTOP_GROUPS], ["phone", PHONE_GROUPS]]) {
+    const run = await runTools(localWorkspace(scratch()), { kind, computer: fakeScreen(scratch()), hello: helloOf(kind, groups), surface: "tools" }, { mode: 1, context: ctx });
+    assert.deepEqual(run.kindTools, ["computer_observe", "computer_act", "computer_screenshot", "computer_op", "computer_request_handoff"], kind);
+    assert.deepEqual(listedOf(run), ["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"], kind);
+    await run.end();
+  }
+});
+
+test("surface code: the run lists the hand-over alone, its per-step tools and computer_op bound for scripts alone; none named reads as tools", async () => {
+  for (const [kind, groups] of [["desktop", DESKTOP_GROUPS], ["phone", PHONE_GROUPS]]) {
+    const run = await runTools(localWorkspace(scratch()), { kind, computer: fakeScreen(scratch()), hello: helloOf(kind, groups), surface: "code" }, { mode: 1, context: ctx });
+    assert.deepEqual(run.kindTools, ["computer_observe", "computer_act", "computer_screenshot", "computer_op", "computer_request_handoff"], kind);
+    assert.deepEqual(listedOf(run), ["computer_request_handoff"], kind);
+    await run.end();
+  }
+  const none = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeScreen(scratch()), hello: helloOf("desktop", DESKTOP_GROUPS) }, { mode: 1, context: ctx });
+  assert.deepEqual(none.kindTools, TOOLS);
+  assert.deepEqual(listedOf(none), ["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"]);
+  await none.end();
+});
+
+test("exec false: no bash family even on a desktop whose provider mounts, in either mode, no computer.shell or computer.processes on the script's card, computer_op refuses one in words, and nothing reaches the computer's exec", async () => {
+  for (const mode of [1, 2]) {
+    const root = scratch();
+    const computer = fakeScreen(root);
+    const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf }, exec: false }, { mode, context: ctx });
+    assert.deepEqual(names(run), [...FILES, ...TOOLS], `mode ${mode}: the file tools on the run's folder and the computer's tools, no bash`);
+    assert.equal(run.shell, "none", `mode ${mode}`);
+    assert.equal(run.hands.processes, undefined, `mode ${mode}: no background processes`);
+    assert.ok(!computer.methods().includes("readBack"), `mode ${mode}: the folder is not attached`);
+    assert.deepEqual(run.hands.computer.groups, ["files", "screen", "input.pointer", "input.keys"], "the computer's card has no exec or processes");
+    assert.ok(!run.hostTools(["bash", "bash_background"]).length, "bash is not bound, granted or not");
+    const tools = run.hostTools(run.kindTools);
+    // A script's computer is bound to the agent's card: no exec, no processes (codemode-computer.test.mjs: its reach for
+    // computer.shell throws the words below).
+    assert.deepEqual(run.computer, { card: { ...run.computer.card, groups: ["files", "screen", "input.pointer", "input.keys"] }, exec: false });
+    const bound = scriptComputer(run, tools);
+    assert.deepEqual(["shell" in bound, "processes" in bound], [false, false]);
+    // computer_op called by hand with either: refused in words, before the computer is reached.
+    for (const [name, args] of [["shell.run", { command: "id" }], ["processes.start", { command: "xterm" }]]) {
+      const refused = await op(tools, name, args);
+      assert.equal(refused.isError, true, name);
+      assert.match(refused.text, /this agent's computer runs no programs: its exec setting is off/, name);
+    }
+    assert.deepEqual(computer.calls.filter(([method]) => method === "exec.run" || method.startsWith("process.")), [], `mode ${mode}: nothing ran on the computer`);
+    await run.end();
+  }
+  // A phone in Mode 2 has Archil's bash ("local") as a rule; exec false takes it away too.
+  const phone = await runTools(localWorkspace(scratch()), { kind: "phone", computer: fakeScreen(scratch()), hello: helloOf("phone", PHONE_GROUPS), exec: false }, { mode: 2, context: ctx });
+  assert.deepEqual(names(phone), [...FILES, ...TOOLS]);
+  await phone.end();
+});
+
+test("exec false is the agent's alone: the loop's computer (the owner's POST /runs/{id}/computer/call channel) keeps the computer's whole hello and runs exec.run", async () => {
+  const { loopComputerOf } = await import("../dist/runner/computer-channel.js");
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const given = { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), exec: false };
+  const run = await runTools(localWorkspace(root), given, { mode: 1, context: ctx });
+  assert.ok(!run.hands.computer.groups.includes("exec"));
+  const loop = loopComputerOf(given, undefined);
+  assert.deepEqual(loop.hello.groups, DESKTOP_GROUPS, "every group, exec and processes among them");
+  const ran = await loop.client.call("exec.run", { argv: ["true"], timeoutMs: 1000 });
+  assert.equal(ran.ok, true, JSON.stringify(ran));
+  assert.deepEqual(computer.calls.filter(([method]) => method === "exec.run").map(([, params]) => params.argv), [["true"]]);
+  await run.end();
+});
+
+test("the claim's MCP server: an MCP client lists the run's computer tools and its calls answer what the per-step tools and computer_op answer, with structuredContent and image blocks", async () => {
   const root = scratch();
   const phone = fakeScreen(root, { ui: true });
   const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
@@ -303,14 +368,15 @@ test("the claim's MCP server: an MCP client lists the run's computer tools and i
     assert.equal(observed.isError ?? false, false);
     assert.deepEqual(observed.content, [{ type: "text", text: byTool.text }], "the same words");
     assert.equal(JSON.stringify(observed.structuredContent), JSON.stringify(byTool.structured), "byte-identical values");
-    const scripted = await client.callTool({ name: "computer_script", arguments: { code: "return await computer.app().observe();" } });
-    assert.equal(JSON.stringify(scripted.structuredContent), JSON.stringify(byTool.structured), "the script's value is the tool's");
+    const listedApps = await client.callTool({ name: "computer_op", arguments: { op: "apps.list", args: {} } });
+    assert.equal(JSON.stringify(listedApps.structuredContent), JSON.stringify((await op(tools, "apps.list")).structured), "computer_op's value is the same over MCP");
     const shot = await client.callTool({ name: "computer_screenshot", arguments: {} });
     assert.deepEqual(shot.content.filter((block) => block.type === "image"), [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }], "the screenshot as an image block, whole");
-    const failed = await client.callTool({ name: "computer_script", arguments: { code: "throw new Error('no Save button here');" } });
+    // A shell on a phone that has none: the computer's refusal, in its words.
+    const failed = await client.callTool({ name: "computer_op", arguments: { op: "shell.run", args: { command: "id" } } });
     assert.equal(failed.isError, true);
     assert.equal(failed.structuredContent, undefined, "a failure carries no value");
-    assert.match(failed.content[0].text, /no Save button here/);
+    assert.match(failed.content[0].text, /can't shell\.run/);
   } finally {
     await client.close();
   }

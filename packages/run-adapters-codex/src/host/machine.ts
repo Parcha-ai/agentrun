@@ -19,14 +19,12 @@ import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { FileTail } from "@parcha/agentrun-kernel/process";
-import type { AcquireMachine, CallHooks, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
+import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
-import type { SessionMcp } from "@parcha/agentrun-kernel";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { codexPolicy, withWebSearches } from "./policy.js";
 import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
-import { CODEX_MCP_CLIENT, mcpServersConfig, recorded } from "../mcp.js";
 import { type CodexCommand, MODEL_CATALOG_FILE, patchlessCatalog } from "../catalog.js";
 
 /** The variables a child takes from this process, when they are set. */
@@ -81,12 +79,12 @@ export interface LocalMachineOptions {
     tools: readonly string[];
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
+    /** On a person's ChatGPT plan: its rules (CodexPolicyOptions.plan). */
+    plan?: boolean;
+    credentialRefused?: ModelProxyOptions["credentialRefused"];
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
-  /** The session's remote MCP servers (mcp.ts): each served at the proxy's `/mcp/<server>`, written in Codex's config,
-   *  and each call recorded in the drive's session before it is sent. */
-  mcp?: SessionMcp;
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
   /** Files one of the session's private directories holds at the start of every drive: written when the machine is
@@ -254,18 +252,19 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const route = model.options;
     // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
     let announced: string | undefined;
+    // The script of the last `exec` announced, by its call id: what the host's record of that exec shows.
+    let script: { callId: string; input: string } | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
     const cutListeners: ((stop: { outputTokens?: number }) => void)[] = [];
-    let calls: CallHooks | undefined;
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
         tools: options.proxy.tools,
-        ...(options.mcp ? { mcpTools: options.mcp.servers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)) } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
+        ...(options.proxy.plan ? { plan: true } : {}),
         ...(search ? { webSearch: "live" as const, ...(options.searchAllowed ? { searchAllowed: options.searchAllowed } : {}) } : {}),
         announce: {
           // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
@@ -276,7 +275,10 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
             open += 1;
             announced = open > 1 ? UNWATCHED : undefined;
           },
-          exec: (callId) => void (announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId),
+          exec: (callId, input) => {
+            script = { callId, input: input ?? "" };
+            announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId;
+          },
           failed: () => void (announced = UNWATCHED),
           end: () => void (open = Math.max(0, open - 1)),
         },
@@ -285,13 +287,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       model: route.models.model,
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
+      ...(options.proxy.credentialRefused ? { credentialRefused: options.proxy.credentialRefused } : {}),
       ...(price ? { price } : {}),
-      // The kernel's proxy mounts the session's MCP door for Codex's own client; each call is recorded first (recorded).
-      ...(options.mcp ? { mcp: { session: recorded(options.mcp, ctx, () => calls), client: CODEX_MCP_CLIENT } } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),
+      // The provider's error answer ends the run (a ChatGPT plan's limit reached): no retry or other key can pass it.
+      onFinal: (message) => ctx.halt?.(new Error(message)),
       // The provider cut the turn's answer at its output limit: Codex would ask for it again (it retries an incomplete
       // stream), so the harness ends the turn there, its answer cut.
       onCut: (stop) => {
@@ -310,16 +313,13 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelUrl: proxy.url,
       modelKey: key,
       announcedExec: () => announced,
+      announcedInput: (callId) => (script?.callId === callId ? script.input : undefined),
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
       onCut: (listener) => void cutListeners.push(listener),
       openTurn: () => proxy.openTurn(),
-      onCalls: (given) => void (calls = given),
-      ...(search || options.mcp || catalog ? {
+      ...(search || catalog ? {
         configure: (config: Record<string, TomlValue>) => {
           if (search) config.web_search = "live";
-          // Codex's bearer for the proxy's /mcp/<server> is the key it sends to the proxy's model route.
-          const keyEnv = ((config.model_providers as Record<string, Record<string, TomlValue>> | undefined)?.gateway?.env_key ?? "") as string;
-          if (options.mcp) config.mcp_servers = mcpServersConfig(options.mcp, proxy.url, keyEnv);
           // Only with the built-ins off: with them on, apply_patch runs through the shell.
           const features = config.features as Record<string, TomlValue> | undefined;
           if (catalog && features?.shell_tool !== true && features?.unified_exec !== true) config.model_catalog_json = join(dirs["codex-home"], MODEL_CATALOG_FILE);

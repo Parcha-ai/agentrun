@@ -1,0 +1,69 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.safari.follow-link",
+  "version": 1,
+  "title": "Follow a local site's links to a named page",
+  "split": "heldout",
+  "tags": ["safari", "browse", "navigate"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Safari"] },
+  "params": {
+    "city": {
+      "pick": [
+        { "name": "Lisbon", "file": "p41.html" },
+        { "name": "Oslo", "file": "p17.html" },
+        { "name": "Quito", "file": "p63.html" },
+        { "name": "Lima", "file": "p28.html" },
+        { "name": "Hanoi", "file": "p55.html" },
+        { "name": "Osaka", "file": "p09.html" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Close windows a run left on this site, so the front window is the one setup opens.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Write the site fresh: an index, three region pages and six city pages.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "A new Safari window on the index, which is not the asked page.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "start"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "Safari shows a \"Travel desk\" page. Following its links, open the page about {{city.name}}.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "url",
+      "kind": "exec",
+      "why": "The front Safari window's current tab is the city's page of this run's site (its URL, read over AppleScript, ends in the city's file).",
+      "argv": ["osascript", "-e", "{{file:safari.applescript}}", "url"],
+      "timeoutMs": 30000,
+      "stdout": { "matches": "^file:///(private/)?tmp/computer-bench-{{nonce}}/{{city.file}}([?#].*)?$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the windows on the site.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Remove the site.",
+      "params": { "argv": ["sh", "-c", "rm -rf /tmp/computer-bench-{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Load the city's page in the front tab.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "go"], "timeoutMs": 30000 }
+    }
+  ]
+}

@@ -25,8 +25,6 @@ such as a refusal, a computer that is gone or a vendor that said no, is a result
 - `vendor` is the code for a failure the vendor answered with (its API, its CLI, its device). The error's `vendor` field
   then names which vendor: its descriptor's id (`daytona`, `phone-harness`, ...). One code serves every vendor, so a new
   vendor never edits the error type. An error passed up in new words keeps its code, and with code `vendor`, its vendor.
-  (This replaces the per-vendor codes `docker`, `daytona`, `modal`, `e2b`, `orgo` and `phone`; it lands with the
-  descriptor, below.)
 
 ## Members
 
@@ -35,12 +33,12 @@ such as a refusal, a computer that is gone or a vendor that said no, is a result
 | `id`, `version` | The provider's id (its registry name) and its own version. A computer whose daemon reports another version is never handed out. |
 | `capabilities()` | What its computers are and can do, before any is made (below). |
 | `check(spec)` | Every way a spec is beyond what it declares, in words, field by field, with no vendor call. `create` refuses the same. |
-| `create(spec, { requestId })` | Makes one computer for `spec`, with a deadline, and answers its ref. The lifetime is required: a computer with no deadline is refused. Once per request id ([below](#idempotent-create)). |
-| `attach(ref)` | Finds one computer this provider made, by id or by labels, with its spec read back from the vendor. None or several is an error in words. |
+| `create(spec, { requestId })` | Makes one computer for `spec`, with a deadline, and answers its ref. A run's computer needs a lifetime: one with no deadline is refused. Once per request id ([below](#idempotent-create)). |
+| `attach(ref)` | Finds one computer this provider made, by id or by labels, with its spec read back from it. None or several is an error in words. |
 | `list(labels)` | Every computer this provider made that carries all of these labels: the janitor's view. |
 | `network(ref, policy?)` | Reads the network back; with a policy, sets it, or refuses in words. Never wider than asked. A remote computer's network is fixed at create: a change is refused `refused`, and asking for the network it has answers ok. |
 | `connect(ref)` | A connection to the computer, after `hello`. It refuses a `hello` whose protocol, version, kind or groups differ from what it declared. |
-| `release(ref, how)` | `delete`, or `stop` where declared; an undeclared `stop` is refused in words, with the computer left as it was. Idempotent: a computer already gone is ok. |
+| `release(ref, how)` | `delete`, `stop` where declared, or `detach` (an agent's computer, kept with its state) where `persistence` is declared. An undeclared `stop` or `detach` is refused in words, with the computer left as it was. Idempotent: a computer already gone is ok. |
 | `extend?` | Moves the deadline later, never earlier, and never past the provider's cap counted from create. |
 | `stream?` | A URL that shows the screen live, the vendor's own. |
 | `watch?` | The computer's live view: frames, and input on what it answers. A computer with a screen gives it. |
@@ -49,13 +47,14 @@ such as a refusal, a computer that is gone or a vendor that said no, is a result
 
 A computer's spec (`ComputerSpec`):
 - `image`;
-- `lifetimeMs`, required;
+- `lifetimeMs`, required for a run's computer; an agent's computer (`owner`) has none;
 - `network`: `none`, `open` or an allowlist;
 - `cpus`, `memoryMb`, `pids`, `labels`, `workdir`;
 - `user`: a uid, or `uid:gid`; unset is a non-root default, and root only when asked;
 - `mount`: the run's folder, mounted at `/workspace`, of a kind the provider declares;
-- `owner` (**draft**): `{ agent }`, the agent a computer that keeps its state belongs to, so a later run of that agent
-  finds it again and no other agent does.
+- `gpu`, `browser`: GPUs and browser features, of what the provider declares;
+- `owner`: `{ agent, server?, idleTtlMs? }`, the agent a computer that keeps its state belongs to, so a later run of
+  that agent finds it again and no other agent does.
 
 ## Idempotent create
 
@@ -70,6 +69,11 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
 - The same id while it is up answers it once it is the computer the spec asks for, as far as the vendor reads it back
   (Docker: every field its drift check reads, the network and the mount among them; a phone: its labels and image); one
   that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
+  A size (`cpus`, `memoryMb`) is compared only where the vendor reads one back; on a vendor that reads none back
+  (Modal), a retry asking another size after a restart answers the request's computer as it was made.
+  The GPUs are compared likewise: the hosted adapter records them at create in the label `agentrun.computer.gpu`
+  (`<type>:<count>`), on every vendor, so a retry asking a GPU finds a computer made without one, or the other way
+  round, refused `exists`.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one
@@ -79,8 +83,9 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
 
 Every provider that makes computers keeps it through one mechanism, `CreateRequests` (`src/create-requests.ts`): the id checked, the name,
 the creates in flight and the requests ended. What the vendor holds under the name is the provider's to read: the
-hosted adapter lists the name, Docker's `docker run --name` finds the name taken and reads that container, and the
-phone harness reads its ledger by name and sends a key derived from the id as the `Idempotency-Key`.
+hosted adapter lists the name and reads each machine it finds by `get`, Docker's `docker run --name` finds the name
+taken and reads that container, and the phone harness reads its ledger by name and sends a key derived from the id as
+the `Idempotency-Key`.
 
 `provider.create-retried` creates twice with one id and expects one computer; `provider.create-after-release` releases
 it and expects the same id refused `exists`. Both are Full.
@@ -96,14 +101,13 @@ it and expects the same id refused `exists`. Both are Full.
 | `lifetime` | Who ends a computer at its deadline: the vendor, or our janitor by label. |
 | `maxLifetimeMs` | The longest lifetime it gives: the vendor's hard cap. |
 | `network` | The networks it takes: `none`, `open`, `allow`. With `allow`, `allow` says what a list may hold. `networkReadBack` says whether the vendor reads the policy back from outside. |
-| `isolation` | `container`, `gvisor`, `microvm`, `vm` or `machine`. |
+| `isolation` | `container`, `gvisor`, `microvm`, `vm`, `machine` or `host` (processes of the provider's own machine, such as the local browser's). |
 | `release` | `delete`, and `stop` where a stopped computer is kept; `stopDeletes` where a stop ends in deletion. |
 | `user` | What `spec.user` may ask for beyond the non-root default: `root`, another `uid`. |
 | `mount` | The kinds of folder a computer can mount at `/workspace`. |
 | `vendorAgentPorts` | The ports the vendor's own agent listens on inside the computer. A `child` daemon must declare them. |
-| `persistence` (**draft**) | `{ keepsState, resume }`: whether a computer keeps its disk and state past a run, and whether a kept computer can be resumed by a later run. Absent means neither: each computer lives for one run. |
-
-Fields marked **draft** are named but not yet in the types; their shapes may change before they land.
+| `gpu`, `browser` | The GPUs `spec.gpu` may ask for; a browser's features beyond the protocol. |
+| `persistence` | `{ keepsState, resume }`: whether a computer keeps its disk and state past a run, and whether a kept computer comes back running or boots again from its disk. Absent means neither: each computer lives for one run. |
 
 ## The descriptor
 
@@ -119,6 +123,7 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `settings?` | Values that are not keys but fill a `create()` option (Modal's app): `name`, `option`, and a `default` used when the server names none. |
 | `metered` | The vendor bills by time. Prices are the vendor's page, not ours. |
 | `mounts` | The mount kinds its computers take (`bind`, `archil`), as its providers' `capabilities().mount` declare; `[]` for none. |
+| `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its sandboxes). |
 | `capabilities` | One entry per configuration it offers: a machine kind and its groups, as each built provider's `capabilities()` declares. At least one. |
 | `defaultImage?` | The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no default, and the caller refuses the setting in words. |
 | `prepareImage?` | Its providers have `prepareImage()`: the image is built or pulled before the first create. |
@@ -134,21 +139,50 @@ for a descriptor loaded from elsewhere. `DESCRIPTORS` (`descriptors/index.ts`) l
 Settings shows them. The kind registry's `PROVIDERS` and the provider registry are derived from them; nothing else
 repeats what a descriptor says.
 
-The provider module takes its `MOUNT` and `CAPABILITIES` from its descriptor and exports `create(options)`, where
-`options` holds each key and setting by its `option` name.
+The provider module exports `create(options)`, where `options` holds each key and setting by its `option` name. Its
+mounts and capabilities are its descriptor's, read from the descriptor and exported nowhere else.
 
 The conformance case `health.declared` holds `capabilities()` to the declaration, and `hello` to `capabilities()`.
 
-**Status.** The descriptor lands with the provider contract's next change (branch `computer/cp1-descriptor`). Until it
-merges, `PROVIDERS` in `packages/computer/src/kinds.ts` is kept by hand and each module exports its own `CAPABILITIES`
-and `MOUNT`; the suite reads `PROVIDERS` either way. After that, the contract types move to a zero-dependency package,
-`@parcha/agentrun-computer-protocol` (**draft**), and this spec is generated from there.
+**Status.** Next, the contract types move to a zero-dependency package, `@parcha/agentrun-computer-protocol`
+(**draft**), and this spec is generated from there.
+
+## A hosted vendor's exec
+
+A vendor on the shared machine-host adapter writes a `MachineHost` (`packages/computer/src/host.ts`), and its `exec` is
+the whole protocol: the adapter installs and starts `computerd` through it, then runs `computerd stdio` through it and
+talks to the daemon over that one process's stdin and stdout for the computer's whole life ([`stdio.md`](stdio.md)).
+`exec(id, argv, ctx)` answers a `MachineProcess` once the process has started, or throws. Its stdin is always open: the
+adapter calls `end()` at once for a command it gives no input, such as the daemon's install. The process is:
+
+- **Two-way and live.** Each `write()` reaches the process's stdin as it is written, and stdout and stderr bytes come
+  back as the process writes them, while it runs. Not request and response, and never held until the process exits.
+- **Byte-exact.** Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
+  nothing added or dropped.
+- **Without a timeout.** The process runs until it exits or `kill()` ends it. The vendor's command timeout, and any idle
+  timeout on the stream, are off.
+- **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and `kill()`
+  ends the process itself, not only the streams.
+
+The exec pre-check checks each of these with `exec` alone, on a machine made by hand, before anything else of the host
+is written:
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js> --exec-stream --machine <id>
+```
+
+It builds the host with the module's `createHost(options)`, which it calls with `{}`, so `env` defaults to `process.env`
+(E2B's `createHost({ env = process.env } = {})`). It sends all 256 byte values each way and 8 MiB of random bytes
+(compared by sha256), checks output and stdin while the process runs, stderr apart, `sh -c 'exit 7'`, a killed `sleep`,
+and a silent process of 75 s (`--quick`: 5 s). Each failure says what the exec did wrong, such as "byte 0x80
+came back on stdout as ef bf bd: your exec decodes UTF-8". It exits 0 when every check passes and 1 when one fails.
 
 ## A new vendor
 
 1. A descriptor (`defineProvider`, above) and a provider module: a class implementing `ComputerProvider`, with
    `create(options)`. `create` takes its keys as options and reads no environment. A vendor's own failure is
-   `vendorFail(<id>, message)`, or `failFor(<id>)` for every failure the module returns.
+   `vendorFail(<id>, message)`, or `failFor(<id>)` for every failure the module returns. A vendor of Linux machines
+   writes a `MachineHost` instead and hands it to `HostedProvider` ([PROVIDERS.md](../../packages/computer/PROVIDERS.md)).
 2. The daemon in, by its mode: an image with `computerd init` as its entrypoint (`pid1`), `computerd` uploaded and
    started at boot (`child`), or no daemon, with the provider answering the methods itself (`none`).
 3. Optionally a conformance module that reads the run's settings from `COMPUTER_<ID>_*` names (`ENV` lists them) and

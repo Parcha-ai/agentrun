@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { queued, storeOn } from "./store-helpers.mjs";
+import { queued, registryPin, storeOn } from "./store-helpers.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { githubAppAccess } = await import("../dist/runner/github-app.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
@@ -34,6 +35,7 @@ async function fakeGitHub(t) {
   /** The installation tokens revoked (DELETE /installation/token, each by itself). */
   const revoked = [];
   const server = createServer((req, res) => {
+    if (stranger(req, res)) return;
     let body = "";
     req.on("data", (c) => (body += c)).on("end", () => {
       asked.push({ method: req.method, url: req.url, body, iss: JSON.parse(Buffer.from(String(req.headers.authorization).split(".")[1] ?? "", "base64url").toString() || "{}").iss });
@@ -109,7 +111,7 @@ test("a claimed run whose agent grants a github_app server's tools gets the App'
   t.after(() => fake.close());
   const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
   await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
-  await queued(store, "run-1");
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const content = 'Review it.\n\n<trigger-payload source="github" installation="777" repo="acme/widgets" number="7">{}</trigger-payload>';
   const githubApp = await githubAppAccess(store, KEY, { content }, { api: github.api, fromGitHub: true });
@@ -225,7 +227,7 @@ test("an App disconnected or replaced while a run holds its token stops it at th
 });
 
 /** A claim's MCP for run-1 with a github_app server "gh" at a fake MCP server, through mcpForClaim as a spec builder makes
- *  it, and its two doors: pi's host tool, and the session a CLI harness's own MCP client reaches through its proxy. */
+ *  it, and its one door: the host tool every harness calls. */
 async function claimedGitHub(t, { failSame } = {}) {
   const { store } = await storeOn(t);
   await connected(store);
@@ -234,7 +236,7 @@ async function claimedGitHub(t, { failSame } = {}) {
   t.after(() => fake.close());
   const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
   await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
-  await queued(store, "run-1");
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const work = mkdtempSync(join(tmpdir(), "github-app-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
@@ -245,19 +247,14 @@ async function claimedGitHub(t, { failSame } = {}) {
   t.after(() => mcp.release());
   const host = mcp.tools.find((tool) => tool.name === "mcp__gh__add");
   let n = 0;
-  const doors = {
-    pi: async () => host.call({ a: 1, b: 1 }, { signal: new AbortController().signal, callId: `pi-${++n}` }),
-    cli: async () => {
-      const said = await mcp.session(new Map([[host.name, host]]), async () => undefined).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal, callId: `cli-${++n}` });
-      return { text: said.content.map((block) => block.text).join("\n\n"), isError: said.isError === true };
-    },
-  };
+  // The one door: the claim's host tool, which every harness calls (pi's registry, a CLI's tool bridge).
+  const doors = { host: async () => host.call({ a: 1, b: 1 }, { signal: new AbortController().signal, callId: `host-${++n}` }) };
   const calls = () => fake.log.filter((entry) => entry.method === "tools/call").length;
   return { store, github, doors, calls };
 }
 
-test("both doors check the App at each call: on pi's host tools and on a CLI harness's session, an App disconnected between two calls of one claim refuses the second unsent, and its token is revoked", async (t) => {
-  for (const door of ["pi", "cli"]) {
+test("the host tool every harness calls checks the App at each call: an App disconnected between two calls of one claim refuses the second unsent, and its token is revoked", async (t) => {
+  for (const door of ["host"]) {
     const { store, github, doors, calls } = await claimedGitHub(t);
     assert.equal((await doors[door]()).text, "2", `${door}: the first call, with the App's token`);
     const sent = calls();
@@ -270,8 +267,8 @@ test("both doors check the App at each call: on pi's host tools and on a CLI har
   }
 });
 
-test("a per-call check that fails (the App's read throws) refuses the call unsent in words on either door, keeps the token, and the next call that checks goes through", async (t) => {
-  for (const door of ["pi", "cli"]) {
+test("a per-call check that fails (the App's read throws) refuses the call unsent in words, keeps the token, and the next call that checks goes through", async (t) => {
+  for (const door of ["host"]) {
     let failing = false;
     const { github, doors, calls } = await claimedGitHub(t, { failSame: () => failing });
     assert.equal((await doors[door]()).text, "2", door);

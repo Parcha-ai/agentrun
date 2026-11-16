@@ -3,7 +3,8 @@
 // The runner carries it the same way, as a pi-native extension on the root agent (adapter-run-spec.ts, through the pi
 // adapter's PiAdapterOptions.extensions, which both offers and runs it), so pi keeps its terminate; the loop reads that
 // turn end (endedOnTurnEndingTool) and commits the run parked on a KINDS.personAsked entry, never ending it. A person's
-// message resumes it as the next user turn. pi only: CLI harnesses refuse ask_person (runnable.ts, not in REPLAY).
+// message resumes it as the next user turn. The same run on claude-agent and codex, which get ask_person as a host tool,
+// is runner-ask-person-harnesses.test.mjs.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,6 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { viewOverStore } = await import("../dist/store-view.js");
-const { blockersOf } = await import("../dist/runnable.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -51,7 +51,7 @@ const driveAsk = ({ body }) => {
  *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
  *  .personWait), as the browser's is. The runner stays up so a test may resume it; its store, server and gateway are
  *  returned. */
-async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream, drive = driveAsk }) {
+async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream, drive = driveAsk, outcomes = [] }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -75,7 +75,18 @@ async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstrea
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
     return personWait ? { ...spec, lifecycle: { ...spec.lifecycle, personWait: [personWait] } } : spec;
   };
-  const start = (name) => (runner = startRunner({ store, name, ...TIMING, createLoop: createAdapterLoop(specOf, loopOptions) }));
+  // What each claim's loop answered each command row it was handed (`outcomes`, the caller's: the runner writes only a
+  // refusal of them).
+  const loops = createAdapterLoop(specOf, loopOptions);
+  const createLoop = (loopDeps) => {
+    const loop = loops(loopDeps);
+    return { ...loop, command: async (command) => {
+      const outcome = await loop.command(command);
+      outcomes.push({ id: command.id, outcome });
+      return outcome;
+    } };
+  };
+  const start = (name) => (runner = startRunner({ store, name, ...TIMING, createLoop }));
   start("runner-a");
   /** The runner shut down (its claims let go, as a deploy's drain does), and another started on the same store. */
   const restart = async () => {
@@ -86,7 +97,7 @@ async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstrea
     const now = await server.runs.get(RUN);
     return ["parked", "ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
   }, "the run's park or end");
-  return { row, server, store, gw, restart };
+  return { row, server, store, gw, restart, outcomes };
 }
 
 test("park: a pi run that calls ask_person parks on its question, input_required with the question pending, claim released, one request and no re-run", async (t) => {
@@ -205,13 +216,6 @@ test("resume after a follow-up: a reopened run that parks on its question has it
     return now.state === "ended" && now.runner === null && now;
   }, "the answer ends the run");
   assert.equal(ended.summary, null);
-});
-
-test("CLI refused: a CLI-harness run that names ask_person is refused in main's words, never bound", async () => {
-  const blockers = await blockersOf({}, { kind: "agentic", instructions: "Ask the person.", tools: ["ask_person"], harness: "codex", model: "gpt-6.1-sol" });
-  const ask = blockers.find((blocker) => blocker.tool === "ask_person");
-  assert.ok(ask, `ask_person is refused on a CLI harness: ${JSON.stringify(blockers)}`);
-  assert.match(ask.message, /runs on pi here/, `refused in main's words: ${JSON.stringify(ask)}`);
 });
 
 /** A tool host's hold for the wait in the claim (HostLifecycle.personWait), as the browser's is: what it was asked, how
@@ -358,56 +362,70 @@ test("wait in the claim: the run row says it waits on the person while its claim
   assert.notEqual(ended.summary, "Waiting for your reply", "the waiting summary is gone with the answer");
 });
 
-test("wait in the claim: a trigger's message (answers: false) delivered while the run waits is refused in the waiting words, never taken as the person's answer", async (t) => {
+/** The loop's answer to the trigger's row once it has one: `later` (left untaken), never taken as the answer nor refused. */
+async function leftForLater(outcomes, trigger) {
+  const { outcome } = await until(() => outcomes.find((one) => one.id === trigger.id), "the trigger's row reached the loop");
+  assert.ok("later" in outcome, `the trigger's row is left untaken, never taken or refused: ${JSON.stringify(outcome)}`);
+}
+
+/** The person answers; the answer is the next request's, and the trigger's message runs after it as a turn of its own,
+ *  its row taken and never refused: its firing's `sent` is true. */
+async function answeredThenTheTrigger(server, gw, trigger) {
+  const asks = modelCalls(gw).length;
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await until(async () => {
+    const [r, rows] = [await server.runs.get(RUN), await server.commands(RUN, 0)];
+    return r.state === "ended" && r.runner === null && rows.find((c) => c.id === trigger.id)?.takenAt !== null && r;
+  }, "the answer's turn, then the trigger's, end the run");
+  const row = (await server.commands(RUN, 0)).find((c) => c.id === trigger.id);
+  assert.equal(row.refused, null, JSON.stringify(row));
+  const asked = modelCalls(gw).slice(asks).map((call) => JSON.stringify(call.body?.messages ?? []));
+  assert.ok(asked[0]?.includes("us-west-2") && !asked[0].includes("A push came in."), `the answer's request is the person's alone: ${asked[0]?.slice(-400)}`);
+  assert.ok(asked.slice(1).some((body) => body.includes("A push came in.")), `the trigger's message is a later request: ${asked.length} requests`);
+}
+
+test("wait in the claim: a trigger's message (answers: false) delivered while the run waits is left untaken, never taken as the person's answer, and runs as a turn of its own after it", async (t) => {
   const wait = fakeWait();
-  const { server, gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
+  const outcomes = [];
+  const { server, gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen), outcomes });
   const before = modelCalls(gw).length;
   const trigger = await sendCommand(server, RUN, { kind: "steer", body: { text: "A push came in.", answers: false } });
-  // Not taken yet, it is no answer: the run reads waiting on its question still (the server tells run.needs_input by it).
+  // Not taken, it is no answer: the run reads waiting on its question still (the server tells run.needs_input by it).
+  await leftForLater(outcomes, trigger);
   assert.equal((await viewOverStore(server, RUN, VIEW_DEPS)).status, "input_required", "a trigger's message counts as no answer");
-  const row = await until(async () => (await server.commands(RUN, 0)).find((c) => c.id === trigger.id && (c.refused !== null || c.takenAt !== null)), "the trigger's row answered");
-  assert.equal(row.refused, "The run is waiting on a person.", JSON.stringify(row));
   const now = await until(async () => {
     const r = await server.runs.get(RUN);
     return r.summary === "Waiting for your reply" && r;
   }, "the row's waiting summary").catch(() => server.runs.get(RUN));
   assert.deepEqual([now.state, now.summary], ["running", "Waiting for your reply"], "still waiting on the person");
   assert.equal(modelCalls(gw).length, before, "the agent was not resumed");
-  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
-  await until(async () => {
-    const r = await server.runs.get(RUN);
-    return r.state === "ended" && r.runner === null && r;
-  }, "the person's answer ends the run");
+  await answeredThenTheTrigger(server, gw, trigger);
 });
 
-test("wait in the claim: a trigger's message (answers: false) delivered between the question's turn end and the wait's start is refused too, never taken as the answer", async (t) => {
+test("wait in the claim: a trigger's message (answers: false) delivered between the question's turn end and the wait's start is left untaken too, never taken as the answer", async (t) => {
   const wait = fakeWait();
+  const outcomes = [];
   let server;
   let trigger;
+  let wrong;
   const beforePersonWait = async () => {
     if (trigger) return;
     trigger = await sendCommand(server, RUN, { kind: "steer", body: { text: "A push came in.", answers: false } });
-    await until(async () => (await server.commands(RUN, 0)).find((c) => c.id === trigger.id && (c.refused !== null || c.takenAt !== null)), "the trigger's row answered");
+    // Kept, not thrown here: a throw in the loop's hook would end the claim, and the test would fail on a wait instead.
+    await leftForLater(outcomes, trigger).catch((error) => (wrong = error));
   };
-  const { gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, loopOptions: { beforePersonWait }, settled: async (s) => {
+  const { gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, loopOptions: { beforePersonWait }, outcomes, settled: async (s) => {
     server = s;
-    return waitingInClaim(wait.seen)(s);
+    return wrong ? s.runs.get(RUN) : waitingInClaim(wait.seen)(s);
   } });
-  const row = (await server.commands(RUN, 0)).find((c) => c.id === trigger.id);
-  assert.equal(row.refused, "The run is waiting on a person.", JSON.stringify(row));
+  if (wrong) throw wrong;
   // The wait's start lands just after its hold: the row says so then.
   const now = await until(async () => {
     const r = await server.runs.get(RUN);
     return r.summary === "Waiting for your reply" && r;
   }, "the row's waiting summary").catch(() => server.runs.get(RUN));
   assert.deepEqual([now.state, now.summary], ["running", "Waiting for your reply"], "the run waits on its person");
-  const asks = modelCalls(gw).length;
-  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
-  await until(async () => {
-    const r = await server.runs.get(RUN);
-    return r.state === "ended" && r.runner === null && r;
-  }, "the person's answer ends the run");
-  assert.ok(modelCalls(gw).length > asks);
+  await answeredThenTheTrigger(server, gw, trigger);
 });
 
 test("a parked question's answer whose turn fails ends the run failed, never ended: the claim that resumes it reads the answer's own submission", async (t) => {

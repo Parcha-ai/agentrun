@@ -31,10 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			showOnboarding()
 			return
 		}
-		let controls = Pairing.controls(hello: { MacPlatform.driver().hello() }, changed: { [weak self] in
+		// Pairing sends the server the hello its attached connection will answer: what the owner grants it, no more.
+		let controls = Pairing.controls(hello: { MacPlatform.driver(.attached).hello() }, changed: { [weak self] in
 			Task { @MainActor in self?.startAttach() }
 		})
-		let server = SocketServer(auth: PeerAuth(), makeDriver: { MacPlatform.driver() }, controls: controls)
+		let server = SocketServer(auth: PeerAuth(), makeDriver: { MacPlatform.driver(.local) }, controls: controls)
 		do {
 			try server.start()
 		} catch {
@@ -69,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			setStatus("Not paired: the token is missing from the keychain")
 			return
 		}
-		let client = AttachClient(settings: settings, token: token, makeDriver: { MacPlatform.driver() }) { [weak self] words in
+		let client = AttachClient(settings: settings, token: token, makeDriver: { MacPlatform.driver(.attached) }) { [weak self] words in
 			Task { @MainActor in self?.setStatus(words) }
 		}
 		attach = client

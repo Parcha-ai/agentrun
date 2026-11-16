@@ -7,7 +7,7 @@
 # COMPUTERD_SIGN_IDENTITY is the one signing setting. "-" (the default) signs ad hoc, as CI does: macOS then pins each
 # grant to this exact build, so a new build is granted again. A "Developer ID Application: <name> (<team>)" identity
 # from the keychain signs for distribution, with the hardened runtime and a timestamp, and grants survive updates. Any
-# other keychain identity, such as the Mac mini's self-signed "Computerd Local Signing" (MINI.md), signs without either;
+# other keychain identity, such as a self-signed local one, signs without either;
 # its grants survive rebuilds too, since the designated requirement names the certificate and not the build.
 #
 # The bundle:
@@ -37,7 +37,7 @@ cp "$bin/computerd" "$app/Contents/Helpers/computerd"
 cp App/Info.plist "$app/Contents/Info.plist"
 
 # A Developer ID identity signs with the hardened runtime and Apple's timestamp, which notarization asks for. Ad hoc and
-# local identities (mini-bootstrap.sh's) sign plainly: neither is notarized.
+# local identities sign plainly: neither is notarized.
 options=()
 if [[ "$identity" == "Developer ID Application:"* ]]; then
 	options=(--options runtime --timestamp)

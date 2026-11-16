@@ -328,3 +328,40 @@ describe("LiveRun, a run that moves from one wait to the next", () => {
     expect(reads()).toBeGreaterThan(before);
   });
 });
+
+// A take-over's answer says who drives: the Screen tab shows it as soon as it comes, not after the run's re-read that
+// follows it (a slow read held the header back by a second and more, measured live).
+describe("LiveRun, a take-over while the run is slow to read", () => {
+  it("the Screen tab says the take-over's answer while the run's re-read is still on its way", async () => {
+    let reads = 0;
+    let slow: (() => void) | undefined;
+    const desktop = { ...at("working", false), computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const v2 = {
+      // The first read answers; every read after it waits until the test lets it go.
+      getRun: () => (++reads === 1 ? Promise.resolve(desktop) : new Promise<Run>((resolve) => { slow = () => resolve(desktop); })),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: () => new Promise<TimelinePage>(() => {}),
+      runComputer: async () => ({ state: "live", kind: "desktop", viewer: "/v2/runs/r1/computer/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET", hold: "agent" }),
+      takeOverComputer: async () => ({ hold: "pending" }),
+      computers: async () => ({ kinds: [] }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const button = (label: string) => [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === label);
+    await settle();
+    await act(async () => { [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent === "Screen")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await settle();
+    const panel = () => host.querySelector('section[aria-label="Screen"]')?.textContent ?? "";
+    expect(panel()).toContain("The agent drives");
+    await act(async () => { button("Take over")!.click(); });
+    await settle();
+    expect(slow).toBeTypeOf("function");
+    expect(panel()).toContain("Yours after the agent's step");
+    await act(async () => { slow!(); });
+    await settle();
+    expect(panel()).toContain("Yours after the agent's step");
+  });
+});

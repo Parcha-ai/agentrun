@@ -44,9 +44,11 @@ test("faux-broken's test fails with plain words", async (t) => {
   assert.match(answer.why, /^Faux broken could not be reached: try again in a moment\. \(the vendor said: .+\)$/);
 });
 
-test("faux-desktop's run computer answers a screenshot and input, and its watch gives frames and takes input until the release ends it gone", async () => {
+test("faux-desktop's run computer answers a ping, a screenshot and input, and its watch gives frames and takes input until the release ends it gone", async () => {
   const desktop = await FAUX.launch(entryOf("faux-desktop"), { kind: "desktop", keys: {} });
   assert.deepEqual(desktop.groups, ["screen", "input.pointer", "input.keys"]);
+  // Every computer answers ping (protocol.ts): computer-bench pings after the agent's turn and scores a silent one infra.
+  assert.deepEqual(await desktop.client.call("ping", {}), { ok: true, value: {} });
   const shot = await desktop.client.call("screen.shot", {});
   assert.equal(shot.ok, true);
   assert.equal(Buffer.from(shot.value.data, "base64").subarray(1, 4).toString(), "PNG");

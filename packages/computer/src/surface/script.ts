@@ -24,8 +24,8 @@ export function bindComputer(call: Call, card: Card): Computer {
 			if (options.observe) args.observe = options.observe;
 			const result = (await call("act", args)) as ActResult;
 			if (result.after) last = result.after;
-			// A refused step is the last one run (api.ts ActResult): the script stops there, as computer_script's words say, so
-			// no later action lands on a screen it did not expect.
+			// A refused step is the last one run (api.ts ActResult): the script stops there, as its words say ("a refused step
+			// throws"), so no later action lands on a screen it did not expect.
 			for (let index = 0; index < result.steps.length; index += 1) {
 				const step = result.steps[index] as { error?: { kind: string; message: string } };
 				if (step.error) throw new Error(`step ${index + 1} was refused (${step.error.kind}): ${step.error.message}`);
@@ -69,6 +69,7 @@ export function bindComputer(call: Call, card: Card): Computer {
 	if (has("screen")) computer.screen = freeze({ shot: (options: { region?: unknown } = {}) => call("screenshot", options) });
 	if (has("input.pointer") || has("input.touch") || has("input.keys")) computer.input = freeze({ act: (actions: unknown[]) => call("input.act", { actions }) });
 	if (has("exec")) computer.shell = freeze({ run: (command: unknown, options: object = {}) => call("shell.run", { ...options, command }) });
+	if (has("processes")) computer.processes = freeze({ start: (command: unknown, options: object = {}) => call("processes.start", { ...options, command }) });
 	if (has("files"))
 		computer.files = freeze({
 			read: (path: string, options: object = {}) => call("files.read", { ...options, path }),
@@ -84,8 +85,15 @@ export function bindComputer(call: Call, card: Card): Computer {
 /** The global a script's isolate holds the host's call under. */
 export const COMPUTER_CALL_GLOBAL = "__computerCall";
 
+/** One expression, on one line, that is the `computer` object for a computer that is `card`, over `call`: the source of
+ *  the isolate's `(op, args) => Promise` the object's calls go through (the host's codemode passes one that calls the
+ *  run's tools, each a nested call of its own). */
+export function computerOver(card: Card, call: string): string {
+	return `(0, eval)(${JSON.stringify(`(${String(bindComputer)})`)})(${call}, ${JSON.stringify(card)})`;
+}
+
 /** One line that binds `computer` in a script, over the global COMPUTER_CALL_GLOBAL: put it before the script's first
  *  line (as `${scriptPrelude(card)} ${code}`) and the script's line numbers stay its own. */
 export function scriptPrelude(card: Card): string {
-	return `const computer = (0, eval)(${JSON.stringify(`(${String(bindComputer)})`)})(${COMPUTER_CALL_GLOBAL}, ${JSON.stringify(card)});`;
+	return `const computer = ${computerOver(card, COMPUTER_CALL_GLOBAL)};`;
 }

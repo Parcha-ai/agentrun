@@ -37,8 +37,48 @@ export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: 
 export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 export const STOP_SETTLE_MS = 30_000;
-/** The most a cut run's end-of-run step (a store read), or the end's patch, may take before the end is written without it. */
+/** How long a park waits, by default, for the calls already running beside the parked one to end before it seals: as long
+ *  as a stop gives a turn to settle, the loop's one bound for calls already under way. Past it, what still runs is cut. */
+export const PARK_SIBLINGS_MS = 30_000;
+/** The most a cut run's end-of-run step (a store read) may take before the end is written without it. */
 export const CUT_STEP_MS = 2_000;
+/** The most the end's patch (the run's cost and metrics, read from its journal and the store) may take before the end is
+ *  written without them. Those reads queue behind every other run's on a busy store (eight runs ending at once took over
+ *  2 s), and an end written without them leaves the run's cost and path unknown for good: so it waits as long as a
+ *  stalled store, never a busy one, would hold it. Past it, the end says both are unknown (END_PATCH_UNKNOWN). */
+export const END_PATCH_MS = 30_000;
+/** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
+ *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
+export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
+/** How many times an end reads its cost before it is written unknown, and the pause between reads: all within the end's
+ *  bound (END_PATCH_MS), so a store that refused one read never leaves the cost null. The stored cost is every reader's
+ *  answer for an ended run (the list, the view, usage, learning), so a null there stays only when no read could be made. */
+export const END_COST_TRIES = 3;
+export const END_COST_PAUSE_MS = 100;
+
+/** `read`'s answer, read again after a failure (END_COST_TRIES in all, END_COST_PAUSE_MS apart), each failure said by
+ *  `failed` (its error, how many reads failed, whether it was the last): "late" once `late` resolves first, "failed" when
+ *  every read failed. */
+export async function readAgain<T>(read: () => Promise<T>, late: Promise<"late">, failed: (error: unknown, tries: number, last: boolean) => void): Promise<T | "late" | "failed"> {
+  for (let tries = 1; ; tries += 1) {
+    try {
+      return await Promise.race([read(), late]);
+    } catch (error) {
+      failed(error, tries, tries >= END_COST_TRIES);
+      if (tries >= END_COST_TRIES) return "failed";
+      let timer: NodeJS.Timeout | undefined;
+      const paused = await Promise.race([new Promise<"again">((resolve) => (timer = setTimeout(() => resolve("again"), END_COST_PAUSE_MS))), late]);
+      clearTimeout(timer);
+      if (paused === "late") return "late";
+    }
+  }
+}
+/** How long a booking whose write has begun (its request answered, its runner.turn on its way to the store) is waited
+ *  for, by an answer's cost and by a park's or an end's release, before either goes on without it. A busy store queues
+ *  that write behind every other run's; an end written ahead of it has no booking for the last request and reads the
+ *  run's cost unknown for good, so it waits as long as the end's own patch would (END_PATCH_MS). A request still
+ *  streaming is waited for CLOSE_MS only, as before: past it, it reads at its hold. */
+export const BOOKING_WRITE_MS = END_PATCH_MS;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };
@@ -185,6 +225,17 @@ export function cutLast(entries: readonly EntryRecord[]): string | undefined {
   }
   const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
   return message?.stopReason === PI_STOP.length ? cutAtLimit(message.usage?.output) : undefined;
+}
+
+/** The text of the answer the run would end on (cutLast's newest model answer: the root's last pi.assistant, its text
+ *  blocks joined as the Timeline joins them, or a CLI record's last model message), "" when it said none: what the output
+ *  contract's retry checks against the agent's output schema (adapter-loop.ts). */
+export function lastAnswerText(entries: readonly EntryRecord[]): string {
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+  if (last?.kind === KINDS.message) return String((last.data as { text?: unknown }).text ?? "");
+  const content = (last as { model?: { content?: unknown }[] } | undefined)?.model?.[0]?.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("\n") : "";
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */

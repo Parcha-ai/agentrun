@@ -138,7 +138,9 @@ async function step(s, tools, system, signal) {
   const out = { text: "", calls: [], usage: undefined, deltas: [] };
   const decoder = new TextDecoder();
   let buffer = "";
-  for await (const chunk of res.body) {
+  // The step is done at the answer's completion event: nothing more is read, and its calls run, while the provider may
+  // still hold the stream open.
+  read: for await (const chunk of res.body) {
     buffer += decoder.decode(chunk, { stream: true });
     let at;
     while ((at = buffer.indexOf("\n\n")) >= 0) {
@@ -149,7 +151,10 @@ async function step(s, tools, system, signal) {
       const e = JSON.parse(data);
       if (e.type === "response.output_text.delta") out.deltas.push(e.delta);
       if (e.type === "response.output_item.done" && e.item?.type === "function_call") out.calls.push(e.item);
-      if (e.type === "response.completed") out.usage = e.response?.usage;
+      if (e.type === "response.completed") {
+        out.usage = e.response?.usage;
+        break read;
+      }
       // An answer cut at its output limit: OpenCode's finish for it is "length" (its AI SDK's finishReason).
       if (e.type === "response.incomplete") {
         out.usage = e.response?.usage;

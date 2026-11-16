@@ -21,13 +21,15 @@ export function ComputerAskCard({ ask, onAnswer, open, heading, compact = false 
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   // One answer in flight: a second click (Done again, or Cancel) before the first answers sends nothing. The server takes
-  // the first answer.
+  // the first answer. A taken answer leaves Done and Cancel off: the card goes when the next read of the run takes the ask
+  // away, which can come after the answer. A refused one turns them back on.
   const answering = useRef(false);
   const answer = async (outcome: HandBackOutcome) => {
     if (!onAnswer || answering.current) return;
     answering.current = true;
     setBusy(true); setSaid(null);
-    try { setSaid(await onAnswer(outcome)); } finally { answering.current = false; setBusy(false); }
+    let taken = false;
+    try { const refused = await onAnswer(outcome); taken = refused === null; setSaid(refused); } finally { if (!taken) { answering.current = false; setBusy(false); } }
   };
   return (
     <section aria-label="Waiting for you at the computer" className={compact ? "px-4 py-3" : "border border-warning/50 bg-warning/5 p-4"}>

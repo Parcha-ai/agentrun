@@ -1,0 +1,58 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "macosworld.daa28096",
+  "version": 1,
+  "title": "Set the Music app's own volume to a given level",
+  "split": "dev",
+  "source": {
+    "suite": "macOSWorld",
+    "id": "daa28096-f9e8-879a-b3a0-2b90aa0e2f83",
+    "revision": "e2ca8334b3765537e5c1c428ce57990248a1bb5f",
+    "licence": "CC-BY-NC-4.0; ported by reference (our own instruction, setup and checks; no source text copied)",
+    "changes": "Instruction written in our own words. The target level is a param; the source's 50 is one pick, and each pick keeps the source's tolerance (more than 4 below or above fails, as in 45 < v < 55). The source activated Music on an AMI snapshot with whatever volume it held; here setup keeps Music's own volume, sets it to 100 so the agent must change it, and teardown puts it back and quits Music."
+  },
+  "tags": ["music", "settings"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Music"] },
+  "params": {
+    "vol": {
+      "pick": [
+        { "want": 50, "range": "^(4[6-9]|5[0-4])$" },
+        { "want": 30, "range": "^(2[6-9]|3[0-4])$" },
+        { "want": 70, "range": "^(6[6-9]|7[0-4])$" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep Music's own volume for teardown, set it to 100 so the agent has to lower it, and bring Music to the front.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 60000 }
+    }
+  ],
+  "instruction": "In the Music app, find where Music's own volume is set, and set it to {{vol.want}}%.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "volume",
+      "kind": "exec",
+      "why": "Music's sound volume (its own slider, not the Mac's output volume) is within 4 of {{vol.want}}, the source's tolerance. Setup left it at 100, so an agent that does nothing fails.",
+      "argv": ["osascript", "-e", "tell application \"Music\" to get sound volume"],
+      "timeoutMs": 30000,
+      "stdout": { "matches": "{{vol.range}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put Music's own volume back and quit Music.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Set Music's volume, as its slider does.",
+      "params": { "argv": ["osascript", "-e", "tell application \"Music\" to set sound volume to {{vol.want}}"], "timeoutMs": 30000 }
+    }
+  ]
+}

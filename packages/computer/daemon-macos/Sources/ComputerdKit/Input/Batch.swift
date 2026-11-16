@@ -3,8 +3,8 @@ import Foundation
 /// One input.actions call: the batch checked whole, then run on the computer's own keyboard and mouse in order until
 /// the first failure. Raw input takes the person's real pointer and lands on the app in front, so it is foreground
 /// input: it needs the same grant as ui's foreground route (Platform.foregroundFeature), the app in front must be one
-/// the owner's Policy allows, and a person who moves the pointer during a batch stops it (aborted), with what it held
-/// released.
+/// the owner's Policy allows, and a person who uses the keyboard or the mouse during a batch stops it (aborted,
+/// TakeOverWatch: a ui act's rule too), with what it held released.
 public struct InputBatch: Sendable {
 	let platform: Platform
 	let policy: Policy
@@ -107,8 +107,6 @@ struct InputStop: Error {
 
 /// A batch running: the screen in pixels, what it pressed and has not released, and where it left the pointer.
 final class InputRun: @unchecked Sendable {
-	/// How far, in pixels, the pointer may sit from where the batch left it before a person is taken to have moved it.
-	static let takeOverPixels = 3.0
 	/// The longest leg one drag event moves, in points; a longer leg is cut into pieces about 8 ms apart.
 	static let dragStepPoints = 20.0
 	/// The most one raw scroll call sends, in points or in clicks, and one raw type call, in characters: the app in
@@ -126,14 +124,19 @@ final class InputRun: @unchecked Sendable {
 	let scale: Double
 	var buttons: [InputButton]
 	var keys: [String]
-	/// Where the batch's last pointer action left the pointer, in pixels.
-	var left: Pixel?
+	/// Where the batch's last pointer action left the pointer, in pixels: where the take-over check holds it.
+	var left: Pixel? {
+		didSet { if let left { takeOver.pointer = Point(Double(left.x), Double(left.y)) } }
+	}
+	/// A person at the keyboard or the mouse since the batch began stops it before its next action.
+	var takeOver: TakeOverWatch
 
 	init(platform: Platform, policy: Policy, screen: ScreenInfo, buttons: [InputButton] = [], keys: [String] = []) {
 		self.buttons = buttons
 		self.keys = keys
 		self.platform = platform
 		self.policy = policy
+		takeOver = TakeOverWatch(call: "batch", unit: "action", platform: platform)
 		raw = platform.raw
 		clock = platform.clock
 		scale = screen.scale > 0 ? screen.scale : 1
@@ -146,8 +149,11 @@ final class InputRun: @unchecked Sendable {
 			do {
 				try Task.checkCancellation()
 				try guardFront()
-				try guardTakeOver()
+				try takeOver.check(platform)
 				try await run(a)
+			} catch let taken as TakenOver {
+				await release()
+				return InputActionsResult(done: i, failed: InputFailure(i, .aborted, "action \(i) (\(a.type)): \(taken.message)"))
 			} catch let stop as InputStop {
 				await release()
 				return InputActionsResult(done: i, failed: InputFailure(i, stop.kind, "action \(i) (\(a.type)): \(stop.why)"))
@@ -171,14 +177,6 @@ final class InputRun: @unchecked Sendable {
 		let front = platform.workspace.list().foreground
 		guard let front, policy.allows(front) else {
 			throw InputStop(.denied, "input goes to the app in front, \(front ?? "none"), and this computer's owner allows Computerd to touch only \(allowed.joined(separator: ", "))")
-		}
-	}
-
-	/// A person moving the pointer during a batch takes the computer back: the batch stops before its next action.
-	func guardTakeOver() throws {
-		guard let left, let now = platform.capture.cursor() else { return }
-		if abs(now.x - Double(left.x)) > Self.takeOverPixels || abs(now.y - Double(left.y)) > Self.takeOverPixels {
-			throw InputStop(.aborted, "someone moved the pointer to (\(Int(now.x)), \(Int(now.y))) while the batch ran (it left it at (\(left.x), \(left.y))): the person has the computer, so input.actions stopped; observe and try again")
 		}
 	}
 

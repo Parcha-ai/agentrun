@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -52,18 +53,14 @@ const until = async (done, what, ms = 30_000) => {
 /** A gateway on loopback that answers OpenAI's Responses API with `text`, and records each model request's body
  *  (`seen`: every POST to /responses). Anything else that reaches its port is no model request: a host's loopback prober
  *  (a keyless `GET /`, as codex-run's and opencode-run's gateways pass over) is kept apart (`stray`), answered 404, and
- *  never counted as one. */
+ *  never counted as one (fixtures/stranger.mjs). */
 async function responsesGateway(t, text) {
   const seen = [];
   const stray = [];
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
-    if (req.method !== "POST" || !new URL(req.url, "http://gateway").pathname.endsWith("/responses")) {
-      stray.push(`${req.method} ${req.url} (${req.headers["user-agent"] ?? "no user agent"})`);
-      res.writeHead(404).end();
-      return;
-    }
+    if (stranger(req, res, { own: (path, method) => method === "POST" && path.endsWith("/responses"), strays: stray })) return;
     seen.push({ path: req.url, at: Date.now(), body: JSON.parse(body || "{}") });
     const events = [
       { type: "response.output_text.delta", item_id: "m_0", output_index: 0, content_index: 0, delta: text },
@@ -92,8 +89,8 @@ async function deadClaim(store, dir) {
 
 /** A run of `harness` stored with its launch (`launch`: more of its body, as the server writes it), and a runner whose
  *  dispatch resolves a CLI harness to cliRunSpecFromLaunch. `crashed`: a first claim died with its folder in place
- *  (deadClaim) before this runner starts. */
-async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}, crashed = false }) {
+ *  (deadClaim) before this runner starts. `body`: more of the revision's body. */
+async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}, crashed = false, body = {} }) {
   assert.equal(typeof spec.cliRunSpecFromLaunch, "function", "runner/cli-run-spec.js exports cliRunSpecFromLaunch");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-spec-"));
   await prepare?.(dir);
@@ -107,7 +104,7 @@ async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", harness, tools: ["read"] } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", harness, tools: ["read"], ...body } });
   const launch = { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness, model, ...more };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -136,8 +133,9 @@ async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}
 /** A stored `harness` run's spec, built for its claim as the dispatch builds it (no session opened), with the CLI's
  *  working directory (the run's scratch). OpenCode on its stand-in: building its adapter starts nothing. `archil`: Mode 2
  *  over that disk fake, Archil's control plane the fake as a fetch function (`control`: no port, every request recorded). `env`: more of the
- *  runner's environment; `model`: the launch's model; `crashed`: a first claim died with its folder in place (deadClaim). */
-async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-6.1-sol" }, prepare, deps: given = {}, crashed = false } = {}) {
+ *  runner's environment; `model`: the launch's model; `crashed`: a first claim died with its folder in place (deadClaim);
+ *  `body`: more of the revision's body. */
+async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-6.1-sol" }, prepare, deps: given = {}, crashed = false, body = {} } = {}) {
   const control = archil ? archilControlFetch() : undefined;
   // A second net: in Mode 2, any fetch to a host other than this machine's loopback is refused and recorded (`outbound`).
   const outbound = [];
@@ -166,7 +164,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
     rmSync(dir, { recursive: true, force: true });
   });
   await prepare?.(dir);
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"] } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"], ...body } });
   const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   // Mode 2: the server's Archil settings row, and its account key sealed under the runner's seal key, as the server saves
@@ -213,10 +211,54 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : undefined;
     const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
     assert.equal(built.session.system[0], environmentLine(), "the date line first");
-    assert.match(built.session.system[0], /^Today is \d{4}-\d{2}-\d{2} \(UTC\)\./);
+    assert.match(built.session.system[0], /^Today is [A-Z][a-z]+ \d{1,2} [A-Z][a-z]+ \d{4} \([A-Za-z_\/]+\)\./);
     assert.equal(built.session.system[1], "Answer.", "then the revision's instructions");
   });
 }
+
+/** An output schema a CLI run's answer meets: `{ok: true}`. */
+const OK_SCHEMA = { type: "object", additionalProperties: false, required: ["ok"], properties: { ok: { const: true } } };
+
+// The output contract, the same on every harness: an agent with an output schema is told it in its system prompt, right
+// after its instructions (answer-json.ts outputContract, as the pi spec does), and its spec carries the schema for the
+// loop's one retry.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`the ${harness} session's system prompt gives the agent's output schema after its instructions, and its spec carries the schema`, async (t) => {
+    const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : undefined;
+    const { spec: built } = await specOn(t, harness, { body: { outputSchema: OK_SCHEMA }, prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
+    assert.equal(built.session.system[1], "Answer.");
+    assert.equal(built.session.system[2], `End your final answer with exactly one \`\`\`json block that matches this JSON Schema:\n\n\`\`\`json\n${JSON.stringify(OK_SCHEMA, null, 2)}\n\`\`\``);
+    assert.deepEqual(built.outputSchema, OK_SCHEMA);
+  });
+}
+
+test("a claude-agent run whose answer misses its output schema is asked once more in the same session, in the server's words, and ends on the corrected answer", { timeout: 180_000 }, async (t) => {
+  const asked = [];
+  const fake = await fakeAnthropic({
+    reply: (request) => {
+      const said = JSON.stringify(request.messages ?? []);
+      asked.push(said);
+      return { text: said.includes("Your final JSON did not match the output schema") ? 'Fixed.\n\n```json\n{"ok": true}\n```' : "Hello in prose." };
+    },
+  });
+  t.after(() => fake.close());
+  const { row, messages } = await runOn(t, {
+    harness: "claude-agent",
+    model: { provider: "anthropic", modelId: "claude-haiku-5-5" },
+    body: { outputSchema: OK_SCHEMA },
+    prepare: (data) => linkHarnesses(data),
+    env: (data) => ({ [DATA_ENV]: data, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }),
+  });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const retry = "Your final JSON did not match the output schema: the answer has no fenced json block. Reply again, ending with the corrected json block.";
+  assert.deepEqual(messages.map((message) => [message.role, message.text, message.origin?.reason]), [
+    ["person", "Say hello.", undefined],
+    ["model", "Hello in prose.", undefined],
+    ["person", retry, "output_retry"],
+    ["model", 'Fixed.\n\n```json\n{"ok": true}\n```', undefined],
+  ]);
+  assert.ok(asked.at(-1).includes("Hello in prose."), "the retry went on in the same session: its request holds the first answer");
+});
 
 test("a claude-agent run, claimed by the runner, runs its first turn through the dispatch on the CLI spec, on the pinned Agent SDK and CLI, and ends with its answer", { timeout: 180_000 }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Hello from Claude." }) });
@@ -433,6 +475,11 @@ test("a CLI's absolute path under its working directory is the run's folder: a w
   // itself. The CLI is handed no bash at all, granted or not.
   assert.deepEqual(built.session.tools.map((tool) => tool.name).filter((name) => name.startsWith("bash")), [], "no bash-family tool");
   assert.deepEqual(built.session.tools.map((tool) => tool.name).filter((name) => ["read", "write"].includes(name)).sort(), ["read", "write"], "the file tools stay");
+});
+
+test("a CLI run's opening message is saved as inputs/message.md in the run's folder, as on pi", async (t) => {
+  const { dir } = await specOn(t, "opencode");
+  assert.equal(readFileSync(join(runFolder(dir, "agent-1", RUN), "inputs", "message.md"), "utf8"), "Write a file.");
 });
 
 test("Mode 2 (the server's Archil settings saved): the CLI still works in the run's scratch on this machine, a write to <cwd>/x.txt lands as x.txt in the run's folder on the Archil disk, and bash runs as Archil exec, at most 295 s", async (t) => {

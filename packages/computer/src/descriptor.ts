@@ -1,9 +1,9 @@
 // A provider's descriptor: everything a server, Settings and the conformance kit need to know of a vendor before any
 // of its code loads. Each vendor declares one, once, in its descriptor module (src/descriptors/<id>.ts, data and a lazy
-// load() alone), and its provider module takes its MOUNT and CAPABILITIES from it. The kind registry's PROVIDERS and
+// load() alone), and its provider module reads its mounts and capabilities from it. The kind registry's PROVIDERS and
 // the provider registry are derived from the descriptors; nothing beside them repeats what a descriptor says.
 import type { ComputerSettingKind, KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
+import type { MountKind, Unmounted } from "./mount.js";
 import type { NetworkForm } from "./provider.js";
 import type { ProviderModule } from "./providers.js";
 
@@ -67,9 +67,16 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	/** The mount kinds its computers take, as its providers' capabilities().mount declare them; [] for none. */
 	readonly mounts: readonly MountKind[];
 	/**
-	 * The network forms its computers make, as its providers' capabilities().network declare them: ["none"], a remote
-	 * computer whose programs run in a network of their own; ["open"], the vendor's own network, which no allowlist of
-	 * this server reaches; Docker's makes all three. A provider of several configurations declares every form they make.
+	 * Mount kinds its computers don't take though a caller would ask for them, each with why in one sentence: check()
+	 * refuses such a mount in these words, and serve says them where the run's folder can't be had (Daytona's archil).
+	 */
+	readonly unmounted?: Unmounted;
+	/**
+	 * The network forms its computers make and enforce, as its providers' capabilities().network declare them: ["none"],
+	 * a remote computer whose programs run in a network of their own and nothing else; ["open"], the vendor's own network,
+	 * which no allowlist of this server reaches; a hosted computer through init's egress proxy (hosted/network.ts) makes
+	 * all three, as Docker's does. A form not declared is refused at check, never widened or narrowed to another. A
+	 * provider of several configurations declares every form they make.
 	 */
 	readonly network: readonly NetworkForm[];
 	/**
@@ -139,6 +146,11 @@ export function descriptorProblems(value: unknown): string[] {
 	if (typeof d.metered !== "boolean") problems.push("metered is not true or false");
 	if (typeof d.load !== "function") problems.push("load is not a function that imports the provider module");
 	if (!Array.isArray(d.mounts) || d.mounts.some((kind) => kind !== "bind" && kind !== "archil")) problems.push("mounts is not a list of mount kinds (bind, archil)");
+	if (d.unmounted !== undefined) {
+		const entries = typeof d.unmounted === "object" && d.unmounted !== null && !Array.isArray(d.unmounted) ? Object.entries(d.unmounted) : undefined;
+		if (entries === undefined || entries.some(([kind, why]) => (kind !== "bind" && kind !== "archil") || typeof why !== "string" || why.trim() === "")) problems.push("unmounted maps mount kinds (bind, archil) to why, in words");
+		else if (Array.isArray(d.mounts) && entries.some(([kind]) => d.mounts?.includes(kind as MountKind))) problems.push("unmounted names a mount kind that mounts declares");
+	}
 	if (!Array.isArray(d.network) || d.network.length === 0 || d.network.some((form) => form !== "none" && form !== "open" && form !== "allow")) problems.push("network is not a list of the network forms its computers make (none, open, allow)");
 	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
 	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");

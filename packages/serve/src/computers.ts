@@ -24,7 +24,7 @@ import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./s
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { withPaired } from "./workspace/attached-computers.js";
-import { type ComputerSettingKind, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { aLabel, type ComputerSettingKind, type ShellPlace, mode2ArchilWhy, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -52,6 +52,8 @@ export interface ProviderEntry {
   readonly keys: readonly { readonly name: string; readonly required: boolean; readonly picked?: boolean }[];
   /** The mounts its computers take; none means it cannot mount the run's folder. */
   readonly mounts: readonly string[];
+  /** Why its computers take none of these mounts, each in one sentence (Daytona's archil), as its descriptor says. */
+  readonly unmounted?: Readonly<Partial<Record<string, string>>>;
   /** The network forms its computers make ("none", "open", "allow"), as its descriptor declares them. Absent (a
    *  test's fixture): nothing is said of its network. */
   readonly network?: readonly string[];
@@ -59,6 +61,8 @@ export interface ProviderEntry {
   readonly capabilities: readonly KindCapabilities[];
   /** The image a computer of each kind starts from when its setting names none. */
   readonly defaultImage?: Partial<Record<ComputerKind, string>>;
+  /** Its provider makes its image ready before the first create (its descriptor's prepareImage). */
+  readonly prepareImage?: boolean;
   /** A program its computers need on this machine's PATH, what installs it, and the machines it is built for
    *  (`${platform}-${arch}`; absent, every one), as its descriptor declares it: the phone's adb. Absent: none. */
   readonly hostCommand?: HostCommand;
@@ -175,8 +179,10 @@ const noNetworkWhy = (provider: ProviderEntry): string =>
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
  *  makes "none" alone, "open" alone, or "open" and "allow" but no "none" (a browser behind its own proxy); none where
  *  the allow-list applies as it is (Docker), or nothing is declared. */
-export function networkWords(network: readonly string[] | undefined): string | undefined {
+export function networkWords(network: readonly string[] | undefined, kind?: ComputerKind): string | undefined {
   if (network?.length === 1 && network[0] === "none") return NO_NETWORK_WORDS;
+  // A desktop whose provider makes open is open under the default list (computer-deps.ts networkOf), as Local Chrome is.
+  if (kind === "desktop" && network?.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   if (network?.length === 1 && network[0] === "open") return VENDOR_NETWORK_WORDS;
   if (network?.length === 2 && network.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   return undefined;
@@ -206,12 +212,19 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
  *  A sandbox holds the run's folder: Mode 1 keeps it on this machine, which only a computer that binds a local folder
  *  (Docker) reaches; Mode 2 keeps it on the owner's disk, which only a computer that mounts the disk reaches (never a
  *  local Docker bind). A desktop, phone or browser holds no folder unless its provider mounts it, so either mode takes
- *  it. */
+ *  it. A sandbox that mounts the disk can't start yet either, nor can a desktop that would mount it (resolve-computer.ts
+ *  mode2ArchilWhy), unless its provider prepares its image (prepareImage: Agent37 registers the box image, which has
+ *  Archil's client, in the owner's workspace; Modal pulls it; E2B starts its public template). */
 export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
+  // A desktop with files and exec on a provider that mounts the disk would mount it in Mode 2, so it needs the image too.
+  if (kind === "desktop") return mode === "disk" && provider.mounts.includes("archil") && !provider.prepareImage && provider.capabilities.some((one) => one.kind === "desktop" && one.groups.includes("files") && one.groups.includes("exec")) ? mode2ArchilWhy(provider.label, "desktop") : undefined;
   if (kind !== "sandbox") return undefined;
   if (mode === "local" && !provider.mounts.includes("bind")) return `${provider.label} can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
-  if (mode === "disk" && !provider.mounts.includes("archil")) return `${provider.label} can't mount the owner's disk this server keeps run folders on: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
-  return undefined;
+  if (mode === "disk" && !provider.mounts.includes("archil")) {
+    const why = provider.unmounted?.archil;
+    return `${provider.label} can't mount the owner's disk this server keeps run folders on${why ? ` (${why})` : ""}: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
+  }
+  return mode === "disk" && !provider.prepareImage ? mode2ArchilWhy(provider.label, "sandbox") : undefined;
 }
 
 /** The GPUs a sandbox of `provider` gives, as its configuration that serves a sandbox declares them, or undefined. */
@@ -297,7 +310,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
           const serving = provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0);
           const images = imagesOf(serving, provider.defaultImage?.[kind]);
-          const network = refusedOpen(provider) ? NETWORK_REFUSED_WORDS : networkWords(provider.network);
+          const network = refusedOpen(provider) ? NETWORK_REFUSED_WORDS : networkWords(provider.network, kind);
           // A sandbox's GPUs: only a sandbox takes them (computer-setting.ts computerIssues).
           const gpu = kind === "sandbox" ? sandboxGpu(kinds, provider) : undefined;
           // The configurations of this kind that keep an agent's own computer (computer-setting.ts persistenceIssues).
@@ -427,7 +440,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const options = providerOptions(providerId, await keysOf(entry), settings, keyTable);
     if (!options.ok) throw new Error(options.error.message);
     const make = Object.hasOwn(factories, providerId) ? factories[providerId] : undefined;
-    if (typeof make !== "function") throw new Error(`this server cannot make a ${entry.label} provider`);
+    if (typeof make !== "function") throw new Error(`this server cannot make ${aLabel(entry.label)} provider`);
     const configuration = image === undefined ? undefined : entry.capabilities.find((one) => one.image === image);
     const made = (await make({ ...options.options, ...((configuration?.options ?? {}) as Record<string, string>) })) as unknown as Partial<Pick<ComputerProvider, "release">>;
     if (typeof made.release !== "function") throw new Error(`this server's ${entry.label} provider cannot release a computer`);

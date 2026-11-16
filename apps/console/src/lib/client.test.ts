@@ -56,6 +56,17 @@ describe("createClient", () => {
     expect(new Headers(get.init?.headers).get("content-type")).toBeNull();
   });
 
+  it("rotates a trigger's secret with no body at all: the route refuses any, `{}` too; the JSON type stays, as every cookie write needs", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { signing_secret: "whsec_fake", secret: { name: "trigger:t 1", set: true, source: "console", changed_at: null } }));
+    const v2 = createClient({ fetch: fn });
+    await v2.rotateTriggerSecret("t 1");
+    const [rotate] = calls;
+    expect([rotate.init?.method, rotate.url]).toEqual(["POST", "/v2/triggers/t%201/secret"]);
+    expect(rotate.init?.body).toBeUndefined();
+    expect(new Headers(rotate.init?.headers).get("content-type")).toBe("application/json");
+    expect(rotate.init?.credentials).toBe("same-origin");
+  });
+
   it("asks the timeline from its cursor and long-polls", async () => {
     const { fn, calls } = fakeFetch(() => json(200, running.body));
     const v2 = createClient({ fetch: fn });

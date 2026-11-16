@@ -345,7 +345,7 @@ func rgb(img image.Image, x, y int) [3]int {
 
 func TestOnXvfbTheDisplayIsDeclared(t *testing.T) {
 	k := onXvfb(t)
-	if got := strings.Join(k.display.Groups(), ","); got != "screen,input.pointer,input.keys" {
+	if got := strings.Join(k.display.Groups(), ","); got != "screen,input.pointer,input.keys,apps" {
 		t.Fatalf("groups %q", got)
 	}
 	var empty result

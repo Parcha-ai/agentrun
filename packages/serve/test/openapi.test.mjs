@@ -135,10 +135,11 @@ test("the contract's operations are as vendored; this server's own are added and
       continue;
     }
     if (op.operationId === "getTimeline") {
-      // A page's limit: the contract's parameters, then this server's one, and the rest as vendored.
-      assert.deepEqual(Object.keys(changes), ["limit"]);
-      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
-      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["limit", "query", false]);
+      // A page's limit and a grader's calls=whole: the contract's parameters, then this server's two, the rest as vendored.
+      assert.deepEqual(Object.keys(changes), ["limit", "calls"]);
+      assert.deepEqual(op.parameters.slice(0, -2), original.parameters);
+      assert.deepEqual(op.parameters.slice(-2).map((p) => [p.name, p.in, p.required]), [["limit", "query", false], ["calls", "query", false]]);
+      assert.deepEqual(op.parameters.at(-1).schema, { enum: ["whole"] });
       const { parameters: _a, ...same } = rest;
       const { parameters: _b, ...vendoredSame } = original;
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");
@@ -183,9 +184,9 @@ test("the contract's operations are as vendored; this server's own are added and
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getAgent is the contract's but for its 200's tools");
       continue;
     }
-    if (op.operationId === "cancelRun" || op.operationId === "createRun") {
-      // What a cancel's 202 reads here, and how long a run create's key replays: the contract's description, then this
-      // server's own reading of it.
+    if (op.operationId === "cancelRun" || op.operationId === "createRun" || op.operationId === "stopRun") {
+      // What a cancel's 202 reads here, how long a run create's key replays, and what a stopped run's pending reads: the
+      // contract's description, then this server's own reading of it.
       assert.deepEqual(Object.keys(changes), ["description"]);
       assert.ok(op.description.startsWith(original.description.trimEnd()), "the contract's description comes first");
       const { description: _a, ...same } = rest;
@@ -247,6 +248,14 @@ test("the contract's operations are as vendored; this server's own are added and
       // A contract property whose enum this server widens (models.source) is marked on the property, each value it adds
       // listed, as RunStatus is: cut back to the vendored enum and description, it is the contract's.
       const vendored = at.split(".").slice(1).reduce((object, key) => object?.properties?.[key], VENDORED.components.schemas[at.split(".")[0]])?.properties?.[field];
+      if (at === "TimelineUsage" && field === "requests") {
+        assert.equal(property["x-agentrun-serve"], "native/1");
+        assert.deepEqual(property.type, ["integer", "null"], "native aggregate turns cannot invent a model request count");
+        assert.equal(property.minimum, vendored.minimum);
+        schema.properties[field] = structuredClone(vendored);
+        marked.push(`${at}.${field}`);
+        continue;
+      }
       if (Array.isArray(vendored?.enum) && Array.isArray(property.enum)) {
         for (const value of property.enum.filter((v) => !vendored.enum.includes(v))) marked.push(`${at}.${field}.${value}`);
         property.enum = property.enum.filter((v) => vendored.enum.includes(v));
@@ -433,6 +442,7 @@ test("capabilities(), the exported helper, gives a document that passes the publ
   assert.notDeepEqual(schemaProblems(doc, shape, { ...plain, models: { ...plain.models, source: "elsewhere" } }), []);
   const caps = await capabilities({});
   assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
+  assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ models, ...offer }) => offer) }), [], "a harness without its models is refused too");
 });
 
 test("the decision providers' widening is its own addition, decisions/3 (parallel, then its route), and info lists it", async (t) => {

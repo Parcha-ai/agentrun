@@ -3,8 +3,18 @@
 // harness: it rides in the first message itself, which runs.ts sends to the run's door. Bounded: at most
 // MANIFEST_ENTRIES files, then how many more, and never past what the door takes in one message (FIRST_MESSAGE_BYTES):
 // a message that fits at the run's creation still fits with its line.
-import { INPUTS_DIR } from "./uploads.js";
+import { INPUTS_DIR, MESSAGE_FILE } from "./uploads.js";
 import { type Entry, type Workspace, workspaceAt } from "./workspace/index.js";
+
+const MESSAGE_PATH = `${INPUTS_DIR}/${MESSAGE_FILE}`;
+
+/** The run's opening message as its inputs/message.md holds it: the start's `content` when it is a string, as sent; ""
+ *  (no file) for any other input. */
+export function messageText(input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return "";
+  const { content } = input as Record<string, unknown>;
+  return typeof content === "string" ? content : "";
+}
 
 /** The most files the line names; the rest are counted. */
 export const MANIFEST_ENTRIES = 20;
@@ -58,12 +68,32 @@ export async function inputFiles(given: Workspace | string): Promise<ManifestFil
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       const path = `${dir}/${entry.name}`;
+      // The run's message as a file (uploads.ts MESSAGE_FILE) is the message itself, never one of the files given to it.
+      if (path === MESSAGE_PATH) continue;
       if (entry.kind === "file") files.push({ path, size: entry.size });
       else if (depth < INPUTS_DEPTH) await into(path, depth + 1);
     }
   };
   await into(INPUTS_DIR, 1);
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** The text a run's input is sent to its model as, on every harness: its `content`, then, after a blank line, its other
+ *  fields (an agent's typed input, definition.input_schema) as one fenced json block under the line `Input:`, so the
+ *  model reads each field by its name and its value as given, never as prose a value could break out of. The fence is
+ *  longer than any run of backticks in the JSON, so no value ends the block. No other field: the content alone. */
+export function inputMessage(input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return "";
+  const { content, ...fields } = input as Record<string, unknown>;
+  const text = typeof content === "string" ? content : "";
+  if (!Object.keys(fields).length) return text;
+  const json = JSON.stringify(fields, null, 2);
+  // A loop, never a spread into Math.max: a value may hold more runs of backticks than a call takes arguments.
+  let longest = 3;
+  for (const run of json.matchAll(/`+/g)) longest = Math.max(longest, run[0].length + 1);
+  const fence = "`".repeat(longest);
+  const block = `Input:\n${fence}json\n${json}\n${fence}`;
+  return text ? `${text}\n\n${block}` : block;
 }
 
 /** The run's first message: `content`, then, after a blank line, the files given to it, when it has any: as many named

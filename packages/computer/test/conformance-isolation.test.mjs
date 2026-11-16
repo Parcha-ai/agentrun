@@ -1,9 +1,15 @@
 // The conformance case isolation.vendor-agent against fake computers: a program the computer's user runs reaches no
 // port of the vendor's own agent, on either loopback, and no outside address (a public IP literal on 443, a DNS name),
 // and sees its own loopback alone. The agent's ports are each provider's own declaration
-// (capabilities().vendorAgentPorts), never the case's. No Docker, no daemon, no vendor.
+// (capabilities().vendorAgentPorts), never the case's. And isolation.root-runs: that user can write nothing root runs.
+// No Docker, no daemon, no vendor.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { ROOT_RUNS, rootRunsArgv } from "../dist/conformance/cases/isolation.js";
 import { conformanceCases, coreGroups, runConformance } from "../dist/index.js";
 import { fakeComputers } from "./fake-computer.mjs";
 
@@ -95,6 +101,21 @@ test("a desktop's own display socket (the daemon's DISPLAY :N, /tmp/.X11-unix/XN
 	assert.match(reasons(linux)[ID], /X11-unix\/X99/);
 });
 
+test("an abstract name (@...) a program connects to is a socket like any other: the display's own (@/tmp/.X11-unix/XN, its X server's) passes, any other fails, named", async () => {
+	// E2B's xfwm4 had a session bus on an abstract name (dbus 1.12's unix:tmpdir), which a program of the user called,
+	// and a check of path sockets alone never saw. The X server listens on the display's path and its abstract name both.
+	const own = ["/run/agentrun/computerd.sock"];
+	const desktop = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], vendorAgentPorts: [2280], display: ":99" };
+	const passing = await run({ ...desktop, pathSockets: [...own, "/tmp/.X11-unix/X99", "@/tmp/.X11-unix/X99"] });
+	assert.deepEqual(statuses(passing), { [ID]: "pass" }, reasons(passing)[ID]);
+	const bus = await run({ ...desktop, pathSockets: [...own, "/tmp/.X11-unix/X99", "@/tmp/.X11-unix/X99", "@/tmp/dbus-3dtpvhCTRZ"] });
+	assert.equal(statuses(bus)[ID], "fail");
+	assert.match(reasons(bus)[ID], /@\/tmp\/dbus-3dtpvhCTRZ \(stream\)/);
+	const linux = await run({ vendorAgentPorts: [2280], pathSockets: [...own, "@/tmp/.X11-unix/X0"] });
+	assert.equal(statuses(linux)[ID], "fail", "a computer with no desktop has no display's name of its own");
+	assert.match(reasons(linux)[ID], /@\/tmp\/\.X11-unix\/X0/);
+});
+
 test("it fails where a program sees another interface than its own loopback, and names them", async () => {
 	const report = await run({ vendorAgentPorts: [2280], probeInterfaces: ["lo", "eth0"] });
 	assert.equal(statuses(report)[ID], "fail");
@@ -115,7 +136,7 @@ test("it fails where a program connects to a path unix socket that is not the co
 	// failure in words, never a fence that silently did not run.
 	const unlisted = await run({ vendorAgentPorts: [2280], pathSockets: "no list" });
 	assert.equal(statuses(unlisted)[ID], "fail");
-	assert.match(reasons(unlisted)[ID], /no list of the path unix sockets/);
+	assert.match(reasons(unlisted)[ID], /no list of the unix sockets/);
 	// Review (#1994, PRRT_kwDOUmdVMs61HER9): a datagram or seqpacket socket is reachable too, and is named with its type.
 	const dgram = await run({ vendorAgentPorts: [2280], pathSockets: [...own, { path: "/run/systemd/journal/socket", type: "dgram" }] });
 	assert.equal(statuses(dgram)[ID], "fail");
@@ -127,6 +148,33 @@ test("it fails where a program connects to a path unix socket that is not the co
 	assert.match(reasons(partial)[ID], /could not search .*\/workspace: the walk stopped after 50000 entries/);
 });
 
+test("it fails where something but computerd listens in the user's own network, naming the port; computerd's own listener passes, and every listener is recorded", async () => {
+	// The listener fence: the probe lists the TCP and UDP listeners in its own namespace (/proc/net/tcp, tcp6, udp, udp6),
+	// each tied to the process that holds it. Computerd listens on nothing there today, so a passing run lists none.
+	const quiet = await run({ vendorAgentPorts: [2280] });
+	assert.deepEqual(statuses(quiet), { [ID]: "pass" }, reasons(quiet)[ID]);
+	assert.ok(quiet.results[0].observed.includes("TCP and UDP listeners in the user's own network: none"), JSON.stringify(quiet.results[0].observed));
+	const own = { protocol: "tcp", address: "127.0.0.1", port: 3128, uid: 2510, owner: "pid 1 (computerd)", computerd: true };
+	const passing = await run({ vendorAgentPorts: [2280], listeners: [own] });
+	assert.deepEqual(statuses(passing), { [ID]: "pass" }, reasons(passing)[ID]);
+	assert.ok(passing.results[0].observed.some((line) => line.includes("tcp 127.0.0.1 port 3128 (pid 1 (computerd), computerd)")), JSON.stringify(passing.results[0].observed));
+	const stray = await run({ vendorAgentPorts: [2280], listeners: [own, { protocol: "tcp", address: "0.0.0.0", port: 8080, uid: 2510, owner: "pid 77 (python3)", computerd: false }] });
+	assert.equal(statuses(stray)[ID], "fail");
+	assert.match(reasons(stray)[ID], /tcp port 8080 listens in the user's own network \(on 0\.0\.0\.0, pid 77 \(python3\)\), and it isn't computerd's/);
+	assert.doesNotMatch(reasons(stray)[ID], /3128/, "computerd's own listener is not named as a stray");
+	// One whose holder the probe cannot see (another user's, or root's) is not computerd's either.
+	const unseen = await run({ vendorAgentPorts: [2280], listeners: [{ protocol: "udp6", address: "::", port: 5353, uid: 0, owner: "", computerd: false }] });
+	assert.equal(statuses(unseen)[ID], "fail");
+	assert.match(reasons(unseen)[ID], /udp6 port 5353 listens in the user's own network \(on ::, its owner not shown\), and it isn't computerd's/);
+	// A daemon whose probe lists no listeners, or a table it could not read, proves nothing: the case fails in words.
+	const unlisted = await run({ vendorAgentPorts: [2280], listeners: "no list" });
+	assert.equal(statuses(unlisted)[ID], "fail");
+	assert.match(reasons(unlisted)[ID], /no list of the TCP and UDP listeners/);
+	const partial = await run({ vendorAgentPorts: [2280], listenerSearchIncomplete: ["/proc/net/tcp6: permission denied"] });
+	assert.equal(statuses(partial)[ID], "fail");
+	assert.match(reasons(partial)[ID], /could not read every table of listeners.*\/proc\/net\/tcp6: permission denied/);
+});
+
 test("it is skipped in words where nothing is declared (Docker), and fails Core for a child daemon that declares nothing", async () => {
 	const docker = await run({});
 	assert.equal(statuses(docker)[ID], "skip");
@@ -134,4 +182,82 @@ test("it is skipped in words where nothing is declared (Docker), and fails Core 
 	const child = await run({ mode: "child" });
 	assert.equal(statuses(child)[ID], "fail");
 	assert.match(reasons(child)[ID], /vendor-agent/);
+});
+
+// --- isolation.root-runs: the computer's user can write nothing root runs ---
+
+const ROOT_ID = "isolation.root-runs";
+const runRoot = (options) => runConformance(fakeComputers(options).provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.id === ROOT_ID) });
+
+test("isolation.root-runs is a Core case of the isolation group that needs exec alone, so every provider with computerd takes it", () => {
+	const found = conformanceCases.filter((c) => c.id === ROOT_ID);
+	assert.equal(found.length, 1);
+	assert.equal(found[0].level, "core");
+	assert.equal(found[0].group, "isolation");
+	assert.deepEqual(found[0].needs, ["exec"]);
+	for (const path of ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/opt/agentrun/computerd", "/usr/local/sbin/agentrun-archil", "/usr/bin/archil", "/usr/bin/envd", "/etc/inittab"]) assert.ok(ROOT_RUNS.includes(path), path);
+});
+
+test("isolation.root-runs passes where the user can write none of what root runs or the directories above it, and records every path it read", async () => {
+	for (const mode of ["pid1", "child"]) {
+		const report = await runRoot({ mode, vendorAgentPorts: [] });
+		assert.deepEqual(statuses(report), { [ROOT_ID]: "pass" }, reasons(report)[ROOT_ID]);
+		const line = report.results[0].observed.find((one) => one.startsWith("what root runs, and the directories above it, as the computer's user: "));
+		for (const path of ["/usr/local/sbin", "/usr/local", "/usr", "/", "/opt/agentrun", "/usr/local/sbin/agentrun-archil"]) assert.ok(line?.includes(path), `${path} in ${line}`);
+	}
+});
+
+test("isolation.root-runs fails where the user can write a directory on root's PATH, a helper, or a directory above one, naming each", async () => {
+	for (const writable of [["/usr/local/sbin"], ["/usr/local/sbin/agentrun-archil"], ["/usr/local"], ["/opt/agentrun"], ["/usr/bin/envd"], ["/etc/inittab"], ["/etc"], ["/usr/local/bin", "/usr/local/sbin"]]) {
+		const report = await runRoot({ rootRunsWritable: writable });
+		assert.equal(statuses(report)[ROOT_ID], "fail", writable.join(", "));
+		for (const path of writable) assert.match(reasons(report)[ROOT_ID], new RegExp(`the computer's user can write what root runs: .*${path.replaceAll("/", "\\/")}`));
+	}
+});
+
+test("isolation.root-runs' check, run by sh: each path that is there and every directory above it, writable or closed by test -w, a missing one skipped, nothing written", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-root-runs-"));
+	try {
+		const open = join(root, "open");
+		const shut = join(root, "shut");
+		mkdirSync(open);
+		mkdirSync(shut);
+		writeFileSync(join(shut, "helper"), "");
+		chmodSync(join(shut, "helper"), 0o555);
+		chmodSync(shut, 0o555);
+		const argv = rootRunsArgv([open, join(shut, "helper"), join(root, "absent")]);
+		const ran = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stderr);
+		const lines = ran.stdout.trim().split("\n");
+		assert.ok(lines.includes(`writable ${open}`), ran.stdout);
+		assert.ok(lines.includes(`writable ${root}`), "the directory above, the user's own");
+		assert.ok(lines.includes(`closed ${shut}/helper`) && lines.includes(`closed ${shut}`), ran.stdout);
+		assert.ok(lines.includes("closed /"), "up to /");
+		assert.ok(!lines.some((line) => line.includes("absent")), "a missing path is skipped");
+		assert.deepEqual(readdirSync(shut), ["helper"], "nothing written");
+	} finally {
+		chmodSync(join(root, "shut"), 0o755);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// BusyBox's test -w reads the mode bits alone, and as root says yes to every path: in a user and mount namespace of its
+// own (root there), with a read-only bind of one directory, only the mount's options tell the two apart.
+const roMounts = spawnSync("unshare", ["-Urm", "true"]).status === 0 && spawnSync("busybox", ["true"]).status === 0;
+test("isolation.root-runs' check, run by BusyBox's sh as root: a path on a read-only mount is closed, the directory above it writable", { skip: roMounts ? false : "needs unshare -Urm and busybox" }, () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-root-runs-ro-"));
+	try {
+		const shut = join(root, "shut");
+		mkdirSync(shut);
+		writeFileSync(join(shut, "helper"), "");
+		const argv = rootRunsArgv([join(shut, "helper")]);
+		const ran = spawnSync("unshare", ["-Urm", "sh", "-c", 'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1" && shift && exec busybox sh -c "$@"', "sh", shut, argv[2], ...argv.slice(3)], { encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stderr);
+		const lines = ran.stdout.trim().split("\n");
+		assert.ok(lines.includes(`closed ${shut}/helper`) && lines.includes(`closed ${shut}`), ran.stdout);
+		assert.ok(lines.includes(`writable ${root}`), ran.stdout);
+		assert.deepEqual(readdirSync(shut), ["helper"], "nothing written");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

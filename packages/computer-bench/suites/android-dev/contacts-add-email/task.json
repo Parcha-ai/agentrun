@@ -1,0 +1,61 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.contacts.add-email",
+  "version": 1,
+  "title": "Add an email address to a contact in Contacts",
+  "split": "heldout",
+  "tags": ["contacts", "edit"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
+  "params": {
+    "who": {
+      "pick": [
+        { "first": "Noor", "last": "Haddad", "user": "noor.haddad" },
+        { "first": "Felix", "last": "Wagner", "user": "fwagner" },
+        { "first": "Ama", "last": "Boateng", "user": "ama.b" },
+        { "first": "Luca", "last": "Romano", "user": "luca.romano" }
+      ]
+    },
+    "domain": { "pick": ["example.com", "example.org", "example.net"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No contact with this run's nonce is left from an earlier try.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The contact to edit: a name and a phone number, no email address.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "add", "computer-bench-{{nonce}}", "{{who.first}} {{who.last}} {{nonce}}", "303 555 0116"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the contacts app on its list, with its contacts permissions granted.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "open"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Contacts, add the email address {{who.user}}.{{nonce}}@{{domain}} to the contact \"{{who.first}} {{who.last}} {{nonce}}\", and save.",
+  "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
+  "checks": [
+    {
+      "id": "email-and-phone",
+      "kind": "exec",
+      "why": "Prints the contact's email rows, then its phone rows. The emails hold exactly {{who.user}}.{{nonce}}@{{domain}} (any case), and the phone setup gave it (303 555 0116) is still there, so the address went onto this contact rather than a new one replacing it. Setup gave it no email, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "sh -c \"$1\" sh emails \"$2\"; sh -c \"$1\" sh phones \"$2\"", "sh", "{{file:contacts.sh}}", "{{who.first}} {{who.last}} {{nonce}}"],
+      "stdout": { "matches": "data1={{who.user}}\\.{{nonce}}@{{domain}}\\s*$[\\s\\S]*data1=\\D*(?:1\\D+)?3\\D*0\\D*3\\D*5\\D*5\\D*5\\D*0\\D*1\\D*1\\D*6(?!\\d)", "flags": "im" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete every contact holding the nonce.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "add-email", "{{who.first}} {{who.last}} {{nonce}}", "{{who.user}}.{{nonce}}@{{domain}}"], "timeoutMs": 30000 }
+    }
+  ]
+}

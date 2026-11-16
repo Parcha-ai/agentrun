@@ -80,7 +80,7 @@ final class PairingTests: XCTestCase {
 	}
 
 	func testTheControlCallsAreNeverADriverMethod() {
-		let driver = Driver(platform: FakeOS().platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		let driver = Driver(platform: FakeOS().platform(), policy: Policy(), caller: .attached, machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
 		let methods = driver.router().methods
 		XCTAssertFalse(methods.contains(Control.pair), "attach serves the driver's router: pairing is the socket's only")
 		XCTAssertFalse(methods.contains(Control.unpair))

@@ -4,14 +4,16 @@
 //   anthropic-messages: ANTHROPIC_BASE_URL's base (an Anthropic-compatible endpoint) or api.anthropic.com, with
 //     ANTHROPIC_API_KEY as `x-api-key`, priced as Anthropic's; or OpenRouter's Messages endpoint (openRouterOnly, or a
 //     model the run names on it, `openrouter/anthropic/<model-id>`), with OPENROUTER_API_KEY as a bearer token, priced
-//     as OpenRouter's. Either way the wire carries Anthropic's own id (`claude-sonnet-5-5`). Its own settings only:
-//     AGENT_MODEL_BASE_URL is the other wire's gateway.
+//     as OpenRouter's. Either way the wire carries Anthropic's own id (`claude-sonnet-5-5`). Its own settings only, but
+//     for a Claude model of serve's gateway (pi's, model.ts gatewayWire), which goes to the gateway as on Responses.
 //   openai-responses: the gateway at AGENT_MODEL_BASE_URL's base with its key (AGENT_MODEL_API_KEY, or none), the model
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
 import type { Wire } from "@parcha/agentrun-kernel";
-import { chooseModel, FAUX_ENV, hostModel, type ModelNeeds, type ModelRef } from "./model.js";
+import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
 import { WIRES } from "./wires.js";
+import { modelFormWhy } from "./model-form.js";
+import { EXPIRED, PLAN_ORIGIN, PLAN_PROVIDER, planOf, SIGNED_OUT } from "./chatgpt-plan.js";
 
 // Each wire's own settings live in a leaf module (wires.ts), which the harness table reads as it loads.
 export { WIRES };
@@ -103,7 +105,9 @@ export function anthropicModelId(model: ModelRef): string {
  *  path), its key, read per request, how the endpoint takes it, the model id sent, and the catalog entry that prices it.
  *  `who`: the harness, for a refusal's words. Throws a HarnessUnavailable where the run cannot go: a model of another
  *  vendor, a key that is not set (its `keys` name the ones that would fix it), or an endpoint a key may not go to. */
-export type Provider = { origin: string; credential: () => string; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef };
+/** `billing: "plan"`: a ChatGPT plan's route (chatgpt-plan.ts), billed to the plan, never priced here; its credential is
+ *  the plan's token, asked at each request, and `refused` tells the plan OpenAI answered 401 to one it sent. */
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void> };
 
 /** OpenRouter's key, read per request, refused by name where it is not set. */
 function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () => string {
@@ -111,9 +115,16 @@ function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () =
   return () => env.OPENROUTER_API_KEY ?? "";
 }
 
+/** Serve's gateway (AGENT_MODEL_BASE_URL) on either wire: its base, its key (AGENT_MODEL_API_KEY, or none) as a bearer
+ *  token, the model id as model.ts chose it, priced as runModels prices it. */
+const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
+
 export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef, who: string): Provider {
   const named = `${model.provider}/${model.modelId}`;
   if (wire === "anthropic-messages") {
+    // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
+    // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).
+    if (model.provider === MODEL_PROVIDER && env.AGENT_MODEL_BASE_URL) return gatewayProvider(env, model);
     if (model.provider === "openrouter" && model.modelId.startsWith("anthropic/")) {
       const own = anthropicModelId({ provider: "anthropic", modelId: model.modelId.slice("anthropic/".length) });
       return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", modelId: `anthropic/${openRouterName(own)}` } };
@@ -127,7 +138,13 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
     return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own } };
   }
-  if (env.AGENT_MODEL_BASE_URL) return { origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model };
+  // A ChatGPT plan's model: OpenAI's Responses API on the plan's token, whatever else is set.
+  if (model.provider === PLAN_PROVIDER) {
+    const plan = planOf(env);
+    if (plan?.state !== "signed_in") throw new HarnessUnavailable(plan?.state === "expired" ? EXPIRED : SIGNED_OUT);
+    return { origin: PLAN_ORIGIN, credential: () => plan.token(), auth: "bearer", modelId: model.modelId, priceModel: model, billing: "plan", refused: (sent) => plan.refused(sent) };
+  }
+  if (env.AGENT_MODEL_BASE_URL) return gatewayProvider(env, model);
   if (model.provider === "openrouter" && model.modelId.startsWith("openai/")) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: model.modelId, priceModel: model };
   if (model.provider !== "openai") throw new HarnessUnavailable(`${who} runs OpenAI models; the run's model is ${named}.`);
   if (openRouterOnly(wire, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: named, priceModel: model };
@@ -166,12 +183,12 @@ export async function modelOn(wire: Wire, env: NodeJS.ProcessEnv, ref: string | 
     if (env[FAUX_ENV] || !openRouterOnly(wire, env) || !named?.startsWith(`${vendor}/`)) return chooseModel(env, ref, "default", harness);
     const modelId = named.slice(vendor.length + 1);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    if (!builtinModels().getModel(vendor, modelId)) return { why: `pi-ai knows no model ${modelId} of ${vendor}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
+    if (!builtinModels().getModel(vendor, modelId)) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
     return { model: { provider: vendor, modelId } };
   }
   if (!named) return { why: `No model yet for ${harness}: add an OpenRouter or ${label} key in Settings → Model keys, or set OPENROUTER_API_KEY or ${WIRES[wire].key} where AgentRun starts.`, host: true };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `${harness} runs a model named ${vendor}/<model-id>; the run's model is ${named}.`, host: ref === undefined };
+  if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   // OpenRouter's name for a model is OpenRouter's provider, then the vendor's model; another vendor's is providerFor's
   // to refuse.

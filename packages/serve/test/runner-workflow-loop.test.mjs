@@ -168,6 +168,30 @@ test("a plain stop ends the run stopped, in the person's words", async (t) => {
   assert.equal(rows.find((row) => row.id === stop.id).takenAt !== null, true, "the stop row is taken");
 });
 
+// The end's patch waits (up to END_PATCH_MS) on its reads after the workflow completed: a person's stop that comes then is
+// the end's, as a stop before it is (the run ends stopped whatever the workflow's own outcome), never a completed end.
+test("a person's stop while the end waits on its patch ends the run stopped, its stop taken, the patch's cost kept", async (t) => {
+  const { store, claim, workflow } = await claimedWorkflow(t);
+  let patchAsked;
+  const asked = new Promise((resolve) => (patchAsked = resolve));
+  let answerPatch;
+  const answered = new Promise((resolve) => (answerPatch = resolve));
+  const endPatch = async () => (patchAsked(), await answered, { costUsd: 0.25, metrics: { requests: 1 } });
+  const spec = async () => ({ ...(await workflowSpec(workflow, { question: "What is six times seven?" })), endPatch });
+  const loop = createWorkflowLoop(spec)({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const started = loop.start(claim);
+  await asked;
+  const stop = await store.command("run-1", { kind: "stop", body: {} });
+  const stopping = loop.stop({ kind: "command", commandId: stop.id });
+  answerPatch();
+  assert.deepEqual(await started, { state: "stopped" }, "the stop's end, never a completed one");
+  await stopping;
+  const run = await store.runs.get("run-1");
+  assert.deepEqual([run.state, run.summary, run.outcome, run.costUsd], ["stopped", "stopped by a person", "stopped", 0.25]);
+  const rows = await store.commands("run-1", 0);
+  assert.deepEqual([rows.find((row) => row.id === stop.id).takenAt !== null, rows.find((row) => row.id === stop.id).refused ?? null], [true, null], "the stop row is taken by the end");
+});
+
 test("a workflow run takes no messages or answers", async (t) => {
   const { store, claim } = await claimedWorkflow(t);
   const loop = loopOn(store, answerFlow(), { question: "What is six times seven?" });

@@ -3,11 +3,11 @@
 // daemon's wire over one exec'd process.
 import { PassThrough, Writable } from "node:stream";
 import { DaemonClient } from "../client.js";
-import type { HostCall, MachineHost, MachineProcess } from "../host.js";
+import { type HostCall, HostError, type MachineHost, type MachineProcess } from "../host.js";
 import type { ArchilRoot } from "../mount-archil.js";
 import type { ComputerConnection } from "../provider.js";
 import type { HelloResult } from "../protocol.js";
-import { type ComputerErrorCode, errorOf, ok, type Result } from "../result.js";
+import { type ComputerErrorCode, failFor, ok, type Result } from "../result.js";
 
 /** What a call's race adds to the bound it gives the vendor's own call, so the vendor's timeout, not the race, reports a slow call. */
 export const CALL_SLACK_MS = 5_000;
@@ -37,17 +37,51 @@ export const pause = (ms: number, signal?: AbortSignal) =>
 /** A signal that aborts with the caller's, or once ms pass. */
 export const bounded = (ms: number, signal?: AbortSignal): AbortSignal => (signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms));
 
-/** The failures of one host: an error of code vendor names it. */
-export const failOf =
-	(host: Pick<MachineHost, "id">) =>
-	(code: ComputerErrorCode, message: string): Result<never> => ({ ok: false, error: errorOf(code, message, host.id) });
+/**
+ * A promise that rejects with an AbortError (the caller's signal aborted) or a TimeoutError (ms passed), and clear to
+ * stop listening when the work finished first.
+ */
+export function boundOf(ms: number, signal: AbortSignal | undefined, what: string): { promise: Promise<never>; clear: () => void } {
+	const bound = bounded(ms, signal);
+	let onAbort: () => void = () => {};
+	const promise = new Promise<never>((_, reject) => {
+		onAbort = () => {
+			const timedOut = !signal?.aborted;
+			const error = new Error(timedOut ? `${what} did not answer within ${seconds(ms)}` : `${what} was aborted`);
+			error.name = timedOut ? "TimeoutError" : "AbortError";
+			reject(error);
+		};
+		if (bound.aborted) onAbort();
+		else bound.addEventListener("abort", onAbort, { once: true });
+	});
+	promise.catch(() => {});
+	return { promise, clear: () => bound.removeEventListener("abort", onAbort) };
+}
 
 /**
- * Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. A host call that
- * answers a Result is passed on as it answers; one that throws is read through the host's errorCode.
+ * The code of an error a host threw: a HostError's own, AbortError and TimeoutError by name, else the host's errorCode,
+ * else "vendor".
  */
-export function race<T>(host: Pick<MachineHost, "id" | "errorCode">, promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
-	const fail = failOf(host);
+export function codeOfError(host: Pick<MachineHost, "errorCode">, error: unknown): ComputerErrorCode {
+	if (error instanceof HostError) return error.code;
+	const name = (error as { name?: unknown } | null)?.name;
+	if (name === "AbortError") return "aborted";
+	if (name === "TimeoutError") return "timeout";
+	return host.errorCode?.(error) ?? "vendor";
+}
+
+/** A Result's value, or a HostError in its words: for a host whose own client answers Results (hosted/rest.ts). */
+export function orThrow<T>(result: Result<T>): T {
+	if (result.ok) return result.value;
+	throw new HostError(result.error.code, result.error.message);
+}
+
+/**
+ * Settles with the promise's value, or a timeout or abort in words once ms pass or signal aborts. A host call that
+ * throws is read through codeOfError.
+ */
+export function race<T>(host: Pick<MachineHost, "descriptor" | "errorCode">, promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
+	const fail = failFor(host.descriptor.id);
 	if (signal?.aborted) {
 		promise.catch(() => {});
 		return Promise.resolve(fail("aborted", `${what} was aborted`));
@@ -66,29 +100,40 @@ export function race<T>(host: Pick<MachineHost, "id" | "errorCode">, promise: Pr
 		}
 		promise.then(
 			(value) => done(ok(value)),
-			(error: unknown) => done(signal?.aborted ? fail("aborted", `${what} was aborted`) : fail(host.errorCode(error), `${what} failed: ${words(error)}`)),
+			(error: unknown) => done(signal?.aborted ? fail("aborted", `${what} was aborted`) : fail(codeOfError(host, error), `${what} failed: ${words(error)}`)),
 		);
 	});
 }
 
 /**
  * One host call, bounded: ctx.timeoutMs is the vendor's own bound, and the race gives it CALL_SLACK_MS more. A call
- * that throws at once is an error like one that rejects; a Result the host answers keeps its own words, prefixed.
+ * that throws at once is an error like one that rejects. A call given up on (timeout or abort), by the race or by the
+ * host's own client (a HostError timeout), hands onLate what it answers: its value, or its failure, once it settles.
  */
-export async function hostCall<T>(host: Pick<MachineHost, "id" | "errorCode">, what: string, run: (ctx: HostCall) => Promise<Result<T>>, ms: number, signal?: AbortSignal): Promise<Result<T>> {
-	const fail = failOf(host);
+export async function hostCall<T>(
+	host: Pick<MachineHost, "descriptor" | "errorCode">,
+	what: string,
+	run: (ctx: HostCall) => Promise<T>,
+	ms: number,
+	signal?: AbortSignal,
+	onLate?: (late: Result<T>) => unknown,
+): Promise<Result<T>> {
+	const fail = failFor(host.descriptor.id);
 	if (signal?.aborted) return fail("aborted", `${what} was aborted before it was called`);
-	let promise: Promise<Result<T>>;
+	let promise: Promise<T>;
 	try {
 		promise = Promise.resolve(run({ timeoutMs: ms, ...(signal ? { signal } : {}) }));
 	} catch (error) {
-		return fail(host.errorCode(error), `${what} failed: ${words(error)}`);
+		return fail(codeOfError(host, error), `${what} failed: ${words(error)}`);
 	}
 	const raced = await race(host, promise, what, ms + CALL_SLACK_MS, signal);
-	if (!raced.ok) return raced;
-	const answered = raced.value;
-	if (answered.ok) return answered;
-	return { ok: false, error: { ...answered.error, message: `${what} failed: ${answered.error.message}` } };
+	if (!raced.ok && onLate && (raced.error.code === "timeout" || raced.error.code === "aborted")) {
+		promise.then(
+			(value) => onLate(ok(value)),
+			(error: unknown) => onLate(fail(codeOfError(host, error), `${what} failed: ${words(error)}`)),
+		);
+	}
+	return raced;
 }
 
 /** Reads every chunk of a stream into one buffer, at most `max` bytes kept (the last ones). */
@@ -120,15 +165,19 @@ const OUTPUT_MAX = 64 * 1024;
  * A non-zero exit is a result, not an error.
  */
 export async function runToExit(host: MachineHost, id: string, argv: readonly string[], { stdin, ms, signal, what }: { stdin?: Uint8Array; ms: number; signal?: AbortSignal; what: string }): Promise<Result<RunResult>> {
-	const fail = failOf(host);
-	const started = await hostCall(host, what, (ctx) => host.exec(id, argv, { stdin: stdin !== undefined }, ctx), ms, signal);
+	const fail = failFor(host.descriptor.id);
+	const started = await hostCall(host, what, (ctx) => host.exec(id, argv, ctx), ms, signal);
 	if (!started.ok) return started;
 	const proc = started.value;
 	const out = drain(proc.stdout, OUTPUT_MAX);
 	const err = drain(proc.stderr, OUTPUT_MAX);
 	const ran = (async (): Promise<RunResult> => {
-		if (stdin !== undefined) {
-			// In pieces, so a vendor whose stdin takes one request at a time (E2B's sendStdin) is never handed a whole binary.
+		// In pieces, so a vendor whose stdin takes one request at a time (E2B's sendStdin) is never handed a whole binary;
+		// with none to give, stdin ends at once, so the process reads end of file (one that ended already has no stdin). Not
+		// awaited: a vendor's close that stalls (E2B's closeStdin is a request of its own) never holds up a command that
+		// reads no input.
+		if (stdin === undefined) Promise.resolve().then(() => proc.end()).catch(() => {});
+		else {
 			for (let at = 0; at < stdin.length; at += STDIN_CHUNK) await proc.write(stdin.subarray(at, at + STDIN_CHUNK));
 			await proc.end();
 		}
@@ -152,7 +201,7 @@ const STDIN_CHUNK = 256 * 1024;
 export async function uploadThroughExec(host: MachineHost, id: string, path: string, bytes: Uint8Array, ms: number, signal?: AbortSignal): Promise<Result<void>> {
 	const ran = await runToExit(host, id, ["sh", "-c", 'umask 077 && cat > "$1"', "sh", path], { stdin: bytes, ms, ...(signal ? { signal } : {}), what: `the upload to ${path}` });
 	if (!ran.ok) return ran;
-	return ran.value.exitCode === 0 ? ok(undefined) : failOf(host)("vendor", `the upload to ${path} exited with ${ran.value.exitCode}: ${`${ran.value.stdout} ${ran.value.stderr}`.trim().slice(0, 300)}`);
+	return ran.value.exitCode === 0 ? ok(undefined) : failFor(host.descriptor.id)("vendor", `the upload to ${path} exited with ${ran.value.exitCode}: ${`${ran.value.stdout} ${ran.value.stderr}`.trim().slice(0, 300)}`);
 }
 
 /**
@@ -182,29 +231,15 @@ export async function openBridge(
 	id: string,
 	{ argv, name, version, requestMs, helloMs, signal }: { argv: readonly string[]; name: string; version: string; requestMs: number; helloMs: number; signal?: AbortSignal },
 ): Promise<Opened> {
-	const fail = failOf(host);
-	const what = `starting the daemon's stdio bridge in ${name}`;
-	if (signal?.aborted) return fail("aborted", `${what} was aborted before it was called`);
-	let starting: Promise<Result<MachineProcess>>;
-	try {
-		starting = Promise.resolve(host.exec(id, argv, { stdin: true }, { timeoutMs: requestMs }));
-	} catch (error) {
-		return fail(host.errorCode(error), `${what} failed: ${words(error)}`);
+	const fail = failFor(host.descriptor.id);
+	// Never signalled, only raced: the bridge lives on after this call. It has no command timeout, so one the vendor
+	// starts after this was given up on is killed as it lands.
+	const started = await hostCall(host, `starting the daemon's stdio bridge in ${name}`, (ctx) => host.exec(id, argv, { timeoutMs: ctx.timeoutMs }), requestMs, signal, (late) => late.ok && late.value.kill());
+	if (!started.ok) {
+		const { code, message } = started.error;
+		return code === "timeout" || code === "aborted" ? fail(code, `${message}; a bridge that starts after this is killed`) : started;
 	}
-	const raced = await race(host, starting, what, requestMs + CALL_SLACK_MS, signal);
-	if (!raced.ok) {
-		// The bridge has no command timeout: one the vendor starts after this was given up on is killed as it lands.
-		if (raced.error.code === "timeout" || raced.error.code === "aborted") {
-			starting.then(
-				(late) => (late.ok ? late.value.kill() : undefined),
-				() => {},
-			);
-			return fail(raced.error.code, `${raced.error.message}; a bridge that starts after this is killed`);
-		}
-		return raced;
-	}
-	if (!raced.value.ok) return fail(raced.value.error.code, `${what} failed: ${raced.value.error.message}`);
-	const proc = raced.value.value;
+	const proc = started.value;
 	const readable = new PassThrough();
 	let stderr = "";
 	void (async () => {

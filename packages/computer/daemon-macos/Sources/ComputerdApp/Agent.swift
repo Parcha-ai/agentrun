@@ -13,7 +13,7 @@ enum Agent {
 	static var plistPath: String { NSHomeDirectory() + "/Library/LaunchAgents/\(label).plist" }
 	static var domain: String { "gui/\(getuid())" }
 
-	/// The agent's job, for the executable at this path. scripts/mini-bootstrap.sh writes the same keys.
+	/// The agent's job, for the executable at this path.
 	static func job(executable: String) -> NSDictionary {
 		[
 			"Label": label,

@@ -1,17 +1,20 @@
 // An agent's cost per run, run after run (GET /agents/{id}/learning/cost): what each run of its cost, what learning added
 // for it, and the path it took, so a person sees the cost fall once a learned workflow does the job, and by how much.
 // Aggregates only: no run's input, answer or tool text. The store's reader (store-reads/learning.ts agentCostOverStore)
-// gives each run's figures and its path (runner/learning-end.ts runPathOf); this module sums its learning and says what the
+// gives each run's figures and its path (its run record's metrics.path, store-reads/learning.ts runPathOverStore); this module sums its learning and says what the
 // series shows (costSummary), the rule the console, the CLI and the CSV all read. It imports only the errors, so the API
 // document reads its words.
 
 import { ApiError } from "./errors.js";
 
-/** The path a run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow
- *  calls, each answering, and nothing was said after its first message: the runner's own rule for a run with nothing new
- *  to look back on, runner/learning-end.ts onlyLearnedWorkflows); `handed_back`, a learned workflow ran and the agent
- *  went on (it failed, escalated, or the agent did more work after it); `agent`, no learned workflow ran. */
-export const RUN_PATHS = ["agent", "handed_back", "workflow"] as const;
+/** The path a run took: `workflow`, a learned workflow finished it alone (served first and answered, or its job's only
+ *  tool calls were learned_workflow calls, each answering, and nothing was said after its first message: the runner's own
+ *  rule for a run with nothing new to look back on, runner/learning-end.ts onlyLearnedWorkflows); `handed_back`, a
+ *  learned workflow ran and the agent went on (it handed back, failed, escalated, or the agent did more work after it);
+ *  `agent`, no learned workflow ran; `replay`, a replay run deciding whether a learned workflow's new revision serves
+ *  (runner/promotion.ts: the workflow alone on a graded run's input, at workflow cost). One classifier (store-reads/learning.ts runPathOverStore) writes it on the run's
+ *  record at its end (metrics.path). */
+export const RUN_PATHS = ["agent", "handed_back", "workflow", "replay"] as const;
 export type RunPath = (typeof RUN_PATHS)[number];
 
 /** What a run that looked back kept of its costs as it answered (runner/reflect-hook.ts: store-reads/learning.ts
@@ -52,41 +55,73 @@ export type CostRun = {
    *  that served it. Null for a run that does not learn. */
   learned_revision: string | null;
   cost_usd: number | null;
+  /** Its stored cost is only a bound (the run row's `costAtMostUsd`: a request cut at its cap hold): `cost_usd` and `total_usd` are null, the bound is never shown as a cost. */
+  cost_upper_bound: boolean;
   learning_usd: number | null;
   total_usd: number | null;
 };
 
 /** The fewest runs after the takeover a "times cheaper" figure needs: fewer say too little. */
 export const CHEAPER_AFTER_RUNS = 20;
+
+/** How many of a learned workflow's newest runs served first at one version the money rule reads
+ *  (runner/workflow-first.ts costLineOf); under that many, it serves. */
+export const COST_WINDOW = 10;
 /** The latest runs the route answers by default, and at most. */
 export const COST_RUNS_DEFAULT = 1000;
 export const COST_RUNS_MAX = 10_000;
 
+/** The serving promotion's replay (store-reads/learning.ts servingReplayOf): on `n` inputs, the workflow's accuracy and the
+ *  agent's in percent to a tenth, and whether it `cleared` the bar promotion reads (learn/promote.ts withinBar). */
+export type CostReplay = { n: number; workflow_pct: number; agent_pct: number; cleared: boolean };
+
 /** What the series shows: `takeover`, its first `workflow` run, null before one; `before`, the mean of the job's own $
- *  (learning left out) over its `agent` runs before the takeover (every one when there is none yet), whose cost is known;
- *  `after`, the mean all-in $ (learning included) of every run from the takeover on whose total is known; and
- *  `times_cheaper`, before over after to a tenth, once `after` counts CHEAPER_AFTER_RUNS runs or more, else null. The
- *  before side leaves learning out and the after side keeps it in, so the figure never flatters learning. */
+ *  (learning left out) over its `agent` runs before the takeover (every one when there is none yet), whose cost is known
+ *  exactly; `after`, the mean all-in $ (learning included) of every run from the takeover on whose total is known exactly;
+ *  and `times_cheaper`, before over after to a tenth, once `after` counts CHEAPER_AFTER_RUNS runs or more and every run
+ *  either side reads is known exactly, else null. The before side leaves learning out and the after side keeps it in, so
+ *  the figure never flatters learning. `withheld`: after a takeover, how many runs either side reads have an unknown cost
+ *  and how many one known only as at most (`cost_upper_bound`); while any does there is no ratio, null when none does.
+ *  `hand_backs`: of the runs a learned workflow ran first on from the takeover on (`workflow` or `handed_back`), how many
+ *  handed back; null before a takeover. `replay`: the serving promotion's, as given. Every one is over every run, never
+ *  only the latest a read lists. */
 export type CostSummary = {
   takeover: { n: number; run_id: string } | null;
   before: { runs: number; mean_usd: number } | null;
   after: { runs: number; mean_usd: number } | null;
   times_cheaper: number | null;
+  hand_backs: { ran: number; back: number } | null;
+  withheld: { unknown: number; at_most: number } | null;
+  replay: CostReplay | null;
 };
 
-export function costSummary(runs: readonly CostRun[]): CostSummary {
+export function costSummary(runs: readonly CostRun[], replay: CostReplay | null = null): CostSummary {
   const first = runs.findIndex((run) => run.path === "workflow");
-  const mean = (values: number[]) => (values.length ? { runs: values.length, mean_usd: usd(values.reduce((a, b) => a + b, 0) / values.length) } : null);
-  const before = mean((first < 0 ? runs : runs.slice(0, first)).flatMap((run) => (run.path === "agent" && run.cost_usd !== null ? [run.cost_usd] : [])));
-  const after = first < 0 ? null : mean(runs.slice(first).flatMap((run) => (run.total_usd === null ? [] : [run.total_usd])));
-  const times = before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
-  return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, times_cheaper: times };
+  // Each side's figures: the job's own $ before, all-in after; `bound`, known only as at most.
+  type Figure = { value: number | null; bound: boolean };
+  const beforeSide: Figure[] = (first < 0 ? runs : runs.slice(0, first)).filter((run) => run.path === "agent").map((run) => ({ value: run.cost_usd, bound: run.cost_upper_bound }));
+  const afterSide: Figure[] = first < 0 ? [] : runs.slice(first).map((run) => ({ value: run.total_usd, bound: run.cost_upper_bound }));
+  const mean = (side: Figure[]) => {
+    const values = side.flatMap(({ value, bound }) => (value === null || bound ? [] : [value]));
+    return values.length ? { runs: values.length, mean_usd: usd(values.reduce((a, b) => a + b, 0) / values.length) } : null;
+  };
+  const before = mean(beforeSide);
+  const after = first < 0 ? null : mean(afterSide);
+  const read = [...beforeSide, ...afterSide];
+  // A bound is at most (the row stores its cost null); unknown is a null cost with no bound.
+  const unknown = read.filter(({ value, bound }) => value === null && !bound).length;
+  const atMost = read.filter(({ bound }) => bound).length;
+  const withheld = first >= 0 && unknown + atMost > 0 ? { unknown, at_most: atMost } : null;
+  const times = !withheld && before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
+  const ranFirst = first < 0 ? [] : runs.slice(first).filter((run) => run.path === "workflow" || run.path === "handed_back");
+  const handBacks = first < 0 ? null : { ran: ranFirst.length, back: ranFirst.filter((run) => run.path === "handed_back").length };
+  return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, times_cheaper: times, hand_backs: handBacks, withheld, replay };
 }
 
 /** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. A text cell that
  *  a spreadsheet would read as a formula (one starting with =, +, -, @, a tab or a carriage return) starts with a `'`, so
  *  it opens as the text it is. */
-export const COST_CSV_COLUMNS = ["n", "run_id", "started_at", "path", "workflow", "learned_revision", "cost_usd", "learning_usd", "total_usd"] as const;
+export const COST_CSV_COLUMNS = ["n", "run_id", "started_at", "path", "workflow", "learned_revision", "cost_usd", "cost_upper_bound", "learning_usd", "total_usd"] as const;
 export function costCsv(runs: readonly CostRun[]): string {
   const cell = (value: unknown) => {
     const raw = value === null || value === undefined ? "" : String(value);

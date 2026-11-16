@@ -13,6 +13,7 @@ import { MACHINE_PATH } from './machine-path.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
+import { RECORD as DAEMON_RECORD, sourceDigest as daemonSourceDigest } from '../packages/computer/scripts/daemon-source.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
 import { ALLOWED_MARKS, attributionProblems, boundaryProblems, carriesUpstream } from './upstream-attribution.mjs';
 
@@ -66,8 +67,9 @@ function templateFiles() {
 // copied; no other package may carry them.
 const allowedExtraFiles = {
   'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json', 'package/src/vendor/browser-use-pi/UPSTREAM.json'],
-  // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
-  'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
+  // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs),
+  // and OpenAI's o200k_base vocabulary, unchanged, with its licenses (src/host/o200k.ts reads it to count input tokens).
+  'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json', 'package/vendor/o200k/o200k_base.tiktoken', 'package/vendor/o200k/LICENSE'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
@@ -81,8 +83,9 @@ const allowedExtraFiles = {
   // installer (skill.mjs) and its template package check (template.mjs).
   // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
   // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile, and the scripts that build it
-  // as a Daytona snapshot, a Modal image, an E2B template or an Agent37 template.
-  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/build-agent37.mjs'],
+  // as a Daytona snapshot, a Modal image or an E2B template, and the recipe's hash with its types (dist/box-image.js names
+  // the published image by it, which Agent37 registers as a template).
+  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
   agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
@@ -110,6 +113,12 @@ const allowedEndpoints = {
     // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.
     ['dist/chrome.js',
       'http://127.0.0.1:${port}/json/version'], // key-gate: loopback-rule the local Chrome's own DevTools socket
+    // The network-open conformance case asks a hosted computer's egress proxy for metadata, a private address and the
+    // vendor agent's loopback port, each of which it must refuse: addresses the case sends to be refused, never reached.
+    ['dist/conformance/cases/provider.js', 'http://169.254.169.254/latest/meta-data/'],
+    ['dist/conformance/cases/provider.js', 'https://169.254.169.254/'],
+    ['dist/conformance/cases/provider.js', 'https://10.0.0.1/'],
+    ['dist/conformance/cases/provider.js', 'http://127.0.0.1:${port}/'], // key-gate: loopback-rule the vendor agent's port, which the case's proxy must refuse
   ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
@@ -119,10 +128,20 @@ const allowedEndpoints = {
     // The CLI's last resort for the server started on this machine: the address agentrun-serve binds by default.
     ['lib/cli.mjs',
       'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
+    // The native-connect skill documents a loopback port placeholder for the server on the source machine.
+    ['skills/agentrun-cli/SKILL.md', 'http://127.0.0.1:PORT'],
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
     ['README.md', 'http://127.0.0.1:7340'],
+    // Native connect uses the same public default and refuses a host outside loopback (src/native/cli.ts).
+    ['dist/native/cli.js', 'http://127.0.0.1:7340'],
+    // Reflection replaces inherited HTTP MCP transports with this inert placeholder only after disabling them;
+    // it confirms every server is still disabled before dispatch (src/native/runtime.ts), so no endpoint is called.
+    ['dist/native/runtime.js', 'http://127.0.0.1:1'],
+    // The served skill and its source copy document that same local native-connect default.
+    ['dist/skills/agentrun-serve/SKILL.md', 'http://127.0.0.1:7340'],
+    ['skills/agentrun-serve/SKILL.md', 'http://127.0.0.1:7340'],
     // The same address in the changelog entry the release fold writes from the package's fragment (#625).
     ['CHANGELOG.md', 'http://127.0.0.1:7340'],
     // The agentrun.v2/0 contract, vendored unchanged for GET /v2/openapi.json: its servers list the local server's default address.
@@ -139,12 +158,15 @@ const usedEndpoints = new Set();
 // dist/computerd-linux-<arch> into each computer, Daytona and Modal upload it. `npm run build:daemon -w @parcha/agentrun-computer`
 // (Go, after `npm run build`) writes both, and the check below requires each, executable by everyone (every computer drops
 // every capability, so its root runs the mounted binary only if everyone may), an ELF for its architecture, stamped with the
-// package's version, the one its hello reports. Its ./mount subpath is what a host reads the mount rule from. The Docker
+// package's version, the one its hello reports, beside dist/computerd.json, the record of the daemon source they were built
+// from (packages/computer/scripts/daemon-source.mjs), which must be this tree's: a checkout without Go takes the binaries
+// from the published package by that record. Its ./mount subpath is what a host reads the mount rule from. The Docker
 // provider binds dist/docker and package.json into each egress proxy container, which runs the egress files with Node alone.
+// dist/box-image.js imports box/recipe.mjs at run time, to name the published box image Agent37 registers.
 const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
-  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`)],
+  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
 };
 
 try {
@@ -178,7 +200,7 @@ try {
     const extracted = join(temporary, `inspect-${directory}`);
     await mkdir(extracted);
     await run('tar', ['-xzf', tarball, '-C', extracted]);
-    for (const name of requiredFiles[directory] ?? []) assert.ok(names.includes(name), `${manifest.name} must hold ${name.slice('package/'.length)}${name.includes('/computerd-linux-') ? ': run npm run build:daemon -w @parcha/agentrun-computer (Go) after the build' : ''}`);
+    for (const name of requiredFiles[directory] ?? []) assert.ok(names.includes(name), `${manifest.name} must hold ${name.slice('package/'.length)}${name.includes('/computerd') ? ': run npm run build:daemon -w @parcha/agentrun-computer after the build' : ''}`);
     if (directory === 'computer') {
       for (const [arch, machine] of Object.entries(daemonMachines)) {
         const name = `package/dist/computerd-linux-${arch}`;
@@ -187,7 +209,9 @@ try {
         assert.ok(bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && bytes.readUInt16LE(18) === machine, `${name} is a Linux ${arch} ELF`);
         assert.ok(bytes.includes(Buffer.from(manifest.version)), `${name} is stamped with ${manifest.version}: build the daemon again after the version changes`);
       }
-      receipt.checks.push(`${manifest.name} holds LICENSE, NOTICE, its ./mount subpath, the egress proxy's code, and the daemon for linux ${Object.keys(daemonMachines).join(' and ')}, each an executable ELF stamped ${manifest.version}.`);
+      const record = JSON.parse(await readFile(join(extracted, 'package', 'dist', DAEMON_RECORD), 'utf8'));
+      assert.deepEqual(record, { version: manifest.version, source: daemonSourceDigest(join(cwd, 'daemon')) }, `dist/${DAEMON_RECORD} names this version and this tree's daemon source: build the daemon again after either changes`);
+      receipt.checks.push(`${manifest.name} holds LICENSE, NOTICE, its ./mount subpath, the egress proxy's code, and the daemon for linux ${Object.keys(daemonMachines).join(' and ')}, each an executable ELF stamped ${manifest.version}, and the record of the daemon source they were built from.`);
     }
     for (const name of names.filter(n => !n.endsWith('/'))) {
       const content = await readFile(join(extracted, name), 'utf8');
@@ -373,7 +397,7 @@ assert.ok(loadAuthorReference('language').includes(authorContract()));
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
-{ assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); assert.ok(Array.isArray(module.MOUNT)&&module.MOUNT.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' MOUNT'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o777,0o755&~process.umask(),'the install has dist/computerd-linux-'+arch+', executable (0755 less the umask npm installed it under)'); }
+{ assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); const mounts=computer.descriptorOf(id)?.mounts; assert.ok(Array.isArray(mounts)&&mounts.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' mounts'); assert.equal(module.MOUNT,undefined,id+' exports no MOUNT: the descriptor holds its mounts'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o777,0o755&~process.umask(),'the install has dist/computerd-linux-'+arch+', executable (0755 less the umask npm installed it under)'); }
 { const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
 console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,network:'prohibited'}));
 `);
@@ -506,12 +530,12 @@ void browser;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'browser-consumer.ts'], consumer);
   await writeFile(join(consumer, 'computer-consumer.ts'), `import { checkMount, MOUNT_KINDS, readBackOf, WORKSPACE, type MountKind, type MountReadBack, type MountSpec } from '@parcha/agentrun-computer/mount';
-import { providerModule, type ComputerProvider, type ProviderModule } from '@parcha/agentrun-computer';
-// A host checks a run folder's mount from the subpath, and reads a provider's mount kinds from its registry line.
+import { descriptorOf, type ComputerProvider } from '@parcha/agentrun-computer';
+// A host checks a run folder's mount from the subpath, and reads a provider's mount kinds from its descriptor.
 const spec: MountSpec = { kind: 'bind', path: WORKSPACE };
 const back: MountReadBack = readBackOf(spec);
 const kinds: readonly MountKind[] = MOUNT_KINDS;
-const takes = async (id: string): Promise<readonly MountKind[]> => { const module: ProviderModule = await providerModule(id); return module.MOUNT; };
+const takes = (id: string): readonly MountKind[] => descriptorOf(id)?.mounts ?? [];
 // @ts-expect-error a read-back never holds the token.
 const leaked: MountReadBack = { kind: 'archil', disk: 'd', region: 'r', folder: 'f', token: 't' };
 void [back, checkMount(spec, kinds), takes, leaked, undefined as ComputerProvider | undefined];

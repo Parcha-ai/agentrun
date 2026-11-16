@@ -24,6 +24,14 @@ describe("runState", () => {
     expect(view("completed", "idle", "agentic", ON, true, { code: "escalated" }).label, "only a failed run").toBe("Completed");
   });
 
+  it("reads a queued run whose desktop or phone is starting as Starting, never Queued; a queued run with none stays Queued", () => {
+    for (const kind of ["desktop", "phone"] as const) {
+      expect(view("queued", "working", "agentic", ON, true, null, undefined, { kind, state: "starting" })).toMatchObject({ label: "Starting", tone: "active", live: true, canMessage: true, messageMode: "steer" });
+    }
+    expect(view("queued", "working", "agentic", ON, true, null, undefined, undefined).label).toBe("Queued");
+    expect(view("working", "working", "agentic", ON, true, null, undefined, { kind: "phone", state: "ready" }).label).toBe("Working");
+  });
+
   it("reads working with no live turn as working: the server relaunches it on its own", () => {
     expect(runState("working", "idle", "agentic")).toMatchObject({ label: "Working", tone: "active", live: true, needsYou: false });
   });

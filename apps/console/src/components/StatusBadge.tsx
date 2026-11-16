@@ -3,12 +3,13 @@ import { Chip } from "@/components/ui/chip";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 
-const ICON = { Queued: Loader, Working: Loader, Completed: Check, Failed: CircleAlert, Escalated: CircleArrowUp, "Needs review": Eye, Cancelled: Ban, "Input required": MessageCircleQuestion, Stopped: Pause, Paused: CirclePause };
+const ICON = { Queued: Loader, Starting: Loader, Working: Loader, Completed: Check, Failed: CircleAlert, Escalated: CircleArrowUp, "Needs review": Eye, Cancelled: Ban, "Input required": MessageCircleQuestion, Stopped: Pause, Paused: CirclePause };
 
 /** The run's status as a chip: the label the console gives serve's status and state (and its error's code, for a run
- *  that ended escalated, and its review, for one that waits for a person). */
-export function StatusBadge({ run }: { run: Pick<Run, "status" | "state" | "kind"> & Partial<Pick<Run, "error" | "review">> }) {
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
+ *  that ended escalated, its review, for one that waits for a person, and its computer, for one whose desktop or phone
+ *  is starting). */
+export function StatusBadge({ run }: { run: Pick<Run, "status" | "state" | "kind"> & Partial<Pick<Run, "error" | "review" | "computer">> }) {
+  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
   const Icon = ICON[view.label as keyof typeof ICON];
   return (
     <Chip tone={view.tone}>

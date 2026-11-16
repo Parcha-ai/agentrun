@@ -97,8 +97,12 @@ public protocol Accessibility: Sendable {
 	var incidentalActions: Set<String> { get }
 	/// The app and window a target names. Throws not_found for an app that is not running or a window it lacks.
 	func resolve(_ target: Target?) throws -> ResolvedTarget
-	/// The window's tree, at most maxNodes nodes.
-	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot
+	/// The window's tree, at most maxNodes nodes. Without details each node's actions are empty and settable false: on a
+	/// Mac those two reads cost as much as the rest of a node, and an act's looks need them only for the elements its
+	/// steps act on, which details(_:) reads.
+	func snapshot(_ target: ResolvedTarget, maxNodes: Int, details: Bool) throws -> Snapshot
+	/// An element's actions and whether its value can be set, as a snapshot with details reads them.
+	func details(_ element: ElementHandle) -> (actions: [String], settable: Bool)
 	/// The element still exists.
 	func exists(_ element: ElementHandle) -> Bool
 	/// Its frame now, in screen points.
@@ -236,6 +240,17 @@ public protocol Workspace: Sendable {
 	func terminate(_ id: String) throws
 }
 
+/// An app telling when its accessibility tree changed (on a Mac, an AXObserver): what lets a settle wait for the app to
+/// go quiet and read its window once, instead of reading it again and again until two reads match. One read of a
+/// SwiftUI window (System Settings on CI) costs 260 to 860 ms.
+public protocol Changes: Sendable {
+	/// Watches the app from now on, if it does not already: every change to its tree after this answers is told. False
+	/// when the app will not tell its changes.
+	func watch(_ pid: Int32) -> Bool
+	/// When, on the platform's Clock, the app last told a change; nil when it told none since watching began.
+	func lastChange(_ pid: Int32) -> Double?
+}
+
 /// Time, so settle and expect run on a fake clock in tests.
 public protocol Clock: Sendable {
 	/// Milliseconds on a monotonic clock.
@@ -266,15 +281,17 @@ public struct Platform: Sendable {
 	public var foreground: any InputRoute
 	/// Foreground input works here (the grant), apart from whether a call allows it.
 	public var foregroundFeature: Feature
-	/// The nav step works here, or why not.
-	public var navFeature: Feature
 	/// input.actions' keyboard and mouse. It is foreground input by nature, so foregroundFeature gates it too.
 	public var raw: any RawInput
 	/// A person's keyboard and mouse, for the take-over check of a ui act that takes the foreground route.
 	public var person: any PersonInput
 	public var clock: any Clock
+	/// Where ui.act last acted, for the live view's frames (Marks): on clock's time.
+	public var marks: Marks
+	/// When an app's tree changed, where the OS tells it; nil where it does not, and a settle looks until two looks match.
+	public var changes: (any Changes)?
 
-	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, navFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock()) {
+	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock(), marks: Marks = Marks(), changes: (any Changes)? = nil) {
 		self.accessibility = accessibility
 		self.capture = capture
 		self.workspace = workspace
@@ -282,20 +299,32 @@ public struct Platform: Sendable {
 		self.backgroundFeature = backgroundFeature
 		self.foreground = foreground
 		self.foregroundFeature = foregroundFeature
-		self.navFeature = navFeature
 		self.raw = raw
 		self.person = person
 		self.clock = clock
+		self.marks = marks
+		self.changes = changes
 	}
 }
 
-/// What the Mac's owner allows every connection: which apps it may touch. Kept in Paths.policy; none means any app.
+/// What the Mac's owner allows, kept in Paths.policy: which apps every connection may touch (none listed means any app),
+/// and what the server this Mac is paired with may use besides them (none listed means none of it).
 public struct Policy: Sendable, Equatable, Codable {
 	/// Bundle ids a connection may touch; nil is any.
 	public var apps: [String]?
+	/// What an attached connection (the paired server's) may use: running programs, files and the whole screen. nil is
+	/// none. The socket (stdio, over SSH or a local harness) is the Mac's own user's and needs no grant.
+	public var server: [ServerGrant]?
 
-	public init(apps: [String]? = nil) {
+	public init(apps: [String]? = nil, server: [ServerGrant]? = nil) {
 		self.apps = apps
+		self.server = server
+	}
+
+	/// The words a call the owner has not granted the paired server is refused in, and hello's off reason for it: what is
+	/// off, who can switch it on, and where.
+	public static func ungranted(_ grant: ServerGrant) -> String {
+		"\(grant.what) is off for the server this Mac is paired with: only this Mac's owner can switch it on, by adding \"\(grant.rawValue)\" to \"server\" in \(Paths.shown(Paths.policy)), as {\"server\": [\"\(grant.rawValue)\"]}"
 	}
 
 	public func allows(_ app: String) -> Bool {
@@ -307,4 +336,52 @@ public struct Policy: Sendable, Equatable, Codable {
 			throw RPCError.denied("this Mac's owner allows Computerd to touch only \(apps!.joined(separator: ", ")), not \(app)")
 		}
 	}
+
+	/// Whether `caller` may use what `grant` covers: the socket always; the paired server only when the owner lists it.
+	public func grants(_ grant: ServerGrant, to caller: Caller) -> Bool {
+		caller == .local || (server ?? []).contains(grant)
+	}
+
+	public func check(_ grant: ServerGrant, for caller: Caller) throws {
+		guard grants(grant, to: caller) else { throw RPCError.denied(Self.ungranted(grant)) }
+	}
+}
+
+/// What the Mac's owner may grant the server it is paired with, as policy.json's "server" lists it. A value not here
+/// makes the file not a policy, which allows no app and grants nothing until it is fixed. exec or files is the run of
+/// the account (either can rewrite policy.json, or what the login starts); screen alone is the screen alone.
+public enum ServerGrant: String, Sendable, Codable, CaseIterable {
+	/// exec.run.
+	case exec
+	/// files.* and tar.*.
+	case files
+	/// screen.shot, screen.read and screen.watch: the whole screen, whichever apps are on it.
+	case screen
+
+	/// The grant a method needs, by its group: exec.*; files.* and tar.*; screen.*. nil for every other method.
+	public init?(method: String) {
+		switch method.prefix(while: { $0 != "." }) {
+		case "exec": self = .exec
+		case "files", "tar": self = .files
+		case "screen": self = .screen
+		default: return nil
+		}
+	}
+
+	var what: String {
+		switch self {
+		case .exec: "running programs (exec)"
+		case .files: "reading and writing files (files, tar)"
+		case .screen: "seeing the whole screen (screen.shot, screen.watch)"
+		}
+	}
+}
+
+/// Who a connection serves.
+public enum Caller: Sendable, Equatable {
+	/// The app's socket: this user's own Computerd binaries, so the stdio binding, over SSH or a local harness. Whoever
+	/// reaches it already has a shell as this user.
+	case local
+	/// The attach binding: the server this Mac is paired with, which dialed nothing in and holds no shell here.
+	case attached
 }

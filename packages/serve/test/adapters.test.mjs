@@ -62,6 +62,10 @@ test("the model id codex is given is the one model.ts chose: OpenAI's own id dir
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" };
   assert.equal((await chooseModel(gateway, "openai/gpt-6.1-sol")).model.modelId, "openai/gpt-6.1-sol", "through a gateway: its name, whole");
   assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-6.1-sol")).model.modelId, "gpt-6.1-sol", "unless the gateway takes bare ids");
+  const bare = { ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare", AGENT_MODEL: "team/model", AGENT_MODEL_FAST: "team/fast" };
+  assert.equal((await chooseModel(bare, "team/model")).model.modelId, "team/model", "a configured id the picker lists goes as configured, not cut");
+  assert.equal((await chooseModel(bare, "team/fast")).model.modelId, "team/fast", "so does a configured tier id");
+  assert.equal((await chooseModel(bare, "openai/gpt-6.1-sol")).model.modelId, "gpt-6.1-sol", "any other ref is still cut");
 });
 
 test("the model id claude-agent sends and prices is Anthropic's own: dots as dashes, as a gateway such as OpenRouter names its models with dots", () => {
@@ -180,6 +184,31 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
   await claudeOf(env, needs, load, loadedSdk);
   assert.deepEqual(given[0].skills, skills, "the skills, as given");
   assert.deepEqual(given.slice(1).map((options) => "skills" in options), [false, false], "none: no option, so the adapter keeps its Skill tool off");
+});
+
+test("a run's clock (a template eval case's now) reaches claude-agent's adapter, whose turn date reads it; a run with none hands no clock", async () => {
+  const real = await import("@parcha/agentrun-harness-claude");
+  const given = [];
+  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, models: { getModel: () => undefined } };
+  const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
+  const now = () => new Date("2026-11-14T09:00:00Z");
+  await claudeOf(env, { ...needs, now }, load, loadedSdk);
+  await claudeOf(env, needs, load, loadedSdk);
+  assert.equal(given[0].now, now);
+  assert.equal("now" in given[1], false, "the real clock: the adapter's own default");
+});
+
+test("a run's time zone reaches claude-agent's adapter, whose turn date reads it; a run with none hands no zone", async () => {
+  const real = await import("@parcha/agentrun-harness-claude");
+  const given = [];
+  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, models: { getModel: () => undefined } };
+  const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
+  await claudeOf(env, { ...needs, zone: "America/Los_Angeles" }, load, loadedSdk);
+  await claudeOf(env, needs, load, loadedSdk);
+  assert.equal(given[0].zone, "America/Los_Angeles");
+  assert.equal("zone" in given[1], false, "no zone: the adapter's own default");
 });
 
 test("each adapter harness's check of skills is its own package's skillProblems, by its table entry (packageSkillCheck); none where a package has no check of its own (each package is a dependency of serve, so it is never missing)", async () => {

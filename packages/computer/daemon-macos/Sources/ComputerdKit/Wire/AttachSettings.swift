@@ -18,19 +18,13 @@ public enum Attach {
 	/// A pairing code: eight characters with no 0, O, 1 or I, "K7PD-W3QX".
 	public static let codeAlphabet = Set("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
 
-	/// Why a socket closed.
+	/// The close codes the driver sends or stops on (the server's full list is src/attach.ts ATTACH_CLOSE).
 	public enum Close {
-		public static let normal = 1000
-		public static let going = 1001
-		public static let binary = 1003
-		public static let tooBig = 1009
 		/// The computer's hello is not what it paired as: pair again.
 		public static let mismatch = 4400
 		/// The token is unknown or was revoked: pair again.
 		public static let unauthorized = 4401
 		public static let idle = 4408
-		/// The same computer dialed again; the older socket is closed.
-		public static let replaced = 4409
 		/// The driver speaks another protocol version: update it.
 		public static let `protocol` = 4426
 	}
@@ -144,7 +138,7 @@ public struct AttachSettings: Sendable, Codable, Equatable {
 }
 
 extension Policy {
-	/// The policy file, or the default (any app) when there is none.
+	/// The policy file, or the default (any app, and nothing granted to the paired server) when there is none.
 	public static func load(_ path: String = Paths.policy) throws -> Policy {
 		guard let data = FileManager.default.contents(atPath: path) else { return Policy() }
 		do {

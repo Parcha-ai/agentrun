@@ -1,0 +1,29 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "fixture.second-page",
+  "version": 1,
+  "title": "Go to the second page (ui fixture)",
+  "split": "heldout",
+  "tags": ["fixture"],
+  "needs": { "os": "macos", "kind": "desktop", "apps": ["ai.agentrun.uifixture"] },
+  "setup": [
+    { "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] },
+    { "method": "apps.launch", "params": { "id": "ai.agentrun.uifixture" } }
+  ],
+  "instruction": "In the UI fixture app, go to the second page.",
+  "budget": { "steps": 6, "usd": 0.1, "wall_s": 20 },
+  "checks": [
+    { "id": "second", "kind": "ui", "why": "The window shows the second page's heading.", "app": "ai.agentrun.uifixture", "find": { "role": "heading", "name": { "equals": "Second page" } }, "min": 1, "max": 1 }
+  ],
+  "teardown": [{ "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] }],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "params": {
+        "target": { "app": "ai.agentrun.uifixture" },
+        "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Next" } } } }],
+        "expect": { "text": "Second page" }
+      }
+    }
+  ]
+}

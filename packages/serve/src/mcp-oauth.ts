@@ -11,6 +11,7 @@ import type { OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAu
 import { ApiError } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import { localAddresses, PRIVATE_HOSTS_PAGE, privateAllowed } from "./mcp-private-hosts.js";
+import type { SourceRecord } from "./mcp-sources.js";
 
 /** The authorization server sends the owner's browser back here; it holds no credential, so it takes none. */
 export const OAUTH_CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
@@ -34,7 +35,9 @@ export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 export type TokenSet = { tokens: OAuthTokens; obtained_at: string; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
 /** `keptFor`: the authorization server (its issuer) a client kept from an earlier sign-in was registered at; the client is
  *  used again only when discovery finds that same one (else it is dropped, and the sign-in registers anew). */
-export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; keptFor?: string; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+/** `source`: what the start said the server is (its source and toolkit, mcp-sources.ts), written for the row the sign-in
+ *  saves. */
+export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; keptFor?: string; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; source?: SourceRecord; expires: number };
 
 /** The authorization server a discovery found, by its issuer (its metadata's, else its URL). */
 export const issuerOf = (state: { authorizationServerUrl?: string; authorizationServerMetadata?: { issuer?: string } } | undefined): string | undefined => state?.authorizationServerMetadata?.issuer ?? state?.authorizationServerUrl;
@@ -384,10 +387,10 @@ export class McpSignIns {
   }
 
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
-  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind; keptFor?: string }): Promise<string> {
+  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind; keptFor?: string; source?: SourceRecord }): Promise<string> {
     const now = Date.now();
     const state = randomBytes(32).toString("base64url");
-    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), expires: now + STATE_MS };
+    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), ...(options.source ? { source: options.source } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const seen: Seen = {};
     const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };

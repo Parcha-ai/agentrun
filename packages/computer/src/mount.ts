@@ -41,12 +41,19 @@ const NUL = "a NUL byte cannot be passed to a mount";
 const filled = (value: unknown): value is string => typeof value === "string" && value !== "";
 
 /**
- * The one mount rule, with no vendor call: no mount is no refusal; a kind the provider does not declare is refused in
- * words; a bind's path is absolute, canonical (its own realpath: what a provider reads back is what is bound), an
- * existing directory on the host, with no NUL; an Archil mount's disk, region, folder and token are non-empty strings with no
- * NUL, the folder relative to the disk's root and never above it. Each refusal names a field, never an Archil value.
+ * Mount kinds a provider's computers don't take though a caller would ask for them, each with why, in the one sentence
+ * its refusal gives (Daytona's archil: Archil's client hangs on its sandboxes).
  */
-export function checkMount(mount: unknown, declared: readonly MountKind[] | undefined): Refusal[] {
+export type Unmounted = Readonly<Partial<Record<MountKind, string>>>;
+
+/**
+ * The one mount rule, with no vendor call: no mount is no refusal; a kind the provider does not declare is refused in
+ * words (the provider's own reason, `unmounted`, where it gives one); a bind's path is absolute, canonical (its own
+ * realpath: what a provider reads back is what is bound), an existing directory on the host, with no NUL; an Archil
+ * mount's disk, region, folder and token are non-empty strings with no NUL, the folder relative to the disk's root and
+ * never above it. Each refusal names a field, never an Archil value.
+ */
+export function checkMount(mount: unknown, declared: readonly MountKind[] | undefined, unmounted: Unmounted = {}): Refusal[] {
 	if (mount === undefined) return [];
 	const refuse = (message: string): Refusal[] => [{ field: "mount", message }];
 	const given = typeof mount === "object" && mount !== null && !Array.isArray(mount) ? (mount as Record<string, unknown>) : undefined;
@@ -54,6 +61,8 @@ export function checkMount(mount: unknown, declared: readonly MountKind[] | unde
 	if (given === undefined || !MOUNT_KINDS.includes(kind as MountKind)) return refuse(SHAPE);
 	const takes = declared ?? [];
 	if (!takes.includes(kind as MountKind)) {
+		const why = unmounted[kind as MountKind];
+		if (why !== undefined) return refuse(why);
 		return refuse(
 			takes.length === 0
 				? `this provider declares no mount kind, so it mounts no run folder (capabilities().mount)`

@@ -1,13 +1,18 @@
-import { BookOpen, ChevronDown, Hourglass, Layers, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
+import { agentHash } from "@/components/AgentPage";
+import { BookOpen, Layers, ChevronDown, Hourglass, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { workflowGraph } from "@dsl/graph";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
+import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { CostPerRun } from "@/components/CostPerRun";
 import { LearnFromCsv } from "@/components/LearnFromCsv";
 import { HeldOutTest } from "@/components/HeldOutTest";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
+import { LoopFeed } from "@/components/LoopFeed";
+import { LoopStory } from "@/components/LoopStory";
+import { compiledInto, storyOf } from "@/lib/learningLoop";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -21,10 +26,11 @@ import {
   counted, type LearnedItem, PROMOTE_SIGN_IN, PROMOTES, statusFile, supersedesOf,
 } from "@/lib/learning";
 import { keeper } from "@/lib/idempotency";
+import { backendSdkOf } from "@/lib/backendSdk";
 import type { Places } from "@/lib/place";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
-import type { Run } from "@/lib/v2";
+import type { LearningCost, LearningLoop, Promotion, Run, Serving } from "@/lib/v2";
 
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there.
  *  `places`: the server's places (capabilities `places`), for where an agent that names no place runs.
@@ -41,41 +47,100 @@ const PROSE = "text-lead leading-[1.65] [&_a]:text-primary-text [&_a]:underline 
 const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 /** The most pages of notes, or of changes, the tab reads past the first on its own (for a link's note, or a note's source). */
 const MORE_PAGES = 20;
+const REFRESH_MS = 15_000;
+const field = "w-full border bg-background px-3 py-2 font-mono text-body outline-none placeholder:text-muted-foreground focus:border-border-strong";
+
+/** Keep the version a person is editing, reviewing or confirming stable until they finish. Take/release the hold
+ * in the state setter: a reply can arrive before React commits, or it can batch a quick operation's start and end. */
+type RefreshHolds = { items: Set<symbol>; changed: (held: boolean) => void };
+function useRefreshState<T = boolean>(holds: RefreshHolds, initial: T = false as T) {
+  const [active, setActive] = useState(initial);
+  const token = useRef(Symbol("learning interaction")).current;
+  useEffect(() => () => { holds.items.delete(token); holds.changed(holds.items.size > 0); }, [holds, token]);
+  const set = (value: T) => {
+    if (value) holds.items.add(token); else holds.items.delete(token);
+    holds.changed(holds.items.size > 0); setActive(value);
+  };
+  return [active, set] as const;
+}
 
 /** The agent's Learning tab: the notes it wrote for itself after its runs, which every later run reads first. Each note
  *  shows where it came from and how often it was used, and a person edits it (its version named, so a change made since
  *  is never written over), retires it, or adds one. Beside them: the learning switch, what runs did not keep and why, the
  *  before and after once there is one, and what the next run reads. */
-export function LearningTab({ agent, v2, focus = [], server, onAgent, places, onChanged }: LearningProps) {
+export function LearningTab(props: LearningProps) {
+  // Drafts and outstanding reads belong to one agent, even if the router reuses this component for another.
+  return <LearningView key={props.agent.agent_id} {...props} />;
+}
+
+function LearningView({ agent, v2, focus = [], server, onAgent, places, onChanged }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
+  // The loop's own reads, shared by the story, the cost chart, the workflow card and the feed: a read that fails leaves
+  // its part out (no marker, no standing, no feed), never the tab.
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [serving, setServing] = useState<Serving[]>([]);
+  const [loop, setLoop] = useState<LearningLoop | null>(null);
+  const [cost, setCost] = useState<LearningCost | null>(null);
   const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown; pages: number }>({ items: [], cursor: null, pages: 0 });
   // The changes past the view's first page, read only while a note's source is not yet known.
   const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
   // Whether the runs read are all the agent's (false: the latest page of them only).
-  const [adding, setAdding] = useState(false);
+  const [held, setHeld] = useState(false);
+  const refreshHolds = useMemo<RefreshHolds>(() => ({ items: new Set<symbol>(), changed: setHeld }), []);
+  const [adding, setAdding] = useRefreshState(refreshHolds);
   // Bumped when a batch from a CSV ends: the chart reads again, with the tab.
   const [batchEnds, setBatchEnds] = useState(0);
   const asked = useRef(0);
   const reading = useRef(false);
+  const live = useRef(true);
+  const refreshing = useRef(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const canRefresh = useRef<() => boolean>(() => false);
+  // Once extra note pages are loaded, keep that snapshot and its cursors until an explicit refresh. Read replies
+  // also respect interactions opened while they were in flight; a write's own refresh still applies its result.
+  canRefresh.current = () => !adding && !refreshHolds.items.size && !reading.current && later.pages === 0;
   // Reads the tab again. The answer settles once the list is read, or once that read failed (it never rejects), so an
   // approve or a retire that landed stays busy until then, and is never left busy after it.
-  const read = (): Promise<void> => {
+  const refresh = (mode: "background" | "manual" | "write"): Promise<void> => {
+    const background = mode === "background";
+    if (!live.current || (background && (refreshing.current || !canRefresh.current()))) return Promise.resolve();
     const n = ++asked.current;
+    refreshing.current = true; setIsRefreshing(true);
     reading.current = false;
     setError(null);
+    const current = () => live.current && n === asked.current && (mode === "write" || !refreshHolds.items.size) && (!background || canRefresh.current());
     const learning = v2.agentLearning(agent.agent_id).then((r) => {
-      if (n !== asked.current) return;
+      if (!current()) return;
       setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
-    }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
+    }, (e) => { if (current()) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
-    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); } }, () => {});
-    return learning;
+    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (current()) { setRuns(r.runs); } }, () => {});
+    // A client without the read (a fake in a test) is a failed read, never a thrown render.
+    Promise.resolve().then(() => v2.learningPromotions(agent.agent_id)).then((r) => { if (current()) { setPromotions(r.promotions); setServing(r.serving); } }, () => {});
+    Promise.resolve().then(() => v2.learningLoop(agent.agent_id)).then((r) => { if (current()) setLoop(r); }, () => {});
+    return learning.finally(() => { if (n === asked.current) { refreshing.current = false; setIsRefreshing(false); } });
   };
-  useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const read = () => refresh("manual");
+  const automatic = useRef<() => void>(() => {});
+  automatic.current = () => { if (!document.hidden) void refresh("background"); };
+  useEffect(() => {
+    live.current = true;
+    void read();
+    const refresh = () => automatic.current();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = window.setInterval(refresh, REFRESH_MS);
+    return () => {
+      live.current = false; asked.current++;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.clearInterval(timer);
+    };
+  }, [v2, agent.agent_id, agent.archived_at]); // eslint-disable-line react-hooks/exhaustive-deps
   // After a write of the tab's own: the tab reads again, and the page is told.
-  const changed = (): Promise<void> => { onChanged?.(); return read(); };
+  const changed = (): Promise<void> => { onChanged?.(); return refresh("write"); };
   // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
   // it, so old and new versions never mix and the cursor is always the current read's.
   const more = () => {
@@ -144,26 +209,50 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     );
   }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
+  // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next. Its
+  // compile counts completed runs only, as the server's trigger does (learn/compile.ts COMPILE_AFTER_RUNS): the cost
+  // series' total counts failed and cancelled runs too. The newest runs read hold enough: the count stops at the threshold.
+  const execution = agent.definition.native ? "native" : backendSdkOf(agent.definition) ? "sdk" : "hosted";
+  const story = storyOf({
+    notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
+    runs: runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
+    mode: agent.definition.learning === "notes" ? "notes" : "full",
+    execution,
+  });
 
-  if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
-  if (!view) return <Skeleton />;
+  const frame = (content: ReactNode) => <div className="space-y-3">
+    <div className="flex justify-end"><Button size="icon" variant="ghost" aria-label="Refresh learning" title="Refresh learning" disabled={held || isRefreshing}
+      onClick={() => { if (!refreshHolds.items.size && !refreshing.current) void read(); }}><RefreshCw className={cn(isRefreshing && "animate-spin")} aria-hidden /></Button></div>
+    {content}
+  </div>;
+  if (error && !view) return frame(<ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />);
+  if (!view) return frame(<Skeleton />);
   // A refresh that failed (after an edit, a retire or a new note) leaves the notes read before it on screen: a line beside
   // them says they were not read again, and why, and Try again reads them again.
   const stale = error ? <RefreshFailed error={error} onRetry={read} /> : null;
 
   const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
-  if (!all.length && !skills.length && !workflows.length && !adding) return (
+  // CSV batches launch capped server runs with follow-up answers; source-owned execution cannot use that route.
+  const learnFromTasks = on && !readOnly && (execution === "hosted"
+    ? <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />
+    : <Banner tone="info">{execution === "native"
+      ? "Run tasks with this agent’s original Claude Code or Codex setup."
+      : "Start tasks in your backend using this agent’s SDK wrapper."} Accepted notes and skills remain available here. CSV learning batches require server-managed execution. <a href={agentHash(agent.agent_id, "runs")} className="underline underline-offset-2">Open the agent’s Run controls</a>.</Banner>);
+
+  if (!all.length && !skills.length && !workflows.length && !adding) return frame(
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
+      {on && <LoopStory stages={story} />}
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
-      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
-      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet />
+      {learnFromTasks}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} execution={execution} />
+      <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
       <NotKept runs={runs} />
     </div>
   );
 
-  return (
+  return frame(
     <div className="space-y-6">
       {waiting.length > 0 && (
         <section className="border border-warning/50" aria-label="Waiting for your OK">
@@ -175,17 +264,19 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} approves={approves} replaces={replaced.get(x.file)} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} approves={approves} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
         </section>
       )}
+      {/* The loop at a glance, under what waits for the owner (an action comes first). */}
+      <LoopStory stages={story} />
       <HeldOutTest v2={v2} agentId={agent.agent_id} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
-      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
-      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} />
+      {learnFromTasks}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} execution={execution} />
+      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
@@ -202,13 +293,13 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} replaces={replaced.get(x.file)} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
           {later.error !== undefined && <ProblemCard problem={problem(later.error, "more notes")} onRetry={more} className="" />}
           {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
-          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={changed} />}
+          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={changed} refreshHolds={refreshHolds} />}
         </section>
         {(["skill", "workflow"] as const).map((kind) => {
           const items = kind === "skill" ? skills : workflows;
@@ -225,16 +316,17 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
               </div>
               {inUse.length > 0 && (
                 <ul className="space-y-3">
-                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={changed} /></li>)}
+                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={changed} refreshHolds={refreshHolds} /></li>)}
                 </ul>
               )}
-              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={changed} />}
+              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={changed} refreshHolds={refreshHolds} />}
             </section>
           );
         })}
         </div>
         <aside className="min-w-0 space-y-6" aria-label="About learning">
           <Panel title="Learning">{switchRow(false)}</Panel>
+          <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
           <NotKept runs={runs} />
           <NextRun index={view.index} skills={skills.filter((s) => s.status === "active").map((s) => s.name)} off={!on || server === "off"} />
         </aside>
@@ -332,7 +424,11 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
 
 /** The learning switch on the tab: a new revision with `learning` on or off, made on the agent as the server has it
  *  now, shown as it goes and put back if the save fails. */
-function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+function SavedSwitch(props: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+  return props.agent.definition.native ? <div className="p-4"><NativeLearningSwitch agent={props.agent} v2={props.v2} learning={props.server} onAgent={props.onAgent} /></div> : <ManagedSavedSwitch {...props} />;
+}
+
+function ManagedSavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [trouble, setTrouble] = useState<unknown>(null);
   const [shown, setShown] = useState<boolean | null>(null);
@@ -388,13 +484,13 @@ type Replaced = { file: string; name: string | null };
  *  `replaces`: the older notes it replaces (its `supersedes`, and each `superseded_by` it), said in its footer and listed
  *  on expand, by name, or by file while the page that names one is not read yet.
  */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, replaces = [] }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; replaces?: Replaced[] }) {
-  const [editing, setEditing] = useState(false);
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, refreshHolds, replaces = [] }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; refreshHolds: RefreshHolds; replaces?: Replaced[] }) {
   const [older, setOlder] = useState(false);
-  const [retiring, setRetiring] = useState(false);
+  const [editing, setEditing] = useRefreshState(refreshHolds);
+  const [retiring, setRetiring] = useRefreshState(refreshHolds);
   const [flash, setFlash] = useState(focused);
   const [saved, setSaved] = useState<string | null>(null);
-  const [approving, setApproving] = useState(false);
+  const [approving, setApproving] = useRefreshState(refreshHolds);
   const [said, setSaid] = useState<ReactNode>(null);
   const ref = useRef<HTMLElement>(null);
   const waits = isPending(note);
@@ -426,6 +522,8 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
   // Its newest change by a person (or a run's other than the learning), as the server names it (last_change); none
   // when it names none.
   const person = lastChangeLine(note.last_change);
+  // The learned workflow this note was compiled into (its front matter's compiled_into), when one was.
+  const into = compiledInto(note.text);
   return (
     <article ref={ref} id={`note-${note.file}`} tabIndex={-1} aria-label={note.name} className={cn("border bg-card/40 outline-none focus-visible:border-primary transition-[border-color,box-shadow] duration-slow", flash && "border-primary ring-1 ring-primary")}>
       <header className="flex flex-col gap-x-3 gap-y-1 px-5 pt-4 sm:flex-row sm:items-start">
@@ -434,6 +532,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
             <h3 className="min-w-0 break-words text-prose font-semibold leading-snug">{note.name}</h3>
             <Chip>{typeLabel(note.type)}</Chip>
             {note.origin === "you" && <Chip tone="muted">From you</Chip>}
+            {into && <Chip tone="success" label title={`This note went into the learned workflow ${into}`}>Compiled into {into}</Chip>}
             {saved && <span className="caps text-micro text-success-text" role="status">{saved}</span>}
           </div>
           <p className="mt-1 text-body text-muted-foreground">{note.description}</p>
@@ -476,22 +575,20 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
  *  Retire (after the notes' confirm) are made on the file that says whether it is in use, a skill's SKILL.md or a
  *  workflow's README, at the version listed, or an open skill's shown. A run changes it; a person approves or retires
  *  it, never edits it. */
-function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void> }) {
-  const [open, setOpen] = useState(false);
+function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged, refreshHolds }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {
+  const [open, setOpen] = useRefreshState(refreshHolds);
   const [text, setText] = useState<string | null>(null);
   // The version of the text shown: a skill is approved on it, never on a newer one the list holds (its etag).
   const [shown, setShown] = useState<string | null>(null);
   const [readError, setReadError] = useState<unknown>(null);
-  const [approving, setApproving] = useState(false);
-  const [retiring, setRetiring] = useState(false);
-  const [promoting, setPromoting] = useState(false);
-  // One Idempotency-Key per promotion of this workflow, kept past a Cancel until it is answered: a retry after a lost
-  // answer, from this confirm or a new one, is the same request, so it never makes a second agent.
-  const promoteKeys = useRef(keeper()).current;
-  const [made, setMade] = useState<Agent | null>(null);
+  const [approving, setApproving] = useRefreshState(refreshHolds);
+  const [retiring, setRetiring] = useRefreshState(refreshHolds);
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
   // Only an active workflow, and only for the owner signed in: a pending one waits for their OK first.
+  const [promoting, setPromoting] = useRefreshState(refreshHolds);
+  const promoteKeys = useRef(keeper()).current;
+  const [made, setMade] = useState<Agent | null>(null);
   const promotes = kind === "workflow" && item.status === "active" && approves === "yes";
   const load = async () => {
     setReadError(null);
@@ -548,7 +645,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         </div>
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
-      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
+      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={agentHash(made.agent_id)} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
       {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
         : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
         : kind === "skill" ? <Body text={bodyOf(text)} />
@@ -840,8 +937,8 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
 }
 
 /** The notes no longer in use: replaced by a newer one, or retired. Closed until asked; one a link points at opens it. */
-function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, onChanged }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run>; v2: Client; agentId: string; readOnly: boolean; onChanged: () => void | Promise<void> }) {
-  const [restoring, setRestoring] = useState<string | null>(null);
+function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, onChanged, refreshHolds }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run>; v2: Client; agentId: string; readOnly: boolean; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {
+  const [restoring, setRestoring] = useRefreshState<string | null>(refreshHolds, null);
   const [open, setOpen] = useState(list.some((x) => focus.includes(x.file)));
   // The retired notes opened to their text: read-only, as no later run reads them.
   const [shown, setShown] = useState<Set<string>>(new Set());
@@ -904,9 +1001,9 @@ function Folded({ title, count, open, onToggle, children }: { title: string; cou
 
 /** The skills or the workflows a person retired, as retired notes are shown: closed until asked, each by its name, and
  *  who retired it and when once the changes read say. No Approve and no Retire: no later run is given it. */
-function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }: { kind: "skill" | "workflow"; items: LearnedItem[]; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void> }) {
+function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged, refreshHolds }: { kind: "skill" | "workflow"; items: LearnedItem[]; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {
   const [open, setOpen] = useState(false);
-  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restoring, setRestoring] = useRefreshState<string | null>(refreshHolds, null);
   // The ones opened to their text, read from the file when opened (a skill's SKILL.md, a workflow's workflow.json).
   const [shown, setShown] = useState<Set<string>>(new Set());
   const toggle = (file: string) => setShown((s) => { const n = new Set(s); if (n.has(file)) n.delete(file); else n.add(file); return n; });

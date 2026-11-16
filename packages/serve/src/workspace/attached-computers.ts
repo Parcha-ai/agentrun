@@ -92,13 +92,17 @@ export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry,
 }
 
 /** `registry` with each paired computer of `rows` as one more provider (pairedEntry), and the words for one that cannot
- *  serve a kind an agent asks of it: it is a computer of the person's own, and its driver lacks what the kind needs
- *  (helloLacks), so the driver is what to update. */
+ *  serve a kind an agent asks of it: it is a computer of the person's own, and either the attach path carries no such
+ *  kind (ATTACH_CANNOT: a sandbox, which would run the agent's shell there, or a browser), so the agent takes it as the
+ *  kind it serves, or its driver lacks what the kind needs (helloLacks), so the driver is what to update. */
 export function withPaired<R extends KindRegistry>(registry: R, rows: readonly PairedComputerRow[]): R {
   if (rows.length === 0) return registry;
   const byId = new Map(rows.map((row) => [row.id, row]));
   const unservedWhy = (entry: ProviderEntry, kind: ComputerSettingKind): string | undefined => {
     const row = byId.get(entry.id);
+    if (row !== undefined && kind in ATTACH_CANNOT && entry.kinds.length > 0) {
+      return `${row.name} is a computer of your own, and a paired computer can't be a ${kind} computer yet: give this agent ${row.name} as a ${entry.kinds.join(" or ")} computer`;
+    }
     const lack = row === undefined ? undefined : helloLacks(row.hello as Partial<HelloResult>, kind);
     if (row === undefined || lack === undefined) return registry.unservedWhy?.(entry, kind);
     return `${row.name} is a computer of your own, and its driver gives no ${kind} computer: ${lack}. Update the driver on ${row.name}`;

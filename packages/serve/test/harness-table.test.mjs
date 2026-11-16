@@ -19,17 +19,20 @@ const EXCLUDED = new Set(["import.ts", "import-sources.ts", "harness-table.ts"])
 const NAMES = "pi|claude-agent|codex|opencode";
 const BRANCH = new RegExp(`(===|!==)\\s*"(${NAMES})"|"(${NAMES})"\\s*(===|!==)|\\bcase\\s+"(${NAMES})"|(===|!==)\\s*DEFAULT_HARNESS\\b|\\bDEFAULT_HARNESS\\s*(===|!==)`);
 
+const branchHits = (entries) => entries.filter(([file]) => !EXCLUDED.has(file))
+  .flatMap(([file, source]) => source.split("\n").flatMap((line, index) => (BRANCH.test(line) ? [`${file}:${index + 1}: ${line.trim().slice(0, 140)}`] : [])));
+const sourceEntries = () => sources().map(file => [file, readFileSync(join(SRC, file), "utf8")]);
+
 test("serve/src outside the harness table compares no harness name: no ===/!== against pi, claude-agent, codex or opencode, no case on one, and no comparison with DEFAULT_HARNESS", () => {
-  const hits = sources()
-    .filter((file) => !EXCLUDED.has(file))
-    .flatMap((file) => readFileSync(join(SRC, file), "utf8").split("\n").flatMap((line, index) => (BRANCH.test(line) ? [`${file}:${index + 1}: ${line.trim().slice(0, 140)}`] : [])));
+  const hits = branchHits(sourceEntries());
   assert.deepEqual(hits, [], `harness-name branches:\n${hits.join("\n")}`);
 });
 
-test("serve/src keys no data by a harness's name outside the harness table: no default, list, keyed row, install id or path names pi, claude-agent, codex or opencode by its literal (each comes from DEFAULT_HARNESS, HARNESSES, an entry or its facts)", () => {
+const keyedHits = (entries) => {
   // The registry (harness.ts) and the table name them; the transcript formats' sources (import*.ts, and openapi.ts's
   // `source` enums) are the formats' own words; the OpenCode adapter (harness-opencode/) names itself.
-  const outside = (file) => !EXCLUDED.has(file) && !["harness.ts", "import-summary.ts", "openapi.ts"].includes(file) && !file.startsWith("harness-opencode/");
+  // The separate native registry names installed CLI protocols, never managed harness dispatch. Only its facts table is exempt.
+  const outside = (file) => !EXCLUDED.has(file) && !["harness.ts", "import-summary.ts", "openapi.ts", "native/runtimes.ts"].includes(file) && !file.startsWith("harness-opencode/");
   const ID = `"(?:${NAMES})"`;
   const KEYED = [
     new RegExp(`\\?\\?\\s*${ID}`), // a default
@@ -38,11 +41,25 @@ test("serve/src keys no data by a harness's name outside the harness table: no d
     new RegExp(`\\bid:\\s*${ID}`), // an id field
     new RegExp(`installDirOf\\(.*,\\s*${ID}\\)`), // an install's path
   ];
-  const hits = sources().filter(outside).flatMap((file) => readFileSync(join(SRC, file), "utf8").split("\n").flatMap((line, i) => {
+  return entries.filter(([file]) => outside(file)).flatMap(([file, source]) => source.split("\n").flatMap((line, i) => {
     const code = line.replace(/\/\/.*$/, "");
     return /^\s*(\*|\/\*\*?)/.test(line) || !KEYED.some((pattern) => pattern.test(code)) ? [] : [`${file}:${i + 1}: ${line.trim().slice(0, 160)}`];
   }));
+};
+
+test("serve/src keys no data by a harness's name outside the harness table: no default, list, keyed row, install id or path names pi, claude-agent, codex or opencode by its literal (each comes from DEFAULT_HARNESS, HARNESSES, an entry or its facts)", () => {
+  const hits = keyedHits(sourceEntries());
   assert.deepEqual(hits, [], `harness-keyed data:\n${hits.join("\n")}`);
+});
+
+test("native protocol facts exempt only their own table: managed harness branches and keyed dispatch still fail in discovery, runtime and server", () => {
+  for (const file of ["native/discovery.ts", "native/runtime.ts", "server.ts"]) {
+    assert.equal(branchHits([[file, 'if (harness === "codex") managedRun();']]).length, 1, file);
+    assert.equal(keyedHits([[file, 'const managed = { codex: { run: managedRun } };']]).length, 1, file);
+  }
+  assert.deepEqual(keyedHits([["native/runtimes.ts", 'const facts = { codex: { binary: "codex" } };']]), []);
+  assert.equal(branchHits([["native/runtimes.ts", 'if (harness === "codex") managedRun();']]).length, 1,
+    "even the native facts table may not branch on managed harness names");
 });
 
 test("production code never builds a stand-in harness: serve/src imports no @parcha/agentrun-kernel/testing and names no faux harness", () => {
@@ -50,21 +67,21 @@ test("production code never builds a stand-in harness: serve/src imports no @par
   assert.deepEqual(hits, [], hits.join("\n"));
 });
 
-test("each adapter package exports its facts, and the table's entry for each id reads them: wire, steer, memory, thinking, search, own model, MCP client, tool alias", async () => {
+test("each adapter package exports its facts, and the table's entry for each id reads them: wire, steer, memory, thinking, search, own model, tool alias", async () => {
   const [{ facts: claude }, { facts: codex }, { facts: opencode }, { builtinHarness }] = await Promise.all([import("@parcha/agentrun-harness-claude/facts"), import("@parcha/agentrun-harness-codex/facts"), import("../dist/harness-opencode/facts.js"), import("../dist/harness-table.js")]);
-  const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, mcp: f.mcp, alias: Boolean(f.toolAlias), schema: typeof f.schemaProblems });
-  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, mcp: true, alias: false, schema: "function" });
-  assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, mcp: true, alias: false, schema: "function" });
-  assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, mcp: false, alias: true, schema: "undefined" });
+  const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, hostName: f.hostName?.(f.id === "claude-agent" ? "mcp__hands__x" : f.id === "codex" ? "mcp_s__x" : "hands_x"), schema: typeof f.schemaProblems });
+  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, hostName: "x", schema: "function" });
+  assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, hostName: "mcp__s__x", schema: "function" });
+  assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, hostName: "x", schema: "undefined" });
   for (const facts of [claude, codex, opencode]) {
     const entry = builtinHarness(facts.id);
     assert.equal(entry.facts, facts, `${facts.id}'s entry holds its package's facts`);
-    assert.deepEqual([entry.steer, entry.runMib, entry.mcp], [facts.steer, facts.runMib, facts.mcp], facts.id);
+    assert.deepEqual([entry.steer, entry.runMib], [facts.steer, facts.runMib], facts.id);
     assert.ok(Object.isFrozen(facts), `${facts.id}'s facts are frozen`);
   }
   // pi has no adapter: it takes a message mid-turn, and one of its runs always fits.
   const pi = builtinHarness("pi");
-  assert.deepEqual([pi.facts, pi.steer, pi.runMib, pi.oneAlwaysFits, pi.mcp], [undefined, true, 128, true, true]);
+  assert.deepEqual([pi.facts, pi.steer, pi.runMib, pi.oneAlwaysFits], [undefined, true, 128, true]);
 });
 
 test("facts decide, not names: thinking clamps at a harness's highest level, native options follow its search, the tool alias is OpenCode's alone, memory follows runMib", async () => {
@@ -74,7 +91,6 @@ test("facts decide, not names: thinking clamps at a harness's highest level, nat
   assert.deepEqual(["claude-agent", "codex", "opencode"].map((id) => thinkingFor(facts(id), "low")), ["low", "low", "low"], "a level a harness takes is kept");
   const native = { AGENTRUN_SERVE_TOOL_PLANE: JSON.stringify({ web_search: "native" }) };
   assert.deepEqual(["claude-agent", "codex", "opencode"].map((id) => nativeOptions(facts(id), native)), [{ webSearch: true, webSearchAllowance: 200_000 }, { webSearch: "live" }, {}]);
-  assert.deepEqual(["claude-agent", "codex", "opencode"].map((id) => settingsKeyOf(id, "srv_lookup", ["srv"])), [undefined, undefined, "mcp:srv/lookup"], "only a harness whose facts name an alias maps `<server>_<tool>`");
   assert.deepEqual(["pi", "claude-agent", "codex", "opencode"].map(runMibOf), [128, 288, 192, 704]);
   const tiny = (SERVER_MIB + 100) * 2 ** 20;
   assert.deepEqual(["pi", "codex"].map((id) => runsThatFit(id, tiny)), [1, 0], "one pi run always fits (its entry's oneAlwaysFits); no codex run does");

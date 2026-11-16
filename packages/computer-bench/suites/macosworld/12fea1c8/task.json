@@ -1,0 +1,66 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "macosworld.12fea1c8",
+  "version": 1,
+  "title": "Solve a catch-up word problem in Calculator",
+  "split": "dev",
+  "source": {
+    "suite": "macOSWorld",
+    "id": "12fea1c8-55ec-f895-a1a4-89b79ec7b838",
+    "revision": "e2ca8334b3765537e5c1c428ce57990248a1bb5f",
+    "licence": "CC-BY-NC-4.0; ported by reference (our own instruction, setup and checks; no source text copied)",
+    "changes": "Instruction written in our own words. The speeds and the gap are a param; the source's numbers (60 and 80 km/h, 20 km) are one pick. The source restored an AMI snapshot; here setup quits Calculator and clears its last result, and teardown puts the Mac's own value back. The check reads the same preference as the source (com.apple.calculator LastResultValue), but compares the six-decimal value exactly instead of with grep. The oracle types the division into Calculator."
+  },
+  "tags": ["calculator", "compute"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.calculator"] },
+  "params": {
+    "c": {
+      "pick": [
+        { "a": 60, "b": 80, "gap": 20, "want": "1.000000", "keys": "20/20=" },
+        { "a": 45, "b": 60, "gap": 30, "want": "2.000000", "keys": "30/15=" },
+        { "a": 70, "b": 90, "gap": 50, "want": "2.500000", "keys": "50/20=" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the Mac's own last Calculator result for teardown, quit Calculator and clear the result, so an agent that does nothing leaves no result to read.",
+      "params": { "argv": ["sh", "-c", "{{file:calc-setup.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "Use the Calculator app to answer this, and leave the answer as Calculator's result: two cars drive the same way along one road. Car A, in front, goes {{c.a}} km/h. Car B goes {{c.b}} km/h and starts {{c.gap}} km behind Car A. How many hours does Car B take to catch up with Car A?",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "result",
+      "kind": "exec",
+      "why": "Calculator's last result (LastResultValue, which it saves at each =), to six decimals, is the answer: the gap over the difference in speed, {{c.gap}} / ({{c.b}} - {{c.a}}). Setup deleted the value, so an agent that does nothing reads empty and fails.",
+      "argv": ["sh", "-c", "defaults read com.apple.calculator LastResultValue 2> /dev/null | awk '{printf \"%.6f\\n\", $1}'"],
+      "timeoutMs": 20000,
+      "stdout": { "equals": "{{c.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Quit Calculator and put the Mac's own last result back.",
+      "params": { "argv": ["sh", "-c", "{{file:calc-restore.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    { "method": "apps.launch", "params": { "id": "com.apple.calculator" } },
+    {
+      "method": "input.actions",
+      "why": "Basic mode (Command-1), clear twice, then type the division and = as a person would.",
+      "params": { "actions": [
+        { "type": "wait", "ms": 1500 },
+        { "type": "key", "keys": ["super", "1"] },
+        { "type": "key", "keys": ["escape"] },
+        { "type": "key", "keys": ["escape"] },
+        { "type": "type", "text": "{{c.keys}}" },
+        { "type": "wait", "ms": 2000 }
+      ] }
+    }
+  ]
+}

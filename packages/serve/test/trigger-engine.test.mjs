@@ -332,6 +332,8 @@ test("firings a restart finds due past their retry wait, queued behind a slow lo
   let atOnce = 0;
   const { arm } = second.clock;
   second.clock.arm = (fire, ms) => (ms <= 0 && atOnce++, arm(fire, ms));
+  // The restart's first lookup comes after the store's reads, slower on Postgres: the others are watched from there.
+  await until(() => lookups.length === 1, "the first firing looked up");
   for (let i = 0; i < 20; i++) {
     second.clock.to("2026-06-01T00:01:00Z");
     await sleep(1);
@@ -672,16 +674,20 @@ test("a firing claimed before its agent's archive starts no run after it: one wa
   assert.equal((await triggers.get(raced.id)).failures_in_a_row, 0, "no failure counted");
 });
 
-test("a create or a PATCH answers once its timer is armed: the clock moved right after the answer fires the trigger", async (t) => {
+test("a PATCH that moves a schedule's time fires it at the new time and not the old: its timer is read armed for the new time first, the clock then passes the old time with nothing fired, and the new time fires it once", async (t) => {
   const { clock, triggers } = await engine(t, {});
   const made = await triggers.create(body({ at: "2026-06-01T00:05:00Z" }));
-  // No wait for the timer: the answer is the schedule in effect.
-  clock.to("2026-06-01T00:05:00Z");
-  await until(async () => (await triggers.firings(made.id)).firings.length === 1, "the create's time fired");
-  // A one-time schedule turned itself off once it fired: on again, at its new time.
-  await triggers.update(made.id, { source: { kind: "schedule", at: "2026-06-01T00:09:00Z" }, enabled: true });
+  await until(() => clock.timer?.at === Date.parse("2026-06-01T00:05:00Z"), "armed for the created time");
+  await triggers.update(made.id, { source: { kind: "schedule", at: "2026-06-01T00:09:00Z" } });
+  // The timer's own state, never the answer's race: the old time's timer is replaced by the new time's.
+  await until(() => clock.timer?.at === Date.parse("2026-06-01T00:09:00Z"), "armed for the PATCH's time");
+  clock.to("2026-06-01T00:06:00Z");
+  assert.equal((await triggers.firings(made.id)).firings.length, 0, "past the old time, nothing fired");
   clock.to("2026-06-01T00:09:00Z");
-  await until(async () => (await triggers.firings(made.id)).firings.length === 2, "the PATCH's time fired");
+  // A due row is written before the start is driven: wait for the run to start, not for a row to exist.
+  await until(async () => (await triggers.firings(made.id)).firings.some((f) => f.status === "started"), "the PATCH's firing started");
+  const fired = (await triggers.firings(made.id)).firings;
+  assert.deepEqual(fired.map((f) => [f.nominal_at, f.status]), [["2026-06-01T00:09:00Z", "started"]], "one firing, at the new time, started, none at the old time");
 });
 
 test("run now with the same Idempotency-Key twice answers the first firing and its run, and starts one run", async (t) => {

@@ -1,4 +1,4 @@
-import type { Run, RunState, RunStatus } from "./v2";
+import type { Run, RunMachine, RunState, RunStatus } from "./v2";
 
 export type Tone = "active" | "success" | "warning" | "error" | "muted";
 export type MessageMode = "steer" | "answer" | "follow_up";
@@ -58,15 +58,18 @@ export const needsReview = (status: RunStatus, review?: unknown) => status === "
 /** How the console shows a run: serve's status and state, by its contract table and its guards (runs.ts message, stop,
  *  cancel). Stopped (input_required, idle), input required (input_required, waiting) and cancelled stay distinct, and so
  *  does a run that ended escalated (`error`'s code), which reads Escalated, never Failed, and a completed run with a
- *  `review`, which reads Needs review, never Completed. */
-export function runState(status: RunStatus, state: RunState, kind: Run["kind"], messages: MessageFeatures, steers: boolean, error?: { code: string } | null, review?: unknown): RunView {
+ *  `review`, which reads Needs review, never Completed. A queued run whose desktop or phone is starting (the run read's
+ *  `computer`: the run's claim makes it before the agent starts) reads Starting, never Queued: it isn't waiting in line. */
+export function runState(status: RunStatus, state: RunState, kind: Run["kind"], messages: MessageFeatures, steers: boolean, error?: { code: string } | null, review?: unknown, computer?: Pick<RunMachine, "kind" | "state"> | null): RunView {
   const final = FINAL.has(status);
   const agentic = kind === "agentic";
   const escalated = isEscalated(status, error);
   const reviewing = needsReview(status, review);
+  const starting = status === "queued" && computer?.state === "starting" && (computer.kind === "desktop" || computer.kind === "phone");
   const label =
     escalated ? "Escalated"
     : reviewing ? "Needs review"
+    : starting ? "Starting"
     : status === "input_required" ? (state === "waiting" ? "Input required" : "Stopped")
     : { queued: "Queued", working: "Working", completed: "Completed", failed: "Failed", cancelled: "Cancelled", paused: "Paused" }[status];
   const tone: Tone =

@@ -314,8 +314,8 @@ export interface ConformanceOptions {
 	/** The same provider with a daemon that reports another version, for the drift cases. */
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
 	/**
-	 * What the provider declares of itself, each configuration's kind and groups, for health.declared: its descriptor
-	 * (until the descriptor lands, its PROVIDERS entry, or its module's CAPABILITIES). Without it, that case skips.
+	 * What the provider declares of itself, each configuration's kind and groups, for health.declared: its descriptor's
+	 * capabilities. Without it (a provider module given by path), that case skips.
 	 */
 	declared?: readonly KindCapabilities[];
 	/**

@@ -1,10 +1,13 @@
+import type { Observations } from "./observations";
+import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./native";
+import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnector } from "./connectors";
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
-import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
+import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLearningResultData, NoteProblem, NoteText, Page } from "./learning";
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -56,7 +59,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 /** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -97,6 +100,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
+  const replays = (id: string, name: string, digest: string) => `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions/${encodeURIComponent(digest)}/replays`;
   const mcpServer = (name: string) => `/settings/mcp-servers/${encodeURIComponent(name)}`;
   const trigger = (id: string) => `/triggers/${encodeURIComponent(id)}`;
   // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
@@ -134,6 +138,19 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** `filter`: one status and the archived runs only, or (the agent page's) just `archived`: the archived runs only (an
      *  archived agent's runs are all archived with it). */
     listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
+    discoverNative: (project: string, runtime?: NativeRuntime) => call<{ machine_id: string; targets: NativeTarget[] }>("POST", "/native/discover", { body: { project, ...(runtime ? { runtime } : {}) } }),
+    connectNative: (body: { project: string; runtime: NativeRuntime; selector: NativeSelector }) => call<{ agent: Agent; native: NativeBinding }>("POST", "/native/connect", { body }),
+    getNative: (id: string) => call<{ native: NativeBinding | null }>("GET", `${agent(id)}/native`),
+    verifyNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/verify`, { body: {} }),
+    disconnectNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/disconnect`, { body: {} }),
+    observations: ({ days = 30, sessionId }: { days?: 7 | 30; sessionId?: string } = {}, signal?: AbortSignal) => {
+      const query = new URLSearchParams({ days: String(days) });
+      if (sessionId) query.set("session_id", sessionId);
+      return call<Observations>("GET", `/observations?${query}`, { signal });
+    },
+    listConnectors: () => call<{ connectors: RemoteConnector[] }>("GET", "/connectors"),
+    enrollConnector: (label?: string, capabilities?: ConnectorEnrollmentCapabilities) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: { ...(label?.trim() ? { label: label.trim() } : {}), ...(capabilities ? { capabilities } : {}) } }),
+    revokeConnector: (id: string) => call<{ connector: RemoteConnector }>("DELETE", `/connectors/${encodeURIComponent(id)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");
@@ -173,7 +190,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     startLearningBatch: (id: string, body: LearningBatchStart) => call<LearningBatch>("POST", `${agent(id)}/learning/batches`, { body }),
     cancelLearningBatch: (id: string, batch: string) => call<LearningBatch>("POST", `${agent(id)}/learning/batches/${encodeURIComponent(batch)}/cancel`, { body: {} }),
     learningEvals: (id: string) => call<LearningEvals>("GET", `${agent(id)}/learning/evals`),
+    learningPromotions: (id: string) => call<Promotions>("GET", `${agent(id)}/learning/promotions`),
+    learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
     learnedWorkflowRevisions: (id: string, name: string, limit?: number) => call<WorkflowRevisions>("GET", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions${limit ? `?limit=${limit}` : ""}`),
+    /** Starts a replay of one revision of a learned workflow on the server's default inputs (POST .../revisions/{digest}/replays):
+     *  the owner's session only; 409 replay_conflict, agent_not_runnable or fewer graded runs than a replay needs. */
+    startLearnedWorkflowReplay: (id: string, name: string, digest: string) => call<ReplayStarted>("POST", `${replays(id, name, digest)}`, { body: {} }),
+    /** A replay as it stands, and decided once its runs ended (GET .../replays/{replay_id}). */
+    learnedWorkflowReplay: (id: string, name: string, digest: string, replay: string) => call<ReplayRead>("GET", `${replays(id, name, digest)}/${encodeURIComponent(replay)}`),
     learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
     learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
     /** A note's whole text and its version, for the If-Match of an edit or a retire. */
@@ -202,6 +226,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return made;
     },
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** The run's recorded learning outcome, grader decisions and usage; null when it did not learn. */
+    runLearningResult: (id: string) => call<RunLearningResultData | null>("GET", `${run(id)}/learning`),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
     /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned skills it was offered and read, and the
@@ -221,6 +247,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Raises an agentic run's spend cap (only a raise: above its current cap, else 422). A run paused at its cap goes on
      *  (`resumed`); an ended run is 409 not_continuable. */
     raiseCap: (id: string, maxCostUsd: number) => call<RaiseAnswer>("PATCH", run(id), { body: { max_cost_usd: maxCostUsd } }),
+    /** Grades an ended run's answer right or wrong (PUT /v2/runs/{id}/grade): a later grade replaces it. The answer says
+     *  the feedback round it opened the run again on (`feedback`), if any. */
+    gradeRun: (id: string, body: GradeBody) => call<GradeAnswer>("PUT", `${run(id)}/grade`, { body }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
     startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
@@ -262,6 +291,15 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** This server's ChatGPT sign-in, never a token (a serve extension; 404 on a server without it). */
+    chatGPT: () => call<unknown>("GET", "/settings/chatgpt"),
+    /** Starts a sign-in: OpenAI's page to open. A new start cancels the one waiting. */
+    startChatGPT: () => call<ChatGPTStart>("POST", "/settings/chatgpt/sign-in"),
+    /** Finishes the sign-in that waits with the whole address its tab ended on. */
+    finishChatGPT: (redirectUrl: string) => call<ChatGPTView>("POST", "/settings/chatgpt/sign-in/finish", { body: { redirect_url: redirectUrl } }),
+    /** Signs out here and revokes the sign-in at OpenAI: whether OpenAI confirmed it (`revoked`), and when it didn't, what
+     *  to do (`message`). A server from before the answer had a body says nothing (204, an empty text). */
+    signOutChatGPT: () => call<ChatGPTSignOut | "">("DELETE", "/settings/chatgpt"),
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
@@ -293,6 +331,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     removeWebhook: () => call<unknown>("DELETE", "/settings/webhook"),
     /** A `webhook.test` message, tried once now: its attempt. */
     testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** The server's email account, never its password (a serve extension). */
+    emailAccount: () => call<EmailAccount>("GET", "/settings/email"),
+    /** Saves the account: the server seals its password and answers the account without it. */
+    saveEmailAccount: (body: EmailAccountBody) => call<EmailAccount>("PUT", "/settings/email", { body }),
+    removeEmailAccount: () => call<unknown>("DELETE", "/settings/email"),
+    /** Signs in to IMAP and SMTP, sending nothing and saving nothing: `body`'s account, or the saved one (its password
+     *  standing in for one left out). */
+    testEmailAccount: (body: EmailTestBody = {}) => call<EmailTest>("POST", "/settings/email/test", { body }),
     /** The last attempts, newest first. */
     /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs. */
     listTriggers: () => call<{ triggers: Trigger[] }>("GET", "/triggers"),
@@ -301,9 +347,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  of its secret, which the first answer showed once. */
     createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
     /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-    rotateTriggerSecret: (id: string, body: { secret?: string } = {}) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body }),
-    updateTrigger: (id: string, body: TriggerInput) => call<Trigger>("PATCH", trigger(id), { body }),
-    deleteTrigger: (id: string) => call<unknown>("DELETE", trigger(id)),
+    /** No body: the route refuses any, `{}` too, and makes the new secret itself. */
+    rotateTriggerSecret: (id: string) => call<TriggerSecret>("POST", `${trigger(id)}/secret`),
+    /** A trigger from an app answers `composio` beside it when Composio could not follow a pause or resume. */
+    updateTrigger: (id: string, body: TriggerInput) => call<TriggerUpdated>("PATCH", trigger(id), { body }),
+    /** None (204), or `composio`'s note when Composio could not follow the delete. */
+    deleteTrigger: (id: string) => call<TriggerDeleted>("DELETE", trigger(id)),
     /** Runs a schedule now: `key` is the click's own Idempotency-Key, so the same click sent again fires once. */
     fireTrigger: (id: string, key: string) => call<Firing>("POST", `${trigger(id)}/fire`, { body: {}, headers: { "idempotency-key": key } }),
     /** Its last firings, newest first. */
@@ -319,20 +368,36 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
+    /** A package read from GitHub at a commit and checked: a dry run stores nothing; the first from a publisher needs
+     *  `trust_publisher`. */
+    importTemplate: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean } = {}) =>
+      call<TemplateImported>("POST", "/templates/import", { body: { source, ...(options.dryRun ? { dry_run: true } : {}), ...(options.trustPublisher ? { trust_publisher: true } : {}) } }),
+    /** An imported package removed (a bundled one is 403). */
+    deleteTemplate: (id: string) => call<unknown>("DELETE", `/templates/${encodeURIComponent(id)}`),
     listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
     /** `name`: the saved server an edit form previews, so its address as shown (origin and `/…`) is previewed at the saved endpoint. */
     previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
-    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
-    saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
+    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. `toolkit` only
+     *  when given (null clears it); left out, the server keeps what it has. The source is never sent: what made it. */
+    saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
     composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[] }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
-    deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
+    /** 204 when it is gone; 200 with a note when a Composio server it made could not be removed there (the row is gone either way). */
+    deleteMcpServer: (name: string) => call<{ deleted: true; composio?: { removed: false; note: string } } | undefined>("DELETE", mcpServer(name)),
+    /** A saved Composio server's toolkit's events, for a trigger from an app. */
+    composioEvents: (name: string) => call<ComposioEvents>("GET", `${mcpServer(name)}/composio/events`),
+    /** A saved Composio server's triggers, and where its project's webhook subscription sends events. */
+    composioTriggers: (name: string) => call<ComposioTriggers>("GET", `${mcpServer(name)}/composio/triggers`),
+    /** Rotates the subscription's secret on Composio and keeps the new one here: no secret in the answer. */
+    rotateComposioSecret: (name: string) => call<{ rotated: true }>("POST", `${mcpServer(name)}/composio/rotate-secret`, { body: {} }),
+    /** Deletes the project's subscription on Composio once no trigger uses it. */
+    deleteComposioSubscription: (name: string) => call<{ deleted: true }>("DELETE", `${mcpServer(name)}/composio/subscription`),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
-    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string; toolkit?: string | null }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
     /** The private-network hosts an MCP server's authorization server may be on; none by default. */
     mcpPrivateHosts: () => call<McpPrivateHosts>("GET", "/settings/mcp-servers/oauth/private-hosts"),
     /** Replaces them (the owner's password session alone): the list as the server keeps it. */
@@ -352,8 +417,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  password session alone may (a token is 403); the first answer wins, so the same one again is 204 and another 409
      *  `not_continuable` with `details: { reason: "already_answered", decision }`. `note`: with deny, the reason the model
      *  is told; sent only when given. */
-    answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string) =>
-      call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}) } }),
+    /** `confirmed`: the second confirm an allow of a destructive call needs (`confirm_destructive`). */
+    answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) =>
+      call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}), ...(confirmed ? { confirm_destructive: true } : {}) } }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
 }

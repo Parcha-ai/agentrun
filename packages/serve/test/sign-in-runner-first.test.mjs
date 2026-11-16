@@ -16,7 +16,7 @@ import * as faux from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import fakeVendors, { calls as vendorCalls } from "./fixtures/faux-vendor-api.mjs";
 import { storeOn } from "./store-helpers.mjs";
-import { withEnv } from "./support.mjs";
+import { toolLedger, withEnv } from "./support.mjs";
 
 const signIns = await import("../dist/sign-ins-store.js");
 const tools = await import("../dist/tools.js");
@@ -223,7 +223,8 @@ test("the made sign-in's sessions open on its profile with save on, and their re
   const r = await runner(t);
   const lifecycle = hostLifecycle();
   const registry = createRegistry();
-  const host = r.hostOf("run-c", "browserbase", { install: (extension) => registry.install(extension), ...lifecycle.register });
+  // On the run's one ledger (host.ledger, as the runner hands it): a browser call with none is refused unsent.
+  const host = r.hostOf("run-c", "browserbase", { install: (extension) => registry.install(extension), ...lifecycle.register, ledger: { paid: await toolLedger() } });
   const binding = await tools.TOOLS.browser.bind(host);
   const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
   model.setResponses(Array.from({ length: 4 }, () => (context) => (context.messages.some((m) => m.role === "toolResult") ? faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" }) : faux.fauxAssistantMessage([faux.fauxToolCall("snapshot", {})], { stopReason: "toolUse" }))));

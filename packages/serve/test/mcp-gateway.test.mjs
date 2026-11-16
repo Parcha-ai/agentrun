@@ -3,12 +3,11 @@
 // read tool pages through, and a server whose address changed is sent nothing.
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
-import { createServer, request } from "node:http";
+import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { FILED_LINE_MAX, LAYOUT_DEPTH_MAX, fileable, laidOut, layoutBound } from "../dist/filed-answer.js";
 import { HEADER_SCAN_DEPTH, MCP_CLIP, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
@@ -181,29 +180,6 @@ function store() {
   return { entries, commit: () => async (change) => change({ appendEntry: async (_conversation, entry) => entries.push(entry) }) };
 }
 
-test("at the session proxy's /mcp/<server>: a client that drops a held tools/call cancels it at the server", async (t) => {
-  const { fake, gateway, cancelled } = await setup(t);
-  const key = "session-key-for-tests";
-  const policy = { id: "test", routes: [], keyOf: (headers) => String(headers.authorization ?? "").replace(/^Bearer /, ""), authHeaders: () => ({}), apply: (body) => body, usageOf: () => undefined };
-  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: gateway, client: { callIdMeta: "claudecode/toolUseId" } } }, key);
-  t.after(() => proxy.close());
-  const gone = new AbortController();
-  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slow_write", arguments: { line: "x", seconds: 30 } } });
-  const held = new Promise((resolve) => {
-    const req = request(`${proxy.url}/mcp/fake`, { method: "POST", signal: gone.signal, headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" } }, (res) => res.resume());
-    req.once("error", () => resolve("dropped"));
-    req.end(body);
-  });
-  while (!fake.log.some((entry) => entry.tool === "slow_write")) await new Promise((resolve) => setTimeout(resolve, 20));
-  gone.abort();
-  assert.equal(await held, "dropped");
-  for (let i = 0; !cancelled(); i++) {
-    assert.ok(i < 150, `the server is told the call was cancelled: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.equal(fake.log.filter((entry) => entry.tool === "slow_write").length, 1, "and it was sent once");
-});
-
 test("a tool named like an object's own property (__proto__) keeps its price: pinned, refused unsent over the cap, booked at it once it leaves", async (t) => {
   const listed = [{ name: "__proto__", inputSchema: schema }];
   // Saved prices read back from JSON, as the server's file and a PUT's body are.
@@ -355,11 +331,11 @@ test("a call to a server that never answers ends at the call's deadline: an erro
   assert.deepEqual(await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal(), callId: "c2" }), { content: [{ type: "text", text: "5" }] }, "the next call goes on");
 });
 
-test("a grant whose server is no longer saved, or whose tool a refresh removed, refuses the pin in words naming it", () => {
+test("a grant whose server is not saved, or whose tool the save's listing does not hold, refuses the pin in words naming it", () => {
   const listed = [{ name: "add", inputSchema: schema }];
   const saved = { server: (name) => (name === "fake" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined) };
-  assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: the MCP server gone is no longer saved\.$/);
-  assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: sub is no longer one of its tools since the last refresh\.$/);
+  assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: no MCP server gone is saved\.$/);
+  assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: the MCP server fake does not list sub\.$/);
   assert.deepEqual(Object.keys(mcpPinOf(["mcp:fake/add", "read"], saved)), ["fake"], "a name that is no MCP tool's is not the pin's");
 });
 

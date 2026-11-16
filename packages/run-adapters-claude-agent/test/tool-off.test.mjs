@@ -12,8 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { NATIVE_SEARCH_USD, o200kTokens } from '@parcha/agentrun-kernel/host';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
+import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, CLAUDE_AGENT_BASE_INPUT_TOKENS, CLAUDE_WEB_SEARCH_TOOL, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
 import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
 import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 import { CLAUDE_BETAS, CLAUDE_BLOCKS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
@@ -112,6 +113,29 @@ test("the pinned CLI's tool set is the one the harness's lists decide: each of i
 
 const MODEL = 'claude-sonnet-5-5';
 const SMALL = 'claude-haiku-5-5';
+
+// The pinned CLI's own input before the agent's prompt (versions.ts CLAUDE_AGENT_BASE_INPUT_TOKENS, what a save under a cap
+// prices a least step on): its first main-model request's system text, the agent's prompt and the line it adds when a
+// session has no tool at all left out, counted with o200k_base. The stated figure is at or under it, and within 16 tokens.
+test("the pinned CLI's base input is at or under what its first request carries before the agent's prompt, within 16 tokens", { skip, timeout: 120_000 }, async (t) => {
+  const PROMPT = 'You answer. PROMPT-MARK';
+  const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
+  t.after(() => provider.close());
+  const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'base-')), 'sessions') });
+  const store = memorySessionStore();
+  const spec = { key: 'base', label: 'task', system: [PROMPT], tools: [], context: 'fresh' };
+  const session = await adapter.open(spec, { store, writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} });
+  await session.send('Hi.');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  await session.close();
+  const [first] = provider.messages().filter((r) => r.model === MODEL).map((r) => r.body);
+  const system = (Array.isArray(first.system) ? first.system.map((block) => block.text ?? '') : [String(first.system ?? '')]).join('\n');
+  assert.ok(system.includes(PROMPT), "the agent's prompt is in the system text");
+  assert.deepEqual(first.tools ?? [], [], 'no tool of its own is offered');
+  const measured = await o200kTokens(system.replace(PROMPT, '').replace(/You have no tools in this session[^\n]*/, ''));
+  t.diagnostic(`the pinned CLI's first request before the agent's prompt: ${measured} tokens (stated ${CLAUDE_AGENT_BASE_INPUT_TOKENS})`);
+  assert.ok(CLAUDE_AGENT_BASE_INPUT_TOKENS <= measured && measured - CLAUDE_AGENT_BASE_INPUT_TOKENS <= 16, `stated ${CLAUDE_AGENT_BASE_INPUT_TOKENS}, measured ${measured}`);
+});
 
 test("the CLI's every built-in, the web, a sub-agent and another MCP server are unavailable; only the host's tools run", { skip, timeout: 240_000 }, async (t) => {
   const dir = mkdtempSync(join(ROOT, 'run-'));
@@ -279,7 +303,7 @@ test("with webSearch on, the CLI's WebSearch runs through the proxy, exactly the
   const usages = events.filter((e) => e.type === 'request_end').map((e) => e.usage);
   const booked = usages.filter((u) => u.webSearches);
   assert.deepEqual(booked.map((u) => u.webSearches), [3]);
-  assert.equal(booked[0].usd, priced('', booked[0]) + 3 * CLAUDE_WEB_SEARCH_USD);
+  assert.equal(booked[0].usd, priced('', booked[0]) + 3 * NATIVE_SEARCH_USD);
   assert.deepEqual(logged.filter((l) => /thinking\.disabled/.test(l.message)), [], 'the search request thinks at the session level too');
   t.diagnostic(`requests: ${forwarded.length}, search request betas: ${searched[0].headers['anthropic-beta']}`);
 });

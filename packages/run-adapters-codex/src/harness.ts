@@ -3,7 +3,7 @@
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
-import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
+import type { GateAnswer, GateCall, OwnCalls } from '@parcha/agentrun-kernel';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
 import {
   type AcquireMachine,
@@ -129,6 +129,12 @@ export interface CodexHarnessOptions {
    * words, nothing written and nothing run; a park holds it. Default none.
    */
   gate?: (call: GateCall) => Promise<GateAnswer>;
+  /**
+   * The host's record of a code-mode `exec` (SessionIO.ownCalls): its row
+   * from its rollout lines, and each host tool call its script makes named
+   * under it. Default none.
+   */
+  ownCalls?: OwnCalls;
   /**
    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
    * in the session's VM. Default false (tool-less: `tools` are its only
@@ -578,7 +584,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         }
         mirror();
       };
-      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT });
+      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT, ...(options.ownCalls ? { ownCalls: options.ownCalls } : {}) });
       /**
        * The hard barrier before a `never` call (§5.6): its `function_call`
        * line in the log, flushed, before its intent. Codex's rollout writer is
@@ -1036,7 +1042,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         if (resume && summary.dangling.length > 0) {
           // Calls the rollout has no output for get theirs from the log.
           const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
-          await code.recoverItems(items, summary.dangling, lines, note.turn.since);
+          await code.recoverItems(items, summary.dangling, lines, note.turn.since, true);
           await guard(rpc.request('thread/inject_items', { threadId, items }));
           await guard(synced());
         }

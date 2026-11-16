@@ -13,13 +13,16 @@ you add or restyle anything a person sees there.
 
 ## The look, in six rules
 
-1. **Square.** Every corner is 0. No class rounds anything.
-2. **One line weight.** Borders are 1px. 2px marks where you are (the open tab, the active nav item) and where the
+1. **Rounded actions, square fields and surfaces.** Every action button uses the same 8px radius. The build composer has its own softer edge.
+2. **One line weight.** Borders are 1px. 2px marks the open tab and where the
    keyboard is (the focus ring). Nothing else is thicker.
 3. **Mono for structure, sans for prose.** JetBrains Mono for labels, buttons, chips, ids, numbers and code. Schibsted
    Grotesk for sentences. Two weights: 400 and 600.
-4. **Orange means AgentRun is acting or you can act.** The fill (`bg-primary`) is for the page's one main button and
-   for marks. Orange words are `text-primary-text`. Never use orange for decoration.
+4. **Orange means AgentRun is acting or you can act.** Each toolbar or form has at most one highlighted main action,
+   with a translucent orange fill (`Button variant="primary"`), including coding-agent handoffs. Place it last at the
+   far right of the toolbar, after secondary actions. Secondary controls stay
+   neutral; destructive actions use their own tone. Do not give adjacent actions equal primary emphasis.
+   Orange words are `text-primary-text`. Never use orange for decoration.
 5. **Flat.** One shadow exists (`shadow-float`), only under what floats over the page.
 6. **Light and dark are equals.** Every token has both values, and every story shows both.
 
@@ -50,6 +53,7 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | `overlay` | `bg-overlay/70` | What dims the page under a dialog. |
 | `primary`, `primary-foreground` | `bg-primary text-primary-foreground` | The brand fill and the text on it. |
 | `primary-text` | `text-primary-text` | Orange words and icons on a page surface. |
+| `primary-action-text` | `text-primary-action-text` | Primary action labels, readable on the 10% fill and 20% hover/open fill. |
 | `success`, `warning`, `destructive`, `info` | `bg-success/10`, `border-warning/50` | A tone's fill, border or dot. |
 | `success-text`, `warning-text`, `destructive-text`, `info-text` | `text-success-text` | Words in a tone. |
 | `border`, `border-strong` | `border`, `border-border-strong` | A dividing line; the edge of a hovered or floating thing. |
@@ -86,8 +90,8 @@ dark fill only, and words are `text-primary-text`.
 - `.caps` is mono, uppercase and tracked: buttons, tabs, chips and small labels. Never write `uppercase
   tracking-*` by hand.
 - Weights are `font-normal` and `font-semibold`. The bundled fonts carry no other weight.
-- A page has one `h1`: `text-2xl font-semibold`, in the sans face, also when it is a name (an agent's, a run's). A
-  page that shows no title (the Playground) has an `sr-only` one. Headings go down in order: `h1`, `h2`, `h3`.
+- A page has one `h1`. A page that shows no title (the Playground) has an `sr-only` one. Headings go down in
+  order: `h1`, `h2`, `h3`.
 - A heading under the title is one of three: a section's (`text-lg font-semibold`), a panel's label (`caps text-small
   font-semibold`), or a card's name for the thing it holds (`text-prose font-semibold`).
 
@@ -119,8 +123,14 @@ a small link in a row gets there with padding the layout does not see (`-my-1 py
 
 - `border` is the 1px line in `--border`. Use `border-border-strong` for the edge of a hovered or floating thing and
   `border-input` for a field.
-- `border-b-2` (or an inset 2px bar) marks the open tab and the active nav item. Nothing else.
-- No `rounded-*` class. The stylesheet squares every element.
+- `border-b-2` marks the open tab. The active sidebar item uses a rounded tint without a leading bar.
+- The stylesheet squares fields and surfaces by default. `Button` and `buttonVariants` use `!rounded-action`
+  (`--radius-action: 0.5rem`) for every action, including links, icon buttons and menu triggers. The coding-agent
+  action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
+  Its tinted main action and chooser share the foreground, hover, open and focus treatment across the whole group,
+  with no internal divider. Compact row actions keep the neutral secondary treatment.
+- The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
+  to the build composer.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.
 
@@ -164,7 +174,7 @@ Import from `@/components/ui`.
 
 | Need | Use | Not |
 | --- | --- | --- |
-| An action | `Button`: `solid` (the page's one main action), `primary`, `outline` (default), `ghost`, `destructive`; sizes `xs`, `sm`, `md`, `lg`, `icon` | A `<button>` with its own border and caps. |
+| An action | `Button`: `primary` (one translucent-orange main action per toolbar or form, last at the far right in top toolbars; `solid` is a legacy alias), `outline` (default), `ghost`, `destructive`; sizes `xs`, `sm`, `md`, `lg`, `icon` | A `<button>` with its own border and caps. |
 | A row or a card someone presses | A plain `<button>` or `<a>` with `hover:bg-accent` and `text-left` | `Button`. |
 | A state or a kind | `Chip` with a tone; a run's state through `StatusBadge` | A hand-built span. |
 | A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |
@@ -215,11 +225,11 @@ An error says what happened, why if the server said, and what to do next. It nev
 | State | Treatment |
 | --- | --- |
 | Hover, neutral control | `hover:bg-accent`; an outlined control also `hover:border-border-strong` |
-| Hover, toned control | The tone at 10%: `hover:bg-primary/10`, `hover:bg-destructive/10` |
+| Hover, toned control | A primary action's wash strengthens from 10% to 20% (`hover:bg-primary/20`); destructive actions use `hover:bg-destructive/10` |
 | Hover, quiet text action | `text-muted-foreground hover:text-foreground` |
 | Hover, link in prose | `underline underline-offset-2` always; links are not marked by colour alone |
 | Focus (keyboard) | The global ring: 2px, the text colour, 2px off the control. A field's ring sits on its edge. |
-| Selected, in a set | Inverted (`bg-foreground text-background`) in a `Segmented`; the brand colour and a 2px bar in `Tabs` and `NavItem` |
+| Selected, in a set | Inverted (`bg-foreground text-background`) in a `Segmented`; a brand underline in `Tabs`; a rounded brand wash in `NavItem` |
 | Disabled | `disabled:opacity-45 disabled:cursor-not-allowed`, and say why nearby when it is not obvious |
 | Busy | `aria-busy`, the control disabled, its label saying what is happening ("Saving") |
 | Refused field | `aria-invalid`, a red edge, and the `Field`'s error under it |
@@ -228,10 +238,10 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 
 ## Layout and responsiveness
 
-- **The shell** is a 220px sidebar and a main column. Under `md` (768px) the sidebar becomes a top bar with a menu.
+- **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
   Banners sit above the page, outside its scroller. `main` is the page's only scroller.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
-  phone. `short:` is for a viewport under 500px tall (a phone on its side). Do not add a breakpoint.
+  phone. `short:` is for a viewport at most 500px tall (a phone on its side). `roomy:` combines a minimum width of 768px and height of 501px for the desktop shell. Do not add a breakpoint.
 - **Widths.** A page fills the width it has, so nothing is left empty beside it on a wide screen. What changes with
   the width is how its parts are laid out, never a margin:
   - A page of data (Mission Control, a list, a table) is fluid: its tables stretch and its card grids take more columns.
@@ -269,7 +279,7 @@ These hold for every change. The primitives already do them; keep them when you 
 | Check | What it holds |
 | --- | --- |
 | `src/design-system.test.ts` | Every colour token has a light and a dark value. Tailwind names only tokens. The type scale, layers, durations and weights match this guide. Every text pair is 4.5:1 and every edge pair 3:1, in both themes. |
-| `src/design-system.sources.test.ts` | The console's own sources: no literal or palette colour, no size off the type scale, no weight but the two, no numbered layer, no rounded corner, no shadow but `shadow-float`, no duration off the scale, no page title off its one style, no page width as a number, no `uppercase` by hand, no `dark:` variant, no `outline-none` without a replacement, no hand-built button or field outside `components/ui`, and no checkbox or radio without `accent-primary`. An exception is listed in the test with its reason, and a listed exception that no longer applies fails. |
+| `src/design-system.sources.test.ts` | The console's own sources: no literal or palette colour, no size off the type scale, no weight but the two, no numbered layer, no unscoped rounded corner, no shadow but `shadow-float`, no duration off the scale, no page width as a number, no `uppercase` by hand, no `dark:` variant, no `outline-none` without a replacement, no hand-built button or field outside `components/ui`, and no checkbox or radio without `accent-primary`. An exception is listed in the test with its reason, and a listed exception that no longer applies fails. |
 | `src/lib/utils.test.ts` | `cn()` knows the console's scales, so `text-body text-primary-text` keeps both classes. |
 | `src/components/ui/primitives.test.tsx` | Each primitive's keyboard and screen-reader contract, and that every design-system story renders in both themes. |
 

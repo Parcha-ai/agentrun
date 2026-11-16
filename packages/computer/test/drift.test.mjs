@@ -4,15 +4,16 @@ import test from "node:test";
 import * as computer from "../dist/index.js";
 import { report } from "./fake-docker.mjs";
 
-const { drift, helloDrift } = computer;
+const { drift, helloDrift, PROTOCOL_VERSION } = computer;
 const hostOf = (info) => computer.hostOf(info);
 
 const DEADLINE = "2026-11-06T12:00:00.000Z";
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: { team: "a" } };
-const SIZED = { ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64 };
+// Open's read-back needs its egress proxy's inspect, which docker-egress.test.mjs holds; the sizes are what this one is for.
+const SIZED = { ...SPEC, cpus: 1.5, memoryMb: 512, pids: 64 };
 const EXPECTED = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline: DEADLINE, user: "1000:1000", apparmor: false, selinux: false };
 const MIB = 1024 * 1024;
-const HELLO = { version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+const HELLO = { protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 /** The tmpfs options create gives 1000:1000, before their sizes. */
 const WORK_OPTIONS = "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700";
 const SOCKET_OPTIONS = "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700";
@@ -24,7 +25,7 @@ function inspected(sized = false) {
 		name: "computer-0123456789ab",
 		labels: { team: "a", "agentrun.computer": "1", "agentrun.computer.deadline": DEADLINE },
 		cmd: ["init", "--deadline", DEADLINE],
-		network: sized ? "bridge" : "none",
+		network: "none",
 		pids: sized ? 64 : 1024,
 		memory: (sized ? 512 : 4096) * MIB,
 		quota: sized ? 150_000 : 200_000,
@@ -217,12 +218,18 @@ test("AppArmor and SELinux: the profile and label the host's Docker gives every 
 	one(after((i) => (i.ProcessLabel = "system_u:system_r:spc_t:s0"), { expected: labelled }), /ProcessLabel.*spc_t/);
 });
 
-test("network: none must read back as none, open as the bridge, and nothing else", () => {
+test("network: none must read back as none, and open never as Docker's bridge: open is only through the egress proxy", () => {
 	one(after((i) => (i.HostConfig.NetworkMode = "bridge")), /network: declared none, read back .*bridge/);
 	one(after((i) => (i.NetworkSettings.Networks.extra = {})), /network: declared none, read back .*extra/);
 	one(after((i) => (i.HostConfig.NetworkMode = "host")), /network: declared none, read back .*host/);
-	one(after((i) => (i.HostConfig.NetworkMode = "none"), { spec: SIZED }), /network: declared open/);
-	one(after((i) => (i.NetworkSettings.Networks = { bridge: {}, other: {} }), { spec: SIZED }), /network: declared open, read back .*other/);
+	const open = { ...SPEC, network: "open" };
+	const bridged = after((i) => {
+		i.HostConfig.NetworkMode = "bridge";
+		i.NetworkSettings.Networks = { bridge: {} };
+	}, { spec: open });
+	assert.match(bridged[0], /network: declared open, read back network mode bridge/);
+	assert.ok(bridged.some((line) => /egress/.test(line)), `open with no egress volume or relay is drift too: ${JSON.stringify(bridged)}`);
+	assert.match(after(() => {}, { spec: open })[0], /network: declared open, read back none/);
 });
 
 test("CapDrop must be ALL, with no capability added and no privileged mode", () => {
@@ -335,7 +342,7 @@ test("hello: the provider's version, its kind and exactly its groups, linux, and
 	one(helloDrift({ ...HELLO, groups: [...HELLO.groups, "screen"] }, EXPECTED), /offers groups screen, which the provider does not declare/);
 	one(helloDrift({ ...HELLO, kind: "desktop" }, EXPECTED), /kind desktop, expected linux/);
 	one(helloDrift({ ...HELLO, kind: undefined }, EXPECTED), /kind nothing, expected linux/);
-	one(helloDrift({ version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] }, EXPECTED).filter((m) => !/kind/.test(m)), /groups/);
+	one(helloDrift({ protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] }, EXPECTED).filter((m) => !/kind/.test(m)), /groups/);
 	one(helloDrift({ ...HELLO, os: "windows" }, EXPECTED), /os windows/);
 	one(helloDrift({ ...HELLO, arch: "arm64" }, EXPECTED), /arch arm64.*amd64/);
 	assert.deepEqual(helloDrift({ ...HELLO, arch: "arm64" }, { ...EXPECTED, arch: undefined }), [], "arch is checked only when known");

@@ -34,6 +34,10 @@ describe("a pin in words", () => {
     expect(pinLine({ cc: [null, "a@x.test", "b@x.test"] })).toBe("cc must be left out or one of a@x.test, b@x.test");
     expect(pinLine({ limit: [10, 9] })).toBe("limit must be one of 10, 9");
   });
+  it("says a keys pin as the keys its object may hold, sorted, each once", () => {
+    expect(pinLine({ properties: { keys: ["hs_lead_score"] } })).toBe("properties may hold only the key hs_lead_score (any value)");
+    expect(pinLine({ properties: { keys: ["lifecyclestage", "hs_lead_score", "lifecyclestage"] }, contact_id: "1" })).toBe("contact_id must be 1; properties may hold only the keys hs_lead_score, lifecyclestage (any values)");
+  });
 });
 
 describe("pins in Settings → Tools", () => {
@@ -51,6 +55,11 @@ describe("pins in Settings → Tools", () => {
     const review = pins.querySelector(`[data-pin="${REVIEW}"]`)!;
     expect(review.textContent).toContain(`Pinned: ${WORDS}. ${REFUSED}`);
     expect(pins.querySelector('[data-pin="mcp:slack/post_message"]')!.textContent).toContain(BROKEN);
+  });
+
+  it("says a keys pin by the tool it bounds", async () => {
+    const host = await open({ "mcp:hubspot/HUBSPOT_UPDATE_CONTACT": { permission: "allow", pin: { properties: { keys: ["hs_lead_score"] } } } } as never);
+    expect(host.querySelector('[data-pin="mcp:hubspot/HUBSPOT_UPDATE_CONTACT"]')!.textContent).toContain(`Pinned: properties may hold only the key hs_lead_score (any value). ${REFUSED}`);
   });
 
   it("shows no pins section where nothing is pinned", async () => {

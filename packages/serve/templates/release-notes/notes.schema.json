@@ -128,7 +128,7 @@
       "description": "what a person must decide or check before shipping",
       "items": { "type": "string", "minLength": 1, "maxLength": 500 }
     },
-    "draft_markdown": { "type": "string", "minLength": 1, "maxLength": 60000, "description": "the draft as posted, from its # title to the end of the table" },
+    "draft_markdown": { "type": "string", "contentMediaType": "text/markdown", "minLength": 1, "maxLength": 60000, "description": "the draft as posted, from its # title to the end of the table" },
     "draft": {
       "type": "object",
       "additionalProperties": false,

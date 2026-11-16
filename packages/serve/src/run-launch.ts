@@ -1,3 +1,6 @@
+import type { SdkWorkflowTool, SdkWorkflowAdapter } from "./sdk/workflows.js";
+import type { NativeBinding } from "./native/types.js";
+import { nativeOf } from "./native/binding.js";
 // A run's launch record: the one JSON body the server writes when it starts a run (start = INSERT run, design 2.1), and
 // the runner reads at its claim to build the run's spec. It replaces the per-run `serve.json` the old per-run process read
 // (app.ts meta.input, place, effort, cap): no process, no door, no marker file, one body written once. What a person sees
@@ -19,6 +22,8 @@ import type { Place } from "./workspace/place.js";
  *  names (a learning run's `{ runId }`). `model`, `plane`, `approvers`, `documents` and `boxAllow` are the per-run choices
  *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
+  readonly sdk?: {runtime: "claude-agent-sdk" | "codex-sdk"; instructions: string; model?: string; workflow_tools?: SdkWorkflowTool[]; workflow_adapters?: SdkWorkflowAdapter[]};
+  readonly native?: NativeBinding;
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
   readonly title: string;
@@ -32,7 +37,6 @@ export interface RunLaunch {
   readonly model?: { readonly provider: string; readonly modelId: string };
   readonly effort?: string;
   readonly maxCostUsd?: number;
-  readonly capMode?: string;
   /** The tool plane as the server resolved it at start (tool-plane.ts). */
   readonly plane?: Plane;
   /** Whether a person can answer a tool call's approval for this run. */
@@ -63,6 +67,13 @@ export interface RunLaunch {
    *  nothing learned when it does (SeedFailed); `use`, a run started with `learning: "use"` (learning.ts RUN_LEARNING_USE):
    *  it starts from all of the above and keeps nothing, never asked its end-of-run turn. Absent when the run does not learn. */
   readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string; readonly seedNotes?: number; readonly notesLeftOut?: readonly string[]; readonly skills?: readonly string[]; readonly workflows?: readonly string[]; readonly notesOnly?: true; readonly gradeModel?: string; readonly seedFailed?: SeedFailed; readonly use?: true };
+  /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
+   *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
+  readonly workflowFirst?: false;
+  /** A replay run (runner/promotion.ts): learned workflow `workflow` at `digest`, run alone on graded run `of`'s input to
+   *  decide whether that revision serves first (learn/promote.ts). Its guards read record-only (learn/promote.ts recordOnly), a hand-back ends it
+   *  with no agent turn, and it asks nothing at its end. Absent: a run of its own. */
+  readonly replay?: Replay;
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -79,6 +90,13 @@ export interface RunLaunch {
   readonly hold?: { readonly minutes: number };
 }
 
+/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. */
+export interface Replay {
+  readonly of: string;
+  readonly workflow: string;
+  readonly digest: string;
+}
+
 /** The disk a launch record names, and whose it is. */
 export interface LaunchDisk {
   readonly diskId: string;
@@ -89,9 +107,16 @@ export interface LaunchDisk {
 const readDisk = (value: unknown): LaunchDisk | undefined =>
   isObject(value) && typeof value.disk_id === "string" && (value.kind === "launch" || value.kind === "agent") ? { diskId: value.disk_id, kind: value.kind } : undefined;
 
-/** The trigger a launch body names, as read back: `{ id, firing_key }`, or null (triggerOf of the old serve.json). */
+/** The replay a launch body names, as read back, or undefined. */
+const readReplay = (value: unknown): Replay | undefined =>
+  isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest } : undefined;
+
+/** The trigger a launch body names, as read back: `{ id, firing_key }` and its firing's `attrs` (each a string) when it
+ *  kept them, or null (triggerOf of the old serve.json). */
 function readTrigger(value: unknown): RunTrigger | null {
-  return isObject(value) && typeof value.id === "string" && typeof value.firing_key === "string" ? { id: value.id, firing_key: value.firing_key } : null;
+  if (!(isObject(value) && typeof value.id === "string" && typeof value.firing_key === "string")) return null;
+  const attrs = isObject(value.attrs) ? Object.fromEntries(Object.entries(value.attrs).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+  return { id: value.id, firing_key: value.firing_key, ...(Object.keys(attrs).length ? { attrs } : {}) };
 }
 
 /** Where a run runs, as read back from a launch body, or undefined when it names none. */
@@ -126,6 +151,8 @@ export function keepInputOrigin(stored: unknown, trigger: RunTrigger | null): Me
 export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
+    ...(launch.sdk ? {sdk:launch.sdk as unknown as Json}:{}),
+    ...(launch.native ? {native:launch.native}:{}),
     title: launch.title,
     ...(launch.repo !== undefined ? { repo: launch.repo } : {}),
     place: launch.place,
@@ -133,7 +160,6 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.model ? { model: launch.model } : {}),
     ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
     ...(launch.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}),
-    ...(launch.capMode !== undefined ? { cap_mode: launch.capMode } : {}),
     ...(launch.plane ? { plane: launch.plane } : {}),
     ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
@@ -141,6 +167,8 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.notesLeftOut?.length ? { notesLeftOut: [...launch.learning.notesLeftOut] } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.notesOnly ? { notesOnly: true } : {}), ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}) } } : {}),
+    ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
+    ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -176,6 +204,8 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const archilDisk = readDisk(stored.archil_disk);
   return {
     input: stored.input,
+    ...(isObject(stored.sdk) && (stored.sdk.runtime === "claude-agent-sdk" || stored.sdk.runtime === "codex-sdk") && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
+    ...(nativeOf(stored) ? {native:nativeOf(stored)}:{}),
     title: typeof stored.title === "string" ? stored.title : "",
     ...(typeof stored.repo === "string" ? { repo: stored.repo } : {}),
     place,
@@ -183,7 +213,6 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(model ? { model } : {}),
     ...(typeof stored.effort === "string" ? { effort: stored.effort } : {}),
     ...(typeof stored.max_cost_usd === "number" ? { maxCostUsd: stored.max_cost_usd } : {}),
-    ...(typeof stored.cap_mode === "string" ? { capMode: stored.cap_mode } : {}),
     ...(isObject(stored.plane) ? { plane: stored.plane as Plane } : {}),
     ...(typeof stored.approvers === "boolean" ? { approvers: stored.approvers } : {}),
     ...(typeof stored.documents === "string" ? { documents: stored.documents } : {}),
@@ -191,6 +220,8 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { given: [], seed: null, section: "" } } : {}),
+    ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
+    ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),

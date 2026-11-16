@@ -184,28 +184,26 @@ describe("App, the agent builder's unsaved changes", () => {
     expect(p.dialog()).toBeUndefined();
   });
 
-  it("a new agent's Create opens its page with no question", async () => {
+  it("the new-agent page prepares a request without any server write", async () => {
     const writes = serve();
-    const p = await open("#/agents/new");
-    await p.type(p.host.querySelector<HTMLInputElement>("#agent-name")!, "Made");
-    await act(async () => { p.button("Create")!.click(); });
-    await wait(() => location.hash === "#/agents/made" && !p.instructions(), "on the new agent's page");
-    expect(writes).toEqual(["POST /v2/agents"]);
+    const p = await open("#/agents/calc/edit");
+    await act(async () => { location.hash = "#/agents/new"; });
+    await wait(() => p.host.querySelector("h1")?.textContent === "What do you want to build?", "the brief composer");
+    await p.type(p.host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')!, "Answer in French.");
+    expect(p.host.querySelector('textarea[readonly]')?.textContent).toContain("Answer in French.");
+    expect(writes).toEqual([]);
     expect(p.dialog()).toBeUndefined();
   });
 
-  it("a new agent's builder, untouched, goes with no question; named, it asks", async () => {
-    serve();
-    const p = await open("#/agents/new");
-    await act(async () => { p.sidebar("Runs").click(); });
-    await wait(() => location.hash === "#/runs" && !p.instructions(), "on the runs list");
-    expect(p.dialog()).toBeUndefined();
+  it("a new-agent brief leaves without a definition write or a legacy editor guard", async () => {
+    const writes = serve();
+    const p = await open("#/agents/calc/edit");
     await act(async () => { location.hash = "#/agents/new"; });
-    await wait(() => !!p.instructions(), "the builder again");
-    await p.type(p.host.querySelector<HTMLInputElement>("#agent-name")!, "Made");
-    await act(async () => { p.sidebar("Runs").click(); });
-    await wait(() => !!p.dialog(), "Leave without saving? is asked");
-    expect(p.dialog()!.textContent).toContain("This new agent is not saved yet.");
+    await wait(() => p.host.querySelector("h1")?.textContent === "What do you want to build?", "the brief composer");
+    await act(async () => p.sidebar("Runs").click());
+    await wait(() => location.hash === "#/runs", "the runs list");
+    expect(p.dialog()).toBeUndefined();
+    expect(writes).toEqual([]);
   });
 
   it("the browser's own prompt on close or reload is there only while something is unsaved", async () => {

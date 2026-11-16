@@ -42,6 +42,20 @@ export async function shoot(t: CaseContext, region?: Rect): Promise<{ shot: Scre
 	return { shot, image };
 }
 
+/** Why this computer's screen is not captured, as hello's screen.capture says it off (an attached Mac whose owner has
+ *  not granted the screen); undefined when it is on, or not declared, which a computer of the screen group means as on. */
+export function captureOff(t: CaseContext): string | undefined {
+	const value = t.hello.features?.["screen.capture"];
+	return typeof value === "object" ? value.off : undefined;
+}
+
+/** With screen.capture off, `method` is refused `denied` with its reason, never ignored nor answered. */
+async function refusedOff(t: CaseContext, off: string, method: "screen.shot" | "screen.watch"): Promise<void> {
+	const result = method === "screen.shot" ? await t.client.call("screen.shot", {}) : await t.client.call("screen.watch", { after: 0, waitMs: 0 });
+	const error = t.refused(result, `${method} with screen.capture off`, ["denied"]);
+	t.assert(error.message.includes(off), `${method}'s refusal says hello's screen.capture reason (${JSON.stringify(off)}): ${JSON.stringify(error.message)}`);
+}
+
 const QUADRANTS = ["top left", "top right", "bottom left", "bottom right"];
 
 export const screenCases: Case[] = [
@@ -51,6 +65,8 @@ export const screenCases: Case[] = [
 		group: "screen",
 		needs: ["screen"],
 		async run(t) {
+			const off = captureOff(t);
+			if (off !== undefined) return refusedOff(t, off, "screen.shot");
 			const { shot, image } = await shoot(t);
 			t.assert(shot.width > 0 && shot.height > 0, `the shot is ${shot.width}x${shot.height}`);
 			t.deepEqual([image.width, image.height], [shot.width, shot.height], "the PNG's size (IHDR), against the shot's width and height");
@@ -76,6 +92,8 @@ export const screenCases: Case[] = [
 		group: "screen",
 		needs: ["screen"],
 		async run(t) {
+			const off = captureOff(t);
+			if (off !== undefined) return refusedOff(t, off, "screen.watch");
 			const { shot } = await shoot(t);
 			const watcher = t.provider.watch;
 			t.assert(watcher !== undefined, "the provider has no watch(): a computer with a screen gives its live view through it");

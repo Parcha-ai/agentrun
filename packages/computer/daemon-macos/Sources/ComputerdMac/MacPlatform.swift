@@ -15,15 +15,16 @@ public enum MacPlatform {
 			: .off("Post Event is not granted to Computerd: allow it in System Settings > Privacy & Security > Accessibility")
 		return Platform(
 			accessibility: ax,
-			capture: MacCapture(),
+			capture: MacCapture(marks: .shared),
 			workspace: MacWorkspace(),
 			background: BackgroundRoute(sky: sky),
 			backgroundFeature: Feature.all(sky.feature, post),
 			foreground: ForegroundRoute(accessibility: ax),
 			foregroundFeature: post,
-			navFeature: .off("macOS has no system back, home or app switcher: use the app's own controls or a key chord such as super+["),
 			raw: HIDInput.shared,
-			person: PersonWatch.shared
+			person: PersonWatch.shared,
+			marks: .shared,
+			changes: AXChanges.shared
 		)
 	}
 
@@ -55,20 +56,21 @@ public enum MacPlatform {
 		return text.isEmpty ? nil : text
 	}
 
-	/// The owner's policy; a policy file that does not parse allows no app at all, never every app.
+	/// The owner's policy; a policy file that does not parse allows no app at all, never every app, and grants the
+	/// paired server nothing.
 	public static func policy() -> Policy {
 		do {
 			return try Policy.load()
 		} catch {
-			log("\(error): allowing no app until it is fixed")
+			log("\(error): allowing no app and granting the paired server nothing until it is fixed")
 			return Policy(apps: [])
 		}
 	}
 
-	/// A driver for one connection.
-	public static func driver() -> Driver {
-		// One line per ui.act in Computerd.log: where its time went.
-		Driver(platform: make(), policy: policy(), machine: machine, timing: Timing(trace: { log($0) }))
+	/// A driver for one connection, the socket's (.local) or the paired server's (.attached).
+	public static func driver(_ caller: Caller) -> Driver {
+		// One line per ui.act in Computerd.log: where its time went, and what the apps told meanwhile.
+		Driver(platform: make(), policy: policy(), caller: caller, machine: machine, timing: Timing(trace: { log("\($0); \(AXChanges.shared.told())") }))
 	}
 }
 #endif

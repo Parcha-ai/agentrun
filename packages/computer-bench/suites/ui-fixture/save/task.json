@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "fixture.save",
+  "version": 1,
+  "title": "Fill in the name and save (ui fixture)",
+  "split": "dev",
+  "tags": ["fixture"],
+  "needs": { "os": "macos", "kind": "desktop", "apps": ["ai.agentrun.uifixture"] },
+  "params": { "name": { "pick": ["Ada", "Grace", "Linus"] } },
+  "setup": [
+    { "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] },
+    { "method": "apps.launch", "params": { "id": "ai.agentrun.uifixture" } }
+  ],
+  "instruction": "In the UI fixture app, type {{name}} into the Name field, then press Save and wait until the app says it saved.",
+  "budget": { "steps": 8, "usd": 0.1, "wall_s": 20 },
+  "checks": [
+    { "id": "name", "kind": "ui", "why": "The Name field holds the asked name.", "app": "ai.agentrun.uifixture", "find": { "role": "textbox", "name": { "equals": "Name" }, "value": { "equals": "{{name}}" } }, "min": 1, "max": 1 },
+    { "id": "saved", "kind": "ui", "why": "The app shows Saved, which only a press of Save brings.", "app": "ai.agentrun.uifixture", "find": { "role": "text", "name": { "equals": "Saved" } }, "min": 1, "max": 1 }
+  ],
+  "teardown": [{ "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] }],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "params": {
+        "target": { "app": "ai.agentrun.uifixture" },
+        "steps": [
+          { "set": { "find": { "role": "textbox", "name": { "equals": "Name" } } }, "value": "{{name}}" },
+          { "press": { "find": { "role": "button", "name": { "equals": "Save" } } } }
+        ],
+        "expect": { "text": "Saved" }
+      }
+    }
+  ]
+}

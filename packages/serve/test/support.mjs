@@ -29,6 +29,7 @@ import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
 import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
+import { stranger } from "./fixtures/stranger.mjs";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
 // directories (a server keeps its seal key in its data directory, seal-key.ts).
@@ -55,6 +56,12 @@ export const SECRET_WRITE_PATHS = [
   { methods: ["POST"], path: /^\/integrations\/github\/connect$/ },
   { methods: ["DELETE"], path: /^\/integrations\/github$/ },
   { methods: ["DELETE"], path: /^\/agents\/[^/]+\/sign-ins\/[^/]+$/ },
+  // The server's ChatGPT sign-in (chatgpt-plan.ts): its state, its start and finish, and its sign-out.
+  { methods: ["GET", "DELETE"], path: /^\/settings\/chatgpt$/ },
+  { methods: ["POST"], path: /^\/settings\/chatgpt\/sign-in(?:\/finish)?$/ },
+  // The server's email account (email/routes.ts): its read, its save and removal, and its connection test.
+  { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/email$/ },
+  { methods: ["POST"], path: /^\/settings\/email\/test$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -649,12 +656,39 @@ export function journalOf(data, runId) {
   }
 }
 
+/** The run's one ledger for its paid tool calls (the kernel cap's RunTools on its TOOL_SESSION, paid-calls.ts
+ *  Ledger.paid) over a fresh memory store, as a claim opens it: under `cap` (USD, or a function read at each check;
+ *  undefined: no cap). Its `spend(usd)` books a step already settled at `usd` (owed: never refused), what the run spent
+ *  before; `records()`, its runner records as written; `modelRequest(inputTokens)`, the run's one rule asked for a model
+ *  request beside its paid calls (`model`'s, the kernel's CapModel): its verdict, `refuse` when it does not fit. */
+export async function toolLedger(cap, { model } = {}) {
+  const [{ memorySessionStore }, kernelCap] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import("@parcha/agentrun-kernel/kernel/cap")]);
+  const store = memorySessionStore();
+  const writer = await store.open(kernelCap.TOOL_SESSION);
+  const run = kernelCap.runCap({ sessions: store, capUsd: typeof cap === "function" ? cap : () => cap, modelOf: (id) => (id === model?.id ? model : undefined) });
+  const paid = await run.tools(writer);
+  let turns = 0;
+  const modelRequest = (inputTokensMax) => run.before({ key: "run:test", label: "run:test", model: model?.id, turn: (turns += 1), maxTurns: null, spentUsd: 0, inputTokensMax });
+  let spends = 0;
+  const spend = async (usd) => {
+    const id = `spent-before#${(spends += 1)}`;
+    await paid.admit({ id, name: "what the run spent before", holdUsd: usd, basis: "the test's", owed: true });
+    await paid.settle(id, usd);
+  };
+  return Object.assign(paid, { store, spend, records: () => writer.read(), modelRequest });
+}
+
 /** Run `runId`'s paid tool calls as its runner books them on the run's one ledger (the paid-tools session's runner.request
  *  and runner.turn records, run-cap.ts paidCalls), in the words main's records used: each request's hold as an
  *  `agentrun.tool_started` mark (`tool`, `charged_by`, `call`, `heldUsd`) and its settle as an `agentrun.tool_cost` charge
  *  (`usd`; none when unknown). A hold given back unused (nothing sent) has no charge. */
 export function paidCallsOf(data, runId) {
-  const entries = journalOf(data, runId);
+  return paidBookings(journalOf(data, runId));
+}
+
+/** `entries`' paid tool calls (runner.request and runner.turn records of the paid-tools session: a run's journal, or a
+ *  toolLedger's `records()`), as paidCallsOf reads them. */
+export function paidBookings(entries) {
   const requests = new Map();
   const out = [];
   for (const entry of entries) {
@@ -754,6 +788,7 @@ export async function responsesEndpoint(t, text, tokens, { incomplete = false } 
   const models = [];
   const authorizations = [];
   const server = createServer((req, res) => {
+    if (stranger(req, res)) return;
     asked.push(`${req.method} ${req.url}`);
     if (req.method === "POST") authorizations.push(req.headers.authorization ?? null);
     const chunks = [];

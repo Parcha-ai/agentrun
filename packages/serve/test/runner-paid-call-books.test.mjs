@@ -1,7 +1,7 @@
 // A pi run through the dispatch runs its paid web tools and books them as main's per-run process does: web_search, bound by
 // adapterRunSpecFromLaunch under the run's plane (web_search -> Parallel), is no longer refused by a runner-settle seam. Its
-// Parallel search is a paid call on the run's spend cap (paid-calls.ts): held at Parallel's price before it is sent and
-// counted at the charge, so what fits the cap is sent and counted, and one past the cap is refused and never sent. The fake
+// Parallel search is a paid call on the run's one ledger (paid-calls.ts; the kernel cap's RunTools, which the adapter loop
+// sets around each host tool call, bookedIn): held at Parallel's price before it is sent and counted at the charge, so what fits the cap is sent and counted, and one past the cap is refused and never sent. The fake
 // Parallel (fixtures/faux-parallel.mjs) answers in place of the network, on the canary key the plane hands the run; it files
 // one line per request it is sent, so a request never sent leaves no line.
 import assert from "node:assert/strict";
@@ -11,8 +11,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { specFor } from "./runner-spec-support.mjs";
 
-const { useSpend } = await import("../dist/cap.js");
-const { parallelSearchFee } = await import("../dist/paid-calls.js");
+const { bookedIn, parallelSearchFee } = await import("../dist/paid-calls.js");
+const { paidBookings, toolLedger } = await import("./support.mjs");
 const { CANARY } = await import("./fixtures/faux-parallel.mjs");
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
@@ -25,13 +25,15 @@ const webSearchSpec = (t) => specFor(t, { body: { tools: ["web_search"] }, launc
 /** The /v1/search requests the fake Parallel was sent, from its call log. */
 const searchesSent = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/search");
 
-/** `calls` records the paid charges a run's spend took; its cap is `cap` and it has spent `spent` so far. */
-function spend(t, { cap, spent = 0 }) {
-  const charges = [];
-  t.after(() => useSpend(undefined));
-  useSpend({ cap, spent: () => spent, add: (usd) => charges.push(usd) });
-  return charges;
+/** The run's one ledger, under `cap`, having spent `spent` so far; `charges()`, the paid charges call c1 booked on it. */
+async function spend({ cap, spent = 0 }) {
+  const paid = await toolLedger(cap);
+  if (spent > 0) await paid.spend(spent);
+  const charges = async () => paidBookings(await paid.records()).filter((row) => row.kind === "agentrun.tool_cost" && row.call === "c1").map((row) => row.usd);
+  return { paid, charges };
 }
+/** Call c1 of the run, as the adapter loop runs a host tool call: on the run's ledger (bookedIn). */
+const callOn = (paid, tool, args) => bookedIn({ call: "c1", paid }, () => tool.call(args, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
 
 /** The fake Parallel's call log for this test, cleaned up after it. */
 function callLog(t) {
@@ -49,10 +51,11 @@ function callLog(t) {
 test("a web_search that fits the cap runs through Parallel and is counted at Parallel's price on the run's spend", async (t) => {
   const { spec } = await webSearchSpec(t);
   const file = callLog(t);
-  const charges = spend(t, { cap: 1 });
+  const { paid, charges: booked } = await spend({ cap: 1 });
   const webSearch = spec.session.tools.find((tool) => tool.name === "web_search");
   assert.ok(webSearch, "web_search is bound");
-  const answer = await webSearch.call({ query: "widgets", n: 5 }, { callId: "c1", signal: new AbortController().signal, attempt: 0 });
+  const answer = await callOn(paid, webSearch, { query: "widgets", n: 5 });
+  const charges = await booked();
   assert.doesNotMatch(answer.text ?? "", /spend_cap_reached|"error"/, `the search ran, not refused: ${answer.text}`);
   assert.match(answer.text ?? "", /"provider":"parallel"/, `it answered through Parallel: ${answer.text}`);
   assert.equal(searchesSent(file).length, 1, "one search was sent to Parallel");
@@ -64,9 +67,10 @@ test("a web_search past the cap is refused before it runs: nothing is sent to Pa
   const { spec } = await webSearchSpec(t);
   const file = callLog(t);
   // Parallel's fast search is $0.001; a cap with less than that left cannot hold it.
-  const charges = spend(t, { cap: 0.0005, spent: 0 });
+  const { paid, charges: booked } = await spend({ cap: 0.0005, spent: 0 });
   const webSearch = spec.session.tools.find((tool) => tool.name === "web_search");
-  const answer = await webSearch.call({ query: "widgets", n: 5 }, { callId: "c1", signal: new AbortController().signal, attempt: 0 });
+  const answer = await callOn(paid, webSearch, { query: "widgets", n: 5 });
+  const charges = await booked();
   assert.match(answer.text ?? "", /spend_cap_reached/, `refused in the cap's words: ${answer.text}`);
   assert.equal(searchesSent(file).length, 0, "nothing was sent to Parallel");
   assert.equal(charges.length, 0, "nothing was counted on the run's spend");

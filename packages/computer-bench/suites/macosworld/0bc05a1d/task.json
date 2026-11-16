@@ -1,0 +1,60 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "macosworld.0bc05a1d",
+  "version": 1,
+  "title": "Make a new note with an empty table in Notes",
+  "split": "heldout",
+  "source": {
+    "suite": "macOSWorld",
+    "id": "0bc05a1d-1e5a-c967-e0f9-fbca371592ca",
+    "revision": "e2ca8334b3765537e5c1c428ce57990248a1bb5f",
+    "licence": "CC-BY-NC-4.0; ported by reference (our own instruction, setup and checks; no source text copied)",
+    "changes": "Instruction written in our own words, and it says the table goes in a new note: the source deleted every note on the Mac first, so any table it found was in a new note; we keep the Mac's notes and look only at notes made since setup. The source's check grepped all notes' HTML for a table; ours also wants every cell of the table empty, as the instruction says. Teardown deletes the notes made since setup."
+  },
+  "tags": ["notes", "create", "table"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Notes"] },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Note the start time once (a retried setup keeps the first), so the checks and teardown see only notes made in this run.",
+      "params": { "argv": ["sh", "-c", "o=/tmp/computer-bench-{{nonce}}; mkdir -p $o && { [ -f $o/t0 ] || date +%s > $o/t0; }"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "A second's gap, so a note made right after setup is later than the start time.",
+      "params": { "argv": ["sleep", "1"], "timeoutMs": 10000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.Notes" } }
+  ],
+  "instruction": "Open Notes, make a new note and put an empty table in it.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "empty-table",
+      "kind": "exec",
+      "why": "Among the live notes made since setup, at least one table is found in the HTML bodies, and none of those tables' cells holds text. After setup no note is that new, so an agent that does nothing reads tables=0 and fails.",
+      "argv": ["sh", "-c", "osascript -l JavaScript -e \"$1\" \"$(cat /tmp/computer-bench-{{nonce}}/t0)\"", "sh", "{{file:tables.js}}"],
+      "timeoutMs": 60000,
+      "stdout": { "matches": "^notes=[1-9]\\d* tables=[1-9]\\d* filled=0$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the notes made since setup, and again from Recently Deleted.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Drop the start time.",
+      "params": { "argv": ["rm", "-rf", "/tmp/computer-bench-{{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Make a note whose body holds an empty two-by-two table, in the HTML Notes itself writes for a table.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "make", "<div>Table {{nonce}}</div><div><object><table cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse: collapse\"><tbody><tr><td valign=\"top\"><br></td><td valign=\"top\"><br></td></tr><tr><td valign=\"top\"><br></td><td valign=\"top\"><br></td></tr></tbody></table></object><br></div>"], "timeoutMs": 60000 }
+    }
+  ]
+}

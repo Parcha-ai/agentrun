@@ -5,14 +5,17 @@
 // tool the list does not know stays an MCP tool like any other, asked by default. Through the API against the fake MCP
 // server: the server's tools read the meta tool grantable false with the reason; a grant of it is 422 in those words, and
 // a direct tool of the same server is granted; Klavis's generic execute_action on a host that is not Klavis's is not
-// refused. A grant saved before the rule is refused at the launch, when the run's tools are pinned.
+// refused. A revision pinned before the rule, holding a meta tool, is refused at its run's launch, nothing sent.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, answerFlow, flowAgent, follow, retried, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
+import { STORE_FILE } from "../dist/store/sqlite/store.js";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -61,6 +64,33 @@ test("Composio's COMPOSIO_MULTI_EXECUTE_TOOL reads grantable false with the reas
   const doc = (await api("GET", "/openapi.json")).body;
   const served = doc.paths["/settings/mcp-servers/{name}"].get.responses["200"].content["application/json"].schema;
   assert.deepEqual(served.properties.tools.items.properties.grantable?.const, false, "the served document names grantable on an MCP tool");
+});
+
+test("a saved server's read says why a grant of a tool is refused (grant_problems), in the words the save's 422 says", async (t) => {
+  const { api } = shared;
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  // `mcp__wide__` and 45 characters: past the 52 a wire name has, so it is called by its hashed wire name, and refused by none.
+  const long = "a".repeat(45);
+  fake.tools[long] = { description: "a name past the wire budget", input: object, run: answer };
+  fake.tools.pick = { description: "a schema whose root is a choice", input: { anyOf: [object, { type: "object", properties: { x: { type: "string" } } }] }, run: answer };
+  fake.tools.plain = { description: "nothing refuses it", input: object, run: answer };
+  const put = await api("PUT", "/settings/mcp-servers/wide", { url: fake.url, auth: { type: "bearer", token: TOKEN } });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  for (const view of [put.body, (await api("GET", "/settings/mcp-servers/wide")).body]) {
+    const byName = Object.fromEntries(view.tools.map((tool) => [tool.name, tool]));
+    assert.equal(byName[long].grant_problems, undefined, "a long name refuses no grant");
+    assert.deepEqual(Object.keys(byName.pick.grant_problems), ["claude-agent"], "only the harness whose own client drops the shape");
+    assert.match(byName.pick.grant_problems["claude-agent"], /^The tool mcp:wide\/pick cannot be offered on claude-agent: .*root has anyOf/);
+    assert.equal(byName.plain.grant_problems, undefined);
+  }
+  assert.equal((await retried(api)("POST", "/agents", agent("wide-long", { tools: [`mcp:wide/${long}`] }))).status, 201, "the long name's grant saves");
+  const refused = await retried(api)("POST", "/agents", agent("wide-pick", { harness: "claude-agent", tools: ["mcp:wide/pick"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.ok(JSON.stringify(refused.body).includes(put.body.tools.find((tool) => tool.name === "pick").grant_problems["claude-agent"]), "the save says what the read said");
+  const doc = (await api("GET", "/openapi.json")).body;
+  const served = doc.paths["/settings/mcp-servers/{name}"].get.responses["200"].content["application/json"].schema;
+  assert.equal(served.properties.tools.items.properties.grant_problems?.type, "object", "the served document names grant_problems on an MCP tool");
 });
 
 test("a generic name is a meta tool only on its provider's host: Klavis's execute_action on a host that is not Klavis's is granted", async () => {
@@ -122,7 +152,7 @@ test("a run of a revision saved granting what is now a meta tool is 409 naming i
 });
 
 
-test("a grant of a meta tool is 422 in the same words on every harness: pi, claude-agent and codex that bind MCP tools, and opencode that doesn't (never a setup warning)", async () => {
+test("a grant of a meta tool is 422 in the same words on every harness: pi, claude-agent, codex and opencode, each of which binds MCP tools (never a setup warning)", async () => {
   const { api } = shared;
   const words = [];
   for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
@@ -138,9 +168,9 @@ test("a grant of a meta tool is 422 in the same words on every harness: pi, clau
   assert.equal(new Set(words).size, 1, "one refusal, word for word, on every harness");
 });
 
-test("a run's pin made before the rule, holding a meta tool, refuses its next launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
-  // Ported to the one store and the runner (the switch): the run's pin is its store row, made before the rule as an earlier
-  // claim would have made it, and the runner's claim step re-checks it at the claim (runner/mcp-claim.ts).
+test("a revision's pin made before the rule, holding a meta tool, refuses its run's launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
+  // The run's pin is its revision's, made at the agent's save; here made before the rule, as an earlier save would have
+  // made it, and the runner's claim step re-checks it at the claim (runner/mcp-claim.ts).
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api, data } = await serveOf(t, { runner: false });
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
@@ -152,10 +182,12 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   t.after(() => store.close().catch(() => undefined));
   const server = await store.mcp.server("composio");
-  const claim = await store.claim(runId, "earlier", { leaseMs: 60_000 });
   const listed = (name) => server.tools.find((tool) => tool.name === name);
-  await store.mcp.pinOnce(claim, { composio: { url: server.url, tools: ["GMAIL_SEND_EMAIL", "COMPOSIO_MULTI_EXECUTE_TOOL"].map((name) => ({ name, inputSchema: listed(name)?.input_schema ?? object })) } });
-  await store.release(claim);
+  const earlier = { composio: { url: server.url, tools: ["GMAIL_SEND_EMAIL", "COMPOSIO_MULTI_EXECUTE_TOOL"].map((name) => ({ name, inputSchema: listed(name)?.input_schema ?? object })) } };
+  assert.deepEqual((await store.mcp.pin(runId)).body.composio.tools.map((tool) => tool.name), ["GMAIL_SEND_EMAIL"], "the save pinned the direct tool alone");
+  const db = new DatabaseSync(join(data, STORE_FILE));
+  db.prepare("UPDATE revisions SET mcp_pin = ? WHERE id = (SELECT revision_id FROM runs WHERE id = ?)").run(JSON.stringify(earlier), runId);
+  db.close();
   // Its launch on a runner is refused at the claim: the run fails in words, and nothing is sent.
   const close = await startInProcessRunner(data);
   t.after(() => close());

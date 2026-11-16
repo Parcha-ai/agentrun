@@ -12,8 +12,13 @@ import UniformTypeIdentifiers
 final class MacCapture: Capture, @unchecked Sendable {
 	private let lock = NSLock()
 	private var content: (at: Date, value: SCShareableContent)?
+	/// Where ui.act last acted: the live view's frames draw it (frame), no other image does.
+	private let marks: Marks
+	private let clock = SystemClock()
 
-	init() {}
+	init(marks: Marks) {
+		self.marks = marks
+	}
 
 	var feature: Feature {
 		CGPreflightScreenCaptureAccess()
@@ -166,8 +171,60 @@ final class MacCapture: Capture, @unchecked Sendable {
 		} catch {
 			throw RPCError.denied("the screen cannot be captured: \(error.localizedDescription)")
 		}
-		guard let jpeg = Encode.jpeg(image, quality: Double(quality) / 100) else { throw RPCError.invalid("the screen's image would not encode") }
-		return ComputerdKit.Image(data: jpeg, format: "jpeg", width: image.width, height: image.height, scale: Double(image.width) / max(1, Double(points.width)))
+		let perPoint = Double(image.width) / max(1, Double(points.width))
+		let shown = marks.scene(now: clock.now()).flatMap { Self.draw($0, on: image, scale: perPoint) } ?? image
+		guard let jpeg = Encode.jpeg(shown, quality: Double(quality) / 100) else { throw RPCError.invalid("the screen's image would not encode") }
+		return ComputerdKit.Image(data: jpeg, format: "jpeg", width: image.width, height: image.height, scale: perPoint)
+	}
+
+	/// The live view's frame with the last step's place drawn on it (Marks): a pointer there, a ring growing out of a
+	/// press, a box around a typed-into field. In the frame's pixels, scale per screen point; the main display's
+	/// origin is the screen's.
+	static func draw(_ scene: Marks.Scene, on image: CGImage, scale: Double) -> CGImage? {
+		let (w, h) = (image.width, image.height)
+		guard let context = CGContext(
+			data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+			bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+		) else { return nil }
+		context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+		// CoreGraphics' origin is the bottom left, the screen's the top left.
+		func at(_ p: Point) -> CGPoint { CGPoint(x: p.x * scale, y: Double(h) - p.y * scale) }
+		let accent = (red: 0.0, green: 0.48, blue: 1.0)
+		if let box = scene.box {
+			let origin = at(Point(box.x, box.y + box.h))
+			let rect = CGRect(x: origin.x, y: origin.y, width: box.w * scale, height: box.h * scale).insetBy(dx: -3 * scale, dy: -3 * scale)
+			context.setStrokeColor(CGColor(red: accent.red, green: accent.green, blue: accent.blue, alpha: 0.9 * scene.boxAlpha))
+			context.setLineWidth(2.5 * scale)
+			context.addPath(CGPath(roundedRect: rect, cornerWidth: 5 * scale, cornerHeight: 5 * scale, transform: nil))
+			context.strokePath()
+		}
+		let tip = at(scene.pointer)
+		if let ring = scene.ring {
+			let radius = (8 + 22 * ring) * scale
+			context.setStrokeColor(CGColor(red: accent.red, green: accent.green, blue: accent.blue, alpha: 0.85 * (1 - ring)))
+			context.setLineWidth(3 * scale)
+			context.strokeEllipse(in: CGRect(x: tip.x - radius, y: tip.y - radius, width: radius * 2, height: radius * 2))
+		}
+		// An arrow pointer, its tip on the place: white, outlined dark, with the accent in its tail so it reads as the
+		// agent's and not the person's.
+		let u = scale
+		let arrow: [(Double, Double)] = [(0, 0), (0, 17), (4.2, 13), (7, 19.5), (9.6, 18.4), (6.9, 12), (12.5, 12)]
+		let path = CGMutablePath()
+		path.addLines(between: arrow.map { CGPoint(x: tip.x + $0.0 * u, y: tip.y - $0.1 * u) })
+		path.closeSubpath()
+		context.setShadow(offset: CGSize(width: 0, height: -1.5 * u), blur: 3 * u, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.45 * scene.alpha))
+		context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: scene.alpha))
+		context.addPath(path)
+		context.fillPath()
+		context.setShadow(offset: .zero, blur: 0, color: nil)
+		context.setStrokeColor(CGColor(red: 0.05, green: 0.05, blue: 0.05, alpha: scene.alpha))
+		context.setLineWidth(1.2 * u)
+		context.setLineJoin(.round)
+		context.addPath(path)
+		context.strokePath()
+		context.setFillColor(CGColor(red: accent.red, green: accent.green, blue: accent.blue, alpha: scene.alpha))
+		context.fillEllipse(in: CGRect(x: tip.x + 9 * u, y: tip.y - 24 * u, width: 7 * u, height: 7 * u))
+		return context.makeImage()
 	}
 
 	/// A hash of a small image of the window: changes when the window looks different.

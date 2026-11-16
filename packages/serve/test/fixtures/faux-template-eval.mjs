@@ -2,18 +2,21 @@
 // the eval's grader agent, no key and no network.
 //
 // The package's agent follows its run's input, one step a request:
-// - `Call <tool> with <json>`, one line each: that call, in order (an MCP tool by its wire name, mcp__<server>__<tool>);
+// - `Call <tool> with <json>`, one line each: that call, in order (an MCP tool by its wire name, mcp__<server>__<tool>),
+//   each `{{env:<NAME>}}` in its json that environment variable's value (a secret the run's input never holds);
 // - `Write <path>: <text>`: the write tool, making that file in the run's work folder;
 // - `Page through the filed answer`: as a model that follows the words it is given would, the read tool on the file the
 //   last result says the whole answer is filed at (`in the run's files at <path>`), from the line that result names
 //   (`offset=<n>`), then again from each `offset=<n>` the read answers, until a read names none;
 // - `Answer:` and the lines after it: the final answer, with `{{last-result}}` the text of the last tool result,
-//   `{{tools}}` the names of the tools the run was given, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned), and
+//   `{{tools}}` the names of the tools the run was given, `{{describe:<tool>}}` that tool's description as the run was
+//   handed it, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned),
+//   `{{today}}` the day its system prompt's environment line names (environment.ts, "Today is <day> (<zone>)"), and
 //   `{{flaky:<a>|<b>}}` <a> the first time any run of this server answers it and <b> after (a count kept in the file
 //   AGENTRUN_TEST_EVAL_COUNTER names).
 // - `Hold until stopped.`: with AGENTRUN_TEST_EVAL_HOLD set, the run writes that file once it holds, so a test knows the
 //   run is in its turn, then holds until the turn is stopped; unset, it answers at once.
-// The end-of-run learning turn is answered "No notes.".
+// The end-of-run learning turn is answered "No notes.", and the output contract's retry with the answer it last gave.
 //
 // The grader agent (its instructions are template-eval.ts GRADER_INSTRUCTIONS) passes a run when every line of its
 // rubric that says `Pass if the answer contains "<text>".` holds of the <answer> it was given (or of the <target>, when it
@@ -54,6 +57,8 @@ function flaky(first, later) {
 
 /** The names of the tools the run was given: the context's, else those its messages added. */
 const toolsOf = (context) => [...new Set([...(context.tools ?? []), ...context.messages.flatMap((m) => m.toolsAdded ?? [])].map((tool) => tool.name))];
+/** The description of the run's tool `name`, as it was handed it; null when it has none. */
+const describedOf = (context, name) => [...(context.tools ?? []), ...context.messages.flatMap((m) => m.toolsAdded ?? [])].find((tool) => tool.name === name)?.description ?? null;
 
 /** Where the last result says the whole answer is filed, and the line it says to go on from. */
 const FILED = /in the run's files at (\S+?)(?=[\]:;,\s]|$)/;
@@ -70,7 +75,7 @@ function nextCall(input, said) {
         at++;
         continue;
       }
-      return call ? [call[1], JSON.parse(call[2])] : ["write", { path: write[1], content: `${write[2]}\n` }];
+      return call ? [call[1], JSON.parse(call[2].replace(/\{\{env:(\w+)\}\}/g, (_, name) => process.env[name] ?? ""))] : ["write", { path: write[1], content: `${write[2]}\n` }];
     }
     if (line !== "Page through the filed answer") continue;
     const path = FILED.exec(said[at - 1] ?? "")?.[1];
@@ -91,6 +96,9 @@ export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map((m) => textOf(m.content));
   const last = users.at(-1) ?? "";
   if (last.startsWith("The task is done. Before the run ends")) return faux.message("No notes.");
+  // The output contract's one retry (an answer with no json block meeting the package's schema): the same answer again,
+  // so a run's answer, and a flaky count, are as the run first wrote them.
+  if (last.startsWith("Your final JSON did not match the output schema:")) return faux.message(textOf(context.messages.findLast((m) => m.role === "assistant")?.content ?? ""));
   const input = users[0] ?? "";
   const results = context.messages.filter((m) => m.role === "toolResult");
   const next = nextCall(input, results.map((result) => textOf(result.content)));
@@ -107,6 +115,8 @@ export default function reply(context, faux) {
   return faux.message(answer
     .replaceAll("{{last-result}}", textOf(results.at(-1)?.content ?? ""))
     .replaceAll("{{tools}}", toolsOf(context).join(", "))
+    .replace(/\{\{describe:([^}]+)\}\}/g, (_, name) => String(describedOf(context, name)))
+    .replaceAll("{{today}}", /^Today is (.+?) \([^)]+\)\./m.exec(system)?.[1] ?? "(no environment line)")
     .replace(/\{\{learned:([^}]+)\}\}/g, (_, text) => (system.includes(text) ? "yes" : "no"))
     .replace(/\{\{flaky:([^|}]*)\|([^}]*)\}\}/g, (_, a, b) => flaky(a, b)));
 }

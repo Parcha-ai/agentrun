@@ -1,0 +1,59 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.finder.color-tag",
+  "version": 1,
+  "title": "Give one file a colour tag",
+  "split": "dev",
+  "tags": ["finder", "files", "tags"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.finder"] },
+  "params": {
+    "target": { "pick": ["plan.txt", "budget.txt", "ideas.txt"] },
+    "color": { "pick": ["Red", "Orange", "Green", "Blue", "Purple"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "A fresh folder with plan.txt, budget.txt and ideas.txt, none tagged, shown in a Finder window.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Finder, give the file \"{{target}}\" in the folder computer-bench-{{nonce}} (in Documents) the {{color}} tag. Don't tag the other files.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "target-tag",
+      "kind": "exec",
+      "why": "The file's tag names (NSURLTagNamesKey, what Finder's tag menu writes) are exactly the asked colour.",
+      "argv": ["osascript", "-e", "{{file:tags.applescript}}", "target"],
+      "timeoutMs": 30000,
+      "stdout": { "equals": "{{color}}" }
+    },
+    {
+      "id": "others-clean",
+      "kind": "exec",
+      "why": "The folder's other two files have no tags.",
+      "argv": ["osascript", "-e", "{{file:tags.applescript}}", "others"],
+      "timeoutMs": 30000,
+      "stdout": { "empty": true }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the Finder window on the folder.",
+      "params": { "argv": ["osascript", "-e", "try", "-e", "tell application \"Finder\" to close (every Finder window whose name is \"computer-bench-{{nonce}}\")", "-e", "end try"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Remove the folder.",
+      "params": { "argv": ["sh", "-c", "rm -rf \"$HOME/Documents/computer-bench-{{nonce}}\""], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Set the file's tag names to the colour.",
+      "params": { "argv": ["osascript", "-e", "{{file:tags.applescript}}", "set"], "timeoutMs": 30000 }
+    }
+  ]
+}

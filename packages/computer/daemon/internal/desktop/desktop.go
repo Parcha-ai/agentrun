@@ -25,8 +25,8 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
 )
 
-// Groups is what a computer with a display offers past computerd's own.
-var Groups = []string{"screen", "input.pointer", "input.keys"}
+// Groups is what a computer with a display offers past computerd's own. apps is package apps's, on the same display.
+var Groups = []string{"screen", "input.pointer", "input.keys", "apps"}
 
 // chunk is the most bytes one screen.shot or screen.read gives: files.MaxChunk, which in base64 fits a line.
 var chunk = files.MaxChunk
@@ -49,6 +49,12 @@ type Display struct {
 	remapped *x11.Conn
 
 	shots atomic.Int64
+
+	// dmu guards damage, the watches' view of where the screen changed (damage.go), and damageStarting, closed once
+	// the start a watch is making ends.
+	dmu            sync.Mutex
+	damage         *damages
+	damageStarting chan struct{}
 }
 
 // New is the display DISPLAY named when computerd started; "" is none.
@@ -60,11 +66,16 @@ func New(name string) *Display {
 // unsupported. It does not wait for a dial.
 func (d *Display) Close() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.closed = true
 	if d.conn != nil {
 		_ = d.conn.Close()
 		d.conn = nil
+	}
+	d.mu.Unlock()
+	d.dmu.Lock()
+	defer d.dmu.Unlock()
+	if d.damage != nil {
+		d.damage.close()
 	}
 }
 
@@ -142,6 +153,26 @@ func (d *Display) gone(c *x11.Conn, err error) error {
 	}
 	d.mu.Unlock()
 	return rpc.Errorf(rpc.KindUnsupported, "the display %s went away: %v", d.name, err)
+}
+
+// Conn is the display's connection, made now if there is none or the last one ended, for the apps group (package apps),
+// which reads windows on the same display. Its failure is unsupported, in words.
+func (d *Display) Conn() (*x11.Conn, error) {
+	return d.connection()
+}
+
+// Use holds the display for the apps group's requests that answer nothing (raising a window, giving it the focus), as
+// screen.shot and input.actions hold it, so the errors a Sync returns are the holder's own. release gives it back.
+func (d *Display) Use(ctx context.Context, method string) (release func(), err error) {
+	if err := d.hold(ctx, method); err != nil {
+		return nil, err
+	}
+	return d.letGo, nil
+}
+
+// Gone is gone for the apps group: a failure of the connection c becomes unsupported, and the next call dials again.
+func (d *Display) Gone(c *x11.Conn, err error) error {
+	return d.gone(c, err)
 }
 
 // Name is the DISPLAY this display was made with, such as ":99"; "" is none.
@@ -315,8 +346,8 @@ func (d *Display) read(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	// A shot held is served from what computerd keeps, with no display: the X server may have exited since screen.shot.
 	// Only a shot not held asks for the display, so a computer without one answers unsupported, not not_found.
-	// A watch's frame is held apart (watchHeldOf), so neither evicts the other.
-	for _, h := range []*held{heldOf(ctx), watchHeldOf(ctx)} {
+	// A watch's frames are held apart (watchHeldOf), so neither evicts the other.
+	for _, h := range append([]*held{heldOf(ctx)}, watchHeldOf(ctx)...) {
 		result, ok, err := h.read(params.ID, *params.Offset)
 		switch {
 		case err != nil:

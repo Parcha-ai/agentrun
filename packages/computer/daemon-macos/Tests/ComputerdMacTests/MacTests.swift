@@ -95,7 +95,7 @@ final class MacTests: XCTestCase {
 	}
 
 	func testHelloSaysEveryFeatureWithAReason() throws {
-		let hello = MacPlatform.driver().hello()
+		let hello = MacPlatform.driver(.local).hello()
 		XCTAssertEqual(hello.os, "macos")
 		XCTAssertNotNil(hello.screen, "the runner's Aqua session has a display")
 		let features = try XCTUnwrap(hello.features)
@@ -132,7 +132,7 @@ final class MacTests: XCTestCase {
 	func testObserveSaysWhatItCannotSee() async throws {
 		let platform = MacPlatform.make()
 		do {
-			let r = try await MacPlatform.driver().ui.observe(UiObserveParams())
+			let r = try await MacPlatform.driver(.local).ui.observe(UiObserveParams())
 			print("observe: \(r.app.id) window \(r.window.id), \(r.nodes.count) nodes, image \(r.image.map { "\($0.width)x\($0.height)" } ?? "none"), empty \(r.empty ?? "-")")
 			if !platform.accessibility.feature.isOn {
 				XCTAssertEqual(r.nodes, [])
@@ -148,7 +148,7 @@ final class MacTests: XCTestCase {
 	}
 
 	func testAppsListHasTheFinder() {
-		let list = MacPlatform.driver().apps()
+		let list = MacPlatform.driver(.local).apps()
 		XCTAssertTrue(list.apps.contains { $0.id == "com.apple.finder" }, "\(list.apps.map(\.id))")
 	}
 

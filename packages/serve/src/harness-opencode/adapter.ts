@@ -12,8 +12,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
-import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
+import { bridgeTool, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
@@ -63,25 +63,6 @@ export interface OpenCodeAdapterOptions {
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
-}
-
-/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's
- *  failure. The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is
- *  entered, so a crash inside a `never` tool is always reported, never repeated. */
-function kernelTool(tool: HostTool): KernelTool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    replay: tool.replay,
-    async execute(input, io) {
-      // The effect's step is `tool:<the model's call id>#<attempt>`: the host sees the model's call id.
-      const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      const result = await tool.call(input, { callId, signal: io.signal });
-      if (result.isError) throw new Error(result.text);
-      return result.images?.length ? { text: result.text, images: result.images } : result.text;
-    },
-  };
 }
 
 /** The adapter's event for a harness live event, if it has one: exactly the four a host reads. A call's `tool_end`
@@ -142,7 +123,6 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
 
   return {
     id: "opencode",
-    capabilities: () => ({}),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("OpenCode sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -184,7 +164,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
       const effort = spec.effort ?? spec.thinking;
       let control: DriveControl | undefined;
       const harness = openCodeHarness({
-        tools: tools.map(kernelTool),
+        tools: tools.map((tool) => bridgeTool(tool)),
         model: modelFor(spec),
         ...(instructions ? { instructions } : {}),
         ...(effort ? { effort: String(effort) } : {}),

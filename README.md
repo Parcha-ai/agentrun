@@ -18,13 +18,14 @@
 </p>
 
 <p align="center">
-  <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>
-  &nbsp;
-  <a href="#start-in-three-steps"><img alt="npx @parcha/agentrun" src="docs/assets/readme/pill-local.png" height="44"></a>
+  <a href="https://console.agentrun.ai/"><b>AgentRun Cloud</b></a> ·
+  <a href="#run-locally-in-three-steps">Run locally</a> ·
+  <a href="#deploy-it">Self-host</a>
 </p>
 
 <p align="center">
-  <a href="#start-in-three-steps">Quickstart</a> ·
+  <a href="#get-started">Quickstart</a> ·
+  <a href="#connect-your-existing-agent">Connect your agent</a> ·
   <a href="#case-studies">Case studies</a> ·
   <a href="#take-the-tour">Tour</a> ·
   <a href="#templates">Templates</a> ·
@@ -70,12 +71,28 @@ Bring your agent on the harness it runs best on: Claude Code, Codex, OpenCode or
 - **You stay in control.** Approvals, spend caps and one console for every agent: what needs you, what failed, what's
   running and what it cost.
 
-You don't build the plumbing: provider integrations, recovery, run tracking and learning are all here. Run it on your
-laptop with one command, in one container, or as a server with runners. Apache-2.0.
+You don't build the plumbing: provider integrations, recovery, run tracking and learning are all here. Use
+[AgentRun Cloud](docs/getting-started.md#agentrun-cloud) for hosted access, or run the open-source platform on your
+laptop, in one container, or as a server with runners. Apache-2.0.
 
-## Start in three steps
+## Get started
+
+**AgentRun Cloud.** Run agents without maintaining your own server. [Open Cloud](https://console.agentrun.ai/) to
+create an account or sign in. For help setting up your team's workflows,
+[talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
+
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Render or Docker](#deploy-it).
+The [getting-started guide](docs/getting-started.md) explains the three options.
+
+<a id="start-in-three-steps"></a>
+
+### Run locally in three steps
 
 You need Node 24.22.3 or newer, on macOS or Linux.
+
+Already use Claude Code or Codex? [Connect your existing agent](#connect-your-existing-agent) with its current
+configuration and sign-in. You do not need to add a model key to AgentRun for that connection. The steps below
+start a new agent from a template.
 
 1. **Start it.**
 
@@ -86,15 +103,20 @@ You need Node 24.22.3 or newer, on macOS or Linux.
    It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
    opens the console in your browser.
 
-2. **Add one model key.** In the console, set a password, then add a key under **Settings → Model keys**. One
-   `OPENROUTER_API_KEY` gives every harness a model. An Anthropic key runs pi and Claude Code; an OpenAI key runs pi,
-   Codex and OpenCode.
+2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**
+   (on the first screen, or under **Settings → Model keys**) and sign in on OpenAI's page: Codex and pi agents run on
+   your ChatGPT plan, with no key. Or add a key in the same place: one `OPENROUTER_API_KEY` gives every harness a model;
+   an Anthropic key runs pi and Claude Code; an OpenAI key runs pi, Codex and OpenCode.
 
 3. **Run your first agent.** Open **Templates**, apply **KYB due diligence**, and start a run with a company's name and
-   website. It needs nothing but your model key. When it finishes, the run's **Report** tab has a due diligence report
-   with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it kept for next time.
+   website. It needs nothing but your ChatGPT sign-in or your model key. When it finishes, the run's **Report** tab has
+   a due diligence report with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it
+   kept for next time.
 
-Rather have your coding agent do it? Tell it: `Read agentrun.ai/SKILL.md and set up AgentRun for me`.
+Rather have your coding agent do it? For the published quickstart, tell it:
+`Read agentrun.ai/SKILL.md and set up AgentRun locally for me`.
+For this development checkout, point it to [the matching onboarding skill](docs/SKILL.md), which guides either
+starting a new agent or bringing an existing one. The public website's skill is released separately.
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>
@@ -103,9 +125,56 @@ If Docker is running on your machine, new agents get a Docker sandbox with a she
 which takes a few minutes, and the console says when it's ready. Without Docker, agents still read and write files,
 but get no shell.
 
-Want your own server with a URL? [Deploy it to Render](#deploy-it) in one click.
+Want your own server with a URL? [Self-host on Render](#deploy-it).
 
 </details>
+
+## Connect your existing agent
+
+Already have agents running in a backend, Docker deployment or terminal? **Connect agent** can observe them
+through the same CLI and OpenTelemetry Collector used by hosted AgentRun. The OSS console shows their reported
+activity and token usage while your application keeps starting the work. Follow
+[Observe agents that already run elsewhere](connector/README.md#observe-agents-that-already-run-elsewhere).
+Observation needs no model key and does not automatically enable learning or import transcripts.
+
+Keep the project, instructions, skills, MCP tools and sign-in you already use in Claude Code or Codex. AgentRun can
+start new jobs with that setup and show their activity and results in the console.
+
+**Development build:** remote connections currently require the server and the Python connector from the same
+reviewed checkout. The published observation-only CLI does not include this remote execution mode. Follow the
+[source connector setup](connector/README.md) for installation and the matching Node bridge.
+
+1. **Choose your coding agent.** In Mission Control or Connected agents, open the **Connect agent** dropdown and
+   select your coding agent. The button remembers your choice and provides a prompt that reads the skill from
+   this server's build.
+2. **Choose what to bring.** The skill first distinguishes **observing existing sessions** from letting AgentRun
+   **start future jobs**. For future jobs, choose **a live connection**, **past history**, or **both**,
+   then confirms the source machine, project and runtime. For a laptop, VM or container separate from the server,
+   use **Connection setup → Another machine** and create a code with the chosen scope. Enter it directly in the
+   source CLI's secure prompt. Your native credentials stay on that machine; the worker connects outbound.
+3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
+   or model job is started. For a **live connection** or **Both**, open the connected agent, verify its setup, and
+   start a job. Keep a remote source worker online. Optionally turn **Self-improving** On to let completed jobs
+   propose notes and skills. Inspect what passes checking and grading in Learning Dojo, then start a fresh run to
+   use it. Reflection and grading add model usage.
+
+History import brings selected completed conversations into Runs without executing them or automatically training
+the agent. A live connection starts new CLI sessions; it does not attach to a desktop conversation already in
+progress. You can connect first and import history later with an explicitly approved history scope.
+
+[Connection and history guide](docs/native-agents.md) · [Remote CLI installation and commands](connector/README.md)
+
+Already run an agent inside your backend with an SDK? The development build can add checked learning around its
+existing call site. Your backend keeps its job queue, tools, model credentials and cancellation; AgentRun records
+the run and supplies accepted learning to the next fresh task. Use the matching client and server from this checkout.
+
+| Backend SDK | Integration |
+| --- | --- |
+| Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
+| Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
+
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note or skill, fresh-run reuse,
+and a learning-Off control. Reflection and independent grading run on the server and add model usage.
 
 ## Take the tour
 
@@ -256,19 +325,60 @@ them. [Template packages](packages/serve/templates/README.md) has the folder for
 Want a template to know your code? [Tune a template on your own code](docs/tutorials/tune-a-template.md) walks
 through the loop we ran on `code-review`.
 
-**Triggers** start capped runs on their own: schedules, signed webhooks and GitHub pull request events.
+**Triggers** start capped runs on their own: schedules, signed webhooks, GitHub pull request events and Composio
+events.
+
+## Connect your tools
+
+Give an agent the tools of any remote MCP server in **Settings → MCP servers**. With a Composio key, five steps take
+you from a toolkit to a run that a Composio event starts:
+
+1. In **Settings → MCP servers → Add from Composio**, paste your Composio API key, type a toolkit (`hackernews`) and
+   press **Load actions**.
+
+   <p align="center">
+     <img alt="The Add from Composio form: the Composio API key field, masked, and the toolkit hackernews" src="docs/assets/tutorials/composio-1-key.png" width="100%">
+   </p>
+
+2. Save a toolkit that acts as you, such as `github`, and open its link to connect your account on Composio.
+
+   <p align="center">
+     <img alt="After saving the github toolkit: its tools need your github account, with a link to connect it on Composio" src="docs/assets/tutorials/composio-2-connect.png" width="100%">
+   </p>
+
+3. Tick the actions an agent may use and save the server, then tick its tools in the agent's **Tools & skills** step.
+
+   <p align="center">
+     <img alt="The hackernews toolkit's six actions, two of them ticked, saved as the server hackernews" src="docs/assets/tutorials/composio-3-actions.png" width="100%">
+   </p>
+
+4. In **Triggers → New app trigger**, pick the saved `github` server, an event such as a new issue and its repository,
+   and the agent. The server makes the trigger on Composio and its webhook subscription at this server's public
+   address (`AGENTRUN_PUBLIC_URL`).
+
+5. Open an issue in your repository and watch the run it starts on the **Timeline**.
+
+   <p align="center">
+     <img alt="A run started by the trigger: its Timeline opens with the trigger's row, then three Hacker News searches" src="docs/assets/tutorials/composio-5-timeline.png" width="100%">
+   </p>
+
+[Connect Composio tools and triggers](docs/tutorials/composio.md) has each step's API call and the Composio side of the
+trigger.
 
 ## Harnesses and computers
 
 **Harnesses.** Name one in the agent's definition with `harness`. Approvals, caps, computers, triggers and learning work
 the same on each. `npx @parcha/agentrun server capabilities` says which harnesses your server runs.
 
-| Harness | `harness` | Notes |
-| --- | --- | --- |
-| pi | `pi` | The default |
-| Claude Code | `claude-agent` | Installs itself on first use |
-| Codex | `codex` | Installs itself on first use |
-| OpenCode | `opencode` | Needs its `opencode-ai` package beside the server; AgentRun prints the line that installs it |
+| Harness | `harness` | On a ChatGPT plan | Notes |
+| --- | --- | --- | --- |
+| pi | `pi` | Yes | The default |
+| Claude Code | `claude-agent` | No: an Anthropic or OpenRouter key | Installs itself on first use |
+| Codex | `codex` | Yes | Installs itself on first use |
+| OpenCode | `opencode` | No: an OpenAI or OpenRouter key | Needs its `opencode-ai` package beside the server; AgentRun prints the line that installs it |
+
+Signed in with ChatGPT and no key, Codex and pi agents run on your plan. Claude Code, OpenCode, Jev decisions and paid
+tools need their own keys.
 
 **Computers.** An agent gets a computer with one setting. It gets the tools for that kind and nothing else, and changing
 the computer changes nothing else about the agent.
@@ -296,8 +406,12 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
 - **Keys.** Add a vendor's key once in **Settings → Computers**. Your server seals it and shows it only as set or
   missing; it never enters the agent's computer. **Test connection** makes one read at the vendor and starts nothing.
 - **The run's files.** By default a run's folder lives on your server and the Docker sandbox mounts it. Turn on an
-  Archil disk in Settings and the folder lives there instead, so a Daytona, Modal, E2B or Agent37 sandbox mounts the same
-  folder. Those four run only with an Archil disk, and with Archil on the Docker sandbox is refused.
+  Archil disk in Settings and the folder lives there instead, and the Docker sandbox is refused. A sandbox that mounts
+  the disk needs Archil's image in your own vendor account. Agent37's sandbox and desktop register it there on their
+  first run (the run waits once while the image is pulled), so they are ready once the keys work. A Modal sandbox starts
+  from our public box image, which has it, so it is ready once the keys work too. An E2B sandbox and desktop start from
+  our public box template, so they are ready once the keys work as well. Orgo's desktop, a phone and a browser mount
+  nothing and still run.
 - **Watching and taking over.** A browser run streams to the run's **Screen** tab through your own server, never
   through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for
   a login or a captcha.
@@ -306,7 +420,7 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   `npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox`.
 
 [`@parcha/agentrun-computer`](packages/computer/README.md) is the protocol underneath: one small daemon in every
-computer and one provider per vendor.
+computer and one provider per vendor. To add your vendor, see [How to contribute a provider](packages/computer/PROVIDERS.md#how-to-contribute-a-provider).
 
 </details>
 
@@ -390,15 +504,26 @@ The Python client is `pip install parcha-agentrun`, with the same methods
 
 ## Deploy it
 
-**Render, in one click.**
+For a hosted workspace, [use AgentRun Cloud](docs/getting-started.md#agentrun-cloud). The options below deploy the
+open-source platform on infrastructure you manage. None of them needs a model key: once it's up, Continue with ChatGPT
+(Settings → Model keys, or the first screen), then run your first agent. Or add a model key there instead.
+
+**Your server, your ChatGPT plan, only you:** a ChatGPT sign-in is for the person who runs this server. Don't share it
+or let others run agents on it. Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT
+settings. On a server that isn't this computer, the sign-in tab ends on a page that won't load: copy its whole address
+into the console.
+
+**Self-host on Render.**
 
 <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>
 
 The button deploys [`render.yaml`](render.yaml): one 1 CPU / 2 GB instance with a 10 GB disk, the published image (no
 build), and the token and seal key generated for you. It needs a card on your Render workspace: about $25 a month for
-the instance and $2.50 for the disk, at Render's prices when this was written. In Render's form, paste
-`OPENROUTER_API_KEY`. We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with
-anyone. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
+the instance and $2.50 for the disk, at Render's prices when this was written. Leave the model keys in Render's form
+blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
+Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
+Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
+date. Do not share it with anyone.
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>
@@ -408,15 +533,18 @@ On a Linux machine with Docker:
 ```sh
 git clone https://github.com/Parcha-ai/agentrun && cd agentrun/deploy
 printf 'AGENTRUN_SEAL_KEY=%s\n' "$(openssl rand -base64 32)" > .env && chmod 600 .env
-echo 'OPENROUTER_API_KEY=...' >> .env
 docker compose up -d --build
 docker compose logs server     # the console's link, the first visit's setup code and, the first time, the token
 ```
 
+Open the link, set your password, then Continue with ChatGPT (Settings → Model keys, or the first screen), then run
+your first agent. Or add a model key in the console, or in `.env` before `docker compose up`
+(`echo 'OPENROUTER_API_KEY=...' >> .env`).
+
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
 This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker
 sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), run the server on
-the host, or use a Daytona or E2B computer with an Archil disk.
+the host.
 
 </details>
 
@@ -445,9 +573,12 @@ nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md)
 
 - [AgentRun Server](packages/serve/README.md): the API, models, tools, MCP servers, triggers, spend caps, learning and
   safety, in full
+- [Get started](docs/getting-started.md): AgentRun Cloud, local setup or self-hosting
 - [Quickstart on agentrun.ai](https://agentrun.ai/docs/quickstart) and the [docs](https://agentrun.ai/docs)
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
+- [Connect existing agents and import history](docs/native-agents.md), locally or from another machine
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)
 

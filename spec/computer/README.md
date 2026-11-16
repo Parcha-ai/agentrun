@@ -1,18 +1,106 @@
 # The AgentRun computer protocol
 
-Draft. Protocol version **0.2**, the wire as `packages/computer` speaks it today.
+Protocol version **0.2**. This page is for an engineer at a sandbox, VM or desktop company who has never seen AgentRun.
+It says what the protocol is, why it's built the way it is, which providers run it today, and where we'd like your
+feedback.
 
-A computer is anything an agent can run commands on or look at: a container, a microVM, a VM, a desktop, a phone, a
-browser. The protocol lets any vendor's computers, and a machine of your own, be given to an agent the same way. It has
-two layers:
+## What it is
 
-- **The computer's methods.** JSON-RPC 2.0, one JSON object per line. `exec.run`, `files.*`, `process.*`, `screen.*`,
-  `input.actions`, `apps.*`, `ui.observe`, `ui.act` and a few more answer for the computer. Inside most computers a small daemon, `computerd`,
-  answers them over its stdin and stdout. A phone or a browser has no daemon: its provider answers the same methods
-  itself.
-- **The provider.** One per vendor. It makes, finds and ends computers, reads their network back, and opens the
-  connection the methods go over. It declares what its computers can do before any is made, and each computer's `hello`
-  says the same.
+[AgentRun](../../README.md) runs AI agents, and an agent often needs a computer: a sandbox to run code in, a desktop to
+click through, a phone or a browser. The computer protocol puts every one of those behind one wire. Inside the machine
+runs a small daemon, `computerd`. It answers JSON-RPC methods (`exec.run`, `files.*`, `process.*`, `screen.*`,
+`input.actions`, `apps.*`, `ui.*`) over its stdin and stdout. Outside the machine, each vendor has a small
+`MachineHost`: eleven members that create, read, list and delete the vendor's machines, and start one process in a
+machine. AgentRun does the rest through that one process. It installs the daemon, talks to it over that process's
+stdin and stdout, enforces deadlines, makes create safe to retry, and sweeps up leftovers. A phone or a browser has no
+daemon, so its provider answers the same methods itself.
+
+```
+ agent ──► AgentRun ──► provider (MachineHost: create, get, list, delete, exec, …) ──► your API
+                │                                                                 │
+                └──────── JSON-RPC over one exec's stdin/stdout ──────► computerd (inside the machine)
+```
+
+## Why it's built this way
+
+Each choice below cost us something, and we say what.
+
+- **A daemon inside the machine, not each vendor's API.** Files, processes, the screen and input work the same on
+  every vendor because one program implements them. A vendor writes the machine's lifecycle and one exec, nothing
+  else. *What it costs:* each create uploads the daemon binary and checks its sha256, and the vendor must start a process as
+  root in a Linux machine.
+- **The daemon's version matches exactly.** AgentRun ships `computerd` inside its own npm package and puts that
+  binary in every machine it makes. A computer whose `hello` names another protocol or daemon version is never handed
+  out, so nothing ever has to guess which methods a daemon has. *What it costs:* no mixed versions during a rollout.
+  The one exception is a driver a person installs on their own device (a Mac, a phone), where only the protocol must
+  match ([`attach.md`](attach.md)).
+- **Exec is byte-exact, two-way and live.** The whole protocol rides one exec stream for the computer's whole life:
+  every byte value both ways, stdin open, output as it's written, and no timeout on a silent process. *What it costs:*
+  a vendor whose exec runs a command and returns its output at the end (a one-shot REST exec) can't plug in today.
+  There's a pre-check for this ([`provider.md`](provider.md#a-hosted-vendors-exec)).
+- **Isolation is read from inside, never taken on trust.** The agent's programs run as a non-root user, in a network
+  namespace of their own. On hosted vendors today that namespace has loopback alone. After every create, `computerd`
+  probes from inside that nothing answers. The vendor's own agent ports and its session sockets are declared, and the
+  agent's programs can't reach them. *What it costs:* agent programs on hosted vendors get no network yet. An
+  allowlist runs only where we enforce it ourselves: Docker, through our egress proxy, and Local Chrome.
+- **The listing finds; `get` answers.** Vendor list endpoints lag: we've seen a killed sandbox still listed, and an
+  extended machine listed with its old end. So AgentRun takes only ids from `list` and reads each machine with
+  `get`, and a delete is done when `get` answers "none" twice running. *What it costs:* more API calls.
+- **Create is idempotent by name.** A machine is named `computer-` plus 12 hex digits of the request id's hash, so a
+  retried create finds the machine it already made. Of two that raced, the oldest is kept.
+- **Errors are a closed set of codes,** with the vendor's own words carried through and never a key in a message.
+  A conformance case plants keys to check.
+
+## Providers today
+
+| Provider | Kinds | Isolation | Agent network | Run folder mount | GPU | Keeps state |
+|---|---|---|---|---|---|---|
+| Docker (local) | sandbox, Linux desktop | container | none, open, allowlist | bind | – | – |
+| E2B | sandbox, Linux desktop | microVM | none | Archil | – | – |
+| Modal | sandbox | VM (gVisor with a GPU) | none | Archil (not with a GPU) | T4 to B300, up to 8 | – |
+| Daytona | sandbox | container, or VM | none | – | H100 ×1 | – |
+| Agent37 | sandbox, Linux desktop | gVisor or VM | none | Archil | – | – |
+| Orgo | Linux desktop | VM | none | – | – | yes, resumes |
+| Phone harness | Android phone | VM | open | – | – | – |
+| Browserbase, Kernel | browser (CDP, live view) | the vendor's | open | – | – | – |
+| Local Chrome | browser (CDP) | the host | open, allowlist | – | – | – |
+| boxd, in progress ([#2571](https://github.com/Parcha-ai/agentrun/pull/2571)) | sandbox, Linux desktop | – | none | – | – | – |
+
+Every row but boxd is declared in `packages/computer/src/descriptors/`, and the conformance suite holds each provider to
+its declaration. A Mac or an Android phone of your own can also attach with its own driver
+([`attach.md`](attach.md), draft).
+
+## Open questions: we'd love your feedback
+
+1. **Snapshots and resume.** Orgo keeps a desktop's disk and resumes it, and every other provider deletes the machine
+   at the end of a run. Our shape is `persistence: { keepsState, resume }`. Is that enough to describe your snapshots,
+   your pause and resume, and a fork?
+2. **GPUs and FUSE.** We mount the agent's run folder with a FUSE client (Archil). Modal's GPU runtime (gVisor) isn't
+   proven with it, and Daytona's GPU hosts have no `/dev/fuse`. Should a GPU machine expose FUSE, or should storage
+   reach it another way?
+3. **Egress policy.** Agent programs on hosted vendors get no network today, because we can't verify an allowlist from
+   outside. How would you want an allowlist expressed, so you can enforce it and we can check it from inside?
+4. **Desktop streaming.** We stream a desktop's screen through `computerd` (`screen.watch`: frames, then input). Some
+   vendors have their own live stream. Which should be the default, and what latency and frame rate do you see on
+   yours?
+5. **What a vendor should expose.** We need two things: a streaming, two-way exec, and a list by label. We'd also like
+   a get by name, a deadline you enforce, and a way to register a public OCI image as a template. What's missing, and
+   what's hard for you?
+6. **One image for every vendor.** We publish one public image (`ghcr.io/parcha-ai/agentrun-box`) and register it per
+   account: an E2B public template, Modal from the registry, an Agent37 template from an `image_ref`. Does your API
+   take a public OCI image directly?
+
+Tell us in [an issue](https://github.com/Parcha-ai/agentrun/issues).
+
+## Read next
+
+- [`PROVIDERS.md`](../../packages/computer/PROVIDERS.md): add your machines in one pull request, starting with a
+  30-minute path.
+- [`provider.md`](provider.md): the provider contract and the descriptor.
+- [`wire.md`](wire.md): the methods, `hello`, errors and limits. [`stdio.md`](stdio.md) is how they travel to
+  `computerd`. [`kinds.md`](kinds.md) covers kinds, groups and the Core and Full levels.
+- The conformance kit: `npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js>`, in
+  [`packages/computer`](../../packages/computer/README.md#conformance).
 
 ## Files
 
@@ -26,37 +114,27 @@ two layers:
 | [`schema/methods.schema.json`](schema/methods.schema.json) | Each method's params and result, as JSON Schema. Generated. |
 | [`protocol.json`](protocol.json) | The protocol version, the limits, the JSON-RPC codes, the groups and the key table. Generated. |
 
-The two generated files come from `packages/computer/src/protocol.ts` by `node scripts/generate-computer-spec.mjs`. A
-test runs it with `--check`, so the published wire cannot drift from the code. Where a document and a generated file
-disagree, the generated file is right, and the document is a bug.
+`node scripts/generate-computer-spec.mjs` generates both from `packages/computer/src/protocol.ts`. A test runs it with
+`--check`, so the published wire can't drift from the code. Where a document and a generated file disagree, the
+generated file is right, and the document is the bug.
 
 ## Versioning
 
-`hello` carries `protocol`, the version of this protocol, apart from the daemon's own `version`.
-
-- A **minor** step adds: a method, an optional field, a group, an error kind a caller may not have seen. A caller that
-  speaks 0.1 keeps working against 0.2: it never calls what it does not know, and it ignores result fields it does not
-  know.
-- A **major** step changes or removes.
-- A provider refuses a computer whose `hello` names another protocol version than its own, as it refuses a daemon of
-  another version.
-
-Until 1.0, a minor step may still change something a draft got wrong. Each such change is named in the step's notes.
+`hello` carries `protocol`, this protocol's version, apart from the daemon's own `version`. The rule is exact match: a
+provider hands out a computer only when its `hello` names the provider's protocol version and its daemon version,
+character for character. AgentRun puts the daemon in every computer, so a daemon of any other version is one it didn't
+put there. An attached driver is the one exception: only the protocol version must match
+([`attach.md`](attach.md#versions)).
 
 **0.2** adds the `ui` group (`ui.observe`, `ui.act`), `hello.screen` and `hello.features`, the error kind `stale`,
 `apps.launch`'s `url` and `background`, and the limits the new methods need. Its one break: the `apps.ui_tree` group and
 method are gone, replaced by `ui`.
 
-## Proving it: conformance
+## Conformance
 
-`packages/computer` ships the conformance suite: one command runs every case against a provider, a vendor's included,
-and reports Core and Full per kind (see [`kinds.md`](kinds.md#levels-core-and-full)).
+`packages/computer` ships the conformance suite. One command runs every case against a provider, a vendor's own
+included, and reports Core and Full per kind ([`kinds.md`](kinds.md#levels-core-and-full)). Among its contract cases:
 
-```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js --kind sandbox
-```
-
-The suite holds the wire to what this spec says. Among its contract cases:
 - **`health.declared`:** a provider's descriptor, its `capabilities()` and each computer's `hello` agree, and `hello`
   carries this protocol version.
 - **`health.no-key-in-errors`:** a provider built with planted keys answers every refusal path with none of them in its
@@ -65,14 +143,7 @@ The suite holds the wire to what this spec says. Among its contract cases:
 
 ## Status
 
-- The wire, the stdio binding, kinds, groups and levels are what the providers in `packages/computer` run today: Docker,
-  Modal, Daytona and E2B sandboxes, Orgo and E2B desktops, an Android phone, and Browserbase and Kernel browsers.
-- The descriptor and the single `vendor` error code (in [`provider.md`](provider.md#the-descriptor)) are written from
-  their types, which land with the provider contract's next change. Until then a provider declares itself by its
-  module's `CAPABILITIES` and the kind registry's entry.
-- Persistence (`capabilities().persistence`, `spec.owner`) and the zero-dependency protocol package are named and
-  marked **draft**: their shapes may change before they land.
-- The `ui` group runs on the Android phone over adb (through `UiEngine`) and on the fake ui driver. Computerd on macOS
-  and phoned on Android, its native drivers, are being built against it.
-- The attach binding ([`attach.md`](attach.md)), where a driver dials the server so a machine needs no inbound port, is
-  **draft**: the provider's side is written and tested, and serve's routes are not built yet.
+- The wire, the stdio binding, kinds, groups, levels, the descriptor and persistence are what the providers above run
+  today.
+- The `ui` group runs on Android, through phoned and over adb, and in `computerd` for macOS.
+- The attach binding ([`attach.md`](attach.md)) is a **draft**.

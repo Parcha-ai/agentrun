@@ -2,7 +2,9 @@
 // The CLI's command table, from the OpenAPI document the server serves: one entry per operation it offers, and the
 // agentrun-cli skill from the same table (scripts/clients/skill.mjs): its SKILL.md and references/commands.md. The
 // TypeScript client's operations (scripts/clients/typescript.mjs) and the Python client's (scripts/clients/python.mjs) come
-// from the same projection, under the same hash.
+// from the same projection. No output carries a stamp of the whole document (a hash, a count): a change to one
+// operation changes only that operation's lines, so two changes to different operations merge without a conflict, and
+// --check proves each committed output is the generator's, byte for byte.
 // From the same document, the console's API types (scripts/clients/types.mjs): apps/console/src/lib/api.generated.ts.
 //   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs, the skill,
 //                                               packages/client/src/operations.generated.ts,
@@ -12,7 +14,6 @@
 // It reads the built server (packages/serve/dist), so it runs after the build. --out, --skill (the skill's folder),
 // --client (the TypeScript client's file), --python (the Python client's file), --types (the console's types),
 // --resources and --document (a document as JSON, in place of the built server's) name other files.
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -20,7 +21,7 @@ import { parseArgs } from 'node:util';
 import { ALL, FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
 import { SECRETS } from '../packages/agentrun/lib/login.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
-import { TEMPLATE_EVAL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
+import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
@@ -38,7 +39,7 @@ const TYPES = 'apps/console/src/lib/api.generated.ts';
 // may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.
@@ -53,7 +54,7 @@ export async function servedDocument() {
   return openapiDocument((operationId) => ROUTES.find((route) => route.name === operationId)?.capability);
 }
 
-/** JSON with every object's keys sorted, so the hash is the content's and not its key order's. */
+/** JSON with every object's keys sorted, so two values compare by their content and not their key order. */
 export const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
   : value !== null && typeof value === 'object' ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
   : JSON.stringify(value);
@@ -157,6 +158,8 @@ export function operationsOf(doc) {
         },
         answers: Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {})),
         answer: answerOf(doc, op),
+        // It also documents 204 (no body): a client's answer is the body or nothing, never the body alone.
+        ...(Object.hasOwn(op.responses ?? {}, '204') ? { noContent: true } : {}),
         // The headers a success answers with, as the document declares them (ETag, Location): a client returns the ones
         // a later request needs, an ETag for If-Match.
         answerHeaders: [...new Set(Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.headers ?? {})))].sort(),
@@ -298,20 +301,14 @@ export function commandsOf(ops, map) {
   return entries.sort((a, b) => a.command.join(' ').localeCompare(b.command.join(' ')));
 }
 
-const hashOf = (ops) => createHash('sha256').update(canonical(ops)).digest('hex');
+/** The console's types, made of the document's shapes (typesOf). */
+export const consoleTypesText = (doc) => typesText(typesOf(doc));
 
-/** The console's types, their header holding the hash of what they are made of (typesOf). */
-export function consoleTypesText(doc) {
-  const types = typesOf(doc);
-  return typesText(types, hashOf(types));
-}
-
-/** The skill's files, by their path under its folder, and what its text names that the CLI does not have. Its header
- *  holds the table's hash: both are made of the same projection. */
+/** The skill's files, by their path under its folder, and what its text names that the CLI does not have. */
 export function skillFiles(ops, map) {
   const commands = allCommands(commandsOf(ops, map), HAND);
-  const skill = skillText(commands, hashOf(ops));
-  return { files: { 'SKILL.md': skill, 'references/commands.md': referenceText(commands, hashOf(ops)) }, problems: recipeProblems(commands, skill) };
+  const skill = skillText(commands);
+  return { files: { 'SKILL.md': skill, 'references/commands.md': referenceText(commands) }, problems: recipeProblems(commands, skill) };
 }
 
 /** The routes whose body is a secret, offered or omitted: what the CLI's raw call guards. */
@@ -320,10 +317,8 @@ const secretRoutesOf = (ops, map) => ops.filter((op) => !op.unsupported && map.s
   .sort((a, b) => a.operationId.localeCompare(b.operationId));
 
 export function tableText(ops, map) {
-  const hash = hashOf(ops);
   return [
     '// Generated by scripts/generate-clients.mjs from the server\'s OpenAPI document. Do not edit: run node scripts/generate-clients.mjs.',
-    `// SHA-256 of what the table is made of (operationsOf in scripts/generate-clients.mjs): ${hash}`,
     `export const COMMANDS = ${JSON.stringify(commandsOf(ops, map), null, 2)};`,
     '',
     '// Every route whose body carries a secret, a command\'s or one with no command (omitted): a raw `api` call to one never',
@@ -350,7 +345,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text]), [values.client ?? CLIENT, clientText(ops, map, commandOf, hashOf(ops))], [values.python ?? PYTHON, pythonText(ops, map, commandOf, hashOf(ops))], [values.types ?? TYPES, consoleTypesText(doc)]];
+  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text]), [values.client ?? CLIENT, clientText(ops, map, commandOf)], [values.python ?? PYTHON, pythonText(ops, map, commandOf)], [values.types ?? TYPES, consoleTypesText(doc)]];
   if (values.check) {
     const stale = [];
     for (const [file, text] of outputs) if (await readFile(resolve(root, file), 'utf8').catch(() => '') !== text) stale.push(file);

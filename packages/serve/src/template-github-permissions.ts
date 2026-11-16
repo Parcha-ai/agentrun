@@ -7,7 +7,8 @@
 // never made here.
 import type { InputIssue } from "./errors.js";
 import { NOT_SET_UP } from "./runnable.js";
-import type { McpNeed } from "./templates.js";
+import type { McpServed } from "./templates.js";
+import { mcpToolName } from "./tool-names.js";
 
 export type Level = "read" | "write";
 
@@ -30,7 +31,7 @@ const holds = (has: Level | undefined, needs: Level) => has === "write" || (has 
  *  App does not hold (naming each installation's account and what it holds), on an MCP server `onApp` says runs on the App's
  *  tokens; or, where `held` could not be read, one saying it could not check. `held` is asked once, and only when a tool
  *  with a need is granted on such a server. */
-export async function appPermissionWarnings(pkg: { name: string; mcp: readonly McpNeed[] }, onApp: (server: string) => boolean, held: () => Promise<Held>): Promise<InputIssue[]> {
+export async function appPermissionWarnings(pkg: { name: string; mcp: readonly Pick<McpServed, "server" | "tools">[] }, onApp: (server: string) => boolean, held: () => Promise<Held>): Promise<InputIssue[]> {
   const asked: { server: string; tool: string; wants: (typeof TOOL_PERMISSIONS)[string] }[] = [];
   for (const need of pkg.mcp) {
     if (!onApp(need.server)) continue;
@@ -45,7 +46,7 @@ export async function appPermissionWarnings(pkg: { name: string; mcp: readonly M
   for (const { server, tool, wants } of asked) {
     // One of the grants.<tool> family (a tool the server denies is another): its field and its shape.
     const label = LABELS[wants.permission] ?? wants.permission;
-    const name = `mcp:${server}/${tool}`;
+    const name = mcpToolName(server, tool);
     if ("unreadable" in map) {
       warnings.push({ field: `grants.${name}`, reason: NOT_SET_UP, message: `${name} needs ${label}: ${wants.level} of the GitHub App, and this server could not check whether it has it (${map.unreadable}): if ${pkg.name} can't use it, it ${wants.instead}.` });
       continue;

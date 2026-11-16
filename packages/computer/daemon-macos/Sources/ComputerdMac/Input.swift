@@ -81,6 +81,71 @@ func dragPoints(_ path: [Point], ms: Int) -> [CGPoint] {
 	return out
 }
 
+/// The event sequences every input layer sends: the ui routes' (BackgroundRoute, ForegroundRoute) and input.actions'
+/// (HIDInput). A layer differs only in how one event goes out, the post it passes. Each runs on the input thread and
+/// stops between events when its request is cancelled.
+enum Gestures {
+	/// A scroll at a point; dy > 0 shows what is below. In pixels, pieces of at most 100 points, as a trackpad sends
+	/// them, 10 ms apart; else one wheel click per event, as a mouse wheel turns, 5 ms apart. fail is the layer's error
+	/// for an event the system would not make.
+	static func scroll(at point: CGPoint, dx: Double, dy: Double, pixels: Bool = true, fail: (String) -> any Error, _ post: (CGEvent) -> Void) throws {
+		func wheel(_ x: Double, _ y: Double, _ units: CGScrollEventUnit) throws {
+			try InputQueue.checkCancelled()
+			guard let e = CGEvent(scrollWheelEvent2Source: nil, units: units, wheelCount: 2, wheel1: Int32(-y), wheel2: Int32(-x), wheel3: 0) else {
+				throw fail("the system made no scroll event")
+			}
+			e.location = point
+			post(e)
+			InputQueue.pause(pixels ? 10 : 5)
+		}
+		if pixels {
+			var (left, down) = (dx, dy)
+			while left != 0 || down != 0 {
+				let x = max(-100, min(100, left))
+				let y = max(-100, min(100, down))
+				try wheel(x, y, .pixel)
+				left -= x
+				down -= y
+			}
+		} else {
+			for _ in 0..<Int(abs(dy)) { try wheel(0, dy > 0 ? 1 : -1, .line) }
+			for _ in 0..<Int(abs(dx)) { try wheel(dx > 0 ? 1 : -1, 0, .line) }
+		}
+	}
+
+	/// A left-button drag through points (dragPoints'), the moves spread over ms: a move and a press at the first point,
+	/// the drags between, and the release at the last, which goes out even when a move fails, so the app is never left
+	/// holding the button.
+	static func drag(_ points: [CGPoint], ms: Int, _ post: (CGEventType, CGPoint) throws -> Void) throws {
+		let pauseMs = Double(ms) / Double(max(1, points.count - 1))
+		try post(.mouseMoved, points[0])
+		try post(.leftMouseDown, points[0])
+		defer { try? post(.leftMouseUp, points[points.count - 1]) }
+		for p in points.dropFirst() {
+			try InputQueue.checkCancelled()
+			InputQueue.pause(pauseMs)
+			try post(.leftMouseDragged, p)
+		}
+	}
+
+	/// Text's key events (Keycodes.textEvents'), 5 ms after each pair.
+	static func text(_ events: [CGEvent], _ post: (CGEvent) -> Void) throws {
+		for (i, e) in events.enumerated() {
+			try InputQueue.checkCancelled()
+			post(e)
+			if i % 2 == 1 { InputQueue.pause(5) }
+		}
+	}
+
+	/// A chord's key events (Keycodes.events'), 2 ms apart.
+	static func chord(_ events: [CGEvent], _ post: (CGEvent) -> Void) {
+		for e in events {
+			post(e)
+			InputQueue.pause(2)
+		}
+	}
+}
+
 /// Input posted to one app's window without bringing it to the front or moving the user's pointer: SkyLight's
 /// pid-routed events, with the window stamped on each, and for keys a synthetic focus that makes the window key inside
 /// its app without raising it. A route that cannot reach the window throws RouteUnavailable, so the next route tries.
@@ -237,21 +302,9 @@ struct BackgroundRoute: InputRoute {
 		let sky = self.sky
 		let pid = t.pid
 		try await InputQueue.run {
-			// In pieces of at most 100 points, as a wheel sends them; dy > 0 shows what is below.
-			var (left, down) = (dx, dy)
-			while left != 0 || down != 0 {
-				try InputQueue.checkCancelled()
-				let sx = max(-100, min(100, left))
-				let sy = max(-100, min(100, down))
-				guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: Int32(-sy), wheel2: Int32(-sx), wheel3: 0) else {
-					throw RouteUnavailable("the system made no scroll event")
-				}
-				e.location = screen
-				Self.stamp(sky, e, pid: pid, wid: wid)
-				e.postToPid(pid)
-				left -= sx
-				down -= sy
-				InputQueue.pause(10)
+			try Gestures.scroll(at: screen, dx: dx, dy: dy, fail: { RouteUnavailable($0) }) {
+				Self.stamp(sky, $0, pid: pid, wid: wid)
+				$0.postToPid(pid)
 			}
 		}
 	}
@@ -263,7 +316,6 @@ struct BackgroundRoute: InputRoute {
 		let wid = try window(t, at: start)
 		let pid = t.pid
 		let sky = self.sky
-		let pauseMs = Double(ms) / Double(max(1, points.count - 1))
 		try await InputQueue.run {
 			guard let source = CGEventSource(stateID: .combinedSessionState) else { throw RouteUnavailable("the system made no event source") }
 			try Self.withFocus(sky, pid, wid, key: false, settleMs: 50) {
@@ -275,15 +327,7 @@ struct BackgroundRoute: InputRoute {
 					Self.stamp(sky, e, pid: pid, wid: wid)
 					e.postToPid(pid)
 				}
-				try post(.mouseMoved, points[0])
-				try post(.leftMouseDown, points[0])
-				// The release goes out even when a move fails, so the app is never left holding the button.
-				defer { try? post(.leftMouseUp, points[points.count - 1]) }
-				for p in points.dropFirst() {
-					try InputQueue.checkCancelled()
-					InputQueue.pause(pauseMs)
-					try post(.leftMouseDragged, p)
-				}
+				try Gestures.drag(points, ms: ms, post)
 			}
 		}
 	}
@@ -295,11 +339,7 @@ struct BackgroundRoute: InputRoute {
 		try await InputQueue.run {
 			let events = try Keycodes.textEvents(text, source: nil)
 			try Self.withFocus(sky, pid, wid, key: true, settleMs: 10) {
-				for (i, e) in events.enumerated() {
-					try InputQueue.checkCancelled()
-					e.postToPid(pid)
-					if i % 2 == 1 { InputQueue.pause(5) }
-				}
+				try Gestures.text(events) { $0.postToPid(pid) }
 			}
 		}
 	}
@@ -311,10 +351,7 @@ struct BackgroundRoute: InputRoute {
 		try await InputQueue.run {
 			let events = try Keycodes.events(chord, source: nil)
 			try Self.withFocus(sky, pid, wid, key: true, settleMs: 10) {
-				for e in events {
-					e.postToPid(pid)
-					InputQueue.pause(2)
-				}
+				Gestures.chord(events) { $0.postToPid(pid) }
 			}
 		}
 	}
@@ -374,57 +411,29 @@ struct ForegroundRoute: InputRoute {
 		try await InputQueue.run {
 			try self.front(t)
 			try Self.post(.mouseMoved, at)
-			var (left, down) = (dx, dy)
-			while left != 0 || down != 0 {
-				try InputQueue.checkCancelled()
-				let sx = max(-100, min(100, left))
-				let sy = max(-100, min(100, down))
-				guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: Int32(-sy), wheel2: Int32(-sx), wheel3: 0) else {
-					throw RouteUnavailable("the system made no scroll event")
-				}
-				e.location = at
-				e.post(tap: .cghidEventTap)
-				left -= sx
-				down -= sy
-				InputQueue.pause(10)
-			}
+			try Gestures.scroll(at: at, dx: dx, dy: dy, fail: { RouteUnavailable($0) }) { $0.post(tap: .cghidEventTap) }
 		}
 	}
 
 	func drag(_ path: [Point], ms: Int, in t: ResolvedTarget) async throws {
 		let points = dragPoints(path, ms: ms)
-		let pauseMs = Double(ms) / Double(max(1, points.count - 1))
 		try await InputQueue.run {
 			try self.front(t)
-			try Self.post(.mouseMoved, points[0])
-			try Self.post(.leftMouseDown, points[0])
-			defer { try? Self.post(.leftMouseUp, points[points.count - 1]) }
-			for p in points.dropFirst() {
-				try InputQueue.checkCancelled()
-				InputQueue.pause(pauseMs)
-				try Self.post(.leftMouseDragged, p)
-			}
+			try Gestures.drag(points, ms: ms) { try Self.post($0, $1) }
 		}
 	}
 
 	func type(_ text: String, in t: ResolvedTarget) async throws {
 		try await InputQueue.run {
 			try self.front(t)
-			for (i, e) in try Keycodes.textEvents(text, source: nil).enumerated() {
-				try InputQueue.checkCancelled()
-				e.post(tap: .cghidEventTap)
-				if i % 2 == 1 { InputQueue.pause(5) }
-			}
+			try Gestures.text(Keycodes.textEvents(text, source: nil)) { $0.post(tap: .cghidEventTap) }
 		}
 	}
 
 	func key(_ chord: KeyChord, in t: ResolvedTarget) async throws {
 		try await InputQueue.run {
 			try self.front(t)
-			for e in try Keycodes.events(chord, source: nil) {
-				e.post(tap: .cghidEventTap)
-				InputQueue.pause(2)
-			}
+			try Gestures.chord(Keycodes.events(chord, source: nil)) { $0.post(tap: .cghidEventTap) }
 		}
 	}
 }

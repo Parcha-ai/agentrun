@@ -175,10 +175,10 @@ describe("the tool cards' measured lines", () => {
     Object.defineProperty(HTMLElement.prototype, "scrollWidth", { configurable: true, get(this: HTMLElement) { return (this.textContent ?? "").length * 6; } });
     Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 48 });
     Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 48 });
-    const REFUSED = "claude-agent drops a tool whose schema's root has anyOf";
+    const REFUSED = "claude-agent drops a tool whose root has anyOf";
     expect(REFUSED.length).toBeLessThan(60);
-    const server = { name: "crm", url: "https://mcp.crm.example/mcp", auth: { type: "none" }, credential: null,
-      tools: [{ name: "find", description: "Find a contact.", input_schema: { anyOf: [{ type: "object" }] } }] } as McpServer;
+    const server = { name: "crm", url: "https://mcp.crm.example/mcp", auth: { type: "none" }, source: "url", toolkit: null, credential: null,
+      tools: [{ name: "find", description: "Find a contact.", input_schema: { anyOf: [{ type: "object" }] }, grant_problems: { "claude-agent": REFUSED } }] } as McpServer;
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", harnesses: ["pi", "claude-agent"], onChange: () => {} })));

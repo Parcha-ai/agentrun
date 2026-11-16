@@ -139,9 +139,10 @@ export const PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta
 export const LOCAL = [...new Set(Object.values(networkInterfaces()).flat().map((entry) => entry.address).filter((address) => checkAddress(address, []).ok))];
 
 /**
- * A computer with network allow as DockerProvider.create makes one, seeded: the computer, its proxy container and its
- * volume. `proxy` is merged over the proxy's report fields (to make it drift), or null leaves the proxy out. `local` is
- * the proxy's --local, this machine's public addresses by default; [] leaves the flag out.
+ * A computer with network allow, or open when `allow` is "open", as DockerProvider.create makes one, seeded: the
+ * computer, its proxy container and its volume. `proxy` is merged over the proxy's report fields (to make it drift), or
+ * null leaves the proxy out. `local` is the proxy's --local, this machine's public addresses by default; [] leaves the
+ * flag out.
  */
 export function allowed({ name, allow, deadline = new Date(Date.now() + 600_000).toISOString(), labels = {}, user = "1000:1000", running = true, proxy = {}, local = LOCAL }) {
 	const volume = `${name}-egress`;
@@ -149,7 +150,7 @@ export function allowed({ name, allow, deadline = new Date(Date.now() + 600_000)
 		name, labels, deadline, user, running, cmd: ["init", "--deadline", deadline, "--egress", "/opt/agentrun/egress/egress.sock"],
 		volumes: [{ src: volume, dst: "/opt/agentrun/egress", readonly: true }],
 	});
-	const cmd = ["/code/docker/egress-main.js", "--socket", "/egress/egress.sock", "--deadline", deadline, "--allow", allow.join(","), ...(local.length ? ["--local", local.join(",")] : [])];
+	const cmd = ["/code/docker/egress-main.js", "--socket", "/egress/egress.sock", "--deadline", deadline, ...(allow === "open" ? ["--open", "public"] : ["--allow", allow.join(",")]), ...(local.length ? ["--local", local.join(",")] : [])];
 	const made = proxy === null ? [] : [proxyReport({
 		id: idOf(volume), name: volume, user, running, cmd, labels: { ...labels, "agentrun.computer.egress": name, "agentrun.computer.deadline": deadline },
 		mounts: [{ type: "volume", src: volume, dst: "/egress" }, { type: "bind", src: CODE_DIR, dst: "/code/docker", readonly: true }, { type: "bind", src: PACKAGE_JSON, dst: "/code/package.json", readonly: true }],
@@ -215,7 +216,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	const computerdModule = computerd ? fileURLToPath(new URL("./fake-computerd.mjs", import.meta.url)) : null;
 	const config = JSON.stringify({ computerd: computerdModule, dir, log, state, volumeState, imageState, volumeRoots, lateRun, sticky, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
-		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
+		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys", "apps"] } });
 	writeFileSync(
 		program,
 		`#!${process.execPath}
@@ -354,7 +355,7 @@ switch (args[0]) {
 				logConfig: { Type: flags["--log-driver"]?.[0] ?? "json-file", Config: Object.fromEntries((flags["--log-opt"] ?? []).map((o) => [o.slice(0, o.indexOf("=")), o.slice(o.indexOf("=") + 1)])) },
 				period: Number(flags["--cpu-period"]?.[0] ?? 0), quota: Number(flags["--cpu-quota"]?.[0] ?? 0), created: new Date().toISOString(),
 				ulimits: (flags["--ulimit"] ?? []).map((u) => { const [n, limits] = u.split("="); const [soft, hard = soft] = limits.split(":").map(Number); return { Hard: hard, Name: n, Soft: soft }; }),
-				logs: config.egress === "ready" ? "egress ready allow=" + args[args.indexOf("--allow") + 1] + "\\n" : ends ? "egress: no host list, so the proxy does not start\\n" : "",
+				logs: config.egress === "ready" ? (args.includes("--open") ? "egress ready open\\n" : "egress ready allow=" + args[args.indexOf("--allow") + 1] + "\\n") : ends ? "egress: no host list, so the proxy does not start\\n" : "",
 			});
 			commit(merge(made, config.proxyPatch), "egress");
 			break;

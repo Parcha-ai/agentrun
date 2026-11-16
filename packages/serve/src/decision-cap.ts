@@ -5,23 +5,21 @@
 //   - Parallel: its list price for one request (PARALLEL_LIST_PRICE_USD), which is what it is booked at.
 //   - Jev: TypeSafe's published price (JEV_PUBLISHED_PRICING) for its input; its output is free.
 //   - OpenRouter's Decisions models: the catalog's price (openrouter.ts priceOf): per request, per image, per input token,
-//     and per output token for DECISION_OUTPUT_TOKENS a question (expected), or the catalog's most output (strict: none
-//     listed and its output priced is no bound, and is not sent). A model the catalog does not price is not sent. A
+//     and per output token for the catalog's most output, the worst case (none listed and its output priced is no
+//     bound, and is not sent). A model the catalog does not price is not sent. A
 //     catalog that cannot be read is read again (CATALOG_TRIES); one still down fails the request unsent, as a connection
 //     error (DecisionProviderError "connection"), and the decision node fails (decision nodes have no attempts loop):
 //     never a refusal of the cap, which would end the run spend_cap_reached.
 import type { DecisionProvider, WorkflowDeps } from "@parcha/agentrun-dsl";
 import { DecisionProviderError } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
-import { type CapMode, money } from "./cap.js";
+import { money } from "./cap.js";
 
 type RunJudge = NonNullable<WorkflowDeps["runJudge"]>;
 type JudgeParams = Parameters<RunJudge>[0];
 
 /** An image's input allowance, in tokens: what a 1568 px square (Jev's longest side) reads as at 750 pixels a token. */
 export const DECISION_IMAGE_TOKENS = 3_300;
-/** The output an answer is expected to take, per question, where a Decisions model prices its output (expected mode). */
-export const DECISION_OUTPUT_TOKENS = 256;
 /** TypeSafe's published price for Jev, per input token (USD; JEV_PUBLISHED_PRICING, $0.042 a million). */
 export const JEV_INPUT_USD = 0.042 / 1e6;
 /** Parallel's list price for one decision request (USD; PARALLEL_LIST_PRICE_USD). */
@@ -71,8 +69,8 @@ const inputOf = (params: JudgeParams): { tokens: number; images: number } => {
   return { tokens: Buffer.byteLength(JSON.stringify({ state: params.state ?? null, questions: params.questions }), "utf8") + images * DECISION_IMAGE_TOKENS, images };
 };
 
-/** The hold of `params`'s request to `provider`, under a cap of mode `mode`. */
-export async function holdOf(provider: DecisionProvider, params: JudgeParams, mode: CapMode): Promise<DecisionHold> {
+/** The hold of `params`'s request to `provider` under a cap: its worst case. */
+export async function holdOf(provider: DecisionProvider, params: JudgeParams): Promise<DecisionHold> {
   const { tokens, images } = inputOf(params);
   if (provider.id === "parallel") return { usd: PARALLEL_DECISION_USD, basis: "Parallel's list price for one decision request" };
   if (provider.id === "jev") return { usd: tokens * JEV_INPUT_USD, basis: `TypeSafe's published price for Jev, ${money(JEV_INPUT_USD * 1e6)} a million input tokens, for ${tokens} tokens at most` };
@@ -83,8 +81,7 @@ export async function holdOf(provider: DecisionProvider, params: JudgeParams, mo
   // A catalog that cannot be read gives no price: read again, then the request fails unsent (catalogPrice).
   const price = typeof priced.priceOf === "function" && model !== undefined ? await catalogPrice(priced as { priceOf(model: string): Promise<DecisionModelPrice | null> }, model, params.signal) : null;
   if (!price) return { unpriced: `${model ?? provider.id} has no price here` };
-  const questions = Object.keys(params.questions).length;
-  const output = mode === "strict" ? price.maxCompletionTokens : questions * DECISION_OUTPUT_TOKENS;
+  const output = price.maxCompletionTokens;
   if (output === null && price.completionUsd > 0) return { unpriced: `${model} names no most output and its output is priced, so what a request may cost has no bound` };
   const usd = price.requestUsd + price.imageUsd * images + price.promptUsd * tokens + price.completionUsd * (output ?? 0);
   return { usd, basis: `${model}'s price in OpenRouter's catalog, for ${tokens} input tokens${price.completionUsd > 0 ? ` and ${output} output tokens` : ""} at most` };

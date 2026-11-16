@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentrun.ai/schema/computer-bench/task.schema.json",
+  "title": "A computer-bench task",
+  "description": "One task, as data: what computer it needs, how its start is set up through the computer protocol, what the agent is told, its budget, and how its end state is checked. Strings in setup, instruction, checks, teardown and oracle may hold {{name}} for a param, {{seed}}, {{nonce}} (six hex characters fixed by the task and seed), and {{file:NAME}} for a file of the task's folder.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "title", "split", "needs", "instruction", "budget", "checks"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "description": "Dotted and dashed, lowercase: suite.app.what, such as mac.notes.new-note. Unique across every suite."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Raised on any change that can change a verdict. Results are compared only at the same version (and the folder's sha256, which the run record keeps)."
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "split": {
+      "enum": ["dev", "heldout"],
+      "description": "dev: anyone may read its transcripts and climb on it. heldout: run once per candidate that cleared dev; its transcripts stay sealed."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite", "id"],
+      "description": "Where a ported task came from.",
+      "properties": {
+        "suite": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string" },
+        "licence": { "type": "string" },
+        "changes": { "type": "string", "description": "What the port changed, in words." }
+      }
+    },
+    "tags": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9-]+$" }, "uniqueItems": true },
+    "needs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "kind"],
+      "description": "What the task needs of the computer, never which tools the agent uses: the agent is given what the computer offers. The runner refuses a computer whose hello does not match, before anything runs.",
+      "properties": {
+        "os": { "enum": ["macos", "android", "linux", "windows", "ios"] },
+        "kind": {
+          "enum": ["desktop", "phone", "sandbox", "browser"],
+          "description": "The setting kind an agent is given (spec/computer/kinds.md)."
+        },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/group" },
+          "uniqueItems": true,
+          "description": "Groups the computer must have because the task can't be done without them (a drag needs input.pointer). Leave it out otherwise. The groups setup, checks and the oracle use are read from their methods and needed too, on the bench's own channel."
+        },
+        "apps": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 2, "uniqueItems": true }
+            ]
+          },
+          "uniqueItems": true,
+          "description": "The apps the task can't be done without, by bundle id or package: each entry must be installed (apps.list), and an entry that is a list is alternatives, any one of which will do (one clock app per phone maker). A precondition: read once per computer after hello; a computer missing one is refused (\"skipped: needs com.android.chrome\"), never retried, and the task's other runs on that backend are refused without claiming a computer."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/check" },
+          "description": "What the computer must be able to do for the task to be doable at all, each a probe written as a check (its id names the capability: camera, bluetooth) on the bench's channel, read after hello and before setup. A probe that fails refuses the task (\"skipped: needs camera\") as a missing app does: a task the computer can't do is skipped, never scored. Never an answer check."
+        },
+        "osVersion": { "type": "string", "description": "A prefix of hello.osVersion the task was written for, such as \"26\" or \"15\"." }
+      }
+    },
+    "params": {
+      "type": "object",
+      "description": "The task's perturbations. Each run's seed picks one value of each, the same for every arm (paired seeds).",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$", "not": { "enum": ["seed", "nonce", "file"] } },
+      "additionalProperties": { "$ref": "#/$defs/param" }
+    },
+    "setup": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/call" },
+      "description": "Protocol calls on the bench's own channel before the agent starts. A failed call is an infra outcome: the run is done again, never scored."
+    },
+    "instruction": { "type": "string", "minLength": 1, "description": "What the agent is told, after params are filled in." },
+    "exec": {
+      "enum": ["allow", "deny"],
+      "description": "deny: the task is done through the UI, so the agent is given no shell and no way to run a program (no exec or processes group, no bash; on serve its agent's computer.exec is false), and its oracle may use only what the agent has (ui, input, screen, apps): the oracle drives the path the agent must. Every \"In the X app, ...\" task says deny. Default allow."
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["steps", "usd", "wall_s"],
+      "properties": {
+        "steps": { "type": "integer", "minimum": 1, "description": "Computer calls the agent may make (hello and ping not counted)." },
+        "usd": { "type": "number", "exclusiveMinimum": 0, "description": "Model spend for the agent's run." },
+        "wall_s": { "type": "integer", "minimum": 1, "description": "Seconds from the agent's start to its end." }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check" },
+      "description": "Stage 1: structural checks of the computer's real state, run through the protocol after the agent ends and before the computer is released. The task passes stage 1 when every check passes."
+    },
+    "sufficient": {
+      "type": "boolean",
+      "default": true,
+      "description": "The checks decide alone. false: the agentic grader decides, with the checks as evidence (a task whose success is partly a judgement)."
+    },
+    "rubric": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+\\.md$",
+      "description": "A file of the task's folder the agentic grader reads. Default rubric.md when the folder has one."
+    },
+    "teardown": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/call" },
+      "description": "Calls after the checks, before release, on a computer that outlives the task (an attached Mac): undo what setup and the agent made. A failure is recorded, never scored."
+    },
+    "oracle": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/call" },
+      "description": "Calls that solve the task, on the bench's own channel. `computer-bench verify` runs them to prove the checks pass on a solved state, and runs nothing to prove they fail on the untouched one."
+    }
+  },
+  "$defs": {
+    "group": {
+      "enum": ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "ui", "cdp", "stream", "downloads"]
+    },
+    "param": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["pick"],
+          "description": "One of these values. A value may be an object of scalars, so values that go together are picked together: {{name.field}} reads a field.",
+          "properties": {
+            "pick": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  { "type": ["string", "number", "boolean"] },
+                  {
+                    "type": "object",
+                    "minProperties": 1,
+                    "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+                    "additionalProperties": { "type": ["string", "number", "boolean"] }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["int"],
+          "description": "A whole number from the first to the second, both included.",
+          "properties": { "int": { "type": "array", "prefixItems": [{ "type": "integer" }, { "type": "integer" }], "minItems": 2, "maxItems": 2 } }
+        }
+      ]
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "type": "string", "pattern": "^[a-z_]+(?:\\.[a-z_]+)+$" },
+        "params": { "type": "object" },
+        "why": { "type": "string" },
+        "allow": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "Error kinds that count as done, such as not_found for a delete of something that may not be there."
+        },
+        "exit": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "uniqueItems": true,
+          "description": "exec.run only: the exit codes that count as done. Default [0]."
+        }
+      },
+      "if": { "properties": { "method": { "const": "ui.act" } } },
+      "then": {
+        "properties": {
+          "params": {
+            "properties": {
+              "steps": { "type": "array", "items": { "$ref": "#/$defs/uiActStep" } }
+            }
+          }
+        }
+      }
+    },
+    "uiActStep": {
+      "type": "object",
+      "description": "A ui.act step as the protocol has it, except that a slot naming an element (press, set, perform, click, into, scroll) may hold {\"find\": <uiQuery>}: the runner puts in the ref of the first node of the window that matches, observed just before the act.",
+      "properties": {
+        "press": { "$ref": "#/$defs/refSlot" },
+        "set": { "$ref": "#/$defs/refSlot" },
+        "perform": { "$ref": "#/$defs/refSlot" },
+        "click": { "$ref": "#/$defs/refSlot" },
+        "into": { "$ref": "#/$defs/refSlot" },
+        "scroll": { "$ref": "#/$defs/refSlot" }
+      }
+    },
+    "refSlot": {
+      "if": { "type": "object", "required": ["find"] },
+      "then": { "additionalProperties": false, "properties": { "find": { "$ref": "#/$defs/uiQuery" } } }
+    },
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "How a text is matched, after trimming its ends (trim: false keeps them). Exactly one of equals, contains, matches, oneOf, empty.",
+      "properties": {
+        "equals": { "type": "string" },
+        "contains": { "type": "string" },
+        "matches": { "type": "string", "description": "A JavaScript regular expression, flags in `flags`." },
+        "oneOf": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "empty": { "const": true },
+        "flags": { "type": "string", "pattern": "^[imsu]*$" },
+        "not": { "type": "boolean", "description": "Pass when it does not match." },
+        "trim": { "type": "boolean" },
+        "caseless": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "required": ["equals"] }, { "required": ["contains"] }, { "required": ["matches"] }, { "required": ["oneOf"] }, { "required": ["empty"] }
+      ]
+    },
+    "uiQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "role": { "type": "string" },
+        "name": { "$ref": "#/$defs/match" },
+        "value": { "$ref": "#/$defs/match" },
+        "flags": { "type": "array", "items": { "enum": ["focused", "disabled", "selected", "secure", "offscreen", "checked"] }, "uniqueItems": true }
+      }
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "kind", "why"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "why": { "type": "string", "minLength": 1, "description": "What it shows, in words the grader and a person read." },
+        "kind": { "enum": ["exec", "file", "ui", "app", "answer"] }
+      },
+      "oneOf": [
+        {
+          "description": "exec: one program through exec.run (AppleScript as [\"osascript\", \"-e\", ...], `settings get` or `content query` on a phone).",
+          "properties": {
+            "id": true, "why": true, "kind": { "const": "exec" },
+            "argv": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000 },
+            "exit": { "type": "integer" },
+            "stdout": { "$ref": "#/$defs/match" },
+            "stderr": { "$ref": "#/$defs/match" }
+          },
+          "required": ["argv"], "additionalProperties": false
+        },
+        {
+          "description": "file: a file's existence or its text, through files.read.",
+          "properties": {
+            "id": true, "why": true, "kind": { "const": "file" },
+            "path": { "type": "string", "pattern": "^/" },
+            "exists": { "type": "boolean" },
+            "text": { "$ref": "#/$defs/match" }
+          },
+          "required": ["path"], "additionalProperties": false
+        },
+        {
+          "description": "ui: nodes of an app's tree (ui.observe, full), counted. Default: at least one.",
+          "properties": {
+            "id": true, "why": true, "kind": { "const": "ui" },
+            "app": { "type": "string" },
+            "find": { "$ref": "#/$defs/uiQuery" },
+            "min": { "type": "integer", "minimum": 0 },
+            "max": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["find"], "additionalProperties": false
+        },
+        {
+          "description": "app: the app in front, or an installed one, through apps.list.",
+          "properties": {
+            "id": true, "why": true, "kind": { "const": "app" },
+            "front": { "type": "string" },
+            "installed": { "type": "string" }
+          },
+          "additionalProperties": false,
+          "anyOf": [{ "required": ["front"] }, { "required": ["installed"] }]
+        },
+        {
+          "description": "answer: the agent's final answer, when the task asks for one.",
+          "properties": {
+            "id": true, "why": true, "kind": { "const": "answer" },
+            "text": { "$ref": "#/$defs/match" }
+          },
+          "required": ["text"], "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

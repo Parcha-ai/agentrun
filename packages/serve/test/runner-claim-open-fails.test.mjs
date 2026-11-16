@@ -20,7 +20,6 @@ const OPEN_FAILED = "the harness's CLI could not start";
 function standIn({ failsToOpen = false } = {}) {
   return {
     id: "stand-in",
-    capabilities: () => ({}),
     check: () => [],
     async open(_spec, io) {
       if (failsToOpen) throw new Error(OPEN_FAILED);

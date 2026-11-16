@@ -29,6 +29,7 @@ describe("a pending approval", () => {
     expect(priceLine(0.005)).toBe("Costs $0.0050 per call");
     expect(priceLine(0)).toBe("Costs nothing per call");
     expect(priceLine("not metered")).toBe("Not metered");
+    expect(priceLine("priced by usage")).toBe("Priced by usage: monid estimates the cost when the call runs, and can charge more.");
     expect(priceLine(undefined)).toBeNull();
   });
 

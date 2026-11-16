@@ -60,7 +60,7 @@ export function hostTools(tools) {
     description: `The suite's ${tool.name} tool.`,
     inputSchema: { type: "object", properties: {} },
     replay: tool.replaySafe ? "safe" : "never",
-    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)) }),
+    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}), ...(tool.structured !== undefined ? { structured: tool.structured } : {}) }),
   }));
 }
 
@@ -95,7 +95,7 @@ function tracked(adapter) {
  *  opens the session from the run's journal. */
 export function codexSpec(setup, options = {}) {
   strictOptions("codexSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
-  strictOptions("codexSpec", options, ["fetch", "requests"]);
+  strictOptions("codexSpec", options, ["fetch", "requests", "price"]);
   const { script, tools, hooks, agentId } = setup;
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-codex-conformance-"));
   dirs.push(sessionsDir);
@@ -107,7 +107,7 @@ export function codexSpec(setup, options = {}) {
         run,
         model: MODEL,
         provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` },
-        price: () => 0,
+        price: options.price ?? (() => 0),
         sessionsDir,
         fetch: options.fetch ?? scriptedResponses(script, options.requests),
       },

@@ -141,26 +141,32 @@ test("a transaction counted from its call keeps the wall clock's deadline, hold 
 // the test's process open until the CI shard was killed. Cleared with what set them, the transaction leaves none.
 test("a transaction whose timers are swapped for mocked ones while it is open leaves no timer of its deadline behind", { timeout: 30_000 }, async (t) => {
   const db = await scratchConnection(t);
-  const timeouts = () => process.getActiveResourcesInfo().filter((kind) => kind === "Timeout").length;
-  // A transaction already open before anything is measured, so the connection's own timers are counted in `before`.
-  await db.connection.transaction(async (tx) => { await tx.step({ sql: "SELECT 1" }); });
-  const before = timeouts();
-  let swapped = () => {};
-  let entered = () => {};
-  const open = new Promise((resolve) => (swapped = resolve));
-  // The callback runs only once the transaction has begun, so its deadline's timers are set (real) by then: the mocks go
-  // on after that, never before, whatever the worker's begin takes.
-  const inside = new Promise((resolve) => (entered = resolve));
-  const done = db.connection.transaction(async (tx) => {
-    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('swapped', '1', 1)" });
-    entered();
-    await open;
-  });
-  await inside;
+  // The deadline's own two handles (its look's interval and its due timer) are caught as they are set, real; nothing else
+  // of the process is counted, so no other test's pipe or timer can move this one.
+  const { runnableDeadline } = await import("../dist/store/deadline.js");
+  const realSetTimeout = globalThis.setTimeout;
+  const realSetInterval = globalThis.setInterval;
+  const handles = [];
+  globalThis.setTimeout = (...args) => (handles.push(realSetTimeout(...args)), handles.at(-1));
+  globalThis.setInterval = (...args) => (handles.push(realSetInterval(...args)), handles.at(-1));
+  let expired = 0;
+  let deadline;
+  try {
+    deadline = runnableDeadline(150, () => void expired++);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.setInterval = realSetInterval;
+  }
+  assert.equal(handles.length, 2, "the deadline sets its look's interval and its due timer");
+  // The mocks go on after the deadline's timers are set (real) and before it is cleared, as a runner-lease test does while
+  // a transaction is open.
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  swapped();
-  await done;
-  t.mock.timers.reset();
-  await sleep(120);
-  assert.equal(timeouts(), before, `no timer of the transaction's deadline is left: ${JSON.stringify(process.getActiveResourcesInfo())}`);
+  try {
+    deadline.clear();
+  } finally {
+    t.mock.timers.reset();
+  }
+  assert.ok(handles.every((handle) => handle._destroyed), "both of the deadline's own handles are cleared, though the global clears were mocked");
+  await sleep(300);
+  assert.equal(expired, 0, "the cleared deadline never expires");
 });

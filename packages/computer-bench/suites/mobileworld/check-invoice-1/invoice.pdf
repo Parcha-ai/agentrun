@@ -1,0 +1,70 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+5 0 obj
+<< /Length 3392 >>
+stream
+BT
+/F1 8 Tf
+11 TL
+40 800 Td
+/F1 14 Tf (INVOICE) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (Invoice Number: INV-2025-TECH-001) Tj T*
+/F1 8 Tf (Date: September 5, 2025) Tj T*
+/F1 8 Tf (Due Date: October 4, 2025) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (From: Tech Solutions Inc., 123 Business Avenue, Tech City, TC 10001, United Kingdom) Tj T*
+/F1 8 Tf (      VAT Number: GB123456789   Phone: +44 20 1234 5678   Email: accounts@techsolutions.com) Tj T*
+/F1 8 Tf (To:   Global Enterprises Ltd., 456 Corporate Boulevard, Business District, BD 20002, United States) Tj T*
+/F1 8 Tf (      VAT Number: US987654321   Phone: +1 555 123 4567   Email: accounting@globalent.com) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (Project: Enterprise Software Implementation - Phase 2) Tj T*
+/F1 8 Tf (Description: Custom CRM development with AI integration and mobile application) Tj T*
+/F1 8 Tf (Contract Reference: CON-2023-TSI-045) Tj T*
+/F1 8 Tf (Payment Terms: 30 days net) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (No.  Description                                          Quantity  Unit   Unit Price \($\)  Amount \($\)) Tj T*
+/F1 8 Tf (1    Software Development) Tj T*
+/F1 8 Tf (1.1  Custom CRM module development - Core functionality   120       Hours  150.00          18,000.00) Tj T*
+/F1 8 Tf (1.2  AI-powered analytics integration                     80        Hours  175.00          14,000.00) Tj T*
+/F1 8 Tf (1.3  Mobile application development \(iOS/Android\)         160       Hours  150.00          24,000.00) Tj T*
+/F1 8 Tf (1.4  Third-party API integrations                         40        Hours  125.00          5,000.00) Tj T*
+/F1 8 Tf (2    Consulting Services) Tj T*
+/F1 8 Tf (2.1  Project management and coordination                  60        Hours  120.00          7,200.00) Tj T*
+/F1 8 Tf (2.2  Technical consulting and architecture design         40        Hours  150.00          6,000.00) Tj T*
+/F1 8 Tf (2.3  Quality assurance and testing services               50        Hours  100.00          5,000.00) Tj T*
+/F1 8 Tf (3    Hardware and Infrastructure) Tj T*
+/F1 8 Tf (3.1  Dedicated server hosting \(3 months\)                  1         Item   2,500.00        2,500.00) Tj T*
+/F1 8 Tf (3.2  Security certificates \(SSL/TLS\)                      3         Years  300.00          900.00) Tj T*
+/F1 8 Tf (3.3  Backup and disaster recovery system                  1         Setup  1,500.00        1,500.00) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (Subtotal:          $ 85,100.00) Tj T*
+/F1 8 Tf (VAT \(20%\):         $ 17,020.00) Tj T*
+/F1 8 Tf (Total Amount Due:  $ 102,120.00) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (Payment Information:) Tj T*
+/F1 8 Tf (Bank: International Business Bank   Account Name: Tech Solutions Inc.   Account Number: 12345678) Tj T*
+/F1 8 Tf (Sort Code: 04-00-75   IBAN: GB29NWBK60161331926819   SWIFT: IBKLGB2L) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (Terms and Conditions:) Tj T*
+/F1 8 Tf (1. Payment is due within 30 days of invoice date.) Tj T*
+/F1 8 Tf (2. Late payments will incur interest at 1.5% per month.) Tj T*
+/F1 8 Tf (3. All amounts are exclusive of VAT unless stated otherwise.) Tj T*
+/F1 8 Tf (4. Support services include 12 months of technical support.) Tj T*
+/F1 8 Tf (5. All intellectual property rights remain with Tech Solutions Inc. until full payment is received.) Tj T*
+/F1 8 Tf () Tj T*
+/F1 8 Tf (Authorized Signature: ____________________   Date: 2025-12-01   Stamp:) Tj T*
+ET
+endstream
+endobj

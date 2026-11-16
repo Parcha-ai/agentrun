@@ -1,6 +1,6 @@
 ---
 name: desktop-computer
-description: Use a desktop computer (a Mac, or a Linux desktop) through computer_observe, computer_act, computer_screenshot and computer_script. It covers reading an app's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and reading the computer's refusals. Use when a run has a desktop and the task needs its apps or its windows.
+description: Use a desktop computer (a Mac, or a Linux desktop) through computer_observe, computer_act, computer_screenshot and a codemode script's `computer`. It covers reading an app's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and reading the computer's refusals. Use when a run has a desktop and the task needs its apps or its windows.
 ---
 
 # Using a desktop
@@ -52,9 +52,12 @@ the new state.
 
 **`computer_screenshot` `{region?}`** is the whole screen, or `region: [x, y, w, h]` of it, in screen pixels.
 
-**`computer_script` `{code}`** runs JavaScript in an isolate whose only binding is `computer`. Its tool description
-gives the `computer` object's types for this desktop. The body is an async function: `await` the calls and `return`
-what you need; `text(...)` and `image(...)` show words and pictures beside the value.
+**Scripts: `codemode`.** A `codemode` script has the desktop as `computer`, and codemode's description gives its
+types for this desktop: its apps, its windows, its screen and input, and, where the desktop has them, its shell
+(`computer.shell.run`) and its files (`computer.files`). The body is an async function: `await` the calls and `return`
+what you need. Each call is a call of its own, asked about and recorded like the tools': a command is held to your
+bash setting, a file written to your write setting, a file read to your read setting. A call that needs a person's OK
+stops the script until they answer.
 
 ```js
 const notes = computer.app("com.apple.Notes");
@@ -65,17 +68,28 @@ const saved = await notes.key("super+s", { expect: { text: "Saved" } });
 return { saved: saved.expect, state: saved.state };
 ```
 
-**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
-there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+The tools are there too, as `tools.computer_observe(...)` and `tools.computer_act(...)`. A screenshot comes with its
+pixels: `image(shot)` shows it to you, as returning it does.
 
-```js
-const notes = JSON.parse(await tools.computer_observe({ app: "com.apple.Notes" }));
-const title = notes.elements.find((node) => node.role === "textbox" && node.name === "Title");
-```
+**On Codex** there is no `codemode` and no `computer`: Codex runs scripts in its own code mode, which calls the tools in
+your list. Codex's exec has no top-level `return` (it is a SyntaxError there, and nothing runs): a script's output goes
+through `text(...)`. The desktop's apps, shell and files are `computer_op` there, one call per op with its arguments, named as
+`computer`'s methods are: `computer_op({op: "shell.run", args: {command: "hostname"}})`, `computer_op({op: "apps.open",
+args: {id: "firefox-esr", url: "https://example.com/"}})`. Every answer is text, and a failed op never throws: an op that
+ran answers JSON, so `JSON.parse` it (shell.run's has `exitCode`, `stdout`, `stderr`). A refused op answers the gate's
+words, which open with `Permission denied:` or `The user denied this`, or give the tool's name then `is read-only for this
+agent, so this call was refused:` or `can't be called:`. A failed op answers its error's words. Neither is JSON: check
+before you parse.
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
 screenshot pixels (`computer.screen.shot()`), for what one app's window can't reach: a drag from one app to another (a
 file from Finder into a Mail message), or anything outside every window.
+
+**Only what you were given.** An agent's computer setting may leave some out: a code-only agent drives the desktop from
+`codemode` alone, with no `computer_observe`, `computer_act` or `computer_screenshot` in its tool list; an agent whose
+exec is off has no `computer.shell`, no `computer.processes` and no bash. Where the desktop has the `apps` group a
+script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they name (below);
+otherwise it uses the desktop's own launcher through the screen. Use what your tool list and codemode's types show.
 
 ## How to work: observe, then act by ref, then check
 
@@ -90,7 +104,7 @@ file from Finder into a Mail message), or anything outside every window.
 
 ## When to write a script
 
-A script is one call where tools would be many. Use one when:
+A `codemode` script is one call of yours where tools would be many. Use one when:
 
 - **You know the steps.** A form you have seen, a menu path you know, a sequence you have done once: run it as one
   script with an `expect` at the end, instead of one act per step.
@@ -109,6 +123,12 @@ The desktop lists no elements. `computer_observe` answers a screenshot of the wh
 are raw input at its pixels: `click`, `type`, `key`, `scroll` and `drag` at points, with no refs, no states and no
 expect. `press`, `set` and `perform` are refused. Take the points from the latest screenshot, aim at the middle of a
 target, and take another screenshot to see what your steps did. Click a field before typing into it.
+
+Open an app from a script with `computer.apps.open("mousepad")`, by its id, its name or its program: it answers once
+the app's window shows in front, and the app stays open. `computer.apps.list()` names the apps the desktop has (the
+text editor, the terminal, Firefox). App ids come from `apps.list`: call it before `apps.open`. With the tools, name the app: `computer_observe` or `computer_act` with
+`app: "org.xfce.mousepad"` opens it, or brings it in front, first. A screenshot with no app in front lists the ids. `computer.shell.run` ends everything its command started when it returns, so an
+app it starts closes at once; `computer.processes.start` keeps a program that is not one of the listed apps.
 
 ## Habits that work
 

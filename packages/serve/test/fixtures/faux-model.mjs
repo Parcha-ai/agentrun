@@ -182,7 +182,7 @@ function replyTo(context, faux) {
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
   }
   // Runs monid's /slow, which holds until it is stopped; then, or on a follow-up (the run stopped), says so.
-  if (first.includes("Run monid's /slow.")) return results === 0 && users.length === 1 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
+  if (first.includes("Run monid's /slow.")) return results === 0 && users.length === 1 ? faux.message(faux.toolCall("monid__faux__slow", { body: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message("Ran.");
   // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
   if (first.includes("Search the web for ")) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
@@ -199,9 +199,26 @@ function replyTo(context, faux) {
   // Answers in words, then the given JSON as its last fenced json block: an agent's structured answer
   // (agent-output-schema.test.mjs). Read off the message's first line; what a trigger appends after it is quoted back
   // first, as "Handed: ...", so a test reads what the run was handed.
+  // With ", then on a retry with this json: <B>", a later message (the output contract's one retry, the server's) is
+  // answered with B, its words quoted as "Told: ..."; without it, every message gets the same JSON. "Answer in prose,
+  // then on a retry with this json: <B>" answers the first message with no json block at all.
   const [line, ...rest] = first.split("\n");
-  const structured = /^Answer with this json: (.+)$/.exec(line ?? "");
-  if (structured) return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}\n\n\`\`\`json\n${structured[1]}\n\`\`\``);
+  const structured = /^Answer (?:with this json: (.+?)|in prose)(?:, then on a retry with this json: (.+))?$/.exec(line ?? "");
+  if (structured) {
+    const retry = users.length > 1 && structured[2] !== undefined;
+    const json = retry ? structured[2] : structured[1];
+    const told = users.length > 1 ? `\n\nTold: ${last}` : "";
+    return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}${told}${json === undefined ? "" : `\n\n\`\`\`json\n${json}\n\`\`\``}`);
+  }
+  // Quotes what its system prompt says from "End your final answer" on (the output contract, agent-output-schema.test.mjs),
+  // else NO CONTRACT.
+  if (first === "Quote the output contract.") {
+    // pi carries the run's system sections as system messages too (as "Use the skill that fits:" reads them below).
+    const sectionText = (part) => (typeof part === "string" ? part : Array.isArray(part) ? part.map((p) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+    const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {}).map(sectionText)])].join("\n");
+    const at = system.indexOf("End your final answer");
+    return faux.message(at < 0 ? "NO CONTRACT" : system.slice(at));
+  }
   // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
   const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
   if (linked) {
@@ -216,19 +233,20 @@ function replyTo(context, faux) {
   }
   // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
   if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
-    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    const steps = [["monid__faux__person__enrich", { body: { name: "Ada" } }], ["monid__faux__slow", { body: { name: "Ada" } }]];
     return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
   }
-  // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
-  // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
-  if (first.includes("Run monid's /person/enrich, called again after a raise")) {
+  // Runs the faux endpoint of monid's it names (monid:faux/person/search is monid__faux__person__search): one call in the
+  // first turn, then, in each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers
+  // with the last result.
+  const again = /Run monid's \/(\S+), called again after a raise/.exec(first)?.[1];
+  if (again) {
     const calls = first.includes("twice") ? 2 * users.length - 1 : users.length;
-    return results < calls ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+    return results < calls ? faux.message(faux.toolCall(`monid__faux__${again.replaceAll("/", "__")}`, { body: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
-  // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
+  // Runs monid's /person/enrich under its wire name; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
-    const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
-    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+    return results === 0 ? faux.message(faux.toolCall("monid__faux__person__enrich", { body: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
   // Uses the skill that fits, as a run told of its skills on demand does: reads the SKILL.md whose path its system prompt
   // names, then answers with the skill's FORMAT-LINE as the file has it. A prompt that already holds the skill's text says

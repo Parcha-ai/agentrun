@@ -2,24 +2,27 @@ import type { EntryLike } from "./timeline.js";
 import { obj, str, type Obj } from "./util.js";
 
 /** What fired a trigger: its definition's kind, never what its payload says. */
-export const TRIGGER_SOURCES = ["schedule", "webhook", "slack", "github"] as const;
+export const TRIGGER_SOURCES = ["schedule", "webhook", "slack", "github", "composio", "email"] as const;
 export type TriggerSource = (typeof TRIGGER_SOURCES)[number];
 /** How a trigger's Timeline row names its source: "<label> <trigger>: <its first line>". */
-export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedule: "Schedule", webhook: "Webhook", slack: "Slack", github: "GitHub" };
+export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedule: "Schedule", webhook: "Webhook", slack: "Slack", github: "GitHub", composio: "Composio", email: "Email" };
 
 /** Who wrote a user-role message that the person did not type. The model reads the message as it reads any; only its
  *  attribution differs, so the Timeline never shows it as "You".
- *  - `server`, for a reason. `approval_declined`: a person's message that declined a call waiting for approval, which the
+ *  - `server`, for a reason. `handed_back`: a learned workflow that ran first on the run handed the job back to its
+ *    agent (runner/workflow-first.ts), the agent's first input saying what it found. `approval_declined`: a person's message that declined a call waiting for approval, which the
  *    server's resume carries as the deny note; `said` is their words, whole, which the Timeline shows as theirs beside
- *    the server's row.
+ *    the server's row. `output_retry`: the one turn a run is asked again when its answer's json misses its agent's output
+ *    schema (answer-json.ts outputRetryWords).
  *  - `trigger`: a trigger's firing (its first input, or its message), `trigger_id` the trigger's. `owner` is decided by
  *    the trigger's definition when it fires, never by its payload: true for a schedule (its owner wrote the words when
  *    they set it up), false for a webhook, Slack or GitHub firing, whose words come from outside. */
 export type MessageOrigin =
-  | { kind: "server"; reason: "cap_raised" | "approval" }
+  | { kind: "server"; reason: ServerReason }
   | { kind: "server"; reason: "approval_declined"; said: string }
   | { kind: "trigger"; trigger_id: string; source: TriggerSource; owner: boolean };
-const REASONS: ReadonlySet<string> = new Set(["cap_raised", "approval"]);
+type ServerReason = "cap_raised" | "approval" | "handed_back" | "output_retry";
+const REASONS: ReadonlySet<string> = new Set<ServerReason>(["cap_raised", "approval", "handed_back", "output_retry"]);
 const SOURCES: ReadonlySet<string> = new Set(TRIGGER_SOURCES);
 
 /** An entry kind that names the origin of the next user entry in its conversation whose text is exactly `text`: written
@@ -36,7 +39,7 @@ export function originOf(value: unknown): MessageOrigin | undefined {
   }
   if (!at || at.kind !== "server" || typeof at.reason !== "string") return undefined;
   if (at.reason === "approval_declined") return typeof at.said === "string" && at.said.trim() ? { kind: "server", reason: "approval_declined", said: at.said } : undefined;
-  return REASONS.has(at.reason) ? { kind: "server", reason: at.reason as "cap_raised" | "approval" } : undefined;
+  return REASONS.has(at.reason) ? { kind: "server", reason: at.reason as ServerReason } : undefined;
 }
 
 const textOf = (message: Obj | undefined): string => {
@@ -82,11 +85,18 @@ export function originMatcher(): (entry: EntryLike) => MessageOrigin | undefined
 }
 
 /** Whether a Timeline row is a message its run took: a person's (`user_message`), the server's (`origin: "server"`), or a
- *  trigger's (`origin: "trigger"`); never the server's row beside the person's words (BESIDE_SUFFIX) or a note it told the
- *  model (NOTE_SUFFIX). A host that counts a run's messages (their arrival, where a stop stands) counts these, never the
+ *  trigger's (`origin: "trigger"`); never the server's row beside the person's words (BESIDE_SUFFIX), a note it told the
+ *  model (NOTE_SUFFIX), or a grade's words (FEEDBACK_SUFFIX: a feedback round asks no turn of the job's). A host that
+ *  counts a run's messages (their arrival, where a stop stands, the turn an answer belongs to) counts these, never the
  *  kind alone. */
 export const isMessageRow = (row: { id?: string; kind: string; origin?: string }): boolean =>
-  row.kind === "user_message" || ((row.origin === "server" || row.origin === "trigger") && !row.id?.endsWith(BESIDE_SUFFIX) && !row.id?.endsWith(NOTE_SUFFIX));
+  (row.kind === "user_message" && !isFeedbackRow(row)) || ((row.origin === "server" || row.origin === "trigger") && !row.id?.endsWith(BESIDE_SUFFIX) && !row.id?.endsWith(NOTE_SUFFIX));
+/** The id suffix of a grade's words' row (runner/feedback-round.ts: a FEEDBACK entry, shown as the reviewer's message,
+ *  store-reads/journal.ts runTimeline): shown as a person's message is, and never a message any turn of the job's took. */
+export const FEEDBACK_SUFFIX = ":feedback";
+/** Whether a Timeline row is a grade's words (FEEDBACK_SUFFIX): where its feedback round begins (journal.ts
+ *  withoutFeedbackRounds). */
+export const isFeedbackRow = (row: { id?: string; kind: string }): boolean => row.kind === "user_message" && row.id?.endsWith(FEEDBACK_SUFFIX) === true;
 /** The id suffix of a server's row shown beside a person's message that its turn took (a declined approval's resume):
  *  the server's, as its origin says, and never a second message of that turn. */
 export const BESIDE_SUFFIX = ":server";

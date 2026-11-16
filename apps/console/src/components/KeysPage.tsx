@@ -1,5 +1,7 @@
 import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { pasteFromClipboard } from "@/lib/paste";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { RunError } from "@/components/RunError";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { SecretRow } from "@/components/SecretRow";
@@ -11,6 +13,7 @@ import { Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
 import { keyHelp } from "@/lib/keyHelp";
+import type { HarnessInfo } from "@/lib/models";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, SecretMeta, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
@@ -43,7 +46,9 @@ export const KEY_ADVICE = "We recommend an OpenRouter key with a dollar cap and 
  *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `onChange`
  *  follows each save and removal (the server's tools and models may change with its keys). */
 /** `writable`: this is the owner's password session (session.secrets_writable), the one that may paste a key. */
-export function KeysPage({ v2, onChange, writable, whyNot = "sign_in" }: { v2: Client; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
+/** `plan`: the ChatGPT plan's row (ChatGPTRow), first among the model keys. `harnesses`: the capabilities' harnesses,
+ *  listed under the keys as what runs here. */
+export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, harnesses }: { v2: Client; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ReactNode; harnesses?: readonly HarnessInfo[] }) {
   const [view, setView] = useState<ToolKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [open, setOpen] = useState<{ id: string; mode: "edit" | "remove" } | null>(null);
@@ -111,9 +116,10 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in" }: { v2: C
           )}
           {groups.map((g) => (
             <SettingsSection key={g.label} label={g.label} title={g.label} note={g.kind === "model" ? <p>{KEY_ADVICE}</p> : undefined}>
-              <ul className="border">{g.keys.map(row)}</ul>
+              <ul className="border">{g.kind === "model" && plan}{g.keys.map(row)}</ul>
             </SettingsSection>
           ))}
+          {harnesses && <WhatRunsHere harnesses={harnesses} />}
         </div>
       </div>
     </div>
@@ -141,6 +147,7 @@ type RowProps = {
 };
 
 function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
+  const row = useRef<HTMLLIElement>(null);
   // Each field's secret ("tool:<KEY>"), and each secret's field (the form's input, and whether a saved one still opens).
   const secretOf = (f: ToolKeyField) => k.secrets.find((s) => secretLabel(s.name) === f.name);
   const fieldOf = (s: SecretMeta) => k.fields.find((f) => f.name === secretLabel(s.name));
@@ -148,7 +155,7 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
   const own = k.fields.filter((f) => secretOf(f)?.source !== "env");
   const setCount = k.secrets.filter((s) => s.set).length;
   return (
-    <li className="border-b p-4 last:border-b-0">
+    <li ref={row} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
         <ProviderIcon id={k.id} className="mt-1" />
         <div className="min-w-0 flex-1">
@@ -168,7 +175,7 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
           <ul className="mt-3 space-y-1.5">
             {k.secrets.map((s) => (
               <SecretRow key={s.name} field={s} stateSaid={k.secrets.length === 1} writable={writable && open === null} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
-                onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
+                onPaste={() => void pasteFromClipboard(() => onOpen("edit"), () => row.current?.querySelector("form")?.elements.namedItem(fieldOf(s)?.name ?? "") as HTMLInputElement | null)} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>
           {!own.length && <p className="mt-3 text-small text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
@@ -224,7 +231,7 @@ export function KeyForm({ tool: k, fields, onSave, onCancel }: { tool: ToolKey; 
       {help && (
         <p className="text-body text-muted-foreground">
           <span className="font-semibold text-foreground">{k.label}</span> · No key yet?{" "}
-          <a href={help.url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">Get a key</a> (opens in a new tab)
+          <a href={help.url} target="_blank" rel="noopener noreferrer" className="text-primary-text underline underline-offset-2">Get a key</a> (opens in a new tab)
         </p>
       )}
       {fields.map((f) => (

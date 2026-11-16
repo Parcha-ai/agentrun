@@ -9,10 +9,10 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { request } from 'node:http';
 import { modelPortFor } from '@parcha/agentrun-kernel';
-import { ProxyRefusal, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { NATIVE_SEARCH_USD, ProxyRefusal, startModelProxy } from '@parcha/agentrun-kernel/host';
 import { inputTokensMaxOf } from '@parcha/agentrun-kernel/testing';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD } from '@parcha/agentrun-harness-claude';
+import { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL } from '@parcha/agentrun-harness-claude';
 import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 import { childEnv, confined, launchCommand, localMachine } from '../dist/host/machine.js';
 import { PARENT_WATCH_SHIM, parentWatched, SETPRIV } from '@parcha/agentrun-kernel/host';
@@ -192,6 +192,10 @@ test("usage: a stream's message_start and last message_delta, a whole body's, an
   const stream = ev('message_start', { message: { usage: { input_tokens: 120, cache_read_input_tokens: 30, cache_creation_input_tokens: 5, output_tokens: 1 } } }) + ev('content_block_delta', { delta: { type: 'text_delta', text: 'hi' } }) + ev('message_delta', { usage: { output_tokens: 7 } }) + ev('message_delta', { usage: { output_tokens: 42 } });
   assert.deepEqual(policy.usageOf(stream + ev('message_stop', {})), { input: 120, output: 42, cacheRead: 30, cacheWrite: 5 });
   assert.equal(policy.usageOf(stream), undefined, 'a stream cut before message_stop');
+  // A stream the provider ended in its error event is whole: the counts it reported before it; none when it reported none.
+  assert.deepEqual(policy.usageOf(stream + ev('error', { error: { type: 'overloaded_error', message: 'Overloaded' } })), { input: 120, output: 42, cacheRead: 30, cacheWrite: 5 });
+  assert.equal(policy.usageOf(ev('error', { error: { type: 'overloaded_error', message: 'Overloaded' } })), undefined, 'an error as the first event');
+  assert.equal(policy.usageOf(stream + 'event: error\ndata: 500 the upstream failed\n\n'), undefined, 'words, not the provider\'s event: cut');
   assert.deepEqual(policy.usageOf(JSON.stringify({ id: 'm', usage: { input_tokens: 3, output_tokens: 4 } })), { input: 3, output: 4, cacheRead: 0, cacheWrite: 0 });
 });
 
@@ -600,7 +604,7 @@ test("usage: the searches a response reports, from a stream's last message_delta
   assert.deepEqual(policy.usageOf(JSON.stringify({ usage: usage(0) })), { input: 9, output: 4, cacheRead: 0, cacheWrite: 0 }, 'no searches, no field');
   for (const bad of ['3', -1, 1.5]) assert.equal(policy.usageOf(JSON.stringify({ usage: usage(bad) })), undefined, String(bad));
   const tokens = (_m, u) => (u.input + u.output) / 1e6;
-  assert.equal(withWebSearches(tokens)('m', { input: 9, output: 4, cacheRead: 0, webSearches: 3 }), tokens('m', { input: 9, output: 4 }) + 3 * CLAUDE_WEB_SEARCH_USD);
+  assert.equal(withWebSearches(tokens)('m', { input: 9, output: 4, cacheRead: 0, webSearches: 3 }), tokens('m', { input: 9, output: 4 }) + 3 * NATIVE_SEARCH_USD);
   assert.equal(withWebSearches(() => null)('m', { input: 9, output: 4, cacheRead: 0, webSearches: 3 }), null, 'an unknown price stays unknown');
 });
 
@@ -619,7 +623,7 @@ test("with an allowance, a search request's input bound is its body's plus the a
 });
 
 test("each web search is booked at Anthropic's rate into the session's cost, streamed and whole, and the cap refuses the next request once searches pass it; another hosted tool is still refused", async () => {
-  assert.equal(CLAUDE_WEB_SEARCH_USD, 10 / 1000, '$10 per 1,000 searches');
+  assert.equal(NATIVE_SEARCH_USD, 10 / 1000, '$10 per 1,000 searches');
   for (const stream of [true, false]) {
     const provider = await fakeAnthropic({ reply: () => ({ search: { query: 'agentrun', results: [{ title: 'AgentRun', url: 'https://example.com/agentrun' }], text: 'found', searches: 3 } }) });
     const ends = [];
@@ -648,7 +652,7 @@ test("each web search is booked at Anthropic's rate into the session's cost, str
     assert.deepEqual(statuses, [403, 200, 200, 400], `stream ${stream}: web fetch refused; two searches answered; the third refused at the cap`);
     assert.equal(provider.messages().length, 2, 'only the two admitted reached the provider');
     assert.deepEqual(ends.map((u) => u.webSearches), [3, 3]);
-    for (const u of ends) assert.equal(u.usd, priced('', u) + 3 * CLAUDE_WEB_SEARCH_USD, 'tokens at the host price, searches at $0.01 each');
+    for (const u of ends) assert.equal(u.usd, priced('', u) + 3 * NATIVE_SEARCH_USD, 'tokens at the host price, searches at $0.01 each');
     assert.equal(booking.spentUsd(), ends[0].usd + ends[1].usd);
     // The tokens alone are under the cap: the searches take the session past it.
     assert.ok(ends.reduce((sum, u) => sum + priced('', u), 0) < 0.05 && booking.spentUsd() > 0.06, String(booking.spentUsd()));

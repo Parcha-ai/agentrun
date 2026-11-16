@@ -18,7 +18,7 @@ import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailur
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type SessionWriter, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { type CapMode, type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeCeilingMessage, freeModelRequestsOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
 // The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
 // parity tests hold this cap's figures to.
@@ -39,21 +39,22 @@ import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
-import { PI_WIRES, storeSettings } from "./adapter-run-spec.js";
+import { capModelOf, PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, NODE_LOG_SESSION, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
 import type { NodeLine } from "../pause.js";
 import { cutStrings } from "../key-refusal.js";
-import { CLOSE_MS, entriesOf } from "./loop.js";
+import { CLOSE_MS } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
-import { bookedSpend } from "./metrics.js";
+import { endCostOf, runCostOf } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = WORKFLOW_SESSION;
@@ -89,6 +90,10 @@ export interface WorkflowProvider {
   readonly capModel: CapModel;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** A ChatGPT plan's route: its policy keeps the plan's rules (pi.ts policyFor). */
+  readonly plan?: boolean;
+  /** Told the credential an upstream 401 refused, so the next one is renewed (a ChatGPT plan's route). */
+  readonly refused?: (credential: string) => Promise<void>;
 }
 
 /** A tier's provider from the runner's model route (model-route.ts routeOf), the one way the runner resolves a model
@@ -114,8 +119,12 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     policy: await policyFor(route.provider, route.model, []),
     price: (route.price ?? (() => null)) as (model: string, usage: ProxyUsage) => number | null,
-    capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null },
+    // As a pi turn's (capModelOf): a ChatGPT plan's route is billed to the plan (CapModel.plan), and a model serve has no
+    // price for (a router's zeros, a gateway model nothing prices) has none, never its placeholder's $0: a cap refuses it.
+    capModel: capModelOf(route),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(route.provider.plan ? { plan: true } : {}),
+    ...(route.provider.refused ? { refused: route.provider.refused } : {}),
   };
 }
 
@@ -140,7 +149,6 @@ export interface WorkflowSpecDeps {
   /** How a decision's images load. Absent: pdf-pages.ts imageLoader on the run's work folder, when the workflow has a
    *  decision node; a test gives its own. */
   readonly loadImage?: LoadImage;
-  readonly now?: () => number;
 }
 
 /** The run's decision providers, by id, and the one a node that names none is answered by (decisions.ts). */
@@ -157,7 +165,6 @@ interface Claimed {
   readonly workflow: Workflow;
   readonly input: Record<string, unknown>;
   readonly capUsd: number | undefined;
-  readonly mode: CapMode;
   readonly workRoot: string;
   /** The launch's tool plane (which web tools resolve to Parallel), for scoping the run's decision keys. */
   readonly plane: RunLaunch["plane"];
@@ -196,8 +203,7 @@ function capRuleOf(capUsd: () => number): WorkflowCapRule {
 
 /** The claim-time builder: `specOf(claim)` the loop calls. Reads the run's launch and revision, resolves each tier's
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
-export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
-  const now = deps.now ?? Date.now;
+export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string; runner?: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   // The proxies a claim started: closed by the spec's release once the claim is done, or here when the claim fails before
   // its spec is returned (the loop then has no spec to release), so a failed claim leaves no proxy listening.
   return async (claim, run) => {
@@ -209,7 +215,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       throw error;
     }
   };
-  async function claimSpec(claim: { runId: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
+  async function claimSpec(claim: { runId: string; runner?: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
     /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
     const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
       const opened = await opening;
@@ -261,7 +267,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const offered = nodeOffer(claimed.workflow);
     for (const [tier, provider] of providers) {
       const proxy = await startModelProxy({
-        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}) }, provider.modelId, offered),
+        // Each request names its tier's route (ModelRequest.route), so the cap prices it as that tier books it: two tiers
+        // on one model id (a plan's and a paid one) are held apart, never at the other's price (capModelOf).
+        route: providerId(tier),
+        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}), ...(provider.plan ? { plan: true } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
         origin: provider.origin,
@@ -269,6 +278,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         price: provider.price as never,
         ...(provider.headers ? { headers: provider.headers } : {}),
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
+        ...(provider.refused ? { credentialRefused: provider.refused } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
       // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.
@@ -281,9 +291,21 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       if (!provider) throw new Error(`the workflow names tier ${String(tier)}, which this run has no model for`);
       return { provider: providerId(providers.has(resolved) ? resolved : "default"), modelId: provider.modelId, ...(provider.named ? { named: provider.named } : {}) };
     };
-    const capModelOf = (id: string): CapModel | undefined => {
-      for (const provider of providers.values()) if (provider.capModel.id === id) return provider.capModel;
-      return undefined;
+    // The cap's model of a request, by the route its tier's proxy names (the key its request is routed by), never by its
+    // bare id: a ChatGPT plan's tier and a paid tier of one model id are priced apart. A request read with no route takes
+    // the paid model of its id over a plan's, so a clash is never priced at the plan's $0.
+    const capModelOf = (id: string, route?: string): CapModel | undefined => {
+      if (route !== undefined) {
+        for (const [tier, provider] of providers) if (providerId(tier) === route) return provider.capModel.id === id ? provider.capModel : undefined;
+        return undefined;
+      }
+      let plan: CapModel | undefined;
+      for (const provider of providers.values()) {
+        if (provider.capModel.id !== id) continue;
+        if (!provider.capModel.plan) return provider.capModel;
+        plan ??= provider.capModel;
+      }
+      return plan;
     };
 
     // The cap read against every request: the run's cap, raised in place once harnessReady reads this claim's raise.
@@ -343,7 +365,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
-      endPatch: async () => endPatchOf(booking, decisionCap, paidTools, run?.journal),
+      endPatch: async () => endPatchOf(booking, run?.journal),
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -387,9 +409,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         // The run's ONE cap over the journal's sessions: its model requests and its decisions admit by the one rule and
         // book on one ledger (runCap's runBooking over the sessions), so each is judged on the run's whole spend and a
         // refusal's figures are the run's. Wired now the Harness is open; the proxies' hooks forward to the model booking.
-        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush() });
+        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush(), ...(claim.runner === undefined ? {} : { claim: { runId: claim.runId, runner: claim.runner } }) });
         const writer = await sessions.open(SESSION);
-        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, mode: claimed.mode, now, modelOf: capModelOf });
+        // Its model nodes' requests on free models count toward the run's limit of them, capped or not. A step waiting for
+        // room under it (a map's branch, beside its siblings' holds) leaves at the run's stop or park, unsent.
+        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeModelRequestsOf(deps.env ?? process.env), ...(context.abortSignal ? { stopped: context.abortSignal } : {}) });
         booking = await modelPortFor(writer, {
           key: SESSION,
           label: SESSION,
@@ -397,6 +421,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
+        // An earlier claim's requests, before the workflow sends anything: one this runner's lost claim saw answer, its
+        // record refused, is booked at what it reported (waiting, bounded, for one still in flight); one a dead runner left
+        // is booked cut (the kernel's bookCut). Read as before for the cap: cut or open, a request counts at its hold and bound.
+        await booking.bookCut();
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
         // open, so a decision node (which runs after this) reaches it through the deferred reference. The flush makes each
         // decision's hold durable before it is sent, as a model request's is.
@@ -438,8 +466,11 @@ export function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHoo
     const verdict = await before(request);
     // A refusal parks the run, as main's does, unless the request is a call node's (an `llm` call's) in flight: that
     // effect is admitted, and parked unfinished it would be left unknown; refused unsent, its call fails in the cap's
-    // words instead (the net under the call's hold, holdAtEffects).
-    if (verdict && "refuse" in verdict && flight.count === 0) {
+    // words instead (the net under the call's hold, holdAtEffects). The limit on free-model requests (freeCeilingEnd)
+    // ends the run even there: it is for good, every free request after it is refused too, and the run never resumes,
+    // so no effect is left to resume; its call's failure would end the run as the call's ("failed at <node>"), not in
+    // the limit's words and code.
+    if (verdict && "refuse" in verdict && (flight.count === 0 || freeCeilingMessage((verdict as Refusal).refuse) !== undefined)) {
       const refusal = verdict as Refusal;
       // Its node: the one workflow step under way (every model request goes through the run's one port, which names no
       // node); none when several run at once, as a map's items do.
@@ -573,7 +604,7 @@ export function callHoldOf(tool: string, input: Record<string, unknown>, env: No
   if (tool === "web_search" || tool === "web_fetch") {
     if (planeOf(env)[tool] !== "parallel") return NO_HOLD(tool);
     const fee = tool === "web_search" ? parallelSearchFee(searchArgs(input).n) : parallelExtractFee(1);
-    // Who charges for it (main's charge row's charged_by), as paidOn names it: the hold is the record its request books under.
+    // Who charges for it (main's charge row's charged_by), as paidRequest names it: the hold is the record its request books under.
     return { usd: fee.usd, name: fee.name, basis: fee.basis, chargedBy: fee.by };
   }
   if (tool === "llm") {
@@ -582,7 +613,7 @@ export function callHoldOf(tool: string, input: Record<string, unknown>, env: No
     const bytes = (text: unknown) => (typeof text === "string" ? Buffer.byteLength(text, "utf8") : 0);
     const bound = bytes(input.prompt) + bytes(input.system) + LLM_FRAMING_BYTES;
     const output = typeof input.maxTokens === "number" ? input.maxTokens : Math.max(LLM_DEFAULT_OUTPUT, model.outputCeiling ?? 0);
-    const usd = requestPrice(pricingOf(model.price), bound, undefined, Date.now(), "strict", model.id).worst(output);
+    const usd = requestPrice(pricingOf(model.price), bound)(output);
     return { usd, name: `the ${model.id} answer`, basis: `${model.id}'s worst price for ${bound} input and ${output} output tokens`, llm: { price: model.price } };
   }
   return NO_HOLD(tool);
@@ -709,7 +740,7 @@ export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => Run
           // The net: an `llm` answer priced at its own usage above what was held for it.
           const usage = hold.llm?.price && value && typeof value === "object" ? (value as { usage?: { input_tokens?: number; output_tokens?: number } | null }).usage : undefined;
           if (usage && hold.llm?.price) {
-            const charged = pricingOf(hold.llm.price)({ cached: 0, fresh: usage.input_tokens ?? 0 }, usage.output_tokens ?? 0);
+            const charged = pricingOf(hold.llm.price)(usage.input_tokens ?? 0, usage.output_tokens ?? 0);
             if (charged > hold.usd + 1e-12) return failed(params.node.label, `its answer cost ${money(charged)}, above the ${money(hold.usd)} it held before it ran.`);
           }
           return value;
@@ -819,31 +850,16 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
   }) as never;
 }
 
-/** The end's cost and metrics: what every model request of the run cost (the booking) plus what its decisions and its
- *  call nodes' paid requests cost (the decision cap, the paid tools), one spend for the run. Unknown (no figure) once any
- *  part is unknown. */
-/** What the run's decisions cost by their booking (bookedSpend, "decisions"), read from only what that needs: the root's
- *  session keys (journalSessions writes them there) and the decisions session's own conversation, never the run's model
- *  or tool records, so the read stays small within the end patch's bound. No decisions session: none, $0. */
-async function decisionsBooked(journal: Journal): Promise<number | null> {
-  const root = await entriesOf(journal, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
-  const key = root.find((entry) => entry.kind === KINDS.sessionKey && (entry.data as { key?: unknown } | undefined)?.key === DECISION_SESSION);
-  const conversation = (key?.data as { conversation?: unknown } | undefined)?.conversation;
-  if (conversation == null) return 0;
-  const decisions = await entriesOf(journal, conversation as never, BACKGROUND_CONTEXT);
-  return bookedSpend([key!, ...decisions] as never, "decisions").usd;
-}
-
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined, paidTools: RunTools | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
+/** The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf, as the
+ *  pi and CLI specs store it): every model request of its sessions, its call nodes' paid requests and its decisions, each
+ *  at what it was booked at, never the cap's figure for it (an answer with no price of its own is unknown, never its
+ *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
+ *  before a response). With no journal to read, unknown. */
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!booking) return {};
-  const model = booking.spentUsd();
-  // A decision's cost is what its booking says it charged (bookedSpend over the decisions session's records, as the pi and
-  // CLI specs read it): one its provider reported no cost for is unknown, never the hold the cap counts it at
-  // (decisionCap.spentUsd, which stays the cap's own figure). With no journal to read, any decision is unknown.
-  const decision = !decisionCap ? 0 : journalOf ? await decisionsBooked(journalOf()) : null;
-  const paid = paidTools ? paidTools.spentUsd() : 0;
-  // Unknown is written as null, never left out (an end that says nothing leaves the $0 the run read before a response).
-  return { costUsd: model === null || decision === null || paid === null ? null : model + decision + paid };
+  if (!journalOf) return { costUsd: null };
+  // With whether the figure is the most it can have cost (a request cut at its hold counted in it), stored beside it.
+  return endCostOf(runCostOf((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never));
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
@@ -958,9 +974,8 @@ export function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | 
 async function decisionRequestOf(provider: DecisionProvider, params: JudgeParams): Promise<DecisionCapRequest> {
   const id = params.decisionId ?? `decision:${params.executionPath ?? ""}:${params.label}${params.item ? `:${params.item.index}` : ""}`;
   const inputTokens = Buffer.byteLength(JSON.stringify({ state: params.state ?? null, questions: params.questions }), "utf8");
-  const questions = Object.keys(params.questions).length;
   const images = Object.keys(params.images ?? {}).length;
-  const base = { kind: "decision" as const, id, inputTokens, questions, images };
+  const base = { kind: "decision" as const, id, inputTokens, images };
   // Parallel charges by the request, nothing by the token: priced at $0 a token and its request price, never as a model
   // with no price (which the cap refuses, failing every capped workflow's Parallel decision).
   if (provider.id === "parallel") return { ...base, model: openrouterModel("parallel", { input: 0, output: 0 }, null), requestUsd: PARALLEL_DECISION_USD };
@@ -1074,7 +1089,7 @@ function bookedNodeTools(binding: ToolBinding, paid: () => RunTools | undefined,
       ...tool,
       execute: (args: never, api: { callId: string }, context: never) => {
         const ledger = paid();
-        return bookedIn(ledger ? { call: api.callId, record: async () => {}, paid: ledger, pause: async (refusal) => park({ message: refusal.refuse, forGood: false, ...(refusal.figures ? { figures: refusal.figures } : {}) }) } : undefined, () => (tool.execute as (a: never, b: never, c: never) => Promise<unknown>)(args, api as never, context));
+        return bookedIn(ledger ? { call: api.callId, paid: ledger, pause: async (refusal) => park({ message: refusal.refuse, forGood: false, ...(refusal.figures ? { figures: refusal.figures } : {}) }) } : undefined, () => (tool.execute as (a: never, b: never, c: never) => Promise<unknown>)(args, api as never, context));
       },
     })) as unknown as NodeToolBinding["tools"],
   };
@@ -1101,12 +1116,11 @@ async function readClaim(deps: WorkflowSpecDeps, runId: string): Promise<Claimed
   const revision = await deps.store.agents.revision(run.revisionId);
   if (!revision || revision.kind !== "workflow") throw new Error(`run ${runId} is not a workflow run`);
   const launchRow = await deps.store.runs.launch(runId);
-  const launch = launchRow.body as { input?: unknown; max_cost_usd?: unknown; cap_mode?: unknown; documents?: unknown; plane?: unknown } | null;
+  const launch = launchRow.body as { input?: unknown; max_cost_usd?: unknown; documents?: unknown; plane?: unknown } | null;
   const input = launch && typeof launch.input === "object" && launch.input !== null ? (launch.input as Record<string, unknown>) : {};
   const capUsd = typeof launch?.max_cost_usd === "number" ? launch.max_cost_usd : undefined;
-  const mode: CapMode = launch?.cap_mode === "strict" ? "strict" : "expected";
   const workRoot = typeof launch?.documents === "string" ? launch.documents : "/tmp";
-  return { agentId: run.agentId, revisionId: run.revisionId, revision: revision as unknown as Revision, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, mode, workRoot, plane: (launch?.plane as RunLaunch["plane"]) };
+  return { agentId: run.agentId, revisionId: run.revisionId, revision: revision as unknown as Revision, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, workRoot, plane: (launch?.plane as RunLaunch["plane"]) };
 }
 
 export { BACKGROUND_CONTEXT };

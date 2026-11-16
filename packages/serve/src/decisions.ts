@@ -158,6 +158,9 @@ export function providersNamed(nodes: readonly Record<string, unknown>[]): strin
       if ((predicate as { predicate?: unknown } | undefined)?.predicate === "ask") add(predicate);
     }
     if (node.verify) ids.add(DEFAULT_DECISION_PROVIDER);
+    // A step guard that reads Jev (runner/step-guard.ts) asks Jev, whatever provider its node names.
+    const signal = (node.guard as { signal?: unknown } | undefined)?.signal;
+    if (signal === "jev" || signal === "both") ids.add("jev");
   }
   return [...ids];
 }

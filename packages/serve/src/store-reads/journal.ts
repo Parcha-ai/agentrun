@@ -4,22 +4,22 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
-import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
+import type { EntryLike, SideSpend, TimelineEvent, TimelineOptions } from "../timeline/index.js";
+import { CALL_ENDED_WITH_RUN, CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
-import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
-import { computerCallsOf } from "../computer-calls.js";
+import { LEARNED_NODES_MAX, learnedCallEntries } from "../learned-nodes.js";
+import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
 import { labelled, type Reflect, reflects } from "../reflect-range.js";
 import { reflectRanges } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords, recordOf } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
-import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
+import { bookedSpend, cliModelWorked, costIsBooked, costWordsOf } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
-import { waitingText } from "../tool-gate.js";
+import { mcpNameOf, mcpToolName } from "../tool-names.js";
 import { Turns } from "../turns.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -52,38 +52,9 @@ function reflectOf(records: Records): Pick<Reflect, "after" | "until" | "earlier
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
-/** The calls the CLI record holds parked at an MCP door (a start marked parked, not in its tool bridge) with no sent mark
- *  and no end. */
-function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
-  const parked = new Set<string>();
-  const past = new Set<string>();
-  for (const entry of entries) {
-    const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
-    if (typeof callId !== "string") continue;
-    const start = entry.data as { parked?: unknown; bridge?: unknown };
-    if (entry.kind === KINDS.callStart && start.parked === true && start.bridge !== true) parked.add(callId);
-    else if (entry.kind === KINDS.callSent || entry.kind === KINDS.callEnd) past.add(callId);
-  }
-  for (const callId of past) parked.delete(callId);
-  return parked;
-}
-
-function piShaped(entries: readonly EntryLike[]): EntryLike[] {
-  const waiting = parkedUnsent(entries);
+export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
   return entries.flatMap((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
-    // A call through a CLI's own MCP client that its gate parked (adapter-loop.ts park): the CLI was answered the gate's
-    // waiting words (mcp-run.ts), which the record never keeps as the call's end, since an end is its outcome and the call
-    // is answered from it. While the call is parked and unsent, those words show as its result row from its ask on, as pi's
-    // parked call shows them; its sent mark or its end (run, refused, withdrawn) ends that.
-    // Once per call, at its first ask: a call asked again (a resume, a raise while it waits) shows one waiting result.
-    if (entry.kind === KINDS.ask && typeof data.callId === "string" && waiting.delete(data.callId)) {
-      const tool = typeof data.tool === "string" ? data.tool : "tool";
-      const timestamp = typeof data.requestedAt === "string" && Number.isFinite(Date.parse(data.requestedAt)) ? { timestamp: Date.parse(data.requestedAt) } : {};
-      // Its own id (the ask's, marked), so the renderer never takes it for the ask entry seen twice.
-      const result = { ...entry, id: `${String(entry.id)}:parked`, kind: "pi.tool-result", data: {}, model: [{ role: "tool", toolCallId: data.callId, content: waitingText(tool), ...timestamp }] } as unknown as EntryLike;
-      return [entry, result];
-    }
     // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
     const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
@@ -99,8 +70,9 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       const text = typeof data.text === "string" ? data.text : "";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
     }
+    // A call: shown as a model's call, never counted as a model request (the booking counts those: bookedUsage).
     if (entry.kind === KINDS.callStart) {
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
+      return { ...entry, kind: "pi.assistant", recordedCall: true, ...(typeof data.parent === "string" ? { parentCall: data.parent } : {}), model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
       // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
@@ -111,7 +83,10 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // One refused before it ran (its gate's deny, a person's, an approval the run ended without) carries pi's refusal
       // mark, so its rows read refused, as pi's do, never as a call that ran and failed.
       const refused = data.status === "refused" ? { details: { [CALL_REFUSED]: true } } : {};
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...timestamp }] };
+      // One the run's end closed, nothing having ended it (`withRun`), carries that mark: it reads interrupted with no
+      // outcome, never as a call that failed.
+      const withRun = data.status === "interrupted" && data.withRun === true ? { details: { [CALL_ENDED_WITH_RUN]: true } } : {};
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...withRun, ...timestamp }] };
     }
     return entry;
   });
@@ -179,8 +154,16 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   return out;
 }
 
-/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
-export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). A nested call's (`<callId>/<key>`, a
+ *  script's or tools_call's) is the record of whichever harness made the call it nests in: on pi, the loop keeps it
+ *  beside pi's own record (adapter-loop.ts nestedGate), so it makes no run a CLI's. */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean =>
+  entries.some((entry) => entry.kind === KINDS.message || ((entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd) && !String((entry.data as { callId?: unknown } | undefined)?.callId ?? "").includes("/")));
+
+/** The call a run's turn ended on waiting for a person (timeline endedOnTurnEndingTool), over its root's entries as the
+ *  run keeps them: a CLI harness's record read as pi's (piShaped), as its Timeline and its view read it, so the runner's
+ *  loop parks a CLI run on exactly the question the view calls waiting, as it does a pi run. */
+export const turnEndedOnAsk = (entries: readonly EntryLike[]): string | undefined => endedOnTurnEndingTool(isCliRecord(entries) ? piShaped(entries) : entries);
 
 /** A path as a run's rows name it, for a harness working in `cwd`: one under `cwd` by its name there (`hello.md`), any
  *  other as given. */
@@ -188,6 +171,38 @@ const inWorkspace = (cwd: string) => (path: string): string => {
   const root = cwd.replace(/\/+$/, "");
   return path.startsWith(`${root}/`) && path.length > root.length + 1 ? path.slice(root.length + 1) : path;
 };
+
+/** A grade's feedback round's words (runner/feedback-round.ts, KINDS.feedback) as the reviewer's message: a host's
+ *  user entry, which the Timeline shows and pi never reads (the entry on the journal carries no model message). */
+export function withFeedback(entries: readonly EntryLike[]): EntryLike[] {
+  return entries.map((entry) => {
+    if (entry.kind !== KINDS.feedback) return entry;
+    const data = (entry.data ?? {}) as { text?: unknown; at?: unknown };
+    return { ...entry, model: [{ role: "user", content: typeof data.text === "string" ? data.text : "", ...(typeof data.at === "number" ? { timestamp: data.at } : {}) }] } as EntryLike;
+  });
+}
+
+/** `rows` (rendered over `entries`) with each grade's words' row (withFeedback's: the row of a FEEDBACK entry) marked
+ *  FEEDBACK_SUFFIX: shown as the reviewer's message, and never a message a turn of the job's took (isMessageRow passes
+ *  over it), so no reader of the rows (the answer, the path, the messages a stop stands after) reads a grade as one. */
+function feedbackMarked(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+  const words = new Set(entries.filter((entry) => entry.kind === KINDS.feedback && entry.id !== undefined).map((entry) => `:${entry.id}`));
+  if (!words.size) return [...rows];
+  return rows.map((row) => (row.kind === "user_message" && words.has(row.id.slice(row.id.lastIndexOf(":"))) ? { ...row, id: `${row.id}${FEEDBACK_SUFFIX}` } : row));
+}
+
+/** The job's turns: a run's timeline `rows` (runTimeline's) with every grade's feedback round left out, from its words'
+ *  row (FEEDBACK_SUFFIX) up to the run's next message. A round asks the agent no turn of the job's, so what the job did is
+ *  what is left (a follow-up's turns, a person's, included). The one view every reader of what the job's turns said
+ *  reads (the answer, the path, nothing new, a run's trace). */
+export function withoutFeedbackRounds<Row extends { readonly id: string; readonly kind: string; readonly origin?: string }>(rows: readonly Row[]): Row[] {
+  let inRound = false;
+  return rows.filter((row) => {
+    if (isFeedbackRow(row)) inRound = true;
+    else if (isMessageRow(row)) inRound = false;
+    return !inRound;
+  });
+}
 
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
@@ -208,11 +223,56 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // settles that turn's message aborted, before the runner books what the abort cut (its request's end mark comes once the
   // session's proxy sees its upstream end). Its cost reads that turn the same way, the request it cut a charge with no
   // price, never one in flight: never the known sum as its cost while the run reads stopped.
-  const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), read);
-  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
-  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+  // A pi run's side calls join its usage row's count and cost in the renderer, by the rule its answers are counted by
+  // (sideOf); a run whose cost is its booking's (costIsBooked) has its usage row from that booking (bookedUsage).
+  const booked = costIsBooked(entries, cli);
+  const side = booked ? undefined : sideOf(entries);
+  const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}), ...(side ? { side } : {}) };
+  // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
+  // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback), marked as no
+  // message of the job's (feedbackMarked).
+  const render = (catalog?: ReadonlyMap<string, string>) => feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), catalog ? { ...read, catalog } : read), entries);
+  const first = render();
+  const catalog = await runCatalog(store, runId, first);
+  // An MCP tool whose `mcp__<server>__<tool>` is too long is called by its hashed wire name, which reads as no tool's own:
+  // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
+  const hashed = hashedMcp(catalog?.values() ?? []);
+  const rendered = hashed.size ? render(hashed) : first;
+  const rows = booked ? bookedUsage(rendered, entries, options) : withFreeUsage(rendered, entries);
+  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
 }
+
+/** The run's MCP tools and monid endpoints by the wire name its harness called each (catalog.ts wireName of each pinned
+ *  tool), read from the run's pins by lookup, never parsed back; undefined when no row names one by a wire name. */
+async function runCatalog(store: Store, runId: string, rows: readonly TimelineEvent[]): Promise<ReadonlyMap<string, string> | undefined> {
+  if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return undefined;
+  const run = await store.runs.get(runId);
+  const pinned = await pinnedMcp(store, runId);
+  const monid = Object.keys((run && (await store.agents.revision(run.revisionId)))?.monidPin ?? {});
+  return new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
+}
+
+/** The catalog names (`mcp:<server>/<tool>`) of the MCP tools the run pinned, from its pin. */
+const pinnedMcp = async (store: Store, runId: string): Promise<string[]> =>
+  Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+
+/** Of `names` (catalog names), each MCP tool whose `mcp__<server>__<tool>` is too long, by the hashed wire name its harness
+ *  calls it (catalog.ts wireName): a name that reads as no tool of its own, so a reader names its calls by the catalog name. */
+const hashedMcp = (names: Iterable<string>): Map<string, string> =>
+  new Map([...names].flatMap((name): [string, string][] => {
+    const mcp = mcpNameOf(name);
+    return mcp !== undefined && wireName(name) !== `mcp__${mcp.server}__${mcp.tool}` ? [[wireName(name), name]] : [];
+  }));
+
+/** The run's MCP tools called by a hashed wire name, by that name (hashedMcp over its pin): what its end's metrics count
+ *  each one's calls under its catalog name by (runner/metrics.ts runMetrics's `catalog`), as its timeline names them. */
+export const hashedMcpOf = async (store: Store, runId: string): Promise<ReadonlyMap<string, string>> => hashedMcp(await pinnedMcp(store, runId));
+
+/** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
+ *  name (`mcp:<server>/<tool>`, from the run's `catalog`), never the wire name the harness called it by, so one call reads
+ *  one way. A row of any other tool is as it was. */
+const catalogNamed = (rows: TimelineEvent[], catalog: ReadonlyMap<string, string> | undefined): TimelineEvent[] =>
+  catalog ? rows.map((row) => (row.tool_name !== null && catalog.has(row.tool_name) ? { ...row, tool_name: catalog.get(row.tool_name)! } : row)) : rows;
 
 /** Whether the run's newest turn is over, cut (turns.ts: no message of the run's open, the newest one's end interrupted),
  *  its end-of-run turn's entries apart, as the run's view reads its status. */
@@ -224,28 +284,31 @@ function turnCutOf(records: Records, reflect: Reflect | undefined): boolean {
 
 /** `rows` with each tool call's result row carrying the computer protocol calls it made (`computer_calls`, and
  *  `computer_calls_dropped` past the record's bound), from the COMPUTER_CALLS entry the adapter loop kept beside the call
- *  (computer-calls.ts), joined by the call's id. A record holds no param's value and no answer's bytes, so it needs no cut.
- *  Rows of a run whose tools made none are as they were. */
-function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+ *  (computer-calls.ts), joined by the call's id. A record holds no typed or set value and no answer's bytes; the names of
+ *  the elements its steps acted on (words on the screen) go through `redact` when given (the run's cut), as every text a
+ *  row shows, whole, and are cut for the row after (shownName). Rows of a run whose tools made none are as they were. */
+function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
   const made = computerCallsOf(entries);
   if (!made.size) return rows;
+  const cut = (calls: readonly ComputerCallRecord[]) =>
+    calls.map((call) => (call.steps?.some((step) => step.on?.name) ? { ...call, steps: call.steps.map((step) => (step.on?.name ? { ...step, on: { ...step.on, name: shownName(step.on.name, redact) } } : step)) } : call));
   return rows.map((row) => {
     const kept = row.kind === "tool_result" && row.tool_use_id ? made.get(row.tool_use_id) : undefined;
-    return kept ? { ...row, computer_calls: kept.calls, ...(kept.dropped > 0 ? { computer_calls_dropped: kept.dropped } : {}) } : row;
+    return kept ? { ...row, computer_calls: cut(kept.calls), ...(kept.dropped > 0 ? { computer_calls_dropped: kept.dropped } : {}) } : row;
   });
 }
 
 /** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
- *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label through
- *  `redact` when given (the run's cut), as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
+ *  LEARNED_NODES entry that counts for the call (learned-nodes.ts learnedCallEntries: a rerun refused before any node ran
+ *  leaves the attempt before it showing), joined by the call's id: each label through `redact` when given (the run's cut),
+ *  as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
 function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
   const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
   const said = (text: string) => (redact ? redact(text) : text);
-  for (const entry of entries) {
-    if (entry.kind !== LEARNED_NODES) continue;
-    const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
-    if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
-    traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
+  for (const [call, index] of learnedCallEntries(entries)) {
+    const data = (entries[index]!.data ?? {}) as { nodes?: unknown };
+    if (!Array.isArray(data.nodes)) continue;
+    traces.set(call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
       const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown; model?: unknown; tier?: unknown };
       if (typeof one.label !== "string" || typeof one.status !== "string") return [];
       // A model node's model and tier, each through the run's cut as the label is.
@@ -257,25 +320,25 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
   return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
 }
 
-/** A pi run's `rows` with its side calls in its usage row: the requests its session booked that no answer of pi's carries
- *  (a learned workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), at what they were
- *  booked at, unknown when one's price is, beside the answers the renderer counted. Their requests join its count; its
- *  words are the renderer's, figures changed. A run with none is as rendered. */
-function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+/** A usage row's cost when every model request went to a free model (its known price $0 for every token): $0, and why. */
+export const FREE_COST = "$0 · free model";
+
+/** A pi run's side calls, for its usage row: the requests its session booked that no answer of pi's carries (a learned
+ *  workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), their count and their cost's
+ *  parts, which the renderer joins to the answers it counts by the one rule (timeline SideSpend). None: undefined. */
+function sideOf(entries: readonly EntryLike[]): SideSpend | undefined {
   const side = bookedSpend(entries, "side");
+  return side.requests ? { requests: side.requests, known: side.known, bounded: side.bounded, atMost: side.atMost, unpriced: side.unpriced } : undefined;
+}
+
+/** A pi run's `rows` whose every request its booking marked free (bookedSpend's `free`) and that cost $0: its usage row
+ *  says why (FREE_COST). Any other is as rendered. */
+function withFreeUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
-  if (!side.requests || at < 0) return [...rows];
-  const row = rows[at]!;
-  const own = row.usage ?? { usd: 0, requests: 0 };
-  const known = (own.usd ?? own.so_far_usd ?? 0) + side.known;
-  const unpriced = (own.usd === null ? (own.unpriced ?? 0) : 0) + side.unpriced;
-  const usd = unpriced ? null : Math.round(known * 1e6) / 1e6;
-  const requests = own.requests + side.requests;
-  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
-  const spent = usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
-  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}`);
-  const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}) };
-  return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
+  const row = rows[at];
+  if (!row || row.usage?.usd !== 0 || bookedSpend(entries, "model").free !== true) return [...rows];
+  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over /, `$1: ${FREE_COST} over `);
+  return rows.map((each, i) => (i === at ? { ...row, summary, usage: { ...row.usage!, free: true as const } } : each));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every
@@ -286,6 +349,7 @@ function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLi
  *  past its model proxy): its usage row says its cost is unknown, its model's work one charge with no price, so its view,
  *  live or ended, reads unknown, never $0. */
 function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
+  const nativeAggregate = entries.some(entry => entry.kind === 'runner.request' && (entry.data as {aggregate?:boolean})?.aggregate);
   const model = bookedSpend(entries, "model");
   const paid = bookedSpend(entries, "paid");
   const at = rows.findIndex((row) => row.kind === "usage");
@@ -298,15 +362,24 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
     const last = kept[kept.length - 1]!;
     return [...kept, { ...last, id: `${last.conversation_id ?? 0}:usage`, kind: "usage", summary: "no model request sent", agent_label: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, usage: { usd: 0, requests: 0 } }];
   }
-  const usd = unbooked || model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
-  const unpriced = model.unpriced + paid.unpriced + (unbooked ? 1 : 0);
+  // Its model requests' and paid tool calls' parts, joined by the kernel's one rule (costWordsOf): a cut request at its
+  // hold keeps its bound on a known sum ("at most"), and joins no known part of an unknown one.
+  const cost = costWordsOf([model, paid], unbooked ? 1 : 0);
+  const usd = cost.usd;
+  // Every model request on a free model, booked so, and nothing else charged: its $0 says why.
+  const free = usd === 0 && model.free === true;
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
-  const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
-  const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
-  const summary = unbooked
-    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${charges}`
-    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
-  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
+  const spent = free ? FREE_COST : usd !== null ? `${cost.upper_bound ? "at most " : ""}${dollars(usd)}` : `${dollars(cost.so_far_usd ?? 0)} known, ${cost.unpriced ?? 0} not priced,`;
+  // Its tool calls with no price as the renderer counted them from the journal (TOOL_UNMETERED), as on a pi run's row.
+  const notMetered = at >= 0 ? (rows[at]!.usage?.not_metered ?? 0) : 0;
+  const calls = toolCallWords(paid.requests, notMetered);
+  const summary = nativeAggregate
+    ? `${costLabel(options.ended === true)}: ${spent}; native model request count unavailable${calls}`
+    : unbooked
+    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
+    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
+  // Its so-far figures whenever the words say them: while the cost is unknown, and beside a bound (its exact part and holds).
+  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(cost.so_far_usd !== undefined && cost.unpriced !== undefined ? { so_far_usd: cost.so_far_usd, unpriced: cost.unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}), ...(free ? { free: true as const } : {}), ...(cost.upper_bound ? { upper_bound: true as const } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

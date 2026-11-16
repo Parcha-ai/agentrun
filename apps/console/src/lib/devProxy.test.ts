@@ -19,4 +19,9 @@ describe("devProxy", () => {
     expect(devProxy({ AGENTRUN_URL: OTHER, AGENTRUN_TOKEN: "t0" })?.["/v2"].headers).toEqual({ authorization: "Bearer t0" });
     expect(devProxy({ AGENTRUN_URL: OTHER })?.["/v2"].headers).toEqual({});
   });
+
+  it("fetches the matching public setup skill from the same target without adding the API token", () => {
+    expect(devProxy({})["/skills/agentrun-serve/SKILL.md"]).toEqual({ target: LOCAL, changeOrigin: true, headers: {} });
+    expect(devProxy({ AGENTRUN_URL: OTHER, AGENTRUN_TOKEN: "t0" })["/skills/agentrun-serve/SKILL.md"]).toEqual({ target: OTHER, changeOrigin: true, headers: {} });
+  });
 });

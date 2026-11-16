@@ -10,7 +10,12 @@
 #     the computer's, which reaches Archil;
 #   - nftables, for the helper's mount with an egress gateway alone: it redirects root's TCP to Archil's 8100 and 32050
 #     to computerd's archil relay on the computer's loopback;
-#   - /workspace, empty and root's, where the helper mounts the run's folder.
+#   - /workspace, empty and root's, where the helper mounts the run's folder;
+#   - a desktop, with nothing started: Xvfb and xfwm4 (with dbus-run-session, which xfconf's packages bring) and
+#     xsetroot (x11-xserver-utils, the desktop's background), which the provider starts through computerd as the tool
+#     user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor,
+#     Firefox ESR, and xdotool. computerd's apps group lists and opens them by their desktop files. No VNC server comes
+#     with it. One image serves a sandbox and a desktop (an Agent37 desktop starts from it too).
 #
 # No sudo and no sudoers file: the image's user is root, so the provider's own exec (Daytona's toolbox, Modal's exec,
 # E2B's commands as root) runs the helper as root, and the tool user has no way to root. The build fails if the base
@@ -45,6 +50,18 @@ RUN set -eu; \
     groupadd --gid 2510 agentrun-tool; \
     useradd --uid 2510 --gid 2510 --no-create-home --home-dir /tmp --shell /bin/sh agentrun-tool; \
     install -d -o root -g root -m 0755 /workspace
+
+# The desktop: Xvfb and xfwm4, which the provider starts through computerd as the tool user on :0, and the apps an agent
+# opens. Each program and each app's desktop file is checked here. It comes before the sudo guard below, so a package
+# that brought sudo would be taken away and checked gone there (a check here would refuse E2B's build, whose builder adds
+# sudo before these steps).
+RUN set -eu; \
+    apt-get update -qq; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+      xvfb xfwm4 x11-xserver-utils xfce4-terminal mousepad firefox-esr xdotool fonts-dejavu-core adwaita-icon-theme >/dev/null; \
+    rm -rf /var/lib/apt/lists/*; \
+    for x in Xvfb xfwm4 dbus-run-session xsetroot xfce4-terminal mousepad firefox-esr xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done; \
+    for app in org.xfce.mousepad xfce4-terminal firefox-esr; do [ -f "/usr/share/applications/$app.desktop" ] || { echo "the image has no desktop file $app.desktop" >&2; exit 1; }; done
 
 COPY agentrun-archil /usr/local/sbin/agentrun-archil
 

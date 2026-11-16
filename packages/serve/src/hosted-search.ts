@@ -1,19 +1,19 @@
 // pi's native web_search: ONE standalone request to the run's own model provider with its hosted search tool, as
 // Claude's CLI runs its WebSearch. The request is one user turn carrying the query and a short instruction to answer
-// with sources, on the run's model and key, sent through the run's models (marked and capped as each of its requests is:
-// request-start.ts, cap.ts), with the provider's hosted tool added to the body (pi-ai's onPayload) and nothing else:
+// with sources, on the run's model and key, sent through the run's models (the session's port under a side key labelled
+// web_search, booked on the run's ledger), with the provider's hosted tool added to the body (pi-ai's onPayload) and nothing else:
 // Anthropic's `web_search_20250305` with at most 5 searches, or OpenAI's Responses `web_search`. pi-ai keeps none of the
-// provider's search blocks, so the results, their citations and the search count are read from the provider's own
+// provider's search blocks, so the results and their citations are read from the provider's own
 // events (onProviderStreamEvent). Nothing of it enters the run's conversation but the tool's answer, so nothing needs
-// replaying. A `pause_turn` (Anthropic pausing a long search turn) answers what it has; nothing is retried.
+// replaying. A `pause_turn` (Anthropic pausing a long search turn) answers what it has; nothing is retried. A provider's
+// answer that the run's key is out of quota (QUOTA) or rate-limited (RATE) is said to the run's breaker (web-search.ts):
+// no more searches in that run, or none until the provider's wait has passed.
 //
-// It is booked through the run's request-cost path as a side request labelled web_search: its tokens at the model's
-// price plus each search at $10 per 1,000 (Anthropic's per search, OpenAI's per call). Under the run's cap its input is
-// held at its context plus HOSTED_SEARCH_ALLOWANCE_TOKENS.
+// Its price and search fee are the session proxy's to book: the pi runner's policy (runner/adapters/pi.ts) holds its input at its
+// context plus HOSTED_SEARCH_ALLOWANCE_TOKENS and its fee at the searches the body allows.
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
 import { clip, TITLE_CAP } from "./web-fetch-direct.js";
-import { sideRequests } from "./cap.js";
-import { ANSWER_MAX, type Hit, type Search, snippetOf } from "./web-search.js";
+import { ANSWER_MAX, type Hit, type Limit, type Search, type Searched, snippetOf } from "./web-search.js";
 
 export const HOSTED_MAX_USES = 5;
 /** One search's results billed as input: about 25,000 tokens, a working estimate. */
@@ -27,14 +27,25 @@ export const OPENAI_SEARCH_TOOL = Object.freeze({ type: "web_search", external_w
 /** OpenAI's hosted search has no per-tool limit: the Responses API's `max_tool_calls` caps the built-in tool calls of the
  *  request at the HOSTED_MAX_USES its fee is reserved for, as Anthropic's tool's `max_uses` does. */
 export const OPENAI_SEARCH_LIMIT = Object.freeze({ max_tool_calls: HOSTED_MAX_USES });
-/** $10 per 1,000 searches (Anthropic) or calls (OpenAI). */
-export const SEARCH_USD = 0.01;
-/** OpenAI's models that bill each call's search content as a fixed block of 8,000 input tokens apart from the response's
- *  usage: the block is added to the fee at the model's input price. */
-const BLOCK_BILLED = /^gpt-(?:4o|4\.1)-mini(?:-|$)/;
 const ANSWER_TOKENS = 2_048;
 /** As Exa's and Parallel's searches stop. */
 const TIMEOUT_MS = 60_000;
+/** A provider's answer that the run's key is out of quota, by the status or the error code it names: a 402, Anthropic's
+ *  billing_error, OpenAI's insufficient_quota (which OpenAI answers as a 429, so it is read first). */
+const QUOTA = /(?<![\w.])402(?![\w.])|\b(?:billing_error|insufficient_quota)\b/;
+/** A provider's answer that the run's key is rate-limited: a 429, Anthropic's rate_limit_error, OpenAI's
+ *  rate_limit_exceeded, Anthropic's hosted search's own too_many_requests. Never its other failures (an overload, a 5xx),
+ *  which pass. */
+const RATE = /(?<![\w.])429(?![\w.])|\b(?:rate_limit_error|rate_limit_exceeded|too_many_requests)\b/;
+/** The limit `said` names, with the Retry-After `error` carries when the provider's client kept its headers (none: the
+ *  breaker's 60 s). */
+function limitOf(said: string, error?: unknown): Limit | undefined {
+  if (QUOTA.test(said)) return { kind: "quota" };
+  if (!RATE.test(said)) return undefined;
+  const headers = (error as { headers?: unknown } | undefined)?.headers;
+  const header = headers instanceof Headers ? headers.get("retry-after") : headers && typeof headers === "object" ? (headers as Record<string, unknown>)["retry-after"] : undefined;
+  return { kind: "rate", ...(typeof header === "string" && header ? { retryAfter: header } : {}) };
+}
 
 /** What a hosted search asks: the run's models a search request goes through (on the runner, the session's port: its
  *  proxy, policy, key, price and cap), handed to each search by its run, never kept per process. */
@@ -52,25 +63,26 @@ function reader(anthropic: boolean) {
     const hit = hits.get(url) ?? {};
     hits.set(url, { ...found, ...Object.fromEntries(Object.entries(hit).filter(([, value]) => value)) });
   };
-  let reported: number | undefined;
-  let calls = 0;
   let failed: string | undefined;
+  // Every search's error code, kept whether or not another search found results: a later search rate-limited after an
+  // early one's hits still says the run's key is limited.
+  const codes: string[] = [];
   const anthropicEvent = (event: Event) => {
     const block = event.content_block;
-    if (event.type === "content_block_start" && block?.type === "server_tool_use" && block.name === "web_search") calls += 1;
     if (event.type === "content_block_start" && block?.type === "web_search_tool_result") {
-      if (!Array.isArray(block.content)) failed = text((block.content as { error_code?: unknown } | undefined)?.error_code) ?? "the search failed";
+      if (!Array.isArray(block.content)) {
+        const code = text((block.content as { error_code?: unknown } | undefined)?.error_code);
+        if (code) codes.push(code);
+        failed = code ?? "the search failed";
+      }
       for (const result of list(block.content)) if (result.type === "web_search_result") add(result.url, { title: text(result.title), published: text(result.page_age) });
     }
     const citation = event.delta?.type === "citations_delta" ? (event.delta.citation as Record<string, unknown> | undefined) : undefined;
     if (citation) add(citation.url, { title: text(citation.title), snippet: text(citation.cited_text) });
-    const used = (event.usage?.server_tool_use as { web_search_requests?: unknown } | undefined)?.web_search_requests;
-    if (event.type === "message_delta" && typeof used === "number") reported = used;
   };
   const openaiEvent = (event: Event) => {
     const item = event.item;
     if (event.type === "response.output_item.done" && item?.type === "web_search_call") {
-      calls += 1;
       for (const source of list((item.action as { sources?: unknown } | undefined)?.sources)) add(source.url, {});
     }
     if (event.type === "response.output_item.done" && item?.type === "message") {
@@ -84,14 +96,11 @@ function reader(anthropic: boolean) {
         }
       }
     }
-    const used = ((event.response?.tool_usage as { web_search?: { num_requests?: unknown } } | undefined)?.web_search)?.num_requests;
-    if ((event.type === "response.completed" || event.type === "response.incomplete") && typeof used === "number") reported = used;
   };
   return {
     event: (event: unknown) => (anthropic ? anthropicEvent : openaiEvent)((event ?? {}) as Event),
-    /** The searches the provider reported, else the search calls its answer held. */
-    searches: () => reported ?? calls,
     failed: () => (hits.size ? undefined : failed),
+    codes: (): readonly string[] => codes,
     hits: (): Hit[] => [...hits].map(([url, hit]) => ({ url, title: clip(hit.title ?? "", TITLE_CAP), snippet: snippetOf(hit.snippet ?? ""), ...(hit.published ? { published: hit.published } : {}) })),
   };
 }
@@ -99,19 +108,26 @@ function reader(anthropic: boolean) {
 /** `query` searched by `ref`'s provider (`provider/model-id`, the model the server resolved web_search on) through the
  *  run's models (`models`: its own, handed by the run; none, no model to search on), at most `n` results: a Search. */
 export async function hostedSearch(query: string, n: number, ref: string | undefined, signal: AbortSignal | undefined, models: SearchModels | undefined): Promise<Search> {
+  return (await hostedSearched(query, n, ref, signal, models)).answer;
+}
+
+/** hostedSearch, and the limit the provider answered for the run's key, if any (QUOTA, RATE). */
+export async function hostedSearched(query: string, n: number, ref: string | undefined, signal: AbortSignal | undefined, models: SearchModels | undefined): Promise<Searched> {
+  const failed = (error: string, said = "", thrown?: unknown): Searched => {
+    const limit = limitOf(said, thrown);
+    return { answer: { error }, ...(limit ? { limit } : {}) };
+  };
   const slash = ref?.indexOf("/") ?? -1;
   const provider = ref && slash > 0 ? ref.slice(0, slash) : undefined;
   const id = ref && slash > 0 ? ref.slice(slash + 1) : undefined;
   // The name as written, else Anthropic's own id for it (dots as dashes, as claude-agent prepares a dotted name:
   // provider.ts anthropicModelId), the one the run's models hold.
   const model = models && provider && id ? (models.getModel(provider, id) ?? (provider === "anthropic" ? models.getModel(provider, id.replaceAll(".", "-")) : undefined)) : undefined;
-  if (!models || !model) return { error: `web_search has no model to search on in this run${ref ? ` (${ref})` : ""}` };
+  if (!models || !model) return failed(`web_search has no model to search on in this run${ref ? ` (${ref})` : ""}`);
   const anthropic = model.api === "anthropic-messages";
-  if (!anthropic && model.api !== "openai-responses") return { error: `web_search: ${ref} has no hosted web search here` };
+  if (!anthropic && model.api !== "openai-responses") return failed(`web_search: ${ref} has no hosted web search here`);
   const read = reader(anthropic);
   const context: Context = { messages: [{ role: "user", content: [{ type: "text", text: `Search the web for: ${query}\n\nAnswer briefly from what the search finds, and name each source by its URL.` }], timestamp: Date.now() }] };
-  const block = BLOCK_BILLED.test(model.id) ? (8_000 * (model.cost?.input ?? 0)) / 1e6 : 0;
-  sideRequests.set(context, { label: "web_search", extraInputTokens: HOSTED_SEARCH_ALLOWANCE_TOKENS, maxFeeUsd: HOSTED_MAX_USES * (SEARCH_USD + block), feeUsd: () => read.searches() * (SEARCH_USD + block) });
   let answer: AssistantMessage;
   try {
     answer = await models.completeSimple(model, context, {
@@ -127,11 +143,16 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
       onProviderStreamEvent: (event) => read.event(event),
     });
   } catch (error) {
-    return { error: `the provider's search failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+    const said = String((error as Error)?.message ?? error);
+    return failed(`the provider's search failed: ${said.slice(0, 300)}`, `${(error as { status?: unknown })?.status ?? ""} ${said}`, error);
   }
-  if (answer.stopReason === "error" || answer.stopReason === "aborted") return { error: answer.stopReason === "aborted" ? "the search was stopped" : `the provider's search failed: ${(answer.errorMessage ?? "no detail").slice(0, 300)}` };
-  const failed = read.failed();
-  if (failed) return { error: `the provider's search failed: ${failed}` };
+  if (answer.stopReason === "aborted") return failed("the search was stopped");
+  if (answer.stopReason === "error") return failed(`the provider's search failed: ${(answer.errorMessage ?? "no detail").slice(0, 300)}`, answer.errorMessage);
+  const refused = read.failed();
+  if (refused) return failed(`the provider's search failed: ${refused}`, refused);
   const said = answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("").trim();
-  return { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) };
+  // Results found, and a later search of the same request failing all the same (too_many_requests after hits): the run
+  // gets the results, and the breaker the limit its codes name (no Retry-After reaches here: 60 s).
+  const limit = limitOf(read.codes().join(" "));
+  return { answer: { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) }, ...(limit ? { limit } : {}) };
 }

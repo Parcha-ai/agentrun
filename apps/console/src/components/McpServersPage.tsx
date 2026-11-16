@@ -1,15 +1,20 @@
 import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { pasteFromClipboard } from "@/lib/paste";
 import { Plug } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
+import { ToolTable } from "@/components/ToolSettings";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Banner } from "@/components/ui/banner";
 import { Input } from "@/components/ui/field";
-import type { Client } from "@/lib/client";
+import { Switch } from "@/components/ui/switch";
+import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import { type ComposioTools, GITHUB_MCP_URL, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, PREVIEW_SCOPE_NOTE, signInFailure } from "@/lib/mcp";
+import { ownSettings, type ToolChoice } from "@/lib/toolSettings";
+import type { ComposioTriggers, Permission, ToolSettings } from "@/lib/v2";
+import { type ComposioTools, GITHUB_MCP_URL, type McpAdd, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, type McpSource, PREVIEW_SCOPE_NOTE, signInFailure, SOURCE_LABEL } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
@@ -26,36 +31,77 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
  *  read, and cleared once sent to be kept: every credential is kept sealed under the server's seal key. `signIn`, the
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
 /** `writable`: this session may type a credential (session.secrets_writable); `whyNot`, why not when it may not. */
-type Add = { name: string; auth?: "github_app" };
-export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; add?: Add; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
+type Add = McpAdd;
+/** `choices`: capabilities' tools with a provider choice, so a save of the server's tool settings sends no default
+ *  provider back as if picked. */
+export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", open = (url) => location.assign(url), choices = [] }: { v2: Client; signIn?: SignIn; add?: Add; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void; choices?: readonly ToolChoice[] }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
+  // This server's tool settings (GET /v2/settings/tools): each saved server's Allow reads and its tools' permissions. Not
+  // read (a token without the right, an older server): the tools list without them.
+  const [settings, setSettings] = useState<ToolSettings | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsProblem, setSettingsProblem] = useState<{ server: string; problem: Problem } | null>(null);
   const [loadError, setLoadError] = useState<Problem | null>(null);
+  // A template's Apply sent the person here to set up a server it needs: a Composio one opens the Composio form with its
+  // toolkit and actions filled (the key is a credential, so only where this session may type one), any other the add form.
+  const composioAdd = add?.preset === "composio" ? add : undefined;
   // The open form: a new server, or a saved one; `problem`, a saved row's refusal it opens with (its sign-in needs a
-  // Client ID), so the form keeps that guidance. `add`: a template's Apply sent the person here to set up the server it
-  // needs, so the add form opens with its name filled.
-  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add ? { add } : null);
-  // The form follows the `add` param on every location change: Back to a setup URL opens it again, with its fields reset.
-  const addName = add?.name;
-  const addAuth = add?.auth;
-  const seenAdd = useRef(`${addName ?? ""}|${addAuth ?? ""}`);
+  // Client ID), so the form keeps that guidance. `add`: the add form opens with its name filled.
+  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add && !composioAdd ? { add } : null);
+  // The Composio form, open (true), open filled from a template's need (its `add`), or closed.
+  const [composio, setComposio] = useState<boolean | Add>(composioAdd && writable ? composioAdd : false);
+  // What a delete says after its row is gone: a Composio server that could not be removed there is the owner's to remove.
+  const [removedNote, setRemovedNote] = useState<string | null>(null);
+  // The forms follow the `add` param on every location change: Back to a setup URL opens one again, with its fields reset.
+  const addKey = add ? JSON.stringify(add) : "";
+  const seenAdd = useRef(addKey);
   useEffect(() => {
-    const now = `${addName ?? ""}|${addAuth ?? ""}`;
-    if (now === seenAdd.current) return;
-    seenAdd.current = now;
-    setForm(addName ? { add: { name: addName, ...(addAuth ? { auth: addAuth } : {}) } } : null);
-  }, [addName, addAuth]);
-  const [composio, setComposio] = useState(false);
+    if (addKey === seenAdd.current) return;
+    seenAdd.current = addKey;
+    const next: Add | undefined = addKey ? JSON.parse(addKey) : undefined;
+    setForm(next && next.preset !== "composio" ? { add: next } : null);
+    setComposio(next?.preset === "composio" && writable ? next : false);
+  }, [addKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const asked = useRef(0);
+  const page = useRef<HTMLDivElement>(null);
   const load = () => {
     const n = ++asked.current;
     v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { v2.toolSettings().then(setSettings, () => setSettings(null)); }, [v2]);
+  // A change of one server's settings, saved as the Tools page saves: the map read as it is now, the change made to it,
+  // and every other key and field written back as it was (a PUT replaces the whole map). The servers are read again
+  // after it: each tool's permission in force is the server's word. One at a time: a second save started while one is out
+  // could write back the map as it was before the first, and undo it. Held outside React's state, so two changes in the
+  // same tick are one save; every control that saves is disabled while one is out.
+  const saving = useRef(false);
+  const saveSettings = async (server: string, edit: (current: ToolSettings) => ToolSettings) => {
+    if (saving.current) return;
+    saving.current = true;
+    setSettingsBusy(true); setSettingsProblem(null);
+    try {
+      const now = await v2.toolSettings();
+      setSettings(await v2.saveToolSettings(edit(ownSettings(now, choices))));
+      load();
+    } catch (e) { setSettingsProblem({ server, problem: mcpProblem(e) }); }
+    saving.current = false;
+    setSettingsBusy(false);
+  };
+  // A template's setup link fills a name no saved server has: its own, else the first free `<name>-<n>`, so saving never
+  // replaces a server of that name (an older one that matches no need, say). Chosen once the list is read, and kept for
+  // that link: the server it saves is never counted against it.
+  const named = useRef<{ key: string; name: string } | null>(null);
+  if (add && servers && named.current?.key !== addKey) named.current = { key: addKey, name: freeName(add.name, servers) };
+  // The need's toolkit stays the link's own (a url need's is its name) when the name moves to a free one.
+  const filled = (a: Add): Add => (named.current?.key === JSON.stringify(a) && named.current.name !== a.name ? { ...a, toolkit: a.toolkit ?? a.name, name: named.current.name } : a);
+  // A form a link filled waits for the list (or its failure), so the name it shows is the one it saves.
+  const listed = servers !== null || loadError !== null;
   // The outcome is said once: a reload of the page does not say it again.
   useEffect(() => { if (signIn && location.hash.includes("sign_in=")) history.replaceState(null, "", "#/settings/mcp"); }, [signIn]);
   const startSignIn = async (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => open((await v2.startMcpSignIn(name, body)).authorization_url);
   return (
-    <div className="h-full overflow-auto">
+    <div ref={page} className="h-full overflow-auto">
       <div className={settingsPageClass}>
         <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
@@ -69,6 +115,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             </p>
           )}
           {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {removedNote && <p className="border border-warning/50 p-4 text-body text-warning-text" role="status">{removedNote}</p>}
           {loadError && (
             <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
               <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
@@ -76,16 +123,17 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
           )}
           <SettingsSection title="Servers" aside={!form && !composio && (
             <>
-              <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>
               <Button size="sm" disabled={!writable} onClick={() => setComposio(true)}>Add from Composio</Button>
+              <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>
             </>
           )}>
-          {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-          {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
-          {composio && <ComposioForm v2={v2} onClose={() => setComposio(false)} onSaved={load} />}
-          {servers && (servers.length
-            ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
-            : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
+        {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
+        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
+        {servers && (servers.length
+          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} settings={settings} settingsBusy={settingsBusy} settingsProblem={settingsProblem?.server === s.name ? settingsProblem.problem : null} onSettings={(edit) => void saveSettings(s.name, edit)} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })}
+            onPaste={() => void pasteFromClipboard(() => setForm({ saved: s }), () => page.current?.querySelector<HTMLInputElement>('input[name="mcp-token"], input[name="mcp-header-value-0"]') ?? null)} onChanged={load} onDeleted={(note) => { setRemovedNote(note ?? null); load(); }} />)}</ul>
+          : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
           </SettingsSection>
           <PrivateHosts v2={v2} />
         </div>
@@ -98,7 +146,14 @@ const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
 
-function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onChanged: () => void }) {
+/** Each tool's key in the tool settings (`mcp:<server>/<tool>`), and the server's wildcard. */
+const keyOf = (server: string, tool: string) => `mcp:${server}/${tool}`;
+const ALL_PERMISSIONS: Permission[] = ["allow", "ask", "deny"];
+
+function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onSettings, writable, signIn, onChange, onPaste, onChanged, onDeleted }: {
+  v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onPaste: () => void; onChanged: () => void; onDeleted: (note?: string) => void;
+  settings: ToolSettings | null; settingsBusy: boolean; settingsProblem: Problem | null; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [note, setNote] = useState<McpRefresh | null>(null);
@@ -112,17 +167,22 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       <div className="flex flex-wrap items-start gap-3">
         <Plug className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
+          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}
+            {/* What a template's MCP need is matched on: where its tools come from and the toolkit they are. */}
+            {s.source && <><Chip tone="muted">{SOURCE_LABEL[s.source]}</Chip><span data-toolkit className="font-mono text-small text-muted-foreground">{s.toolkit ? `toolkit ${s.toolkit}` : "no toolkit"}</span></>}</p>
           <p className="mt-1.5 break-all font-mono text-small text-muted-foreground">{s.url}</p>
           {s.auth.type === "github_app" && <p className="mt-1 font-mono text-small text-muted-foreground">Signed with this server's GitHub App: a token narrowed to the run's repository is made for each run{s.auth.headers?.length ? ` · headers ${s.auth.headers.join(", ")}` : ""}</p>}
           {oauth && s.oauth &&<p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
+          {settings && <AllowReads server={s} settings={settings} busy={settingsBusy} onSettings={onSettings} />}
+          {settingsProblem && <div className="mt-2"><Said problem={settingsProblem} /></div>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-small">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
-            <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-small">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
+            <div className="mt-2"><ServerTools server={s} settings={settings} busy={settingsBusy} onSettings={onSettings} /></div>
           </details>
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
-          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : () => onChange()} /></ul>}
+          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onPaste} /></ul>}
+          {s.source === "composio" && <AppTriggers v2={v2} server={s.name} writable={writable} />}
           {changes && <p className="mt-2 font-mono text-small" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
@@ -138,12 +198,135 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       {confirm && (
         <div role="alertdialog" aria-label={`Delete ${s.name}`} className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
           <p className="min-w-0 flex-1 text-body">Delete {s.name}? Its credential goes with it, and an agent that grants its tools can't call them.</p>
-          <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { await v2.deleteMcpServer(s.name); onChanged(); })}>Delete</Button>
+          <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { onDeleted((await v2.deleteMcpServer(s.name))?.composio?.note); })}>Delete</Button>
           <Button size="sm" onClick={() => setConfirm(false)}>Keep</Button>
         </div>
       )}
       {problem && <div className="mt-3"><Said problem={problem} />{problem.needsClient && writable && <Button className="mt-2" size="sm" variant="primary" onClick={() => onChange(problem)}>Enter a Client ID</Button>}</div>}
     </li>
+  );
+}
+
+/** Whether Composio has a trigger's instance on, in a row's words. */
+const ON_COMPOSIO: Record<ComposioTriggers["triggers"][number]["on_composio"], string> = { on: "on at Composio", off: "off at Composio", missing: "Composio no longer has it", unknown: "Composio didn't say" };
+
+/** A saved Composio server's triggers (GET .../composio/triggers): each one that uses it, linked, with its event and
+ *  whether its instance is on at Composio; where the project's webhook subscription sends its events; and Rotate secret
+ *  (asked first), which shows no secret: Composio makes it and this server keeps it. A server too old to answer (404)
+ *  shows none of it. */
+function AppTriggers({ v2, server, writable }: { v2: Client; server: string; writable: boolean }) {
+  const [read, setRead] = useState<ComposioTriggers | null>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
+  const [hidden, setHidden] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [rotated, setRotated] = useState(false);
+  useEffect(() => {
+    let live = true;
+    v2.composioTriggers(server).then((r) => { if (live) setRead(r); }, (e) => {
+      if (!live) return;
+      if (e instanceof ClientError && e.status === 404) setHidden(true);
+      else setProblem(mcpProblem(e));
+    });
+    return () => { live = false; };
+  }, [v2, server]);
+  if (hidden) return null;
+  const rotate = async () => {
+    setAsking(false); setBusy(true); setProblem(null); setRotated(false);
+    try { await v2.rotateComposioSecret(server); setRotated(true); } catch (e) { setProblem(mcpProblem(e)); }
+    setBusy(false);
+  };
+  const sub = read?.subscription;
+  return (
+    <section data-composio-triggers aria-label={`${server}'s triggers`} className="mt-3 border p-3">
+      <p className="caps text-label text-muted-foreground">Triggers</p>
+      {!read ? (!problem && <p className="mt-1 font-mono text-small text-muted-foreground">Reading its triggers</p>) : (
+        <>
+          {read.triggers.length ? (
+            <ul className="mt-2 space-y-1">
+              {read.triggers.map((t) => (
+                <li key={t.id} data-trigger={t.id} className="flex flex-wrap items-center gap-x-2 text-body">
+                  <a href={`#/triggers/${encodeURIComponent(t.id)}`} className="font-semibold hover:underline">{t.name}</a>
+                  <span className="font-mono text-small text-muted-foreground">{t.event}</span>
+                  <span className={`font-mono text-small ${t.on_composio === "missing" ? "text-warning-text" : "text-muted-foreground"}`}>· {ON_COMPOSIO[t.on_composio]}{t.enabled ? "" : " · paused here"}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1 text-body text-muted-foreground">No trigger uses it yet. <a href="#/triggers/new-composio" className="underline underline-offset-2">New app trigger</a></p>
+          )}
+          {read.composio_error && <p className="mt-2 text-small text-warning-text">Composio didn't answer: {read.composio_error}</p>}
+          {sub && (sub.ours
+            ? <p className="mt-2 text-small text-muted-foreground">The project's webhook subscription sends its events here.</p>
+            : <p className="mt-2 break-all text-small text-muted-foreground">The project's webhook subscription sends its events to <span className="font-mono">{sub.webhook_url}</span>, not here: a new trigger asks before it moves it.</p>)}
+          {sub?.ours && writable && !asking && <Button className="mt-2" size="sm" disabled={busy} onClick={() => setAsking(true)}>Rotate secret</Button>}
+          {asking && (
+            <div role="alertdialog" aria-label="Rotate the subscription's secret?" className="mt-2 flex flex-wrap items-center gap-3 border bg-card p-3">
+              <p className="min-w-0 flex-1 text-body">Rotate the subscription's secret? Composio makes a new one and this server keeps it; a delivery signed with the old one is refused from then on.</p>
+              <Button size="sm" variant="primary" onClick={() => void rotate()}>Yes, rotate</Button>
+              <Button size="sm" onClick={() => setAsking(false)}>Keep</Button>
+            </div>
+          )}
+          {rotated && <p className="mt-2 text-small text-success-text" role="status">Rotated: Composio signs with the new secret from now on.</p>}
+        </>
+      )}
+      {problem && <div className="mt-2"><Said problem={problem} /></div>}
+    </section>
+  );
+}
+
+/** A saved server's Allow reads: one switch, saved at once on its wildcard (`mcp:<server>/*`'s allow_reads), that lets each
+ *  of its read-only tools run with no one asked. A deny, a tool's own setting and an agent's own ask still hold. */
+function AllowReads({ server: s, settings, busy, onSettings }: { server: McpServer; settings: ToolSettings; busy: boolean; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void }) {
+  const wildcard = keyOf(s.name, "*");
+  const on = settings[wildcard]?.allow_reads === true;
+  const reads = s.tools.filter((t) => t.effect === "read").length;
+  const id = `allow-reads-${s.name}`;
+  const words = `${id}-words`;
+  const flip = (next: boolean) => onSettings((current) => {
+    const { [wildcard]: old, ...rest } = current;
+    const { allow_reads: _gone, ...kept } = old ?? {};
+    const now = next ? { ...kept, allow_reads: true as const } : kept;
+    return Object.keys(now).length ? { ...rest, [wildcard]: now } : rest;
+  });
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2">
+        <Switch checked={on} onChange={flip} busy={busy} labelledBy={id} />
+        <span id={id} className="caps text-small font-semibold">Allow reads</span>
+      </div>
+      <p id={words} className="mt-1 text-small text-muted-foreground">{reads} of {s.tools.length} tool{s.tools.length === 1 ? "" : "s"} read-only, as the server marks them: {on ? "they run without asking" : "on, they run without asking"}. Writes keep their permission.</p>
+    </div>
+  );
+}
+
+/** A saved server's tools, each with its effect's mark and what a call costs; and, where this server's tool settings
+ *  read, its permission here (`mcp:<server>/<tool>`), saved at once. A row's fallback is what applies with no setting of
+ *  its own: allow where the server's read says Allow reads would let it run with no setting of its own
+ *  (`fallback_allow_reads`, the server's word: never worked out here), named "allow reads", even while its own setting
+ *  asks, so a choice of allow removes that setting; else the server's wildcard, else the owner's default. A destructive tool's allow takes
+ *  a second click. */
+function ServerTools({ server: s, settings, busy, onSettings }: { server: McpServer; settings: ToolSettings | null; busy: boolean; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void }) {
+  const wildcard = settings?.[keyOf(s.name, "*")];
+  const byKey = new Map(s.tools.map((t) => [keyOf(s.name, t.name), t]));
+  const rows = s.tools.map((t) => ({
+    name: keyOf(s.name, t.name),
+    ...(settings ? { gate: { name: keyOf(s.name, t.name), permission: t.permission ?? "ask", default_permission: t.default_permission ?? "ask", permissions: t.permissions?.length ? t.permissions : ALL_PERMISSIONS } } : {}),
+  }));
+  const detail = (tool: string) => {
+    const price = s.prices?.[tool];
+    return price !== undefined ? `$${price} a call` : s.not_metered?.includes(tool) ? "not metered" : null;
+  };
+  return (
+    <ToolTable label={`${s.name}'s tools`} rows={rows} settings={settings ?? {}} busy={busy} issues={{}}
+      fallbackOf={() => ""} resolvesOf={() => null} onEdit={onSettings}
+      labelOf={(name) => byKey.get(name)?.name ?? name}
+      detailOf={(name) => detail(byKey.get(name)?.name ?? "")}
+      effectOf={(name) => byKey.get(name)?.effect}
+      confirmAllowOf={(name) => byKey.get(name)?.effect === "destructive"}
+      refused={(_, permission) => permission === "deny"}
+      fallbackWordOf={(name) => (byKey.get(name)?.fallback_allow_reads ? "allow reads" : undefined)}
+      permissionFallbackOf={(g) => (byKey.get(g.name)?.fallback_allow_reads ? "allow" : wildcard?.permission ?? g.default_permission)} />
   );
 }
 
@@ -185,7 +368,7 @@ function PrivateHosts({ v2 }: { v2: Client }) {
       {hosts && (
         <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
           <Input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" />
-          <Button type="submit" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
+          <Button type="submit" size="sm" variant="primary" disabled={busy || !draft.trim()}>Allow</Button>
         </form>
       )}
       {problem && <Said problem={problem} />}
@@ -193,14 +376,30 @@ function PrivateHosts({ v2 }: { v2: Client }) {
   );
 }
 
+/** A saved MCP server's name: at most this many characters (the server's MCP_SERVER_NAME). */
+const MAX_SERVER_NAME = 32;
+
+/** `name` if no server of `servers` has it, else the first `<name>-<n>` none has (n from 2), `name` cut (and any dash it
+ *  then ends on dropped) so the whole stays within MAX_SERVER_NAME. */
+export function freeName(name: string, servers: readonly Pick<McpServer, "name">[]): string {
+  const taken = new Set(servers.map((s) => s.name));
+  if (!taken.has(name)) return name;
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`;
+    const free = `${name.slice(0, MAX_SERVER_NAME - suffix.length).replace(/-+$/, "")}${suffix}`;
+    if (!taken.has(free)) return free;
+  }
+}
+
 /** Settings → MCP servers → Add from Composio: Composio is an MCP server like any other. The key and a toolkit load that
  *  toolkit's actions, the ones ticked are what the saved server grants, and the server saves it as an MCP server with the
  *  key sealed. A toolkit that needs your account answers a link to Composio's page to connect it. The key is an
- *  uncontrolled input, never filled from a read and cleared once sent. */
-function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => void; onSaved: () => void }) {
+ *  uncontrolled input, never filled from a read and cleared once sent. `add`: a template's need it opened for, its name
+ *  and toolkit filled and, once its actions load, the ones the template uses ticked. */
+function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; onClose: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
-  const [toolkit, setToolkit] = useState("");
-  const [name, setName] = useState("");
+  const [toolkit, setToolkit] = useState(add?.toolkit ?? "");
+  const [name, setName] = useState(add?.name ?? "");
   const [listed, setListed] = useState<ComposioTools | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [after, setAfter] = useState<{ connect?: string; notServed?: string[] } | null>(null);
@@ -216,7 +415,10 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
     const mine = ++asked.current;
     setListed(null); setPicked([]);
     const answer = await v2.composioTools(key(), toolkit.trim().toLowerCase());
-    if (mine === asked.current) setListed(answer);
+    if (mine !== asked.current) return;
+    setListed(answer);
+    // The template's actions ticked, those of them the toolkit lists, while the toolkit is still the one it needs.
+    if (add?.tools && answer.toolkit === add.toolkit) setPicked(answer.tools.map((t) => t.slug).filter((slug) => add.tools!.includes(slug)));
   });
   const save = () => act(async () => {
     const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
@@ -239,6 +441,7 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
     <form ref={form} autoComplete="off" onSubmit={(e) => { e.preventDefault(); if (listed && picked.length && name.trim()) void save(); }} aria-label="Add from Composio" className="space-y-4 border bg-card p-4"
       onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") changed(); }}>
       <p className="text-small text-muted-foreground">Composio runs the toolkit's actions for you. This saves an MCP server that grants only the actions you tick, with your Composio key sealed like any credential.</p>
+      {add?.tools && <p role="note" className="text-small text-muted-foreground">A template uses {add.tools.join(", ")}: enter your key and load the actions, and those are ticked.</p>}
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Composio API key</span><Input name="composio-key" {...secret} /></label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
         <Input name="composio-toolkit" value={toolkit} onChange={(e) => { setToolkit(e.target.value); changed(); }} placeholder="github" spellCheck={false} /></label>
@@ -279,6 +482,21 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
   const [url, setUrl] = useState(saved?.url ?? (add?.auth === "github_app" ? GITHUB_MCP_URL : ""));
   const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? add?.auth ?? "none");
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
+  // Where its tools come from and the toolkit they are, which a template's MCP need is matched on. The source is what made
+  // the server, shown and never sent: on the GitHub App's tokens github (its toolkit github), from the Composio preset
+  // composio, else url. The toolkit is the owner's to set; a server a template's url need sent the person here for starts
+  // with that toolkit.
+  const shownSource: McpSource = type === "github_app" ? "github" : saved?.source === "composio" ? "composio" : "url";
+  const [toolkit, setToolkit] = useState(saved?.toolkit ?? (add && !add.auth ? add.toolkit ?? add.name : ""));
+  const shownToolkit = shownSource === "github" ? "github" : toolkit.trim();
+  // What a save sends of it: only a toolkit that differs from the saved server's (a new one: only one said); one on the
+  // GitHub App's tokens sends none.
+  const kind = (): { toolkit?: string | null } => {
+    if (type === "github_app") return {};
+    const named = shownToolkit || null;
+    if (saved) return named !== saved.toolkit ? { toolkit: named } : {};
+    return named ? { toolkit: named } : {};
+  };
   const [preview, setPreview] = useState<McpPreview | null>(null);
   // `given`: the refusal its row opened it with (a sign-in that needs a Client ID), kept until the next try.
   const [problem, setProblem] = useState<Problem | null>(given ?? null);
@@ -312,7 +530,8 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
   const startSignIn = () => act(() => {
     const scopes = value("mcp-scopes").split(/\s+/).filter(Boolean);
     const client = value("mcp-client-id");
-    return signIn(name.trim(), { url: url.trim(), ...(scopes.length ? { scopes } : {}), ...(client ? { client_id: client, ...(value("mcp-client-secret") ? { client_secret: value("mcp-client-secret") } : {}) } : {}) });
+    // Its source and toolkit go with the sign-in: the server writes them for the server the sign-in saves.
+    return signIn(name.trim(), { url: url.trim(), ...(scopes.length ? { scopes } : {}), ...(client ? { client_id: client, ...(value("mcp-client-secret") ? { client_secret: value("mcp-client-secret") } : {}) } : {}), ...kind() });
   });
   const runPreview = () => {
     const asked = edits.current;
@@ -328,18 +547,24 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
     if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
     // No prices are sent: this form sets none, and the server keeps the saved ones for the tools still listed at the same
     // address when a PUT has none.
-    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth()); form.current?.reset(); onSaved(); });
+    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth(), kind()); form.current?.reset(); onSaved(); });
   };
   const canSave = !busy && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-small text-muted-foreground">Saved. {what}</span>;
   return (
     <form ref={form} autoComplete="off" onSubmit={submit} aria-label={saved ? `Change ${saved.name}` : "Add an MCP server"} className="space-y-4 border bg-card p-4"
-      onInput={(e) => { if ((e.target as HTMLInputElement).name !== "mcp-name") edited(); checkSignIn(); }}>
+      onInput={(e) => { if (!["mcp-name", "mcp-toolkit"].includes((e.target as HTMLInputElement).name)) edited(); checkSignIn(); }}>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Name</span>
         <span className="-mt-1 mb-2 block text-small text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
         <Input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} /></label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
         <Input name="mcp-url" value={url} onChange={(e) => { setUrl(e.target.value); if (problem?.needsClient) setProblem(null); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
+      <div className="block"><span className="caps mb-2 block text-small font-semibold">Source</span>
+        <span className="-mt-1 mb-2 block text-small text-muted-foreground">What made it: GitHub App access is GitHub, the Composio preset is Composio, anything else is URL.</span>
+        <span data-mcp-source={shownSource}className="font-mono text-body">{SOURCE_LABEL[shownSource]}</span></div>
+      <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
+        <span className="-mt-1 mb-2 block text-small text-muted-foreground">The name a template gives these tools (mcp:{shownToolkit || "<toolkit>"}/&lt;tool&gt;): applying one uses this server for them.</span>
+        <Input name="mcp-toolkit" value={shownSource === "github" ? "github" : toolkit} readOnly={shownSource === "github"} onChange={(e) => setToolkit(e.target.value)} placeholder="hubspot" spellCheck={false} /></label>
       <fieldset>
         <legend className="caps mb-2 text-small font-semibold">Credential</legend>
         <div className="flex flex-wrap gap-4">
@@ -400,11 +625,11 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
       <div className="flex flex-wrap gap-2">
         {type === "oauth" && !writable ? null
           : type === "oauth" && needsSignIn
-          ? <Button type="submit" size="sm" variant="solid" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
+          ? <Button type="submit" size="sm" variant="primary" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
           : type === "oauth"
-          ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
+          ? <Button type="button" size="sm" variant={saved ? "outline" : "primary"} disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
           : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
-        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant="solid" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
+        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant={problem?.signIn && type !== "oauth" && writable ? "outline" : "primary"} disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>
       </div>
     </form>

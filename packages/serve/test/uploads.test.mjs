@@ -182,12 +182,12 @@ export default function reply(context, faux) {
   assert.equal((await api("POST", "/agents", agent("reader", { tools: ["read"] }))).status, 201);
   const run = await api("POST", "/agents/reader/runs", { input: { content: "Read the notes." }, file_ids: [a.file_id, b.file_id] });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  assert.equal(run.body.file_ids, undefined, "the contract's Run has no file_ids");
+  assert.deepEqual([run.body.input, run.body.file_ids], [{ content: "Read the notes." }, [a.file_id, b.file_id]], "the run serves the input and the files it was started with, in order");
   const work = join(runDir(server.data, run.body.run_id), "work");
   // Copied when the runner claims the run, before its first turn: the run reads them.
   await follow(api, run.body.run_id, ["completed"]);
   const listed = await fileList(api, run.body.run_id);
-  assert.deepEqual(listed.filter((f) => f.path.startsWith("inputs/")).map((f) => [f.path, f.size_bytes]), [["inputs/docs/2026/blob.bin", blob.length], ["inputs/notes.txt", notes.length]]);
+  assert.deepEqual(listed.filter((f) => f.path.startsWith("inputs/")).map((f) => [f.path, f.size_bytes]), [["inputs/docs/2026/blob.bin", blob.length], ["inputs/message.md", Buffer.byteLength("Read the notes.")], ["inputs/notes.txt", notes.length]]);
   const raw = await fetch(`${server.baseUrl}/runs/${run.body.run_id}/files/inputs/docs/2026/blob.bin`, { headers: bearer(server) });
   assert.equal(raw.status, 200);
   assert.ok(Buffer.from(await raw.arrayBuffer()).equals(blob), "binary-safe, read through the run's files");
@@ -266,7 +266,8 @@ test("a name taken already gets the next suffix, the same for the same files in 
     const found = [];
     for (const [path, text] of expected) found.push([path, await readFile(join(work, path), "utf8")]);
     assert.deepEqual(found, expected);
-    assert.deepEqual((await fileList(api, run.body.run_id)).map((f) => f.path).filter((p) => p.startsWith("inputs/")).sort(), expected.map(([p]) => p).sort());
+    // The run's message is beside them, at the one name no upload takes.
+    assert.deepEqual((await fileList(api, run.body.run_id)).map((f) => f.path).filter((p) => p.startsWith("inputs/")).sort(), [...expected.map(([p]) => p), "inputs/message.md"].sort());
   }
   // The rules, alone: the suffix goes before the last extension and keeps a name within 255 bytes.
   assert.deepEqual([suffixed("a.txt", 1), suffixed("a.txt", 2), suffixed("README", 3), suffixed("a.b.c", 2)], ["a.txt", "a-2.txt", "README-3", "a.b-2.c"]);
@@ -355,11 +356,13 @@ test("file_ids naming an unknown, pending or repeated file, or more than max_fil
   const full = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: many.slice(0, MAX_FILES_PER_RUN) });
   assert.equal(full.status, 202, JSON.stringify(full.body));
   await follow(api, full.body.run_id, ["completed"]);
-  assert.equal((await fileList(api, full.body.run_id)).filter((f) => f.path.startsWith("inputs/")).length, MAX_FILES_PER_RUN);
-  // None at all starts as a run with no file_ids does: no inputs folder.
+  // Each file, and the run's message beside them (inputs/message.md).
+  assert.equal((await fileList(api, full.body.run_id)).filter((f) => f.path.startsWith("inputs/")).length, MAX_FILES_PER_RUN + 1);
+  // None at all starts as a run with no file_ids does: its inputs folder holds its message alone.
   const none = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: [] });
   assert.equal(none.status, 202, JSON.stringify(none.body));
-  assert.equal(await stat(join(runDir(server.data, none.body.run_id), "work", "inputs")).catch(() => null), null);
+  await follow(api, none.body.run_id, ["completed"]);
+  assert.deepEqual(await readdir(join(runDir(server.data, none.body.run_id), "work", "inputs")), ["message.md"]);
 });
 
 test("the console's session sends a file's bytes: a PUT to a route marked raw takes any content type from the page's own origin; without it, or from another, it is no credential; nothing else changes", async (t) => {

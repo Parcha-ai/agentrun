@@ -26,7 +26,7 @@ const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { readRun } = await import("../dist/store-reads/runs.js");
 const { metersOverStore, spentOverStore } = await import("../dist/store-reads/cap.js");
-const { costView } = await import("../dist/run-view.js");
+const { costWordsOfView } = await import("../dist/run-view.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -104,15 +104,15 @@ async function bookedTurns(server, row) {
 }
 
 test("a claude-agent run under a small cap parks at it once its booked spend leaves no room: the cap holds on a CLI run", { timeout: 90_000 }, async (t) => {
-  // Five $0.01 tool calls and a $0.01 answer, $0.06 in all, under a $0.025 cap.
-  const { row, view, turns } = await cliRun(t, "claude-agent", "Claude Code makes five cent calls.", { capUsd: 0.025 });
+  // Five $0.01 tool calls and a $0.01 answer, $0.06 in all, under a $0.035 cap.
+  const { row, view, turns } = await cliRun(t, "claude-agent", "Claude Code makes five cent calls.", { capUsd: 0.035 });
   const spent = eight(turns.reduce((sum, turn) => sum + (turn.bookedUsd ?? turn.usd ?? 0), 0));
   assert.equal(row.state, "parked", `the run parks at its cap, never runs on: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
-  // Each call is booked at $0.01. The second is priced warm from the first (the cap's expected mode: the 10 tokens of
-  // input it reported and what the body grew by, and a 1,024-token answer at Sonnet's price), within the $0.015 left, so
-  // it runs; the third needs as much again, more than the $0.005 left, so it is never sent.
+  // Each call is booked at $0.01 and held at its worst case: its whole input uncached (5,000 tokens, then 200 more a
+  // call) and the 1,024-token least answer, about $0.02 at Sonnet's price. The second fits the $0.025 left after the
+  // first, so it runs; the third's worst case passes the $0.015 left, so it is never sent.
   assert.deepEqual([turns.length, spent], [2, 0.02], `two requests ran, each booked at its price: ${JSON.stringify(turns)}`);
-  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.025 cap/, `the park names the booked spend: ${row.summary}`);
+  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.035 cap/, `the park names the booked spend: ${row.summary}`);
   assert.equal(eight(view?.cost?.usd ?? 0), spent, `and its view says that spend, never $0: ${JSON.stringify(view?.cost)}`);
 });
 
@@ -140,7 +140,7 @@ for (const harness of Object.keys(HARNESSES)) {
     assert.deepEqual(usage?.usage, { usd: null, requests: 0, so_far_usd: 0, unpriced: 1 }, `its usage row: unknown: ${JSON.stringify(usage)}`);
     assert.equal(usage.summary, "Cost: unknown, its model's requests were not metered", "in words");
     // As a run still going reads it (no stored cost yet): unknown from its rows, never the $0 before any request.
-    assert.equal(costView(await runTimeline(server, RUN, ctx, { settled: true }), undefined), null, "its live view reads unknown too");
+    assert.equal(costWordsOfView(await runTimeline(server, RUN, ctx, { settled: true }), undefined).usd, null,"its live view reads unknown too");
     assert.equal((await metersOverStore(server, RUN, ctx)).tokens, null, "its /usage tokens meter is unknown, never $0");
     assert.equal(await spentOverStore(server, RUN, ctx), null, "and its spend as the cap reads it");
   });

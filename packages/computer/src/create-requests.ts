@@ -52,7 +52,7 @@ export function specDiffer(asked: ComputerSpec, have: ComputerSpec, { userOf = (
  * fields this provider reads back as they were asked: each one asked, or read back, with another value. A size the
  * spec left out is the vendor's default, so it differs from none. Labels are the provider's to compare, by its own.
  */
-export function readBackDiffer(asked: ComputerSpec, have: ReadBackSpec, fields: ReadonlyArray<"image" | "network" | "user" | "cpus" | "memoryMb" | "pids">): string[] {
+export function readBackDiffer(asked: ComputerSpec, have: ReadBackSpec, fields: ReadonlyArray<"image" | "network" | "user" | "cpus" | "memoryMb" | "pids" | "gpu">): string[] {
 	const sized = new Set(["cpus", "memoryMb", "pids"]);
 	return fields
 		.filter((field) => !(sized.has(field) && asked[field] === undefined) && !isDeepStrictEqual(asked[field], have[field]))

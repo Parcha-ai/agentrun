@@ -16,7 +16,7 @@ export const API = "https://orgo.example/api";
 export const VNC = "vnc-fake-password-0123456789";
 export const DAEMON = "/opt/agentrun/computerd";
 export const LABELS_PATH = "/opt/agentrun/labels.json";
-export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const NO_CAPS = "0000000000000000";
 
 let counter = 0;

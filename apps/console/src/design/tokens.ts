@@ -5,7 +5,7 @@
 export const COLOR_TOKENS = {
   surface: ["background", "card", "muted", "accent", "overlay", "run-error-surface"],
   text: ["foreground", "card-foreground", "muted-foreground", "accent-foreground"],
-  brand: ["primary", "primary-foreground", "primary-text"],
+  brand: ["primary", "primary-foreground", "primary-text", "primary-action-text"],
   tone: ["success", "success-text", "warning", "warning-text", "destructive", "destructive-text", "info", "info-text"],
   line: ["border", "border-strong", "input", "ring"],
   run: ["run-active"],
@@ -51,9 +51,14 @@ export const CONTROL_SIZES = [
   { name: "lg", use: "The one action of an empty page or the sign-in page." },
 ] as const;
 
-/** Text and background pairs that must pass WCAG 2.2 AA (4.5:1), in both themes. `wash`: the tone's fill at 10% over
- *  the page, as a Chip and a Banner use it. */
-export const TEXT_PAIRS: readonly { text: string; on: string; wash?: string }[] = [
+export const SHAPES = [
+  { name: "composer", use: "The integrated build-agent prompt and its actions." },
+  { name: "action", use: "All action buttons, including the unified coding-agent action and chooser." },
+] as const;
+
+/** Text and background pairs that must pass WCAG 2.2 AA (4.5:1), in both themes. `wash`: the tone's fill over the
+ *  surface, at `alpha` (10% by default, as a Chip and a Banner use it). */
+export const TEXT_PAIRS: readonly { text: string; on: string; wash?: string; alpha?: number }[] = [
   ...["background", "card", "muted"].flatMap((on) => ["foreground", "muted-foreground", "primary-text", "success-text", "warning-text", "destructive-text", "info-text"].map((text) => ({ text, on }))),
   { text: "card-foreground", on: "card" },
   { text: "accent-foreground", on: "accent" },
@@ -61,6 +66,7 @@ export const TEXT_PAIRS: readonly { text: string; on: string; wash?: string }[] 
   { text: "background", on: "foreground" },
   { text: "destructive-text", on: "run-error-surface" },
   { text: "primary-text", on: "background", wash: "primary" },
+  ...["background", "card"].flatMap((on) => [0.1, 0.2].map((alpha) => ({ text: "primary-action-text", on, wash: "primary", alpha }))),
   { text: "success-text", on: "background", wash: "success" },
   { text: "warning-text", on: "background", wash: "warning" },
   { text: "destructive-text", on: "background", wash: "destructive" },
