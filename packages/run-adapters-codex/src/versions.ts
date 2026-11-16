@@ -10,6 +10,12 @@ export { CODEX_VERSION };
 /** The install line for the pinned release (npm installs this platform's binary package with it). */
 export const CODEX_INSTALL = `npm install --save-exact @openai/codex@${CODEX_VERSION}`;
 
+/** The input tokens the pinned Codex (0.164.0) sends in its first model request before the agent's own prompt: its own
+ *  instructions and tool definitions. Measured from billing, not counted: a Codex run on gpt-6.1-sol wrote 12,198 tokens
+ *  to the provider's cache on its first request, so about 12,200. The facts' `baseInputTokens`: a save under a cap
+ *  prices a least step on it. Re-measure on a Codex bump. */
+export const CODEX_BASE_INPUT_TOKENS = 12_200;
+
 /**
  * npm's integrity of the pinned launcher and of each platform package (an npm alias of
  * `@openai/codex@<version>-<platform>`), as the registry publishes them. npm checks a download against the lockfile's

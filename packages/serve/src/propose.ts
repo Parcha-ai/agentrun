@@ -7,7 +7,6 @@
 // the snapshot and its bodies when main is the seed (no exec), else one read-only exec of the learning script at that
 // commit. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse (a
 // note holding a secret among them) is never kept anywhere.
-import type { DraftAsk } from "./learn/skills.js";
 import { join } from "node:path";
 import { type Change, checkProposal, type DraftDryRun, draftDryRun, draftFiles, NOTE_BLOCK, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILL_BLOCK, SKILLS_DIR, WORKFLOW_BLOCK, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
@@ -91,8 +90,9 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  seed holds is no change, and `MEMORY.md` is the host's (the checker ignores it). A skill is laid at
  *  `skills/<name>/SKILL.md`; a draft at `workflows/<name>/workflow.json`, with the README.md the host writes from the
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
- *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. */
-export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; notesSeed?: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk; decisions?: DraftDecisions; workflows?: false }): Promise<Proposed> => {
+ *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets; `outputSchema`: the
+ *  agent's, which a draft's dry run holds its answer to (learn/skills.ts draftDryRun). */
+export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; notesSeed?: string; revised?: { workflow: string; base: string }; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; decisions?: DraftDecisions; workflowAdapters?: readonly ("runNode" | "runJudge")[]; workflows?: false; outputSchema?: unknown }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
   // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
   // answer's order; a draft is its two files, given together or not at all. A draft's `example:` line, by its
@@ -115,7 +115,17 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   const draftSkills = given.flat().filter(({ file }) => file.endsWith("/workflow.json")).map(({ file }) => skillOf(file));
   const { snapshot, texts } = await seedAt(input.folder, input.seed, (seedSnapshot) => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file), ...draftSkills, ...activeOf(seedSnapshot)] : []));
   if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
-  const { base: seedBase, kept } = baseOf(snapshot);
+  const { base: seedBase, kept: seedKept } = baseOf(snapshot);
+  // A workflow the compile turn revised from main's text (`revised`) is checked against the commit it read that text at,
+  // not the seed: a change made to it on main before that read is what the revision was written over, and only one after
+  // it is a conflict (its files' `bases` in the proposal, which the merge checks main against). Every other item keeps
+  // the seed.
+  const revisedDir = input.revised && input.revised.base !== input.seed ? `${WORKFLOWS_DIR}/${input.revised.workflow}/` : undefined;
+  const isRevised = (path: string) => revisedDir !== undefined && path.startsWith(revisedDir);
+  const revisedAt = revisedDir ? await seedAt(input.folder, input.revised!.base, () => given.flat().map(({ file }) => file).filter(isRevised)) : undefined;
+  const revisedBase = revisedAt ? baseOf(revisedAt.snapshot) : undefined;
+  const textAt = (file: string) => (revisedAt && isRevised(file) ? revisedAt.texts.get(file) : texts.get(file));
+  const kept = revisedBase ? [...seedKept.filter((file) => !isRevised(file)), ...revisedBase.kept.filter(isRevised)] : seedKept;
   // A later round's notes are checked against the main the earlier rounds merged into (`notesSeed`: a note round 1 added
   // is a supersedes target and a duplicate rule), while a skill's or a draft's files keep `seed` as their conflict base:
   // the run was laid from it, so a file changed on main since is a conflict, never written over.
@@ -128,9 +138,9 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   }));
   const learnedPath = (path: string) => path.startsWith(`${SKILLS_DIR}/`) || path.startsWith(`${WORKFLOWS_DIR}/`);
   const notedBase = baseOf(noted.snapshot).base;
-  const base = { files: [...[...notedBase.files].filter((path) => !learnedPath(path)), ...[...seedBase.files].filter(learnedPath)], active: notedBase.active, rules };
+  const base = { files: [...[...notedBase.files].filter((path) => !learnedPath(path)), ...[...seedBase.files].filter((path) => learnedPath(path) && !isRevised(path)), ...[...(revisedBase?.base.files ?? [])].filter(isRevised)], active: notedBase.active, rules };
   const held = new Set(base.files);
-  const files = given.filter((group) => group.some(({ file, text }) => texts.get(file) !== text)).flat();
+  const files = given.filter((group) => group.some(({ file, text }) => textAt(file) !== text)).flat();
   const changeOf = ({ file, text }: { file: string; text: string }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) });
   // Each changed item in the order the answer gave its block, whatever its kind: a count cap names the items past it in
   // that order (learn/check.ts), so a skill the answer led with is never the one past the changed-path cap.
@@ -153,7 +163,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   if (leaky.length) return { state: "dropped", reason: "checker", problems: leaky };
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const dryRuns: Record<string, DraftDryRun> = {};
-  const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(input.workflows === false ? { workflows: false as const } : {}), ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.ask ? { ask: input.ask } : {}), ...(input.decisions ? { decisions: input.decisions } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
+  const check = (some: Change[]) => checkProposal({ workflowAdapters: input.workflowAdapters, base, changes: some, refuseValues: input.refuse, ...(input.workflows === false ? { workflows: false as const } : {}), ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.decisions ? { decisions: input.decisions } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
   // The static checks first, every one (validateWorkflow with executeCode: false, draftProblems' refusal of code nodes,
   // caps, secrets): a draft they refuse is never dry-run, nor is any when they refuse the answer whole. Then each draft
   // left is dry-run on its example, else on a synthesized input (learn/skills.ts draftDryRun): every model and tool
@@ -162,7 +172,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
     const statics = check(changes).problems;
     const whole = statics.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined);
     const refused = new Set(statics.flatMap((problem) => (problem.path === undefined ? [] : [itemOf(problem.path)])));
-    if (!whole) for (const { file, text } of files) if (file.endsWith("/workflow.json") && !refused.has(itemOf(file))) dryRuns[file] = await draftDryRun(dsl, text, examples.get(file));
+    if (!whole) for (const { file, text } of files) if (file.endsWith("/workflow.json") && !refused.has(itemOf(file))) dryRuns[file] = await draftDryRun(dsl, text, examples.get(file), input.outputSchema);
   }
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
   // and the rest is checked again, until it passes; a problem that names no item, or one that refuses the whole (WHOLE),
@@ -201,7 +211,8 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   // reads it there): the format the draft's answer keeps (#2412). Cut of the host's secrets, as what was said is.
   const proposing = new Set(passing.map(({ file }) => file));
   const drafted = passing.filter(({ file }) => file.endsWith("/workflow.json")).map(({ file }) => skillOf(file)).filter((file) => !proposing.has(file) && texts.has(file)).map((file) => ({ file, text: redactSecrets(texts.get(file)!, input.refuse, Number.POSITIVE_INFINITY) }));
-  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), ...(Object.keys(ran).length ? { dryRuns: ran } : {}), ...(drafted.length ? { drafted } : {}), asked, ...(triggered.length ? { triggered } : {}) };
+  const bases = Object.fromEntries(passing.filter(({ file }) => isRevised(file)).map(({ file }) => [file, input.revised!.base]));
+  const proposal: Proposal = { seed: input.seed, ...(Object.keys(bases).length ? { bases } : {}), notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), ...(Object.keys(ran).length ? { dryRuns: ran } : {}), ...(drafted.length ? { drafted } : {}), asked, ...(triggered.length ? { triggered } : {}) };
   await writeDurable(join(input.runDir, PROPOSAL), `${JSON.stringify(proposal)}\n`);
   const count = (suffix: string) => passing.filter(({ file }) => file.endsWith(suffix)).length;
   return { state: "proposed", notes: proposal.notes.length, skills: count("/SKILL.md"), workflows: count("/workflow.json"), ...(left.length ? { left } : {}) };

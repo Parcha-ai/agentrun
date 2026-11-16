@@ -1690,6 +1690,37 @@
                       ]
                     },
                     {
+                      "description": "Holds when a quote at `path` is in none of the page text at `pages`. `path` names a quote (a string) or a list of them;\nwith `field`, a list (or one record) of records, each holding its quote at `field`. Each of `pages` names a state value\nthis run wrote, a call's result most often: every string under it is page text.",
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "quote_missing",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        },
+                        "field": {
+                          "type": "string",
+                          "title": "field"
+                        },
+                        "pages": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "title": "pages"
+                        }
+                      },
+                      "required": [
+                        "pages",
+                        "path",
+                        "predicate"
+                      ]
+                    },
+                    {
                       "$ref": "#/definitions/NotPredicate",
                       "description": "Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation."
                     }
@@ -2004,6 +2035,37 @@
           ]
         },
         {
+          "description": "Holds when a quote at `path` is in none of the page text at `pages`. `path` names a quote (a string) or a list of them;\nwith `field`, a list (or one record) of records, each holding its quote at `field`. Each of `pages` names a state value\nthis run wrote, a call's result most often: every string under it is page text.",
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "quote_missing",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "field": {
+              "type": "string",
+              "title": "field"
+            },
+            "pages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "pages"
+            }
+          },
+          "required": [
+            "pages",
+            "path",
+            "predicate"
+          ]
+        },
+        {
           "$ref": "#/definitions/NotPredicate",
           "description": "Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation."
         },
@@ -2292,6 +2354,37 @@
             "path",
             "predicate",
             "type"
+          ]
+        },
+        {
+          "description": "Holds when a quote at `path` is in none of the page text at `pages`. `path` names a quote (a string) or a list of them;\nwith `field`, a list (or one record) of records, each holding its quote at `field`. Each of `pages` names a state value\nthis run wrote, a call's result most often: every string under it is page text.",
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "quote_missing",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "field": {
+              "type": "string",
+              "title": "field"
+            },
+            "pages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "pages"
+            }
+          },
+          "required": [
+            "pages",
+            "path",
+            "predicate"
           ]
         },
         {

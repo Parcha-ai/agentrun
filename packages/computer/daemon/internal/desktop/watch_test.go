@@ -601,6 +601,28 @@ func TestOnTheFakeInputRunsWhileAWatchWaitsOnTheSameConnection(t *testing.T) {
 	}
 }
 
+// A batch that waits between its keys holds the display for its whole length: the live view still gets each change as
+// it happens, not one frame when the batch ends.
+func TestOnTheFakeAWatchGivesAFrameWhileABatchWaits(t *testing.T) {
+	c, shade, f := damaged(t)
+	var first watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	act := c.send("input.actions", map[string]any{"actions": []any{
+		map[string]any{"type": "move", "at": []int{5, 5}},
+		map[string]any{"type": "wait", "ms": 4_000},
+	}})
+	time.Sleep(300 * time.Millisecond)
+	watch := c.send("screen.watch", map[string]any{"after": first.Seq, "waitMs": 10_000})
+	shade.Store(0x30)
+	f.Damaged(0, 0, x11fake.Width, x11fake.Height)
+	if r := c.awaitEither(watch, act); r.ID != watch || r.Error != nil {
+		t.Fatalf("a watch while a batch waits: %+v; want its frame before the batch ends", r)
+	}
+	if r := c.awaitEither(act); r.Error != nil {
+		t.Fatalf("the batch: %s", r.Error.Message)
+	}
+}
+
 func TestOnTheFakeACancelledWatchAnswersAbortedAtOnce(t *testing.T) {
 	c, _ := shaded(t)
 	var first watchResult

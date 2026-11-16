@@ -1,7 +1,7 @@
 // A stand-in for E2B's envd Process service, enough of it for the real e2b SDK's Connect client to start, feed, close
 // and kill a process: Start (server streaming, application/connect+json), SendInput, CloseStdin and SendSignal (unary,
 // application/json), as envd's process.proto defines them (the SDK's process_pb, e2b@2.63.0 index.mjs:1721). Each
-// Start runs its command line on this machine with bash -c (never a login shell), on pipes, and streams its output as
+// Start runs its command and arguments on this machine (never a login shell), on pipes, and streams its output as
 // envd does: a start event with the pid, data events carrying the bytes read (base64 in Connect's JSON), and an end
 // event with the exit code. A client that lets go of the stream leaves the process running, as envd does.
 import { spawn } from "node:child_process";
@@ -40,10 +40,11 @@ export async function fakeEnvd() {
 		if (method === "Start") {
 			const body = JSON.parse(raw.subarray(5).toString("utf8"));
 			requests.push({ method, headers: req.headers, body });
-			const line = body.process?.args?.[2];
-			// bash -c, as envd's /bin/bash -l -c but no login: a line that is one command is exec'd, so the pid is its own.
-			// Its own process group, so close() ends whatever it started.
-			const child = spawn("bash", ["-c", line], { stdio: [body.stdin ? "pipe" : "ignore", "pipe", "pipe"], detached: true });
+			// The command and its arguments as given, with the request's environment over this one's, as envd starts it; a
+			// login shell's -l is dropped, so nothing of this machine's profile runs. Its own process group, so close() ends
+			// whatever it started.
+			const { cmd, args = [], envs = {} } = body.process ?? {};
+			const child = spawn(cmd, args.filter((arg, at) => !(at === 0 && arg === "-l")), { env: { ...process.env, ...envs }, stdio: [body.stdin ? "pipe" : "ignore", "pipe", "pipe"], detached: true });
 			groups.add(child.pid);
 			children.set(child.pid, child);
 			res.writeHead(200, { "content-type": "application/connect+json" });
@@ -69,7 +70,15 @@ export async function fakeEnvd() {
 		if (method === "SendInput") {
 			child.stdin.write(Buffer.from(body.input?.stdin ?? "", "base64"), () => unary(res, 200, {}));
 		} else if (method === "CloseStdin") {
-			child.stdin.end(() => unary(res, 200, {}));
+			// A command that exited first has a closed pipe, whose end() never calls back: answered at once, as envd does.
+			let answered = false;
+			const done = () => {
+				if (!answered) unary(res, 200, {});
+				answered = true;
+			};
+			if (child.stdin.destroyed || child.stdin.writableFinished) return done();
+			child.stdin.once("close", done).once("error", done);
+			child.stdin.end(done);
 		} else if (method === "SendSignal") {
 			child.kill(body.signal === "SIGNAL_SIGTERM" ? "SIGTERM" : "SIGKILL");
 			unary(res, 200, {});

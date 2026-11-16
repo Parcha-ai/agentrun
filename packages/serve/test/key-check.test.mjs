@@ -14,6 +14,7 @@ import { setImmediate as turn } from "node:timers/promises";
 import { calls as monidCalls, KEY as MONID_KEY, release as releaseMonid, stalled as monidStalled } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN", "AGENTRUN_TEST_FAUX_MONID_STATUS", "AGENTRUN_TEST_FAUX_MONID_STALL"];
@@ -45,7 +46,7 @@ test("a key monid refuses is not kept: the PUT is 422 in monid's own words, neve
   assert.equal(existsSync(join(data, "tool-keys.json")), false, "nothing stored");
   const unset = rowOf((await api("GET", "/settings/tool-keys")).body, "monid");
   assert.deepEqual([unset.fields, unset.check], [[{ name: "MONID_API_KEY", set: false, source: null }], null], "GET shows it unset, with no check");
-  assert.deepEqual(filed(log).map((call) => [call.method, call.path, call.authorized, call.pid === process.pid]), [["POST", "/v1/discover", false, true]], "one discover, from the server, on the key sent");
+  assert.deepEqual(filed(log).map((call) => [call.method, call.path, call.authorized, call.pid === process.pid]), [["GET", "/v1/endpoints", false, true]], "one read of the listing, from the server, on the key sent");
 
   // A key monid accepts, then a wrong one: the wrong one is refused, and the kept key and its check are as they were.
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: MONID_KEY } })).status, 204);
@@ -71,7 +72,7 @@ test("a key monid accepts is kept, and GET says it was checked and when; DELETE 
   assert.equal(row.check.state, "accepted");
   assert.match(row.check.at, ISO);
   assert.ok(Date.parse(row.check.at) >= before - 1000 && Date.parse(row.check.at) <= Date.now(), "when it was saved");
-  assert.deepEqual(monidCalls.slice(from).map(({ method, path, body, authorized }) => [method, path, body?.limit, authorized]), [["POST", "/v1/discover", 1, true]], "one discover of one result, on the key");
+  assert.deepEqual(monidCalls.slice(from).map(({ method, path, authorized }) => [method, path, authorized]), [["GET", "/v1/endpoints", true]], "one read of the listing, on the key");
   for (const other of ["parallel", "browserbase", "typesafe"]) assert.equal(rowOf(view, other).check, null, `${other}: nothing saved, nothing checked`);
   await meetsDocument(api, view);
   assert.ok(!storeBytes(data).includes(MONID_KEY), "the store holds no value in the clear");
@@ -181,12 +182,13 @@ test("a 401 refuses the key whatever its body does: a provider that sends its he
 
 test("a check never follows a redirect: a provider that answers 302 to another origin reads not checked, and nothing, the key's header least of all, reaches where it points", async (t) => {
   const { checkKey } = await import("../dist/key-check.js");
-  // Where the redirect points: it files the headers of each request it gets.
+  // Where the redirect points (a path of its own, so a stranger's bare GET / is not taken for a followed redirect): it
+  // files the headers of each request it gets.
   const landed = [];
-  const elsewhere = createServer((req, res) => (landed.push(req.headers), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const elsewhere = createServer((req, res) => (stranger(req, res) || (landed.push(req.headers), res.writeHead(200, { "content-type": "application/json" }).end("{}"))));
   await new Promise((listening) => elsewhere.listen(0, "127.0.0.1", listening));
   t.after(() => new Promise((closed) => (elsewhere.closeAllConnections(), elsewhere.close(closed))));
-  const redirecting = await onLoopback(t, (res) => res.writeHead(302, { location: `http://127.0.0.1:${elsewhere.address().port}/` }).end());
+  const redirecting = await onLoopback(t, (res) => res.writeHead(302, { location: `http://127.0.0.1:${elsewhere.address().port}/landed` }).end());
   for (const [id, label, header] of [["parallel", "Parallel", "x-api-key"], ["browserbase", "Browserbase", "x-bb-api-key"], ["monid", "Monid", "authorization"]]) {
     const { at, ...outcome } = await checkKey({ id, label }, fake(), {}, redirecting);
     assert.deepEqual(landed.map((headers) => Object.hasOwn(headers, header)), [], `${label}: no request reached the redirect's target (true: one did, with the key's ${header} header)`);
@@ -203,7 +205,7 @@ test("each provider's check is one documented call that costs nothing, on the ke
   const key = fake();
   // Each a read or a search that the provider does not bill (key-check.ts cites the page for each): never a paid path.
   const expected = {
-    monid: ["POST", "https://api.monid.ai/v1/discover", { authorization: `Bearer ${key}` }],
+    monid: ["GET", "https://api.monid.ai/v1/endpoints?limit=1", { authorization: `Bearer ${key}` }],
     parallel: ["GET", "https://api.parallel.ai/v1/monitors?limit=1", { "x-api-key": key }],
     browserbase: ["GET", "https://api.browserbase.com/v1/projects", { "x-bb-api-key": key }],
     kernel: ["GET", "https://api.onkernel.com/browsers?limit=1", { authorization: `Bearer ${key}` }],
@@ -221,8 +223,7 @@ test("each provider's check is one documented call that costs nothing, on the ke
     assert.deepEqual([sent.method, sent.url], [method, url], id);
     for (const [name, value] of Object.entries(auth)) assert.equal(sent.headers[name], value, `${id}: ${name}`);
     assert.equal(sent.redirect, "manual", `${id}: a redirect is never followed, so the key goes nowhere but the provider`);
-    if (id === "monid") assert.deepEqual(sent.body, { query: "company data", limit: 1 }, "a discover of one result");
-    else assert.equal(sent.body, undefined, `${id}: a GET with no body`);
+    assert.equal(sent.body, undefined, `${id}: a GET with no body`);
   }
   // OpenAI's key is not checked: OpenAI answers 401 to a restricted key that works but may not list models.
   const none = recorder(json(200, {}));

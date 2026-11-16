@@ -68,6 +68,188 @@ test("a begin that waits out its busy timeout names the transaction open in this
   await holding;
 });
 
+/** This process held up for `ms` (a synchronous call, a long collection, the machine holding the process): its event loop
+ *  runs nothing meanwhile, the store's workers run on. */
+const heldUp = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** The waiter's busy wait, and the hold-up past it, in the cases below. What is left of the wait after the hold-up (the
+ *  hold-up's first look, TICK_MS, is never given back) carries the holder's round trips to its commit on a loaded
+ *  machine, whose small delays count as time this process ran: at 100 ms it ran out under load. */
+const WAITER_BUSY_MS = 1_000;
+const HELD_UP_MS = 2_500;
+
+// The server and its runner in one process, two connections on one store: a write of one waited on a transaction of the
+// other while the process was held up. That holder's statements wait for the same event loop, and its deadline never
+// counts the hold-up (store/deadline.ts runnableDeadline); the wait for it counts the same way.
+for (const [name, write] of [
+  ["a begin", (waiter) => waiter.transaction(async (tx) => tx.run("INSERT INTO notes (text) VALUES (?)", "waited"))],
+  ["a write", (waiter) => waiter.write([{ sql: "INSERT INTO notes (text) VALUES (?)", params: ["waited"] }])],
+  ["a statement outside a transaction", (waiter) => waiter.run("INSERT INTO notes (text) VALUES (?)", "waited")],
+]) {
+  test(`${name} whose busy wait ran out on a transaction of this process while the process was held up waits on for it, never StoreBusy, and lands once it commits`, async (t) => {
+    const path = await file(t);
+    const holder = await Connection.open(path);
+    const waiter = await Connection.open(path, { busyTimeoutMs: WAITER_BUSY_MS });
+    let go;
+    const going = new Promise((resolve) => { go = resolve; });
+    t.after(() => go());
+    t.after(async () => { await waiter.close(); await holder.close(); });
+    await holder.exec("CREATE TABLE notes (text TEXT)");
+    let began;
+    const begun = new Promise((resolve) => { began = resolve; });
+    const holding = holder.transaction(async (tx) => {
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "held");
+      began();
+      await going;
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "after the hold-up");
+    });
+    await begun;
+    const waited = write(waiter);
+    // Its request is with its worker (every microtask run), waiting on the holder's lock.
+    await new Promise((resolve) => setImmediate(resolve));
+    // Held up past the waiter's busy wait: its worker's wait runs out meanwhile, the holder's next statement waits.
+    heldUp(HELD_UP_MS);
+    go();
+    await holding;
+    await waited;
+    assert.deepEqual((await holder.all("SELECT text FROM notes ORDER BY rowid")).map((row) => row.text), ["held", "after the hold-up", "waited"]);
+  });
+}
+
+/** Calls `then` synchronously, the moment the request has left, each time `connection` posts a request of `op` to its
+ *  worker. */
+function onPost(connection, op, then) {
+  const worker = Connection.workerOf(connection);
+  const post = worker.postMessage.bind(worker);
+  worker.postMessage = (message, ...rest) => {
+    post(message, ...rest);
+    if (message.request.op === op) then();
+  };
+}
+
+/** Runs microtasks only, never a timer or a worker's answer (each is a task of its own), until `done()`. */
+async function microtasksUntil(done, what) {
+  for (let i = 0; i < 1_000 && !done(); i++) await null;
+  assert.ok(done(), what);
+}
+
+/** `connection`'s answer to its next `op` request read only once `other` has read an answer of its own (the next turn
+ *  after it): any answer, or with `otherOp`, its answer to its next `otherOp` request. Two workers' answers that both
+ *  came while the process was held up are read in no order Node sets. */
+function answeredAfter(connection, op, other, otherOp) {
+  const worker = Connection.workerOf(connection);
+  const post = worker.postMessage.bind(worker);
+  const emit = worker.emit.bind(worker);
+  let id;
+  let heldBack;
+  let released = false;
+  worker.postMessage = (message, ...rest) => {
+    if (id === undefined && message.request.op === op) id = message.id;
+    post(message, ...rest);
+  };
+  worker.emit = (event, ...args) => {
+    if (!released && event === "message" && args[0]?.id === id) {
+      heldBack = args;
+      return true;
+    }
+    return emit(event, ...args);
+  };
+  const otherWorker = Connection.workerOf(other);
+  const otherPost = otherWorker.postMessage.bind(otherWorker);
+  const otherEmit = otherWorker.emit.bind(otherWorker);
+  let otherId;
+  otherWorker.postMessage = (message, ...rest) => {
+    if (otherId === undefined && message.request.op === otherOp) otherId = message.id;
+    otherPost(message, ...rest);
+  };
+  otherWorker.emit = (event, ...args) => {
+    const result = otherEmit(event, ...args);
+    if (!released && event === "message" && (otherOp === undefined || (otherId !== undefined && args[0]?.id === otherId))) {
+      released = true;
+      if (heldBack) setImmediate(() => emit("message", ...heldBack));
+    }
+    return result;
+  };
+}
+
+// The same, with the holder's begin still in flight: both requests posted in one turn, the holder's worker took the lock,
+// and the process was held up before it read either answer. No transaction of this process was known open when the wait
+// was sent. When it ran out, the holder's begin was answered, its answer read first, or not yet read.
+for (const [name, op, write] of [
+  ["a begin", "begin", (waiter) => waiter.transaction(async (tx) => tx.run("INSERT INTO notes (text) VALUES (?)", "waited"))],
+  ["a write", "write", (waiter) => waiter.write([{ sql: "INSERT INTO notes (text) VALUES (?)", params: ["waited"] }])],
+  ["a statement outside a transaction", "stmt", (waiter) => waiter.run("INSERT INTO notes (text) VALUES (?)", "waited")],
+]) for (const [order, beginReadAfter] of [["the begin's answer read first", false], ["the begin's answer read after the wait's", true]]) {
+  test(`${name} posted in the same turn as a begin of this process that took the lock, both answers unread while the process was held up past the busy wait (${order}), waits on for it, never StoreBusy`, async (t) => {
+    const path = await file(t);
+    const holder = await Connection.open(path);
+    const waiter = await Connection.open(path, { busyTimeoutMs: WAITER_BUSY_MS });
+    t.after(async () => { await waiter.close(); await holder.close(); });
+    await holder.exec("CREATE TABLE notes (text TEXT)");
+    if (beginReadAfter) answeredAfter(holder, "begin", waiter);
+    else answeredAfter(waiter, op, holder);
+    let holderPosted = false;
+    onPost(holder, "begin", () => {
+      holderPosted = true;
+      // Its worker takes the lock meanwhile; its answer waits unread (this turn has not ended).
+      heldUp(200);
+    });
+    const holding = holder.transaction(async (tx) => {
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "held");
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "after the hold-up");
+    });
+    await microtasksUntil(() => holderPosted, "the holder's begin is posted");
+    let waiterPosted = false;
+    onPost(waiter, op, () => { waiterPosted = true; });
+    const waited = write(waiter);
+    await microtasksUntil(() => waiterPosted, "the waiter's request is posted in the same turn");
+    // Held up past the waiter's busy wait: its worker's wait runs out meanwhile, the holder's begin answer unread.
+    heldUp(HELD_UP_MS);
+    await holding;
+    await waited;
+    assert.deepEqual((await holder.all("SELECT text FROM notes ORDER BY rowid")).map((row) => row.text), ["held", "after the hold-up", "waited"]);
+  });
+}
+
+// The first cases, with the wait's busy answer read only once the holder's commit was answered and read: two workers'
+// answers come back in no set order, and on a loaded machine the waiter's worker may end its wait as the holder commits.
+// The holder it waited on is no longer open when its answer is read, yet it held the lock through the wait.
+for (const [name, op, write] of [
+  ["a begin", "begin", (waiter) => waiter.transaction(async (tx) => tx.run("INSERT INTO notes (text) VALUES (?)", "waited"))],
+  ["a write", "write", (waiter) => waiter.write([{ sql: "INSERT INTO notes (text) VALUES (?)", params: ["waited"] }])],
+  ["a statement outside a transaction", "stmt", (waiter) => waiter.run("INSERT INTO notes (text) VALUES (?)", "waited")],
+]) {
+  test(`${name} whose busy wait ran out on a transaction of this process while the process was held up, its answer read only after that transaction committed, lands, never StoreBusy`, async (t) => {
+    const path = await file(t);
+    const holder = await Connection.open(path);
+    const waiter = await Connection.open(path, { busyTimeoutMs: WAITER_BUSY_MS });
+    let go;
+    const going = new Promise((resolve) => { go = resolve; });
+    t.after(() => go());
+    t.after(async () => { await waiter.close(); await holder.close(); });
+    await holder.exec("CREATE TABLE notes (text TEXT)");
+    let began;
+    const begun = new Promise((resolve) => { began = resolve; });
+    const holding = holder.transaction(async (tx) => {
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "held");
+      began();
+      await going;
+      await tx.run("INSERT INTO notes (text) VALUES (?)", "after the hold-up");
+    });
+    await begun;
+    answeredAfter(waiter, op, holder, "commit");
+    let waiterPosted = false;
+    onPost(waiter, op, () => { waiterPosted = true; });
+    const waited = write(waiter);
+    await microtasksUntil(() => waiterPosted, "the waiter's request is with its worker");
+    // Held up past the waiter's busy wait: its worker's wait runs out meanwhile, the holder's next statement waits.
+    heldUp(HELD_UP_MS);
+    go();
+    await holding;
+    await waited;
+    assert.deepEqual((await holder.all("SELECT text FROM notes ORDER BY rowid")).map((row) => row.text), ["held", "after the hold-up", "waited"]);
+  });
+}
+
 test("a transaction counted from its call that runs out of time still in the connection's queue names where it was opened, and the one ahead of it", async (t) => {
   const db = await Connection.open(await file(t));
   let release;

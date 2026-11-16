@@ -72,15 +72,15 @@ test("control: nothing changed between the calls, both run", async (t) => {
 
 test("a store read that fails at a call fails closed: the last good read's deny still refuses, and never lifts no ask while the store does not read", async (t) => {
   const { spec, store } = await specFor(t, {
-    body: { tools: ["web_search", "monid.run"], approvals: "never" },
+    body: { tools: ["web_search", "monid:faux/person/enrich"], approvals: "never" },
     settings: { web_search: { permission: "deny" } },
   });
   const decision = async (tool) => {
     const given = await spec.gate({ callId: "c", tool, args: {} });
     return typeof given === "string" ? given : "deny";
   };
-  assert.equal(await decision("monid.run"), "allow", "a clean read: never lifts the default ask");
+  assert.equal(await decision("monid:faux/person/enrich"), "allow", "a clean read: never lifts the default ask");
   store.settings.get = async () => { throw new Error("the store is busy"); };
   assert.equal(await decision("web_search"), "deny", "a failed read keeps the last good read's deny");
-  assert.equal(await decision("monid.run"), "ask", "a failed read: never lifts no ask (a deny may be behind it)");
+  assert.equal(await decision("monid:faux/person/enrich"), "ask", "a failed read: never lifts no ask (a deny may be behind it)");
 });

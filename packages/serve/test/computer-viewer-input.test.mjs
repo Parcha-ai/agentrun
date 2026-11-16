@@ -34,7 +34,7 @@ class FakeElement {
 }
 
 /** The viewer's script on a fake page, its WebSocket open and ready for `input` with the person holding the computer. */
-function viewer(input, hash = "#t=token") {
+function viewer(input, hash = "#t=token", globals = {}) {
   const elements = new Map();
   const el = (id) => { if (!elements.has(id)) elements.set(id, new FakeElement(id)); return elements.get(id); };
   const sent = [];
@@ -58,6 +58,7 @@ function viewer(input, hash = "#t=token") {
     Number,
     String,
     Date,
+    ...globals,
   });
   vm.runInContext(computerViewerAssets.js, context);
   socket.onopen();
@@ -206,4 +207,23 @@ test("framed by a page with its own Take over and Hand back (hands=page), the vi
   const own = viewer("desktop");
   assert.equal(own.hands.hidden, false, "opened on its own, the viewer has its Take over");
   assert.equal(own.bar.hidden, false);
+});
+
+test("a park's end says the run waits and the computer is kept until a time, Take over off; once that time passes, that it wasn't kept", () => {
+  const timers = [];
+  const { socket, notice, hands } = viewer("desktop", "#t=token", { setTimeout: (fn, ms) => void timers.push({ fn, ms }) });
+  const lapsed = "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on.";
+  socket.onmessage({ data: JSON.stringify({ type: "ended", reason: "parked", message: "Waiting for your approval. The desktop is kept for 10 minutes.", keptMs: 540_000, lapsed }) });
+  assert.match(notice.textContent, /^Waiting for your approval\. The desktop is kept for 10 minutes, until \d{1,2}:\d{2}( ?[AP]M)?\.$/);
+  assert.doesNotMatch(notice.textContent, /ended/);
+  assert.equal(hands.disabled, true, "no take-over while parked");
+  socket.onclose();
+  assert.match(notice.textContent, /^Waiting for your approval/, "the socket's close leaves the words");
+  assert.deepEqual(timers.map(({ ms }) => ms), [540_000]);
+  timers[0].fn();
+  assert.equal(notice.textContent, lapsed);
+
+  const late = viewer("android", "#t=token", { setTimeout: () => assert.fail("no timer once the time passed") });
+  late.socket.onmessage({ data: JSON.stringify({ type: "ended", reason: "parked", message: "Waiting for your answer. The phone is kept for 10 minutes.", keptMs: 0, lapsed: "The phone wasn't kept: 10 minutes passed. A new one starts when the run goes on." }) });
+  assert.equal(late.notice.textContent, "The phone wasn't kept: 10 minutes passed. A new one starts when the run goes on.");
 });

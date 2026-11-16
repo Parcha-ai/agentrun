@@ -10,6 +10,7 @@ import { GKE_SCOPES, googleAdc } from "../dist/google-adc.js";
 import { CLAIM_API, KubernetesHost, LABELS_ANNOTATION, POD_NAME_ANNOTATION, processOf, SLEEPER, create } from "../dist/kubernetes.js";
 import { answerError, EXEC_PROTOCOLS, execStatus, kubeCode, webSocket } from "../dist/kubernetes-api.js";
 import { resolveEndpoint } from "../dist/kubernetes-auth.js";
+import { PID_KILL, PID_WRAPPER } from "../dist/hosted/scripts.js";
 import { failAs } from "../dist/result.js";
 
 const ok = (value) => ({ ok: true, value });
@@ -39,7 +40,17 @@ function fakeApi(routes) {
 
 const hostOf = (api, extra = {}) => new KubernetesHost({ api, namespace: "computers", object: "pod", image: "example.test/box:1", arch: "amd64", maxLifetimeMs: 86_400_000, requestMs: 1000, ...extra });
 const ctx = { timeoutMs: 1000 };
-const req = { name: "computer-0123456789ab", image: "default", labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-0123456789ab", "agentrun.computer.deadline": "2026-11-14T12:00:00.000Z", "agentrun.run": "r1" }, network: "none" };
+const backstopAt = (ms) => new Date(Date.now() + ms).toISOString();
+const req = { name: "computer-0123456789ab", image: "default", labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-0123456789ab", "agentrun.computer.deadline": "2026-11-14T12:00:00.000Z", "agentrun.run": "r1" }, lifetimeMs: 3_600_000, backstopAt: backstopAt(86_400_000), egress: false };
+/** What a host call throws: its code, words and transient mark. */
+const thrown = async (promise) => {
+	try {
+		await promise;
+	} catch (error) {
+		return error;
+	}
+	assert.fail("the call did not throw");
+};
 
 test("the status table: 401/403 denied, a quota's 403 limit, 404 not_found, 409 exists, 429 limit, 504 timeout, and 429 and 5xx alone transient", () => {
 	assert.equal(kubeCode(401, ""), "denied");
@@ -69,7 +80,7 @@ test("create makes a root pod that sleeps, with no service account token, the ba
 	const api = fakeApi([{ method: "POST", path: "/api/v1/namespaces/computers/pods", answer: () => ok({ status: 201, body: {} }) }]);
 	const host = hostOf(api, { runtimeClass: "gvisor" });
 	assert.equal(host.facts.isolation, "gvisor");
-	assert.deepEqual(await host.create({ ...req, cpus: 2, memoryMb: 4096 }, ctx), ok({ id: req.name }));
+	assert.deepEqual(await host.create({ ...req, cpus: 2, memoryMb: 4096 }, ctx), { id: req.name });
 	const pod = api.calls[0].init.json;
 	assert.equal(pod.metadata.name, req.name);
 	assert.deepEqual(pod.metadata.labels, { "agentrun.computer": "1", "agentrun.computer.name": req.name });
@@ -77,7 +88,7 @@ test("create makes a root pod that sleeps, with no service account token, the ba
 	assert.equal(pod.spec.automountServiceAccountToken, false);
 	assert.equal(pod.spec.enableServiceLinks, false);
 	assert.equal(pod.spec.restartPolicy, "Never");
-	assert.equal(pod.spec.activeDeadlineSeconds, 86_400);
+	assert.ok(Math.abs(pod.spec.activeDeadlineSeconds - 86_400) <= 1, "the backstop is the request's backstopAt");
 	assert.equal(pod.spec.runtimeClassName, "gvisor");
 	assert.equal(pod.spec.containers[0].image, "example.test/box:1");
 	assert.deepEqual(pod.spec.containers[0].command, SLEEPER);
@@ -87,14 +98,15 @@ test("create makes a root pod that sleeps, with no service account token, the ba
 
 test("create of a name the namespace holds is exists; a refusal names the RBAC it needs; a 503 stays transient", async () => {
 	const taken = hostOf(fakeApi([{ method: "POST", path: /pods$/, answer: () => ({ ok: false, error: answerError("POST /pods", 409, '{"message":"already exists"}') }) }]));
-	assert.equal((await taken.create(req, ctx)).error.code, "exists");
+	const exists = await thrown(taken.create(req, ctx));
+	assert.deepEqual([exists.code, exists.transient], ["exists", undefined]);
 	const denied = hostOf(fakeApi([{ method: "POST", path: /pods$/, answer: () => ({ ok: false, error: answerError("POST /pods", 403, '{"message":"forbidden"}') }) }]));
-	const refused = await denied.create(req, ctx);
-	assert.equal(refused.error.code, "denied");
-	assert.match(refused.error.message, /needs create, get, list, delete and patch on pods/);
+	const refused = await thrown(denied.create(req, ctx));
+	assert.equal(refused.code, "denied");
+	assert.match(refused.message, /needs create, get, list, delete and patch on pods/);
 	const down = hostOf(fakeApi([{ method: "POST", path: /pods$/, answer: () => ({ ok: false, error: answerError("POST /pods", 503, "") }) }]));
-	const failed = await down.create(req, ctx);
-	assert.equal(failed.error.transient, true);
+	const failed = await thrown(down.create(req, ctx));
+	assert.equal(failed.transient, true, "a 503 is the vendor's trouble: the HostError keeps the mark");
 });
 
 test("the claim model makes a SandboxClaim against the warm pool, with a shutdownTime backstop, and reads its pod through the Sandbox", async () => {
@@ -107,26 +119,26 @@ test("the claim model makes a SandboxClaim against the warm pool, with a shutdow
 		{ method: "GET", path: "/api/v1/namespaces/computers/pods/pod-xyz", answer: () => ok({ status: 200, body: { metadata: { name: "pod-xyz" }, spec: { containers: [{ name: "main" }] }, status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] } } }) },
 	]);
 	const host = new KubernetesHost({ api, namespace: "computers", object: "claim", warmPool: "pool-a", arch: "amd64", maxLifetimeMs: 3_600_000, requestMs: 1000 });
-	assert.equal(host.facts.specFields, undefined);
-	await host.create(req, ctx);
+	assert.deepEqual(host.check({ image: "pool-a", cpus: 2 }).map((one) => one.field), ["cpus"], "a claim's size is its warm pool's");
+	await host.create({ ...req, backstopAt: backstopAt(3_600_000) }, ctx);
 	const body = api.calls[0].init.json;
 	assert.equal(body.kind, "SandboxClaim");
 	assert.deepEqual(body.spec.warmPoolRef, { name: "pool-a" });
 	assert.equal(body.spec.lifecycle.shutdownPolicy, "Delete");
 	assert.ok(Math.abs(Date.parse(body.spec.lifecycle.shutdownTime) - Date.now() - 3_600_000) < 5_000);
 	const machine = await host.get(req.name, ctx);
-	assert.equal(machine.value.state, "running");
-	assert.deepEqual(machine.value.labels, req.labels);
-	assert.deepEqual(machine.value.image, { resolved: "pool-a" });
+	assert.equal(machine.state, "running");
+	assert.deepEqual(machine.labels, req.labels);
+	assert.equal(machine.image, "pool-a");
 	// exec reaches the Sandbox's pod and its first container.
-	await host.exec(req.name, ["true"], { stdin: false }, ctx);
+	await assert.rejects(host.exec(req.name, ["true"], ctx), /no exec/, "this fake answers no exec stream: the call is what counts");
 	const stream = api.calls.find((call) => call.method === "STREAM");
 	assert.equal(stream.path, "/api/v1/namespaces/computers/pods/pod-xyz/exec");
 	assert.deepEqual(stream.query.slice(0, 3), [["container", "main"], ["stdout", "true"], ["stderr", "true"]]);
 	assert.deepEqual(stream.protocols, [...EXEC_PROTOCOLS]);
 });
 
-test("get reads a pod's state: pending starting, ready running, a bad image failed with why, deleting going, gone undefined", async () => {
+test("get reads a pod's state: pending starting, ready running, a bad image gone with why, deleting gone, not found undefined", async () => {
 	const pods = {
 		p1: { status: { phase: "Pending", conditions: [{ type: "PodScheduled", status: "False", message: "0/3 nodes are available" }] } },
 		p2: { status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] } },
@@ -139,12 +151,13 @@ test("get reads a pod's state: pending starting, ready running, a bad image fail
 		return ok({ status: 200, body: { metadata: { name, ...(pods[name].metadata ?? {}) }, status: pods[name].status } });
 	} }, { method: "GET", path: /\/pods\/gone$/, answer: () => ok({ status: 404, body: {} }) }]);
 	const host = hostOf(api);
-	const state = async (id) => (await host.get(id, ctx)).value;
+	const state = (id) => host.get(id, ctx);
 	assert.equal((await state("p1")).state, "starting");
+	assert.equal((await state("p1")).why, undefined, "a pod waiting on a node is starting, not failed");
 	assert.equal((await state("p2")).state, "running");
-	assert.deepEqual([(await state("p3")).state, (await state("p3")).why], ["failed", "container computer is ImagePullBackOff: no such image"]);
-	assert.equal((await state("p4")).state, "going");
-	assert.match((await state("p5")).why, /DeadlineExceeded/);
+	assert.deepEqual([(await state("p3")).state, (await state("p3")).why], ["gone", "container computer is ImagePullBackOff: no such image"]);
+	assert.deepEqual([(await state("p4")).state, (await state("p4")).why], ["gone", undefined]);
+	assert.deepEqual([(await state("p5")).state, /DeadlineExceeded/.test((await state("p5")).why)], ["gone", true]);
 	assert.equal(await state("gone"), undefined);
 });
 
@@ -153,13 +166,13 @@ test("list selects by the computer label (and the name), reads every page, and f
 	const api = fakeApi([{ method: "GET", path: "/api/v1/namespaces/computers/pods", answer: (init) => ok({ status: 200, body: init.query.continue ? { items: [item("b", "r2")], metadata: {} } : { items: [item("a", "r1")], metadata: { continue: "tok" } } }) }]);
 	const host = hostOf(api);
 	const listed = await host.list({ "agentrun.computer": "1", "agentrun.run": "r2" }, ctx);
-	assert.deepEqual(listed.value.map((one) => one.id), ["b"]);
+	assert.deepEqual(listed.map((one) => one.id), ["b"]);
 	assert.equal(api.calls[0].init.query.labelSelector, "agentrun.computer=1");
 	await host.list({ "agentrun.computer": "1", "agentrun.computer.name": "computer-x" }, ctx);
 	assert.equal(api.calls[2].init.query.labelSelector, "agentrun.computer=1,agentrun.computer.name=computer-x");
 });
 
-test("delete takes a 404 as done; setLabels merges into the annotation under its resourceVersion and reads again on a 409", async () => {
+test("delete takes a 404 as done; extend moves the deadline label in the annotation under its resourceVersion and reads again on a 409", async () => {
 	let patches = 0;
 	const api = fakeApi([
 		{ method: "DELETE", path: /pods\/x$/, answer: () => ok({ status: 404, body: {} }) },
@@ -167,12 +180,12 @@ test("delete takes a 404 as done; setLabels merges into the annotation under its
 		{ method: "PATCH", path: /pods\/x$/, answer: () => (++patches === 1 ? { ok: false, error: answerError("PATCH /x", 409, "") } : ok({ status: 200, body: {} })) },
 	]);
 	const host = hostOf(api);
-	assert.deepEqual(await host.delete("x", ctx), ok(undefined));
-	assert.deepEqual(await host.setLabels("x", { b: "3" }, ctx), ok(undefined));
+	assert.equal(await host.delete("x", ctx), undefined);
+	await host.extend("x", new Date("2026-11-14T13:00:00.000Z"), ctx);
 	const last = api.calls.filter((call) => call.method === "PATCH").at(-1);
 	assert.equal(last.init.contentType, "application/merge-patch+json");
 	assert.equal(last.init.json.metadata.resourceVersion, "1");
-	assert.deepEqual(JSON.parse(last.init.json.metadata.annotations[LABELS_ANNOTATION]), { a: "1", b: "3" });
+	assert.deepEqual(JSON.parse(last.init.json.metadata.annotations[LABELS_ANNOTATION]), { a: "1", b: "2", "agentrun.computer.deadline": "2026-11-14T13:00:00.000Z" });
 });
 
 test("check: \"default\" with no image or warm pool set is refused in words; a claim's image is a warm pool's name", () => {
@@ -195,7 +208,7 @@ function fakeStream(protocol = EXEC_PROTOCOLS[0]) {
 	};
 }
 
-test("an exec process: stdout and stderr apart, byte-exact; the exit status from channel 3; v5 ends stdin with its close; v4 says it cannot", async () => {
+test("an exec process: stdout and stderr apart, byte-exact; the exit status from channel 3; v5 ends stdin with its close; v4 sends nothing", async () => {
 	const fake = fakeStream();
 	const process = processOf(fake.stream);
 	await process.write(new Uint8Array([0, 255, 10]));
@@ -208,8 +221,10 @@ test("an exec process: stdout and stderr apart, byte-exact; the exit status from
 	const read = async (stream) => Buffer.concat(await Array.fromAsync(stream)).toString();
 	assert.equal(await read(process.stdout), "out");
 	assert.equal(await read(process.stderr), "err");
-	const old = processOf(fakeStream("v4.channel.k8s.io").stream);
-	await assert.rejects(old.end(), /older than 1.30/);
+	// v4 has no close message: end() does nothing there (MachineHost.exec), and nothing the adapter runs waits for it.
+	const v4 = fakeStream("v4.channel.k8s.io");
+	await processOf(v4.stream).end();
+	assert.deepEqual(v4.sent, []);
 	assert.deepEqual(execStatus(new TextEncoder().encode('{"status":"Success"}')), { code: 0 });
 	// A command that never ran: 127, its words on stderr.
 	const missing = fakeStream();
@@ -228,35 +243,38 @@ test("upload sends exactly the bytes to head -c in one exec, and fails in words 
 	let fake;
 	const api = fakeApi([{ method: "STREAM", answer: () => {
 		fake = fakeStream();
-		setTimeout(() => fake.push(3, '{"status":"Success"}'), 5);
+		setTimeout(() => {
+			fake.push(2, "41 7\n");
+			fake.push(3, '{"status":"Success"}');
+		}, 5);
 		return ok(fake.stream);
 	} }]);
 	const host = hostOf(api);
 	const bytes = new Uint8Array(150_000).fill(7);
-	assert.deepEqual(await host.upload("p", "/tmp/computerd", bytes, ctx), ok(undefined));
+	assert.equal(await host.upload("p", "/tmp/computerd", bytes, ctx), undefined);
 	const stream = api.calls.find((call) => call.method === "STREAM");
-	const argv = stream.query.filter(([key]) => key === "command").map(([, value]) => value).slice(5);
+	const argv = stream.query.filter(([key]) => key === "command").map(([, value]) => value).slice(PID_WRAPPER.length);
 	assert.deepEqual([argv[0], argv[1], argv.at(-2), argv.at(-1)], ["sh", "-c", "150000", "/tmp/computerd"]);
 	assert.match(argv[2], /head -c "\$1"/);
 	assert.equal(Buffer.concat(fake.sent.filter(([channel]) => channel === 0).map(([, chunk]) => chunk)).length, 150_000);
 	const failing = hostOf(fakeApi([{ method: "STREAM", answer: () => {
 		const one = fakeStream();
 		setTimeout(() => {
-			one.push(2, "the upload did not arrive whole");
+			one.push(2, "41 7\nthe upload did not arrive whole");
 			one.push(3, JSON.stringify({ status: "Failure", details: { causes: [{ reason: "ExitCode", message: "1" }] } }));
 		}, 5);
 		return ok(one.stream);
 	} }]));
-	const failed = await failing.upload("p", "/tmp/x", new Uint8Array(3), ctx);
-	assert.match(failed.error.message, /exited 1: the upload did not arrive whole/);
+	const failed = await thrown(failing.upload("p", "/tmp/x", new Uint8Array(3), ctx));
+	assert.match(failed.message, /exited 1: the upload did not arrive whole/);
 });
 
-test("kill ends the command in the pod: each exec runs as its own group's leader under a pid file, and kill execs the group's kill on that file before it lets go", async () => {
+test("kill ends the command in the pod: each exec runs under PID_WRAPPER, whose pid line is taken off stderr, and kill execs pidKill on that pid before it lets go", async () => {
 	const streams = [];
 	const api = fakeApi([{ method: "STREAM", answer: (query) => {
 		const one = fakeStream();
 		streams.push({ query, one });
-		// The kill's own exec ends at once, as KILL_SCRIPT does, and the killed command's stream then gives its status.
+		// The kill's own exec ends at once, as PID_KILL does, and the killed command's stream then gives its status.
 		if (streams.length === 2) {
 			setTimeout(() => one.push(3, '{"status":"Success"}'), 5);
 			setTimeout(() => streams[0].one.push(3, JSON.stringify({ status: "Failure", details: { causes: [{ reason: "ExitCode", message: "137" }] } })), 10);
@@ -264,24 +282,22 @@ test("kill ends the command in the pod: each exec runs as its own group's leader
 		return ok(one.stream);
 	} }]);
 	const host = hostOf(api);
-	const started = await host.exec("p", ["sleep", "600"], { stdin: false }, ctx);
+	const started = await host.exec("p", ["sleep", "600"], ctx);
 	const argv = (query) => query.filter(([key]) => key === "command").map(([, value]) => value);
-	const [sh, c, leader, pidFile, wrapper, ...command] = argv(streams[0].query);
-	assert.deepEqual([sh, c, command], ["sh", "-c", ["sleep", "600"]]);
-	assert.match(leader, /exec setsid sh -c "\$w"/, "the command leads a process group of its own");
-	assert.match(pidFile, /^\/tmp\/\.agentrun-exec-[0-9a-f]{16}$/);
-	assert.match(wrapper, /echo \$\$ > "\$0"/);
-	await started.value.kill();
+	assert.deepEqual(argv(streams[0].query), [...PID_WRAPPER, "sleep", "600"]);
+	assert.ok(streams[0].query.some(([key, value]) => key === "stdin" && value === "true"), "stdin is always open");
+	// The wrapper's line (pid, start time) comes first on stderr, and is not the command's own.
+	streams[0].one.push(2, "94 123456\nwarming up");
+	await started.kill();
 	assert.equal(streams.length, 2, "kill opened a second exec");
-	const killer = argv(streams[1].query);
-	assert.deepEqual([killer[0], killer[1], killer[3]], ["sh", "-c", pidFile]);
-	assert.match(killer[2], /kill -KILL "-\$p"/, "the group is killed, not only the stream closed");
-	assert.equal(await started.value.wait(), 137, "wait answers the killed command's status");
+	assert.deepEqual(argv(streams[1].query), ["sh", "-c", PID_KILL, "sh", "94", "123456"], "the process and every process under it are killed, not only the stream closed");
+	assert.equal(await started.wait(), 137, "wait answers the killed command's status");
+	assert.equal(Buffer.concat(await Array.fromAsync(started.stderr)).toString(), "warming up");
 	// A command that has exited needs no kill in the pod.
-	const done = await host.exec("p", ["true"], { stdin: false }, ctx);
+	const done = await host.exec("p", ["true"], ctx);
 	streams.at(-1).one.push(3, '{"status":"Success"}');
-	assert.equal(await done.value.wait(), 0);
-	await done.value.kill();
+	assert.equal(await done.wait(), 0);
+	await done.kill();
 	assert.equal(streams.length, 3);
 });
 

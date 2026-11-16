@@ -28,7 +28,7 @@ export function wordsOf(command) {
 
 /** Which of the provider's scripts an argv is (`sh -c '# agentrun-computer: <kind>\n...' sh <args>`), and its arguments. */
 export function scriptOfWords(words) {
-	const mark = /^# agentrun-computer: (\w+)\n/.exec(words[2] ?? "");
+	const mark = /^# agentrun-computer: ([\w-]+)\n/.exec(words[2] ?? "");
 	if (words[0] !== "sh" || words[1] !== "-c" || mark === null) return undefined;
 	return { kind: mark[1], args: words.slice(4) };
 }

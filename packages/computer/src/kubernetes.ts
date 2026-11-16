@@ -11,22 +11,18 @@
 //
 // The adapter's labels are kept in one annotation (agentrun.labels, JSON): a Kubernetes label value takes no colon, so
 // a deadline cannot be one. Two real labels let a listing select: agentrun.computer=1 and the request's name.
-import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { KUBERNETES as KUBERNETES_DESCRIPTOR, KUBERNETES_DEFAULT_IMAGE, KUBERNETES_NO_ARCHIL } from "./descriptors/kubernetes.js";
-import { COMPUTER_LABEL } from "./drift.js";
-import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
+import { KUBERNETES, KUBERNETES_DEFAULT_IMAGE, KUBERNETES_NO_ARCHIL } from "./descriptors/kubernetes.js";
+import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
+import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { orThrow } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, NAME_LABEL } from "./hosted/provider.js";
-import { KILL_SCRIPT, WRAPPER } from "./hosted/ssh.js";
-import type { KindCapabilities } from "./kinds.js";
-import { EXEC_PROTOCOLS, execStatus, KUBERNETES, type KubeAnswer, type KubeStream, type KubeTransport, kubeTransport } from "./kubernetes-api.js";
+import { PID_WRAPPER, pidKill, pidLine, type PidWithin } from "./hosted/scripts.js";
+import { sizeRefusals } from "./hosted/values.js";
+import { EXEC_PROTOCOLS, execStatus, type KubeAnswer, type KubeCall, type KubeStream, type KubeTransport, kubeTransport } from "./kubernetes-api.js";
 import { type KubernetesConnectOptions, resolveEndpoint } from "./kubernetes-auth.js";
-import type { MountKind } from "./mount.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
-import { type ComputerErrorCode, fail, failAs, failFor, ok, type Result, vendorFail } from "./result.js";
-import { countTested } from "./test-connection.js";
-
-const kubeFail = failFor(KUBERNETES);
+import type { ComputerError, Result } from "./result.js";
 
 /** The annotation an adapter's labels live in, as one JSON object of strings. */
 export const LABELS_ANNOTATION = "agentrun.labels";
@@ -39,20 +35,12 @@ export const POD_NAME_ANNOTATION = "agents.x-k8s.io/pod-name";
 const SAFE_TO_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict";
 /** The pod's one container in the pod model. */
 export const CONTAINER = "computer";
+/** How long a kill waits for the command's pid line, then for its own exec (pidKill) to end the command, before it lets go of the streams. */
+const KILL_GRACE_MS = 5_000;
 /**
  * The pod's main process in the pod model: it only waits, and ends at once on SIGTERM, so a delete takes no grace.
  * POSIX sh: no `sleep infinity`, which not every BusyBox has.
  */
-/**
- * Every exec's command runs under ssh.ts's WRAPPER, which writes its pid to a file a kill reads; this line first makes
- * that sh lead a process group, so a kill ends what the command started too. An API server's exec is not one already
- * (runc starts it in the container's group): setsid execs in place, with no fork, when the caller leads no group, and
- * the image's setsid is the one the daemon's start needs anyway. $0 is the pid file, $1 the wrapper.
- */
-const LEADER = 'w=$1; shift; g=$(cut -d" " -f5 "/proc/$$/stat" 2>/dev/null); if [ "$g" != "$$" ] && command -v setsid >/dev/null 2>&1; then exec setsid sh -c "$w" "$0" "$@"; fi; exec sh -c "$w" "$0" "$@"';
-/** How long a kill waits for its own exec (KILL_SCRIPT) to end the command's group before it lets go of the streams. */
-const KILL_GRACE_MS = 5_000;
-
 export const SLEEPER = ["sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done"];
 
 /** Container waiting reasons that waiting will not mend: the image or the pod's configuration is wrong. */
@@ -66,13 +54,10 @@ const MAX_PAGES = 100;
 /** Each message of an upload's or a write's stdin is at most this many bytes. */
 const CHUNK = 64 * 1024;
 
-export const MOUNT: readonly MountKind[] = KUBERNETES_DESCRIPTOR.mounts;
-export const CAPABILITIES: readonly KindCapabilities[] = KUBERNETES_DESCRIPTOR.capabilities;
-
 export type KubernetesObject = "pod" | "claim";
 
 /** The Kubernetes provider's options: how it reaches the API (KubernetesConnectOptions), what it makes, then the shared adapter's. */
-export interface KubernetesProviderOptions extends KubernetesConnectOptions, Omit<HostedOptions, "label" | "kind" | "desktop" | "timeouts" | "archilEgress"> {
+export interface KubernetesProviderOptions extends KubernetesConnectOptions, Omit<HostedOptions, "kind" | "desktop" | "timeouts" | "archilEgress" | "image"> {
 	/** The namespace every computer is made in. Default the kubeconfig context's or the service account's, else "default". */
 	namespace?: string;
 	/** pod (default) or claim; claim needs warmPool. */
@@ -154,29 +139,13 @@ function labelsOf(meta: Meta | undefined): Record<string, string> {
 	}
 }
 
-/** A Kubernetes quantity of CPU as a number of CPUs ("2", "1500m"); undefined for another shape. */
-function cpusOf(value: string | undefined): number | undefined {
-	if (value === undefined) return undefined;
-	const milli = /^(\d+)m$/.exec(value);
-	if (milli) return Number(milli[1]) / 1000;
-	return /^\d+(\.\d+)?$/.test(value) ? Number(value) : undefined;
-}
-
-/** A Kubernetes quantity of memory in MiB ("512Mi", "4Gi"); undefined for another shape. */
-function memoryMbOf(value: string | undefined): number | undefined {
-	const found = value === undefined ? null : /^(\d+)(Mi|Gi|Ki)?$/.exec(value);
-	if (found === null) return undefined;
-	const amount = Number(found[1]);
-	return found[2] === "Gi" ? amount * 1024 : found[2] === "Mi" ? amount : found[2] === "Ki" ? Math.floor(amount / 1024) : Math.floor(amount / (1024 * 1024));
-}
-
-/** A pod's state as the adapter reads a machine's, and the pod's own words when it failed. */
+/** A pod's state as the adapter reads a machine's: gone while it is deleted, and gone in its own words when it failed. */
 function podState(pod: Pod): { state: Machine["state"]; why?: string } {
-	if (pod.metadata?.deletionTimestamp) return { state: "going" };
+	if (pod.metadata?.deletionTimestamp) return { state: "gone" };
 	const phase = pod.status?.phase;
 	for (const status of pod.status?.containerStatuses ?? []) {
 		const waiting = status.state?.waiting;
-		if (waiting?.reason !== undefined && CONFIG_REASONS.has(waiting.reason)) return { state: "failed", why: `container ${status.name ?? "?"} is ${waiting.reason}${waiting.message ? `: ${waiting.message.slice(0, 300)}` : ""}` };
+		if (waiting?.reason !== undefined && CONFIG_REASONS.has(waiting.reason)) return { state: "gone", why: `container ${status.name ?? "?"} is ${waiting.reason}${waiting.message ? `: ${waiting.message.slice(0, 300)}` : ""}` };
 	}
 	if (phase === "Running") {
 		const ready = pod.status?.conditions?.find((one) => one.type === "Ready")?.status === "True";
@@ -184,10 +153,14 @@ function podState(pod: Pod): { state: Machine["state"]; why?: string } {
 	}
 	if (phase === "Succeeded" || phase === "Failed") {
 		const terminated = pod.status?.containerStatuses?.find((one) => one.state?.terminated)?.state?.terminated;
-		return { state: "failed", why: `the pod ended (${phase}${pod.status?.reason ? `, ${pod.status.reason}` : ""}${terminated?.reason ? `, its container ${terminated.reason}` : ""})${pod.status?.message ? `: ${pod.status.message.slice(0, 300)}` : ""}` };
+		return { state: "gone", why: `the pod ended (${phase}${pod.status?.reason ? `, ${pod.status.reason}` : ""}${terminated?.reason ? `, its container ${terminated.reason}` : ""})${pod.status?.message ? `: ${pod.status.message.slice(0, 300)}` : ""}` };
 	}
-	const unschedulable = pod.status?.conditions?.find((one) => one.type === "PodScheduled" && one.status === "False");
-	return unschedulable?.message ? { state: "starting", why: unschedulable.message.slice(0, 300) } : { state: "starting" };
+	return { state: "starting" };
+}
+
+/** A failure of the API in new words, as a HostError: its code (or `code`) and its transient mark kept. */
+function kubeError(error: ComputerError, message: string, code: ComputerError["code"] = error.code): HostError {
+	return new HostError(code, message, { transient: error.transient === true && code === error.code });
 }
 
 /** A stream fed as the exec delivers, read as an async iterable until it ends or fails. */
@@ -227,14 +200,22 @@ function feed(): { push(bytes: Uint8Array): void; end(error?: Error): void; iter
 	};
 }
 
+/** How processOf's kill ends the command in the pod: `stop` given its pid (PID_WRAPPER's line, taken off stderr). */
+export interface ProcessKill {
+	stop(pid: { pid: string; start: string }): Promise<void>;
+}
+
 /**
  * One exec as a MachineProcess: channel 0 stdin, 1 stdout, 2 stderr, 3 the exit status (the exec is over once it comes,
  * whether or not the close follows: some API front ends never send the close after binary output). v5 ends stdin with
- * its close message (255, 0); v4 cannot, and end() says so.
+ * its close message (255, 0); v4 cannot, so end() does nothing there (MachineHost.exec: nothing the adapter runs waits
+ * for it). With `killer`, the command runs under PID_WRAPPER: its first stderr line is its pid, taken off, and kill()
+ * ends it and every process under it in the pod (pidKill, by a second exec): closing an exec's stream does not.
  */
-export function processOf(stream: KubeStream, stop?: () => Promise<void>): MachineProcess {
+export function processOf(stream: KubeStream, killer?: ProcessKill): MachineProcess {
 	const out = feed();
 	const err = feed();
+	const line = killer ? pidLine() : undefined;
 	let settle!: (code: number) => void;
 	let reject!: (error: Error) => void;
 	const exited = new Promise<number>((resolve, fail) => {
@@ -246,6 +227,7 @@ export function processOf(stream: KubeStream, stop?: () => Promise<void>): Machi
 	const finish = (code: number | Error) => {
 		if (finished) return;
 		finished = true;
+		line?.end();
 		out.end();
 		err.end();
 		if (typeof code === "number") settle(code);
@@ -254,7 +236,7 @@ export function processOf(stream: KubeStream, stop?: () => Promise<void>): Machi
 	};
 	stream.onMessage((channel, bytes) => {
 		if (channel === 1) out.push(bytes);
-		else if (channel === 2) err.push(bytes);
+		else if (channel === 2) err.push(line ? line.take(bytes) : bytes);
 		else if (channel === 3 && bytes.length > 0) {
 			const status = execStatus(bytes);
 			if ("code" in status) finish(status.code);
@@ -267,6 +249,7 @@ export function processOf(stream: KubeStream, stop?: () => Promise<void>): Machi
 	});
 	stream.onEnd((error) => finish(new Error(`the exec stream ended before the command's exit status came${error ? `: ${error.message}` : ""}`)));
 	let writing: Promise<void> = Promise.resolve();
+	const pid: PidWithin = line ? line.pid : async () => undefined;
 	return {
 		stdout: out.iterable,
 		stderr: err.iterable,
@@ -279,21 +262,22 @@ export function processOf(stream: KubeStream, stop?: () => Promise<void>): Machi
 		},
 		end() {
 			writing = writing.then(async () => {
-				if (finished) return;
-				if (stream.protocol !== EXEC_PROTOCOLS[0]) throw new Error(`the API server speaks ${stream.protocol}, which cannot end a command's stdin: the cluster's Kubernetes is older than 1.30`);
+				// v4 has no close message: stdin stays open until the command ends (a cluster older than Kubernetes 1.30).
+				if (finished || stream.protocol !== EXEC_PROTOCOLS[0]) return;
 				await stream.send(255, new Uint8Array([0]));
 			});
 			return writing;
 		},
 		wait: () => exited,
 		/**
-		 * Ends the command in the pod (stop: its process group, by a second exec), then lets go of the stream. wait()
-		 * answers the status the API server sends for the killed command (137 for SIGKILL), or -1 if none comes in time.
+		 * Ends the command in the pod (killer: by its pid, a second exec), then lets go of the stream. wait() answers the
+		 * status the API server sends for the killed command (137 for SIGKILL), or -1 if none comes in time. Never throws.
 		 */
 		async kill() {
 			if (finished) return;
-			if (stop) {
-				await stop().catch(() => {});
+			const target = killer ? await pid(KILL_GRACE_MS) : undefined;
+			if (killer && target) {
+				await killer.stop(target).catch(() => {});
 				const grace = new Promise<void>((done) => setTimeout(done, KILL_GRACE_MS).unref());
 				await Promise.race([exited.then(() => {}, () => {}), grace]);
 			}
@@ -304,7 +288,7 @@ export function processOf(stream: KubeStream, stop?: () => Promise<void>): Machi
 
 /** The Kubernetes machines of one namespace, as a MachineHost (./host.ts). */
 export class KubernetesHost implements MachineHost {
-	readonly id = "kubernetes";
+	readonly descriptor = KUBERNETES;
 	readonly facts: HostFacts;
 	readonly #api: KubeTransport;
 	readonly #namespace: string;
@@ -334,8 +318,8 @@ export class KubernetesHost implements MachineHost {
 		this.#requestMs = options.requestMs;
 		// daemon child: exec is the kubelet's, reached through the API server; nothing in the pod listens for it, so no
 		// vendor port. lifetime janitor: the deadline label, init's own deadline, and the pod's activeDeadlineSeconds (or
-		// the claim's shutdownTime) at the most a computer may live, as a backstop. The pod's network is the cluster's; the
-		// programs' is init's own, read back by the probe (networkReadBack false).
+		// the claim's shutdownTime) at the request's backstopAt. The pod's network is the cluster's; the programs' is
+		// init's own, read back by the probe.
 		this.facts = {
 			daemon: "child",
 			isolation: options.runtimeClass !== undefined && /gvisor|runsc/i.test(options.runtimeClass) ? "gvisor" : "container",
@@ -343,20 +327,7 @@ export class KubernetesHost implements MachineHost {
 			maxLifetimeMs: options.maxLifetimeMs,
 			arch: options.arch,
 			vendorAgentPorts: [],
-			networkReadBack: false,
-			network: [...KUBERNETES_DESCRIPTOR.network],
-			mounts: [...MOUNT],
-			unmounted: { ...KUBERNETES_DESCRIPTOR.unmounted },
-			release: ["delete"],
-			...(options.object === "pod" ? { specFields: ["cpus", "memoryMb"] as Array<"cpus" | "memoryMb"> } : {}),
 		};
-	}
-
-	errorCode(error: unknown): ComputerErrorCode {
-		const name = (error as { name?: unknown } | null)?.name;
-		if (name === "AbortError") return "aborted";
-		if (name === "TimeoutError") return "timeout";
-		return "vendor";
 	}
 
 	/** The image a spec names, as this host makes it: the pod model's image, or the claim model's warm pool. */
@@ -365,16 +336,17 @@ export class KubernetesHost implements MachineHost {
 		return this.#object === "pod" ? this.#image : this.#warmPool;
 	}
 
-	check(spec: ComputerSpec): Refusal[] {
+	/** A pod's image is a reference the cluster pulls, a claim's the name of a warm pool, whose template sets the size. */
+	check(spec: Partial<ComputerSpec>): Refusal[] {
+		const refusals = this.#object === "claim" ? sizeRefusals(spec, "a Kubernetes claim's computer", "warm pool") : [];
 		const image = (spec as { image?: unknown } | null)?.image;
-		if (typeof image !== "string" || image === "") return [];
+		if (typeof image !== "string" || image === "") return refusals;
 		const made = this.#imageOf(image);
 		if (made === undefined) {
-			return [{ field: "image", message: this.#object === "pod" ? `"${KUBERNETES_DEFAULT_IMAGE}" names the provider's image, and none is set: set the image option (the server's AGENTRUN_KUBERNETES_IMAGE), or name an image` : `"${KUBERNETES_DEFAULT_IMAGE}" names the provider's warm pool, and none is set: set the warmPool option (KUBERNETES_WARM_POOL), or name a SandboxWarmPool` }];
-		}
-		if (this.#object === "claim" && !DNS_SUBDOMAIN.test(made)) return [{ field: "image", message: `a Kubernetes claim's image is the name of a SandboxWarmPool in the namespace (lowercase letters, digits, - and .), not ${JSON.stringify(made)}` }];
-		if (this.#object === "pod" && /[\s\x00-\x1f]/.test(made)) return [{ field: "image", message: "an image reference has no whitespace or control characters" }];
-		return [];
+			refusals.push({ field: "image", message: this.#object === "pod" ? `"${KUBERNETES_DEFAULT_IMAGE}" names the provider's image, and none is set: set the image option (the server's AGENTRUN_KUBERNETES_IMAGE), or name an image` : `"${KUBERNETES_DEFAULT_IMAGE}" names the provider's warm pool, and none is set: set the warmPool option (KUBERNETES_WARM_POOL), or name a SandboxWarmPool` });
+		} else if (this.#object === "claim" && !DNS_SUBDOMAIN.test(made)) refusals.push({ field: "image", message: `a Kubernetes claim's image is the name of a SandboxWarmPool in the namespace (lowercase letters, digits, - and .), not ${JSON.stringify(made)}` });
+		else if (this.#object === "pod" && /[\s\x00-\x1f]/.test(made)) refusals.push({ field: "image", message: "an image reference has no whitespace or control characters" });
+		return refusals;
 	}
 
 	#path(kind: "pods" | "sandboxclaims" | "sandboxes", name = ""): string {
@@ -384,11 +356,15 @@ export class KubernetesHost implements MachineHost {
 		return `/apis/${api}/namespaces/${encodeURIComponent(this.#namespace)}/${kind}${tail}`;
 	}
 
+	/** One API call: its answer, or a HostError in the API's words, its transient mark kept. */
+	async #call(method: string, path: string, init: KubeCall): Promise<KubeAnswer> {
+		return orThrow(await this.#api.call(method, path, init));
+	}
+
 	/** One object by name; undefined for a 404. */
-	async #read<T>(kind: "pods" | "sandboxclaims" | "sandboxes", name: string, ctx: Pick<HostCall, "timeoutMs" | "signal">): Promise<Result<T | undefined>> {
-		const got = await this.#api.call("GET", this.#path(kind, name), { timeoutMs: Math.min(ctx.timeoutMs, this.#requestMs), ...(ctx.signal ? { signal: ctx.signal } : {}), accept: (status) => status === 404 || (status >= 200 && status < 300) });
-		if (!got.ok) return got;
-		return ok(got.value.status === 404 ? undefined : (got.value.body as T));
+	async #read<T>(kind: "pods" | "sandboxclaims" | "sandboxes", name: string, ctx: Pick<HostCall, "timeoutMs" | "signal">): Promise<T | undefined> {
+		const got = await this.#call("GET", this.#path(kind, name), { timeoutMs: Math.min(ctx.timeoutMs, this.#requestMs), ...(ctx.signal ? { signal: ctx.signal } : {}), accept: (status) => status === 404 || (status >= 200 && status < 300) });
+		return got.status === 404 ? undefined : (got.body as T);
 	}
 
 	/** The metadata create gives an object: the selector labels, and every adapter label in the annotation. */
@@ -404,11 +380,13 @@ export class KubernetesHost implements MachineHost {
 	/**
 	 * Makes the pod, or the claim, named req.name: a name the namespace already holds is exists (409), and makes nothing.
 	 * Not retried: a create that fails after reaching the API may have made the object, and the adapter finds it by name.
+	 * The backstop is req.backstopAt: the pod's activeDeadlineSeconds, or the claim's shutdownTime.
 	 */
-	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const image = this.#imageOf(req.image);
-		if (image === undefined) return fail("invalid", `image ${JSON.stringify(req.image)} names no image this provider is given`);
-		const backstopS = Math.ceil(this.facts.maxLifetimeMs / 1000);
+		if (image === undefined) throw new HostError("invalid", `image ${JSON.stringify(req.image)} names no image this provider is given`);
+		const backstop = Date.parse(req.backstopAt);
+		const backstopS = Math.max(1, Math.ceil(((Number.isNaN(backstop) ? Date.now() + this.facts.maxLifetimeMs : backstop) - Date.now()) / 1000));
 		let made: Result<KubeAnswer>;
 		if (this.#object === "pod") {
 			const limits = {
@@ -425,7 +403,7 @@ export class KubernetesHost implements MachineHost {
 					automountServiceAccountToken: false,
 					enableServiceLinks: false,
 					terminationGracePeriodSeconds: 5,
-					// The most a computer may live, whatever the janitor does: the kubelet ends the pod then.
+					// The backstop, whatever the janitor does: the kubelet ends the pod then.
 					activeDeadlineSeconds: backstopS,
 					...(this.#runtimeClass ? { runtimeClassName: this.#runtimeClass } : {}),
 					...(this.#nodeSelector ? { nodeSelector: this.#nodeSelector } : {}),
@@ -451,83 +429,75 @@ export class KubernetesHost implements MachineHost {
 				spec: {
 					warmPoolRef: { name: image },
 					additionalPodMetadata: { annotations: { [SAFE_TO_EVICT]: "false" } },
-					// The most a computer may live, whatever the janitor does: agent-sandbox deletes the claim then.
+					// The backstop, whatever the janitor does: agent-sandbox deletes the claim then.
 					lifecycle: { shutdownTime: new Date(Date.now() + backstopS * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"), shutdownPolicy: "Delete" },
 				},
 			};
 			made = await this.#api.call("POST", this.#path("sandboxclaims"), { json: claim, timeoutMs: ctx.timeoutMs });
 		}
 		if (!made.ok) {
-			if (made.error.code === "exists") return kubeFail("exists", `the namespace ${this.#namespace} already has a ${this.#object === "pod" ? "pod" : "SandboxClaim"} named ${req.name}: ${made.error.message}`);
-			if (made.error.code === "not_found" && this.#object === "claim") return failAs(made.error, `${made.error.message}: the cluster serves no SandboxClaim (${CLAIM_API}); install kubernetes-sigs/agent-sandbox with its extensions, or use the pod object model`, "invalid");
-			if (made.error.code === "denied") return failAs(made.error, `${made.error.message}: the provider's identity needs create, get, list, delete and patch on ${this.#object === "pod" ? "pods" : "sandboxclaims"}, get on sandboxes and pods, and create on pods/exec in ${this.#namespace}`);
-			return made;
+			const { error } = made;
+			if (error.code === "exists") throw kubeError(error, `the namespace ${this.#namespace} already has a ${this.#object === "pod" ? "pod" : "SandboxClaim"} named ${req.name}: ${error.message}`);
+			if (error.code === "not_found" && this.#object === "claim") throw kubeError(error, `${error.message}: the cluster serves no SandboxClaim (${CLAIM_API}); install kubernetes-sigs/agent-sandbox with its extensions, or use the pod object model`, "invalid");
+			if (error.code === "denied") throw kubeError(error, `${error.message}: the provider's identity needs create, get, list, delete and patch on ${this.#object === "pod" ? "pods" : "sandboxclaims"}, get on sandboxes and pods, and create on pods/exec in ${this.#namespace}`);
+			throw kubeError(error, error.message);
 		}
-		return ok({ id: req.name });
+		return { id: req.name };
 	}
 
 	/** The pod of a machine, by its id: the pod itself, or the claim's Sandbox's pod. */
-	async #observe(id: string, ctx: Pick<HostCall, "timeoutMs" | "signal">): Promise<Result<{ meta: Meta; pod?: Pod; claim?: Claim; why?: string } | undefined>> {
+	async #observe(id: string, ctx: Pick<HostCall, "timeoutMs" | "signal">): Promise<{ meta: Meta; pod?: Pod; claim?: Claim; why?: string } | undefined> {
 		if (this.#object === "pod") {
 			const pod = await this.#read<Pod>("pods", id, ctx);
-			if (!pod.ok || pod.value === undefined) return pod as Result<undefined>;
-			return ok({ meta: pod.value.metadata ?? {}, pod: pod.value });
+			return pod === undefined ? undefined : { meta: pod.metadata ?? {}, pod };
 		}
 		const claim = await this.#read<Claim>("sandboxclaims", id, ctx);
-		if (!claim.ok || claim.value === undefined) return claim as Result<undefined>;
-		const meta = claim.value.metadata ?? {};
-		const sandboxName = claim.value.status?.sandbox?.name;
-		const claimWhy = claim.value.status?.conditions?.find((one) => one.type === "Ready" && one.status !== "True");
+		if (claim === undefined) return undefined;
+		const meta = claim.metadata ?? {};
+		const sandboxName = claim.status?.sandbox?.name;
+		const claimWhy = claim.status?.conditions?.find((one) => one.type === "Ready" && one.status !== "True");
 		const why = claimWhy?.message ?? claimWhy?.reason;
-		if (!sandboxName) return ok({ meta, claim: claim.value, ...(why ? { why } : {}) });
+		if (!sandboxName) return { meta, claim, ...(why ? { why } : {}) };
 		const sandbox = await this.#read<Sandbox>("sandboxes", sandboxName, ctx);
-		if (!sandbox.ok) return sandbox;
-		if (sandbox.value === undefined) return ok({ meta, claim: claim.value, ...(why ? { why } : {}) });
-		const podName = sandbox.value.metadata?.annotations?.[POD_NAME_ANNOTATION] || sandboxName;
+		if (sandbox === undefined) return { meta, claim, ...(why ? { why } : {}) };
+		const podName = sandbox.metadata?.annotations?.[POD_NAME_ANNOTATION] || sandboxName;
 		const pod = await this.#read<Pod>("pods", podName, ctx);
-		if (!pod.ok) return pod;
-		return ok({ meta, claim: claim.value, ...(pod.value ? { pod: pod.value } : {}), ...(why ? { why } : {}) });
+		return { meta, claim, ...(pod ? { pod } : {}), ...(why ? { why } : {}) };
 	}
 
-	#machineOf(found: { meta: Meta; pod?: Pod; claim?: Claim; why?: string }): Machine {
+	#machineOf(found: { meta: Meta; pod?: Pod; claim?: Claim }): Machine {
 		const { meta, pod, claim } = found;
 		const made = Date.parse(meta.creationTimestamp ?? "");
-		const state = meta.deletionTimestamp ? { state: "going" as const } : pod === undefined ? { state: "starting" as const, ...(found.why ? { why: found.why } : {}) } : podState(pod);
+		const state = meta.deletionTimestamp ? { state: "gone" as const } : pod === undefined ? { state: "starting" as const } : podState(pod);
 		const container = pod?.spec?.containers?.find((one) => one.name === (this.#container ?? CONTAINER)) ?? pod?.spec?.containers?.[0];
-		const limits = container?.resources?.limits ?? {};
-		const cpus = cpusOf(limits.cpu);
-		const memoryMb = memoryMbOf(limits.memory);
-		const resolved = claim ? claim.spec?.warmPoolRef?.name : container?.image;
+		const image = claim ? claim.spec?.warmPoolRef?.name : container?.image;
 		return {
 			id: meta.name ?? "",
 			labels: labelsOf(meta),
 			...state,
-			...(resolved ? { image: { resolved } } : {}),
+			...(image ? { image } : {}),
 			...(Number.isNaN(made) ? {} : { createdAt: new Date(made) }),
-			...(this.#object === "pod" && (cpus !== undefined || memoryMb !== undefined) ? { size: { ...(cpus !== undefined ? { cpus } : {}), ...(memoryMb !== undefined ? { memoryMb } : {}) } } : {}),
 		};
 	}
 
-	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
+	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
 		const found = await this.#observe(id, ctx);
-		if (!found.ok) return found;
-		return ok(found.value === undefined ? undefined : this.#machineOf(found.value));
+		return found === undefined ? undefined : this.#machineOf(found);
 	}
 
 	/** Every object of the namespace with the selector labels (the request's name too, when asked), every page, filtered by the rest. */
-	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const selector = [`${COMPUTER_LABEL}=1`, ...(labels[NAME_LABEL] ? [`${NAME_LABEL}=${labels[NAME_LABEL]}`] : [])].join(",");
 		const until = Date.now() + ctx.timeoutMs;
 		const items: Array<Pod | Claim> = [];
 		let next: string | undefined;
 		for (let page = 0; ; page++) {
-			if (page >= MAX_PAGES) return vendorFail(KUBERNETES, `the listing ran past ${MAX_PAGES} pages`);
+			if (page >= MAX_PAGES) throw new HostError("vendor", `the listing ran past ${MAX_PAGES} pages`);
 			const left = until - Date.now();
-			if (left <= 0) return { ok: false, error: { code: "timeout", message: `the listing did not finish within ${ctx.timeoutMs / 1000} s`, transient: true } };
-			const listed = await this.#api.call("GET", this.#path(this.#object === "pod" ? "pods" : "sandboxclaims"), { query: { labelSelector: selector, limit: String(PAGE), continue: next }, timeoutMs: Math.min(left, this.#requestMs), ...(ctx.signal ? { signal: ctx.signal } : {}) });
-			if (!listed.ok) return listed;
-			const body = listed.value.body as { items?: unknown; metadata?: { continue?: unknown } } | undefined;
-			if (!Array.isArray(body?.items)) return vendorFail(KUBERNETES, "the listing is not a list of objects");
+			if (left <= 0) throw new HostError("timeout", `the listing did not finish within ${ctx.timeoutMs / 1000} s`, { transient: true });
+			const listed = await this.#call("GET", this.#path(this.#object === "pod" ? "pods" : "sandboxclaims"), { query: { labelSelector: selector, limit: String(PAGE), continue: next }, timeoutMs: Math.min(left, this.#requestMs), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+			const body = listed.body as { items?: unknown; metadata?: { continue?: unknown } } | undefined;
+			if (!Array.isArray(body?.items)) throw new HostError("vendor", "the listing is not a list of objects");
 			items.push(...(body.items as Array<Pod | Claim>));
 			next = typeof body.metadata?.continue === "string" && body.metadata.continue !== "" ? body.metadata.continue : undefined;
 			if (next === undefined) break;
@@ -542,75 +512,70 @@ export class KubernetesHost implements MachineHost {
 				continue;
 			}
 			const found = await this.#observe(meta.name ?? "", { timeoutMs: Math.max(1, until - Date.now()), ...(ctx.signal ? { signal: ctx.signal } : {}) });
-			if (!found.ok) return found;
-			if (found.value !== undefined) machines.push(this.#machineOf(found.value));
+			if (found !== undefined) machines.push(this.#machineOf(found));
 		}
-		return ok(machines);
+		return machines;
 	}
 
 	/** Deletes the pod (grace 0: it only sleeps) or the claim (agent-sandbox deletes its Sandbox and pod); not found is ok. */
-	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
+	async delete(id: string, ctx: HostCall): Promise<void> {
 		this.#pods.delete(id);
-		const removed = await this.#api.call("DELETE", this.#path(this.#object === "pod" ? "pods" : "sandboxclaims", id), {
+		await this.#call("DELETE", this.#path(this.#object === "pod" ? "pods" : "sandboxclaims", id), {
 			query: this.#object === "pod" ? { gracePeriodSeconds: "0" } : { propagationPolicy: "Foreground" },
 			timeoutMs: ctx.timeoutMs,
 			accept: (status) => status === 404 || (status >= 200 && status < 300),
 		});
-		return removed.ok ? ok(undefined) : removed;
 	}
 
-	/** Replaces some adapter labels: the annotation read, merged, and written back under its resourceVersion (a 409 reads again). */
-	async setLabels(id: string, labels: Record<string, string>, ctx: HostCall): Promise<Result<void>> {
+	/**
+	 * The janitor's deadline label moved to endsAt (the adapter holds it to the most the machine may live): the annotation
+	 * read, merged, and written back under its resourceVersion (a 409 reads again).
+	 */
+	async extend(id: string, endsAt: Date, ctx: HostCall): Promise<void> {
 		const kind = this.#object === "pod" ? "pods" : "sandboxclaims";
 		for (let attempt = 1; ; attempt++) {
 			const read = await this.#read<Pod | Claim>(kind, id, ctx);
-			if (!read.ok) return read;
-			if (read.value === undefined) return kubeFail("not_found", `the namespace ${this.#namespace} has no ${this.#object === "pod" ? "pod" : "SandboxClaim"} ${id}`);
-			const merged = { ...labelsOf(read.value.metadata), ...labels };
+			if (read === undefined) throw new HostError("not_found", `the namespace ${this.#namespace} has no ${this.#object === "pod" ? "pod" : "SandboxClaim"} ${id}`);
+			const merged = { ...labelsOf(read.metadata), [DEADLINE_LABEL]: endsAt.toISOString() };
 			const patched = await this.#api.call("PATCH", this.#path(kind, id), {
-				json: { metadata: { resourceVersion: read.value.metadata?.resourceVersion, annotations: { [LABELS_ANNOTATION]: JSON.stringify(merged) } } },
+				json: { metadata: { resourceVersion: read.metadata?.resourceVersion, annotations: { [LABELS_ANNOTATION]: JSON.stringify(merged) } } },
 				contentType: "application/merge-patch+json",
 				timeoutMs: ctx.timeoutMs,
 				...(ctx.signal ? { signal: ctx.signal } : {}),
 			});
-			if (patched.ok) return ok(undefined);
-			if (patched.error.code !== "exists" || attempt >= 3) return patched;
+			if (patched.ok) return;
+			if (patched.error.code !== "exists" || attempt >= 3) throw kubeError(patched.error, patched.error.message);
 		}
 	}
 
 	/** The pod and container exec reaches, read running; cached for a claim's. */
-	async #target(id: string, ctx: Pick<HostCall, "timeoutMs" | "signal">): Promise<Result<{ pod: string; container: string }>> {
-		if (this.#object === "pod") return ok({ pod: id, container: CONTAINER });
+	async #target(id: string, ctx: Pick<HostCall, "timeoutMs" | "signal">): Promise<{ pod: string; container: string }> {
+		if (this.#object === "pod") return { pod: id, container: CONTAINER };
 		const known = this.#pods.get(id);
-		if (known !== undefined) return ok(known);
+		if (known !== undefined) return known;
 		const found = await this.#observe(id, ctx);
-		if (!found.ok) return found;
-		const pod = found.value?.pod;
-		if (pod?.metadata?.name === undefined || pod.status?.phase !== "Running") return kubeFail("not_found", `SandboxClaim ${id} has no running pod${found.value?.why ? `: ${found.value.why}` : ""}`);
+		const pod = found?.pod;
+		if (pod?.metadata?.name === undefined || pod.status?.phase !== "Running") throw new HostError("not_found", `SandboxClaim ${id} has no running pod${found?.why ? `: ${found.why}` : ""}`);
 		const container = this.#container ?? pod.spec?.containers?.[0]?.name;
-		if (container === undefined) return vendorFail(KUBERNETES, `the pod of SandboxClaim ${id} has no container`);
+		if (container === undefined) throw new HostError("vendor", `the pod of SandboxClaim ${id} has no container`);
 		const target = { pod: pod.metadata.name, container };
 		this.#pods.set(id, target);
-		return ok(target);
+		return target;
 	}
 
 	/**
-	 * argv in the pod's container, as its user (root), over the API server's exec WebSocket; see processOf. It runs
-	 * under LEADER and WRAPPER, so kill ends its process group in the pod (KILL_SCRIPT, by a second exec), not only the
-	 * stream: closing an exec's stream does not stop the command.
+	 * argv in the pod's container, as its user (root), over the API server's exec WebSocket, stdin open; see processOf. It
+	 * runs under PID_WRAPPER, so kill ends it and every process under it in the pod (pidKill, by a second exec), not only
+	 * the stream: closing an exec's stream does not stop the command.
 	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
-		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
-		const opened = await this.#open(id, ["sh", "-c", LEADER, pidFile, WRAPPER, ...argv], stdin, ctx);
-		if (!opened.ok) return opened;
-		return ok(processOf(opened.value, () => this.#stop(id, pidFile)));
+	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+		const opened = await this.#open(id, [...PID_WRAPPER, ...argv], true, ctx);
+		return processOf(opened, { stop: (pid) => this.#stop(id, pid) });
 	}
 
-	/** KILL_SCRIPT for one exec's pid file, waited for within KILL_GRACE_MS; best effort, as kill is. */
-	async #stop(id: string, pidFile: string): Promise<void> {
-		const opened = await this.#open(id, ["sh", "-c", KILL_SCRIPT, pidFile], false, { timeoutMs: KILL_GRACE_MS });
-		if (!opened.ok) return;
-		const killer = processOf(opened.value);
+	/** pidKill for one exec's process, waited for within KILL_GRACE_MS; best effort, as kill is. */
+	async #stop(id: string, pid: { pid: string; start: string }): Promise<void> {
+		const killer = processOf(await this.#open(id, pidKill(pid), false, { timeoutMs: KILL_GRACE_MS }));
 		const drain = async (lines: AsyncIterable<Uint8Array>) => {
 			for await (const _ of lines);
 		};
@@ -622,27 +587,23 @@ export class KubernetesHost implements MachineHost {
 	}
 
 	/** One exec stream of argv as it is, with stdout and stderr (and stdin when asked). */
-	async #open(id: string, argv: readonly string[], stdin: boolean, ctx: HostCall): Promise<Result<KubeStream>> {
+	async #open(id: string, argv: readonly string[], stdin: boolean, ctx: HostCall): Promise<KubeStream> {
 		const target = await this.#target(id, ctx);
-		if (!target.ok) return target;
-		const query: Array<[string, string]> = [["container", target.value.container], ["stdout", "true"], ["stderr", "true"], ...(stdin ? ([["stdin", "true"]] as Array<[string, string]>) : []), ...argv.map((word) => ["command", word] as [string, string])];
-		const opened = await this.#api.stream(`${this.#path("pods", target.value.pod)}/exec`, query, EXEC_PROTOCOLS, { timeoutMs: ctx.timeoutMs, ...(ctx.signal ? { signal: ctx.signal } : {}) });
-		if (!opened.ok) {
-			if (opened.error.code === "not_found") this.#pods.delete(id);
-			if (opened.error.code === "denied") return failAs(opened.error, `${opened.error.message}: the provider's identity needs create on pods/exec in ${this.#namespace}`);
-		}
-		return opened;
+		const query: Array<[string, string]> = [["container", target.container], ["stdout", "true"], ["stderr", "true"], ...(stdin ? ([["stdin", "true"]] as Array<[string, string]>) : []), ...argv.map((word) => ["command", word] as [string, string])];
+		const opened = await this.#api.stream(`${this.#path("pods", target.pod)}/exec`, query, EXEC_PROTOCOLS, { timeoutMs: ctx.timeoutMs, ...(ctx.signal ? { signal: ctx.signal } : {}) });
+		if (opened.ok) return opened.value;
+		if (opened.error.code === "not_found") this.#pods.delete(id);
+		if (opened.error.code === "denied") throw kubeError(opened.error, `${opened.error.message}: the provider's identity needs create on pods/exec in ${this.#namespace}`);
+		throw kubeError(opened.error, opened.error.message);
 	}
 
 	/**
 	 * Bytes to path as root, through exec: `head -c <size>` reads exactly the bytes sent, so the upload needs no end of
 	 * stdin (which v4 cannot send), and the file is moved into place only once it has them all.
 	 */
-	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<Result<void>> {
+	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
 		const script = 'umask 077; head -c "$1" > "$2.part" && [ "$(wc -c < "$2.part")" -eq "$1" ] && mv -f "$2.part" "$2" || { rm -f "$2.part"; echo "the upload to $2 did not arrive whole" >&2; exit 1; }';
-		const started = await this.exec(id, ["sh", "-c", script, "sh", String(bytes.length), path], { stdin: true }, ctx);
-		if (!started.ok) return started;
-		const running = started.value;
+		const running = await this.exec(id, ["sh", "-c", script, "sh", String(bytes.length), path], ctx);
 		const stderr: Uint8Array[] = [];
 		const drained = (async () => {
 			for await (const chunk of running.stderr) stderr.push(chunk);
@@ -652,29 +613,20 @@ export class KubernetesHost implements MachineHost {
 		})().catch(() => {});
 		const bound = AbortSignal.timeout(ctx.timeoutMs);
 		const timedOut = new Promise<"timeout">((done) => bound.addEventListener("abort", () => done("timeout"), { once: true }));
+		const late = () => new HostError("timeout", `the upload to ${path} did not finish within ${ctx.timeoutMs / 1000} s`, { transient: true });
 		try {
 			const written = await Promise.race([running.write(bytes).then(() => "sent" as const), timedOut]);
-			if (written === "timeout") return { ok: false, error: { code: "timeout", message: `the upload to ${path} did not finish within ${ctx.timeoutMs / 1000} s`, transient: true } };
+			if (written === "timeout") throw late();
 			const code = await Promise.race([running.wait(), timedOut]);
-			if (code === "timeout") return { ok: false, error: { code: "timeout", message: `the upload to ${path} did not finish within ${ctx.timeoutMs / 1000} s`, transient: true } };
+			if (code === "timeout") throw late();
 			await Promise.all([drained, drainOut]);
-			if (code !== 0) return vendorFail(KUBERNETES, `the upload to ${path} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim().slice(0, 300)}`);
-			return ok(undefined);
+			if (code !== 0) throw new HostError("vendor", `the upload to ${path} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim().slice(0, 300)}`);
 		} catch (error) {
-			return vendorFail(KUBERNETES, `the upload to ${path} failed: ${(error as Error).message}`);
+			if (error instanceof HostError) throw error;
+			throw new HostError("vendor", `the upload to ${path} failed: ${(error as Error).message}`);
 		} finally {
 			await running.kill();
 		}
-	}
-
-	/** Settings' test: one page of the namespace's computers by the selector label, which makes nothing. */
-	async testConnection(ctx: HostCall): Promise<Result<{ detail: string }>> {
-		const listed = await this.#api.call("GET", this.#path(this.#object === "pod" ? "pods" : "sandboxclaims"), { query: { labelSelector: `${COMPUTER_LABEL}=1`, limit: String(PAGE) }, timeoutMs: ctx.timeoutMs, ...(ctx.signal ? { signal: ctx.signal } : {}) });
-		if (!listed.ok) return countTested("Kubernetes", listed);
-		const body = listed.value.body as { items?: unknown[]; metadata?: { continue?: unknown } } | undefined;
-		const items = Array.isArray(body?.items) ? (body.items as Pod[]) : [];
-		const count = items.filter((item) => !item.metadata?.deletionTimestamp).length;
-		return countTested("Kubernetes", ok({ count, more: typeof body?.metadata?.continue === "string" && body.metadata.continue !== "" }));
 	}
 }
 
@@ -733,6 +685,6 @@ export class KubernetesProvider extends HostedProvider {
 			maxLifetimeMs,
 			requestMs,
 		});
-		super(host, { ...rest, maxLifetimeMs, label: "Kubernetes", kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
+		super(host, { ...rest, maxLifetimeMs, kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
 	}
 }

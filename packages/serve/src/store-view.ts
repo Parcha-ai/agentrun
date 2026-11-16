@@ -19,6 +19,7 @@ import {
   momentOf,
   type Pending,
   pendingOf,
+  stoppedTurn,
   type RunFacts,
   type RunMoment,
   type RunView,
@@ -39,19 +40,19 @@ import {
   statusOf,
   WITHHELD_SIGN_IN,
   WITHHELD_TITLE,
-  costView,
-  soFarOf,
+  costWordsOfView,
+  freeOf,
   usersOf,
   withAsks,
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
-import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
-import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
+import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
+import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
-import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
+import { laidOf, notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
+import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
@@ -122,8 +123,10 @@ const inputWhole = (store: Store, runId: string, input: Record<string, unknown>,
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
  *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
  *  followed, so a follow-up whose own stop said nothing (no text block: a thinking-only stop) has no answer, null, not
- *  the answer before it. */
-export const answerOf = (rows: readonly TimelineEvent[]): string | null => {
+ *  the answer before it. Read on the job's turns (withoutFeedbackRounds): a grade's feedback round asks no turn of the
+ *  job's, so its words never cut the answer off. */
+export const answerOf = (timeline: readonly TimelineEvent[]): string | null => {
+  const rows = withoutFeedbackRounds(timeline);
   const asked = rows.findLastIndex((r) => isMessageRow(r) && r.agent_label === null && r.text !== null);
   const row = rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL);
   return row && rows.lastIndexOf(row) > asked ? row.text ?? null : null;
@@ -134,7 +137,9 @@ export const answerOf = (rows: readonly TimelineEvent[]): string | null => {
  *  the code, as main served it; a provider's content-filter stop is `moderated`, in words a person can act on
  *  (content-filter.ts); every other failure is run_failed. */
 const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => {
-  const over = overCapMessage(summary);
+  // A run that reached its limit of requests on free models (the kernel cap's freeCeilingEnd) ends as its cap ends one: code
+  // spend_cap_reached, its message the words after the code.
+  const over = overCapMessage(summary) ?? freeCeilingMessage(summary);
   if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
   if (summary !== null && contentFiltered(summary)) return { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false };
   return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
@@ -167,6 +172,8 @@ function pausedOf(runRow: RunRow, entries: readonly { kind?: string; id?: unknow
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
 interface StoreRun {
+  readonly native?: Record<string, unknown>;
+  readonly sdk?: Record<string, unknown>;
   readonly row: NonNullable<Awaited<ReturnType<typeof readRun>>>;
   readonly runRow: RunRow;
   readonly launch: RunLaunch | undefined;
@@ -212,6 +219,14 @@ interface StoreRun {
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
   readonly decisions: BookedSpend | undefined;
+  /** Its model requests billed to a ChatGPT plan (metrics.ts planSpend), undefined when it made none. */
+  readonly plan: { readonly requests: number; readonly tokens: number } | undefined;
+  /** An ended run's cost from its booking (metrics.ts runCostOf, the rule its end stored it by), read in the same snapshot
+   *  as its state; undefined for a run still going, imported, native, or that booked no request. */
+  readonly endCost?: RunCost;
+  /** Whether the run's last end wrote its cost (EndData.costUsd present: a figure or null), so the stored column holds the
+   *  end's answer. False for an end whose spec reads no cost, which leaves the column as it was. */
+  readonly endSaidCost?: boolean;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -284,14 +299,29 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // (a CLI session's own conversation skipped) and the input submissions, with the end-of-run turn's entries left out
   // (runReflect). progressAt reads the latest tick, so a working run's last_progress_at advances as today.
   const records = await journalRecords(store.readJournal(runId), context);
+  const sdkCompletion = records.entries.findLast(entry => entry.kind === "agentrun.sdk.completion")?.data as import("./sdk/runs.js").SdkCompletion | undefined;
+  const sdkSession = records.entries.findLast(entry => entry.kind === "agentrun.sdk.session")?.data as {session_id:string} | undefined;
+  const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
+  const nativeConfiguration = records.entries.findLast(e=>e.kind === "agentrun.native.configuration")?.data as Record<string,unknown>|undefined;
+  const nativeEvents = records.entries.filter(e=>e.kind === "agentrun.native.usage").map(e=>e.data as {phase:string;model?:string;usage:import("./native/types.js").NativeUsage;session_id:string});
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
+  const taskUsage = nativeEvents.filter(e=>e.phase==="task").map(e=>e.usage);
+  // A native retry may fail before reporting usage. Do not present earlier attempts as the complete task total.
+  // Reflection requests have their own usage and must not make otherwise complete task counters unknown.
+  const taskRequests = records.entries.filter(e=>e.kind === "runner.request" && (e.data as {aggregate?:unknown})?.aggregate === true && !reflects(reflectRange,e.id)).length;
+  const nativeTaskUsage = taskUsage.length ? Object.fromEntries(Object.keys(taskUsage[0]!).map(key=>{
+    const counters=taskUsage.map(usage=>usage[key as keyof typeof usage]);
+    return [key,taskUsage.length<taskRequests || counters.some(value=>value===null)?null:counters.reduce<number>((total,value)=>total+(value??0),0)];
+  })) : null;
+  const nativeSession = records.entries.findLast(e=>e.kind === "agentrun.native.session")?.data as {session_id:string}|undefined;
+  const native = launch?.native ? {runtime:launch.native.runtime,project:launch.native.project,selector:launch.native.selector,machine_id:launch.native.machine_id,fingerprint:nativeConfiguration?.fingerprint ?? launch.native.fingerprint,session_id:nativeSession?.session_id??null,model:nativeEvents.at(-1)?.model??launch.native.model,learning_revision:launch.learning?.seed??null,usage:{task:nativeTaskUsage,reflection:nativeEvents.filter(e=>e.phase==="reflection").map(e=>e.usage)},model_requests:null} : undefined;
   const skip = reflectRange ? (id: number) => reflects(reflectRange, id) : undefined;
   // The run's learning end with the notes its start gave it and those its job read (its own reads, keyed on the given, read
   // from its rows uncut: a note whose name holds a secret is cut where it is shown, after it is matched). Before its end, a
   // run that learns is seeded, then looking back once its end-of-run turn starts (main's seeded and reflecting).
   const started = launch ? learningStartOf(launch) : undefined;
   const read = started?.given.length ? notesReadOf(started.given, reflectRange, await runTimeline(store, runId, context, { settled: terminal })) : [];
-  const under = !ended && started && started.use ? usedOnly(started, terminal, iso(runRow.endedAt ?? runRow.startedAt)) : !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
+  const under = !ended && started && started.use ? usedOnly(started, terminal, iso(runRow.endedAt ?? runRow.startedAt)) : !ended && started && !seedFailed(started) ? underWay(started, laidOf(records.entries), reflectRange, iso(runRow.startedAt)) : null;
   const sofar = ended ?? under;
   const shownEnd = sofar && withNotes(sofar, started, read);
   const turns = new Turns();
@@ -387,7 +417,16 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
+  const onPlan = planSpend(records.entries as never);
+  const plan = onPlan.requests ? onPlan : undefined;
+  // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
+  // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
+  // workflow's end stores it by the same rule (workflow-spec.ts); a native run's end reads its own, so it keeps the
+  // reading below.
+  const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
+  const endCost = bookedCost?.requests ? bookedCost : undefined;
+  const endSaidCost = endCost ? ((records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd !== undefined) : false;
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, ...(endCost ? { endCost, endSaidCost } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -397,14 +436,13 @@ function learningViewOf(learningEnd: RunLearning | null, shown: Shown, settled: 
   return learningView(learningEnd as Learning, shown, settled);
 }
 
-/** A learning run's learning before its end (main's learning-run.ts onStart and its end-of-run turn): seeded, saying how
- *  many notes its seed held, until its end-of-run turn starts; then looking back. */
-function underWay(started: NonNullable<RunLaunch["learning"]>, reflect: Reflect | undefined, at: string): RunLearning {
-  return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
+/** A run's learning before its end: its seed's notes and the learned skills/workflows its claims actually laid,
+ *  until its end-of-run turn starts; then looking back. Merely offered skills are not counted as supplied. */
+function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<typeof laidOf>, reflect: Reflect | undefined, at: string): RunLearning {
+  return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0, laid.skills.length, laid.workflows.length), at };
 }
 
-/** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept; a cap's room noted when it has
- *  one. A terminal run holds no request in flight, so its overshoot bound is 0. */
+/** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap. */
 function costOfView(run: StoreRun): Record<string, unknown> {
   const imported = Boolean(run.row.importedFrom);
   // The stored cost the view folds with the rows' usage: an ended run's is its row's column (number or null, so a run the
@@ -412,14 +450,38 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // no stored cost (its column is written only at the end), so it reads undefined, which costView turns into 0 before any
   // request — never null.
   const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
+  // The most it can have cost, when that is what its end stored (RunRow.costAtMostUsd): the view is a reader that says
+  // "at most", so it shows that figure, marked upper_bound.
+  const storedAtMost = run.row.state === "running" ? null : run.runRow.costAtMostUsd;
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
-  const usd = imported ? (stored ?? null) : costView(run.rows, stored, decisions ? decisions.usd : undefined);
-  const soFar = usd === null && !imported ? soFarOf(run.rows, decisions ? { known: decisions.known, unpriced: decisions.unpriced } : undefined) : undefined;
+  // An ended run that booked its requests reads the cost its end stored by its booking (runCostOf), the answer the list,
+  // usage and stats read too: one figure on every reader. Its end reads that cost again when a read fails
+  // (loop.ts readAgain), so a null is kept only when the booking could not be read within the end's bound. The booking,
+  // read in the snapshot that read its state, adds only what the stored figure agrees with: what is known so far when both
+  // are unknown. An end that wrote no cost (a spec that reads none) left the column alone: the booking is the answer then.
+  const booked = run.endCost;
+  const said = booked !== undefined && run.endSaidCost === true;
+  // Its cost in the Cost's words (CostWords), each figure by the one rule (costWordsOf): a hold is never spend, so while
+  // the total is unknown each held request counts as not priced, and a bound says its exact part and held count beside it.
+  // A run still going or ended unbooked: its usage row joined with its decisions' booking (costWordsOfView). An imported
+  // run: what the import stored, exact. An ended run that booked its requests: its booking's words, or, where its end
+  // stored a figure, that figure, with what the booking says beside it only where the two agree (the same unknown, the
+  // same bound); a bound its end stored is said so (cost_upper_bound), the bound the list and the column read too.
+  const bookedWords = booked ? costWordsOf([booked]) : undefined;
+  const words = !booked ? (imported ? { usd: stored ?? null } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!.usd === null ? bookedWords! : { usd: null };
+  const usd = words.usd;
+  const counted = words.so_far_usd !== undefined && words.unpriced !== undefined ? { so_far_usd: words.so_far_usd, unpriced: words.unpriced } : undefined;
+  const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
+  // A request billed to a ChatGPT plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
+  // $0, so it is in no unpriced count; what it used on the plan is said beside the figure.
+  const plan = run.plan;
+  // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
+  // decision of its own), that it is free.
+  const soFar = counted ?? (imported || decisions?.requests ? undefined : freeOf(run.rows, usd));
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
-  const bound = cap === undefined ? {} : { overshoot_bound_usd: 0 };
-  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...bound, ...(soFar ?? {}) };
+  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */
@@ -475,11 +537,15 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
+  // A turn a person stopped reads kind stopped (stoppedTurn, which the run.needs_input webhook reads through this field):
+  // it holds none of the run's words, so a withheld run says it too.
   const redactor = redactorOf(values);
-  const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
+  const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : stoppedTurn(view, { status, state }) ? { kind: "stopped" } : null;
   const settled = terminal && ended;
 
   return {
+    ...(run.sdk && !unshown ? {sdk:redactedOutput(run.sdk,values)}:{}),
+    ...(run.native && !unshown ? {native:redactedOutput(run.native,values)}:{}),
     run_id: row.id,
     agent_id: row.agent,
     agent_version: run.version,
@@ -511,13 +577,12 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     review,
     pending,
     cost: costOfView(run),
-    cap_mode: launch?.maxCostUsd === undefined ? null : (launch.capMode ?? "expected"),
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
     // Only what an imported run shows: never the server's internal file stamp (importedFrom.file).
     imported_from: runRow.importedFrom ? { source: runRow.importedFrom.source, session: runRow.importedFrom.session } : null,
-    trigger: launch?.trigger ?? null,
+    trigger: launch?.trigger ? { id: launch.trigger.id, firing_key: launch.trigger.firing_key } : null,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
     learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), settled),
     poll_after_ms: settled ? 0 : 1000,
@@ -532,6 +597,8 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
   const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = view as Record<string, unknown>;
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
+    ...(view.sdk ? {sdk:view.sdk} : {}),
+    ...(view.native ? {native:view.native} : {}),
     ...(effort ? { effort } : {}),
     created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,

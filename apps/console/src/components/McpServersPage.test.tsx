@@ -1,12 +1,13 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { freeName, McpServersPage } from "./McpServersPage";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
+import { SERVER_DENY } from "@/lib/toolSettings";
 import recorded from "@/fixtures/mcp.requests.json";
-import { picker } from "@/test/picker";
+import { pick, picker, valueOf } from "@/test/picker";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
 // words; OAuth's sign-in and its way back; the saved list with each credential's state, refresh and delete. A credential
@@ -54,7 +55,7 @@ function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
 async function open(v2: ReturnType<typeof createClient>, props: Record<string, unknown> = {}) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -81,6 +82,23 @@ async function open(v2: ReturnType<typeof createClient>, props: Record<string, u
 }
 
 describe("Settings → MCP servers, adding one", () => {
+  it.each(["bearer", "headers"] as const)("Replace pastes the %s credential without submitting or previewing it", async (type) => {
+    const readText = vi.fn().mockResolvedValue(VARS.token);
+    vi.stubGlobal("navigator", { clipboard: { readText } });
+    const s = server([[saved({ auth: type === "bearer" ? { type } : { type, headers: ["X-Api-Key"] }, secret: { name: "mcp:fake", set: true, source: "console", changed_at: null } })]]);
+    const p = await open(s.v2);
+    await p.click(/^Replace$/, p.row("fake"));
+    const input = p.input(type === "bearer" ? "mcp-token" : "mcp-header-value-0");
+    expect(input.value).toBe(VARS.token);
+    expect(document.activeElement).toBe(input);
+    expect(p.host.innerHTML).not.toContain(VARS.token);
+    expect(s.writes()).toEqual([]);
+    await p.click(/^Cancel$/);
+    await p.click(/^Change$/, p.row("fake"));
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(p.input(input.name).value).toBe("");
+  });
+
   it("previews the tools and the protocol, then saves: the exact requests, and the token gone from the page", async () => {
     const s = server([[], [saved()]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
     const p = await open(s.v2);
@@ -376,7 +394,7 @@ describe("Settings → MCP servers, the saved ones", () => {
     const s = server([[saved({ prices: { add: 0.05 }, not_metered: ["slow_write"] }), saved({ name: "paid", prices: { add: 0.05, slow_write: 0 } })]]);
     const p = await open(s.v2);
     expect(p.row("fake").textContent).toContain("not metered");
-    expect([...p.row("fake").querySelectorAll("details li")].map((li) => li.textContent)).toEqual(["add · $0.05 a call", "slow_write · not metered"]);
+    expect([...p.row("fake").querySelectorAll("details [data-tool-detail]")].map((x) => x.textContent)).toEqual(["$0.05 a call", "not metered"]);
     expect(p.row("paid").textContent).not.toContain("not metered");
   });
 
@@ -788,5 +806,352 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(p.input("composio-name").value).toBe("gh");
     await p.click(/^Save$/);
     expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
+  });
+});
+
+describe("Settings → MCP servers, deleting a Composio server", () => {
+  it("says what to remove in Composio when it could not be removed there, after the row is gone", async () => {
+    const note = "Remove hn in Composio yourself: https://platform.composio.dev";
+    const s = server([[saved({ name: "hn" })], []], (c) => (c.method === "DELETE" ? json(200, { deleted: true, composio: { removed: false, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Delete$/, p.row("hn"));
+    await p.click(/^Delete$/, p.row("hn").querySelector('[role="alertdialog"]')!);
+    expect(p.text()).toContain("No MCP server is saved here yet");
+    expect(p.host.querySelector('[role="status"]')?.textContent).toContain(note);
+  });
+});
+
+describe("Settings → MCP servers, a server's tool settings", () => {
+  const ALL = ["allow", "ask", "deny"] as const;
+  const gate = (permission: "allow" | "ask" | "deny" = "ask") => ({ permission, default_permission: "ask" as const, permissions: [...ALL] });
+  const MARKED = [
+    { name: "get_repo", input_schema: { type: "object" }, effect: "read", ...gate() },
+    { name: "open_issue", input_schema: { type: "object" }, effect: "write", ...gate() },
+    { name: "delete_repo", input_schema: { type: "object" }, effect: "destructive", ...gate() },
+  ] as unknown as McpServer["tools"];
+  /** A server whose tool settings are `settings`, kept as each PUT replaces them. Its read of gh marks each read-only
+   *  tool `fallback_allow_reads` while gh's wildcard carries it, and `allow_reads` (its permission allow) where no setting
+   *  of its own decides it, as the server does (`marks: false`: a read that marks none). */
+  function withSettings(settings: Record<string, unknown>, { marks = true, held }: { marks?: boolean; held?: { on: boolean; release: () => void } } = {}) {
+    let now = settings;
+    const s = server([[saved({ name: "gh", tools: MARKED })]], (c) => {
+      if (c.method === "GET" && c.path === "/v2/settings/mcp-servers") {
+        const on = marks && (now["mcp:gh/*"] as { allow_reads?: true } | undefined)?.allow_reads === true;
+        const tools = MARKED.map((t) => {
+          if (!on || t.effect !== "read") return t;
+          const own = (now[`mcp:gh/${t.name}`] as { permission?: string } | undefined)?.permission;
+          return own ? { ...t, permission: own, fallback_allow_reads: true } : { ...t, permission: "allow", allow_reads: true, fallback_allow_reads: true };
+        });
+        return json(200, { servers: [saved({ name: "gh", tools: tools as McpServer["tools"] })] });
+      }
+      if (c.path !== "/v2/settings/tools") return undefined;
+      if (c.method === "PUT") now = c.body as Record<string, unknown>;
+      const answer = () => json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" }, browser: { provider: "kernel" }, ...now });
+      // A held PUT answers when the test releases it: a save still out.
+      return c.method === "PUT" && held?.on ? new Promise<Response>((r) => { held.release = () => r(answer()); }) : answer();
+    });
+    return { ...s, settings: () => now };
+  }
+  // Capabilities' providers, each its default: a save sends none of them back as if picked.
+  const CHOICES = [{ name: "web_search", default_provider: "auto" }, { name: "web_fetch", default_provider: "kernel" }, { name: "browser", default_provider: "kernel" }];
+  const table = (p: Awaited<ReturnType<typeof open>>) => p.row("gh").querySelector("table")!;
+  const permission = (p: Awaited<ReturnType<typeof open>>, tool: string) => table(p).querySelector<HTMLButtonElement>(`button[aria-haspopup=listbox][aria-label="mcp:gh/${tool} permission"]`)!;
+
+  it("marks each tool read, write or destructive, as the server's read says", async () => {
+    const p = await open(withSettings({}).v2, { choices: CHOICES });
+    const marks = [...table(p).querySelectorAll("tr[data-tool]")].map((row) => [row.getAttribute("data-tool"), row.querySelector("[data-effect]")?.getAttribute("data-effect")]);
+    expect(marks).toEqual([["mcp:gh/get_repo", "read"], ["mcp:gh/open_issue", "write"], ["mcp:gh/delete_repo", "destructive"]]);
+  });
+
+  it("Allow reads is one click: it saves allow_reads on the server's wildcard, every other setting kept, and the read-only tools then read allow by default", async () => {
+    const s = withSettings({ "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask" } });
+    const p = await open(s.v2, { choices: CHOICES });
+    const toggle = p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle.click(); });
+    await p.settle();
+    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/tools", body: { "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask", allow_reads: true } } }]);
+    expect(p.row("gh").querySelector('button[role="switch"]')!.getAttribute("aria-checked")).toBe("true");
+    expect(valueOf(permission(p, "get_repo"))).toBe("allow");
+    expect(valueOf(permission(p, "open_issue"))).toBe("ask");
+    // Where each allow comes from, in words: Allow reads, never "default", which would read as every server allowing reads.
+    expect(permission(p, "get_repo").textContent).toBe("allow (allow reads)");
+    expect(permission(p, "open_issue").textContent).toBe("ask (default)");
+    // Off again: the field goes, the rest stays.
+    await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
+    await p.settle();
+    expect(s.settings()).toEqual({ "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask" } });
+  });
+
+  it("a read-only tool set to ask under Allow reads falls back to allow (allow reads), as the server's read says: allow again removes its own setting, so turning the switch off leaves it asking", async () => {
+    const s = withSettings({ "mcp:gh/*": { allow_reads: true }, "mcp:gh/get_repo": { permission: "ask" } });
+    const p = await open(s.v2, { choices: CHOICES });
+    expect(valueOf(permission(p, "get_repo"))).toBe("ask");
+    // Ask is its own setting, not the default: with it removed, Allow reads lets the tool run.
+    expect(permission(p, "get_repo").textContent).toBe("ask");
+    expect(table(p).querySelector('tr[data-tool="mcp:gh/get_repo"]')!.textContent).toContain("default: allow (allow reads)");
+    await pick(permission(p, "get_repo"), "allow");
+    await p.settle();
+    expect(s.settings()).toEqual({ "mcp:gh/*": { allow_reads: true } });
+    expect(permission(p, "get_repo").textContent).toBe("allow (allow reads)");
+    await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
+    await p.settle();
+    expect(s.settings()).toEqual({});
+    expect(valueOf(permission(p, "get_repo"))).toBe("ask");
+  });
+
+  it("a tool's own allow under its server's wildcard deny shows allow, its default deny, and no refusal: on this server the tool's own key is its answer (tool-gate.ts settingFrom), so its calls run; every other tool of it shows the deny", async () => {
+    const p = await open(withSettings({ "mcp:gh/*": { permission: "deny" }, "mcp:gh/get_repo": { permission: "allow" } }).v2, { choices: CHOICES });
+    const row = (tool: string) => table(p).querySelector(`tr[data-tool="mcp:gh/${tool}"]`)!;
+    expect(valueOf(permission(p, "get_repo"))).toBe("allow");
+    expect(row("get_repo").textContent).toContain("default: deny");
+    expect(row("get_repo").textContent).not.toContain(SERVER_DENY);
+    expect(valueOf(permission(p, "open_issue"))).toBe("deny");
+    expect(row("open_issue").textContent).toContain(SERVER_DENY);
+  });
+
+  it("the switch and its label are one line: the label beside the switch, which it names", async () => {
+    const p = await open(withSettings({}).v2, { choices: CHOICES });
+    const toggle = p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!;
+    const label = document.getElementById(toggle.getAttribute("aria-labelledby")!)!;
+    expect(label.textContent).toBe("Allow reads");
+    expect(label.parentElement).toBe(toggle.parentElement);
+  });
+
+  it("an allow by Allow reads is the server's word: a read that doesn't mark the tool so leaves it at its default, whatever the wildcard holds", async () => {
+    const p = await open(withSettings({ "mcp:gh/*": { allow_reads: true } }, { marks: false }).v2, { choices: CHOICES });
+    expect(valueOf(permission(p, "get_repo"))).toBe("ask");
+    expect(permission(p, "get_repo").textContent).toBe("ask (default)");
+  });
+
+  it("setting a destructive tool to allow takes a second click: nothing is saved until it is confirmed, and Keep asking saves nothing", async () => {
+    const s = withSettings({});
+    const p = await open(s.v2, { choices: CHOICES });
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    expect(s.writes()).toEqual([]);
+    const confirm = p.row("gh").querySelector("[role='alertdialog']")!;
+    expect(confirm.textContent).toContain("mcp:gh/delete_repo");
+    await p.click(/^Keep asking$/, confirm);
+    expect(s.writes()).toEqual([]);
+    expect(p.row("gh").querySelector("[role='alertdialog']")).toBeNull();
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    await p.click(/^Allow without asking$/, p.row("gh").querySelector("[role='alertdialog']")!);
+    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/tools", body: { "mcp:gh/delete_repo": { permission: "allow" } } }]);
+    // A write is set in one click.
+    await pick(permission(p, "open_issue"), "allow");
+    await p.settle();
+    expect(s.writes()).toHaveLength(2);
+  });
+
+  it("a destructive tool's allow waits while a save is out (each save writes the whole map): confirmed once it lands, both changes are kept", async () => {
+    const held = { on: false, release: () => {} };
+    const s = withSettings({}, { held });
+    const p = await open(s.v2, { choices: CHOICES });
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    held.on = true;
+    await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
+    await p.settle();
+    expect(s.writes()).toHaveLength(1);
+    const allow = () => p.button(/^Allow without asking$/, p.row("gh").querySelector("[role='alertdialog']")!)!;
+    expect(allow().disabled).toBe(true);
+    await act(async () => { allow().click(); });
+    await p.settle();
+    expect(s.writes()).toHaveLength(1);
+    held.on = false;
+    await act(async () => { held.release(); });
+    await p.settle();
+    expect(allow().disabled).toBe(false);
+    await p.click(/^Allow without asking$/, p.row("gh").querySelector("[role='alertdialog']")!);
+    expect(s.writes()).toHaveLength(2);
+    expect(s.settings()).toEqual({ "mcp:gh/*": { allow_reads: true }, "mcp:gh/delete_repo": { permission: "allow" } });
+  });
+
+  it("two changes in the same moment start one save, never two that write the whole map over each other", async () => {
+    const held = { on: true, release: () => {} };
+    const s = withSettings({}, { held });
+    const p = await open(s.v2, { choices: CHOICES });
+    const toggle = p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!;
+    await act(async () => { toggle.click(); toggle.click(); });
+    await p.settle();
+    held.on = false;
+    await act(async () => { held.release(); });
+    await p.settle();
+    expect(s.writes()).toHaveLength(1);
+  });
+
+  it("closing a destructive tool's confirm gives the keyboard back to its permission: Keep asking and Esc at once, an allow once its save lands", async () => {
+    const s = withSettings({});
+    const p = await open(s.v2, { choices: CHOICES });
+    const confirm = () => p.row("gh").querySelector<HTMLElement>("[role='alertdialog']")!;
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    expect(document.activeElement?.textContent).toBe("Keep asking");
+    await p.click(/^Keep asking$/, confirm());
+    expect(document.activeElement).toBe(permission(p, "delete_repo"));
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await p.settle();
+    expect(p.row("gh").querySelector("[role='alertdialog']")).toBeNull();
+    expect(document.activeElement).toBe(permission(p, "delete_repo"));
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    await p.click(/^Allow without asking$/, confirm());
+    expect(s.writes()).toHaveLength(1);
+    expect(document.activeElement).toBe(permission(p, "delete_repo"));
+  });
+});
+
+describe("Settings → MCP servers, URL presets", () => {
+  // The five servers the free templates use: each fills the add form's name, address, credential and toolkit, and says
+  // one line about it. Preview and Save are the form's own: the server checks the address as it checks any.
+  const PRESETS = [
+    { label: "Parallel Search", name: "parallel", url: "https://mcp.parallel.ai/mcp", auth: "none", note: /no key/i },
+    { label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: /without a key/i },
+    { label: "GitHub (token)", name: "github", url: "https://api.githubcopilot.com/mcp/", auth: "bearer", note: /fine-grained/i },
+    { label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: /sign in/i },
+    { label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: /sign in/i },
+  ] as const;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const checkedAuth = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[name="mcp-auth"]:checked')?.value;
+
+  it.each(PRESETS)("$label fills the name, address, credential, toolkit and its note", async (preset) => {
+    const s = server([[]]);
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.click(new RegExp(`^${esc(preset.label)}$`));
+    expect(p.input("mcp-name").value).toBe(preset.name);
+    expect(p.input("mcp-url").value).toBe(preset.url);
+    expect(checkedAuth(p.host)).toBe(preset.auth);
+    expect(p.input("mcp-toolkit").value).toBe(preset.name);
+    expect(p.host.querySelector('[role="note"][data-mcp-preset]')?.textContent).toMatch(preset.note);
+    expect(s.writes()).toEqual([]);
+  });
+
+  it("shows the presets above \"Or any MCP URL\", only on a new server's form", async () => {
+    const s = server([[saved()]]);
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    const text = p.text();
+    for (const preset of PRESETS) expect(text.indexOf(preset.label)).toBeGreaterThan(-1);
+    expect(text.indexOf("Or any MCP URL")).toBeGreaterThan(Math.max(...PRESETS.map((x) => text.indexOf(x.label))));
+    await p.click(/^Cancel$/);
+    await p.click(/^Change$/, p.row("fake"));
+    expect(p.text()).not.toContain("Or any MCP URL");
+    expect(p.button(/^Parallel Search$/)).toBeUndefined();
+  });
+
+  it("GitHub (token) has a read-only choice that swaps the address to /readonly and back", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^GitHub \(token\)$/);
+    const readOnly = p.host.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="Read-only"]')!;
+    expect(readOnly.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { readOnly.click(); });
+    expect(p.input("mcp-url").value).toBe("https://api.githubcopilot.com/mcp/readonly");
+    await act(async () => { readOnly.click(); });
+    expect(p.input("mcp-url").value).toBe("https://api.githubcopilot.com/mcp/");
+  });
+
+  it("a preset's name already saved fills the first free one, so Save never replaces that server", async () => {
+    const p = await open(server([[saved({ name: "parallel" })]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Parallel Search$/);
+    expect(p.input("mcp-name").value).toBe("parallel-2");
+    expect(p.input("mcp-toolkit").value).toBe("parallel");
+  });
+
+  it("a preset's Preview and Save send what the form sends for any address", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved({ name: "firecrawl" })) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Firecrawl$/);
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes()).toEqual([
+      { method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://mcp.firecrawl.dev/v2/mcp", auth: { type: "none" } } },
+      { method: "PUT", path: "/v2/settings/mcp-servers/firecrawl", body: { url: "https://mcp.firecrawl.dev/v2/mcp", auth: { type: "none" }, toolkit: "firecrawl" } },
+    ]);
+  });
+
+  it("routes #/settings/mcp?add=<name>&preset=<id> to the form with that preset filled; an unknown id is the plain form", () => {
+    expect(route("#/settings/mcp?add=notion&preset=notion").add).toEqual({ name: "notion", preset: "notion" });
+    expect(route("#/settings/mcp?add=gh&preset=github-token").add).toEqual({ name: "gh", preset: "github-token" });
+    expect(route("#/settings/mcp?add=foo&preset=nope").add).toEqual({ name: "foo" });
+  });
+
+  it("a deep link's preset opens the form filled, under the link's name", async () => {
+    const p = await open(server([[]]).v2, { add: route("#/settings/mcp?add=notion&preset=notion").add });
+    expect(p.input("mcp-name").value).toBe("notion");
+    expect(p.input("mcp-url").value).toBe("https://mcp.notion.com/mcp");
+    expect(checkedAuth(p.host)).toBe("oauth");
+    expect(p.host.querySelector('[role="note"][data-mcp-preset]')?.textContent).toMatch(/sign in/i);
+  });
+
+  it("a preset clears a credential typed for another server, so none is sent to the preset's address", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.pick("bearer");
+    await p.type("mcp-token", "tok-for-another-server");
+    await p.click(/^GitHub \(token\)$/);
+    expect(p.input("mcp-token").value).toBe("");
+    await p.click(/^Preview$/);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://api.githubcopilot.com/mcp/", auth: { type: "bearer" } } }]);
+  });
+
+  it("a preset clears the scopes and client typed for another OAuth server", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Linear$/);
+    await p.type("mcp-scopes", "read write");
+    await p.type("mcp-client-id", "linear-client");
+    await p.type("mcp-client-secret", "linear-secret");
+    await p.click(/^Notion$/);
+    expect(p.input("mcp-scopes").value).toBe("");
+    expect(p.input("mcp-client-id").value).toBe("");
+    expect(p.input("mcp-client-secret").value).toBe("");
+  });
+
+  it("the presets wait for the saved servers to be read, so none picks a name that is taken", async () => {
+    let list!: (r: Response) => void;
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? new Promise<Response>((r) => { list = r; }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+    await act(async () => { list(json(200, { servers: [saved({ name: "parallel" })] })); });
+    await p.settle();
+    await p.click(/^Parallel Search$/);
+    expect(p.input("mcp-name").value).toBe("parallel-2");
+  });
+
+  it("a list that can't be read leaves the presets off", async () => {
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? refusal(500, "internal", "down") : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+  });
+
+  it("a new server's name already saved can't be saved: it would replace that server", async () => {
+    const s = server([[saved({ name: "fake" })]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "fake");
+    await p.type("mcp-url", "https://mcp.example.test/mcp");
+    await p.click(/^Preview$/);
+    expect(p.text()).toMatch(/fake is saved already/);
+    expect(p.button(/^Save$/)?.disabled).toBe(true);
+    expect(s.writes().filter((c) => c.method === "PUT")).toEqual([]);
+  });
+
+  it("a deep link with an unknown preset id opens the plain form", async () => {
+    const p = await open(server([[]]).v2, { add: route("#/settings/mcp?add=foo&preset=nope").add });
+    expect(p.input("mcp-name").value).toBe("foo");
+    expect(p.input("mcp-url").value).toBe("");
+    expect(checkedAuth(p.host)).toBe("none");
+    expect(p.host.querySelector("[data-mcp-preset]")).toBeNull();
   });
 });

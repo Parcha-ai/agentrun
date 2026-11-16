@@ -78,20 +78,29 @@ export type PushDeps = {
 };
 export type PushAnswer = { status: number; body: unknown; headers?: Record<string, string> };
 
-/** The request to /v2/hooks/{segment}: its answer, or the one 401 (thrown). */
-export async function receivePush(deps: PushDeps, req: IncomingMessage, segment: string): Promise<PushAnswer> {
-  const route = `/v2/hooks/${segment}`;
+/** A scope a source's own path names (/v2/hooks/{source}/{scope}): an id this server made. */
+const SCOPE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The request to /v2/hooks/{segment}, or /v2/hooks/{segment}/{sub} for a source that keeps its key per scope
+ *  (Push.scoped): its answer, or the one 401 (thrown). */
+export async function receivePush(deps: PushDeps, req: IncomingMessage, segment: string, sub?: string): Promise<PushAnswer> {
+  const route = `/v2/hooks/${segment}${sub === undefined ? "" : `/${sub}`}`;
   const refuse = (reason: string) => (deps.refused(route, reason), new ApiError("unauthenticated", REFUSED));
   let name: string;
+  let scoped: string | undefined;
   try {
     name = decodeURIComponent(segment);
+    scoped = sub === undefined ? undefined : decodeURIComponent(sub);
   } catch {
     throw refuse("malformed_path");
   }
+  if (scoped !== undefined && !SCOPE.test(scoped)) throw refuse("malformed_path");
   // A source's own path (its settings are the server's), else a trigger's, checked by that trigger's own source (its
   // settings are a trigger's). A path that names no such trigger is checked as the first such source's, against the
   // decoy: the same work and the same 401, so no id is learned by asking.
   const own = deps.adapters.find((a) => a.id === name && a.push && a.settings?.scope === "server");
+  // Only a source that keeps its key per scope has paths under its own: any other path with a second segment names no hook.
+  if (scoped !== undefined && !own?.push?.scoped) throw refuse("no_hook");
   const named = own || !ID.test(name) ? undefined : await deps.hooked(name);
   const trigger = named && deps.adapters.find((a) => a.id === named.kind && a.push && a.settings?.scope === "trigger");
   const adapter = own ?? trigger ?? deps.adapters.find((a) => a.push && a.settings?.scope === "trigger");
@@ -103,11 +112,13 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const body = await readCapped(req, push.maxBodyBytes, deps.bodyMs);
   const source = trigger ? named : undefined;
   const pathTrigger = source ? name : undefined;
-  const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
+  // A source that keeps its key per scope is checked with its path's scope's (none on its bare path: the decoy's 401).
+  const ownScope = own ? (push.scoped ? scoped : "server") : undefined;
+  const key = own ? ownScope && deps.setting(adapter.id, ownScope, push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
   // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.
   const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, Date.now(), key ? source : undefined);
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
-  const scope = own ? "server" : pathTrigger!;
+  const scope = own ? ownScope! : pathTrigger!;
   const ctx: PushContext = {
     setting: (field) => deps.setting(adapter.id, scope, field),
     notice: async (event, doc) => deps.notice?.(adapter.id, event, doc),
@@ -115,7 +126,9 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   };
   const handshake = await push.handshake?.(req.headers as Headers, body, ctx);
   if (handshake) return handshake;
-  const events = push.parse(req.headers as Headers, body, source);
+  const parsed = push.parse(req.headers as Headers, body, source);
+  // A scoped source's events happened in its path's scope: its takes matches each trigger's to it.
+  const events = Array.isArray(parsed) && own && push.scoped ? parsed.map((event) => ({ ...event, scope })) : parsed;
   // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
   if (!Array.isArray(events)) {
     deps.say({ condition: "hook_ignored", source: adapter.id, route, ...(pathTrigger ? { trigger: pathTrigger } : {}), reason: events.ignored, ...(events.event ? { event: events.event } : {}) });

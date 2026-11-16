@@ -132,6 +132,8 @@ test("at the claim: a provider's list that answers 504 before its create fails t
       version: "0",
       capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
       check: () => [],
+      // E2B's and Modal's descriptors say they prepare their image (the box image): each answers it with no call.
+      prepareImage: async () => ({ ok: true, value: "i" }),
       async list() {
         // E2B's API is down for the claim's first list (its release of an older claim's computer) and back for the cleanup.
         if (id === "e2b" && ++e2bLists === 1) return { ok: false, error: { code: "vendor", vendor: "e2b", message: "GET /sandboxes: 504", transient: true } };

@@ -1,4 +1,4 @@
-// The shared machine-host adapter: hostedProvider(host, options) is a whole ComputerProvider over a vendor's
+// The shared machine-host adapter: new HostedProvider(host, options) is a whole ComputerProvider over a vendor's
 // MachineHost (../host.ts). The vendor answers create, get, list, delete and exec about its own machines; everything a
 // computer is beyond that is here, once, for every vendor: the spec's check, the computer's name from its create's
 // request id (one create per request: a retry finds the first), the daemon's upload, install and sha256 read-back,
@@ -10,12 +10,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+import { isBoxImage } from "../box-image.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
-import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
-import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
-import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "../isolation.js";
+import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
+import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
+import { BACKSTOP_MARGIN_MS, type HostCall, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "../host.js";
+import { readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
+import type { KindCapabilities } from "../kinds.js";
 import { RUN_LABEL } from "../labels.js";
 import { checkMount, type MountReadBack, readBackOf } from "../mount.js";
 import {
@@ -59,13 +62,15 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "../provider.js";
-import { type ComputerError, failAs, ok, type Result } from "../result.js";
+import type { DaemonMethod, DaemonMethods } from "../protocol.js";
+import { type ComputerError, failAs, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, codeOfError, failOf, hostCall, marked, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
-import { isWhole, show } from "./values.js";
-import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
+import { bounded, CALL_SLACK_MS, hostCall, marked, type Opened, OUTPUT_MAX, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec } from "./process.js";
+import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
+import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
+import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf, LABEL_FILE, labelsCommand } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
 export interface HostedTimeouts {
@@ -81,11 +86,14 @@ export interface HostedTimeouts {
 	helloMs: number;
 	/** The probe, run through the daemon: it takes at most 20 s (10 s to connect, 10 s to answer, every target at once). */
 	probeMs: number;
-	/** One whole list, every page and every machine's read-back. */
+	/** One whole listing, every page; each listed machine's get after it has requestMs. */
 	listMs: number;
-	/** From a delete to a machine the vendor no longer has and no longer lists. */
+	/** From a delete to get answering none for the machine. */
 	goneMs: number;
-	/** The first pause between two reads while release waits; the pauses double up to 5 s. */
+	/**
+	 * The first pause between two reads while release waits; the pauses double up to 5 s. The longest pause between two
+	 * listings while create waits for the new computer to show: those start at 150 ms and double up to it.
+	 */
 	pollMs: number;
 	/** How long create waits for the listing to show the new computer. */
 	listedMs: number;
@@ -99,8 +107,6 @@ export interface HostedTimeouts {
 }
 
 export interface HostedOptions {
-	/** The vendor's name in words ("E2B"), for refusals and Settings' test. */
-	label: string;
 	/** desktop: an X server started through the daemon; linux (default): no screen. */
 	kind?: "desktop" | "linux";
 	/** The display and its X server, for kind desktop. Default Xvfb on :0, 1280x800. */
@@ -128,6 +134,12 @@ export interface HostedOptions {
 	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
 	 */
 	archilEgress?: string;
+	/**
+	 * The image this provider's computers start from, where its setting names one, exactly as the vendor reads it back
+	 * (Machine.image). With facts.labels "machine", list reads labels only in a machine of this image or a box image
+	 * (isBoxImage, ../box-image.ts), and check refuses a spec of any other.
+	 */
+	image?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
@@ -136,6 +148,8 @@ export const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 export const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;
 /** The most extend may move the deadline to: create's time plus the cap, by this machine's clock, as init was given. */
 export const MAX_LABEL = `${COMPUTER_LABEL}.max-deadline`;
+/** A GPU computer's GPUs, type:count: a retry and attach read them here, so no vendor need read them back. */
+export const GPU_LABEL = `${COMPUTER_LABEL}.gpu`;
 const NAME = /^computer-[0-9a-f]{12}$/;
 const MACHINE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const USER = /^(\d+):(\d+)$/;
@@ -156,14 +170,21 @@ const DEFAULTS: HostedTimeouts = {
 	listedStableMs: 1_000,
 	mountMs: 120_000,
 };
+/** The adapter's timeouts, the caller's over its defaults: what a host reads for its own requestMs or pollMs. */
+export const timeoutsOf = (timeouts: Partial<HostedTimeouts> = {}): HostedTimeouts => ({ ...DEFAULTS, ...timeouts });
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 const RELEASE_POLL_MAX_MS = 5_000;
 const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;
-const LISTED_POLL_MAX_MS = 1_000;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
+/**
+ * With labels kept in the machine: what a machine of a request's name with no label file must be older than, past the
+ * longest a create takes to write the file (#unfiledMs), before a sweep of the name takes it: another instance's longer
+ * timeouts, and the vendor's clock against this one's.
+ */
+const UNFILED_MARGIN_MS = 300_000;
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The longest timeout the adapter takes: the race of a call bounded by it must still fit a Node timer. */
@@ -176,29 +197,33 @@ const STAGING = "/tmp/agentrun-computerd-";
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu", "owner"]);
+/** The spec's fields the adapter passes on or holds itself: a size goes in the request, for the host's check to refuse. */
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu", "owner", "cpus", "memoryMb"]);
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
-const alive = (state: Machine["state"]) => state === "running" || state === "stopping" || state === "stopped" || state === "starting";
+/** What makes a computer's labels smaller, in words: the list only where its network is one. */
+const shorterWords = (labels: Record<string, string>) => `give a shorter image, mount folder${labels[NETWORK_LABEL]?.startsWith("allow:") ? ", network list" : ""} or labels`;
+const alive = (state: Machine["state"]) => state !== "gone";
+/** The codes of a create the vendor refused, which made nothing. */
+const REFUSED_CREATE: ReadonlySet<ComputerError["code"]> = new Set(["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"]);
+/**
+ * Whether a create that failed with code may have made a machine, so the request's name is swept. A refusal made
+ * nothing: a machine under the name then is another's (exists: another instance's create of the request), never
+ * deleted. Any other failure (the vendor's, a timeout) may have made one, answered in time or after create gave up.
+ */
+const mayHaveMade = (code: ComputerError["code"]) => !REFUSED_CREATE.has(code);
 
 /** An ISO time a label holds, or undefined when it is missing or not the ISO time create writes. */
-function isoOf(written: string | undefined): Date | undefined {
+export function isoOf(written: string | undefined): Date | undefined {
 	const at = written === undefined ? Number.NaN : Date.parse(written);
 	return Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
 }
 
 /**
- * When a machine ends: the deadline create wrote; or, once an extend moved the vendor's own timer past where create set
- * it (the vendor keeps no label change), that end, up to the most the computer may live, which is what init was given.
+ * When a machine ends: its deadline label, as the vendor reads it back. A vendor that keeps no label change reads it
+ * as the end its timer moved to (E2B's get), so a restarted provider reads an extend all the same.
  */
-export function deadlineOf(machine: Pick<Machine, "labels" | "endsAt" | "timerMoved">): Date | undefined {
-	const written = isoOf(machine.labels[DEADLINE_LABEL]);
-	if (written === undefined) return undefined;
-	const end = machine.endsAt instanceof Date ? machine.endsAt.getTime() : Number.NaN;
-	if (machine.timerMoved !== true || Number.isNaN(end)) return written;
-	const most = isoOf(machine.labels[MAX_LABEL]);
-	return new Date(most === undefined ? end : Math.min(end, most.getTime()));
-}
+export const deadlineOf = (machine: Pick<Machine, "labels">): Date | undefined => isoOf(machine.labels[DEADLINE_LABEL]);
 
 /** Only a machine this adapter made counts: its label, a name of its making, and the name asked for when one is. */
 export const ours = (labels: Record<string, string> | undefined, name?: string) =>
@@ -228,6 +253,14 @@ function specUserOf(value: unknown): string | undefined {
 	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
 }
 
+/** The GPUs a machine's GPU_LABEL records (type:count), as a spec's gpu field; none where it records none. */
+function gpuOf(written: string | undefined): { gpu?: { type: string; count: number } } {
+	const at = written?.lastIndexOf(":") ?? -1;
+	if (written === undefined || at < 1) return {};
+	const count = Number(written.slice(at + 1));
+	return isWhole(count) ? { gpu: { type: written.slice(0, at), count } } : {};
+}
+
 /** The caller's labels of a machine: every one but the adapter's own namespace and the Archil mount's. */
 const callerLabels = (labels: Record<string, string>) => Object.fromEntries(Object.entries(labels).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== ARCHIL_MOUNT_LABEL));
 
@@ -241,21 +274,21 @@ interface Made {
 	commands: HostedCommands;
 	/** Who the daemon runs as, uid:gid: the provider's daemon user, or the spec's where the host takes one. */
 	user: string;
-	/** The runtime the host says this request runs (facts.runtime), which the probe's kernel is held to. */
-	runtime?: "vm" | "gvisor";
 }
 
 type Extend = (ref: ComputerRef, ttlMs: number, context?: CallContext) => Promise<Result<{ deadline: Date }>>;
 
-/** hostedProvider's provider: a ComputerProvider whose vendor is host. */
+/** The shared adapter's provider: a ComputerProvider whose vendor is host. */
 export class HostedProvider implements ComputerProvider {
 	readonly id: string;
 	readonly version = VERSION;
 	/** The vendor's machines, for the live sweep (conformance/sweep.ts); nothing else reaches past the provider to them. */
 	readonly host: MachineHost;
 	readonly extend?: Extend;
+	/** The host's descriptor's configuration of this provider's kind: its groups and GPUs. */
+	readonly #configuration: KindCapabilities;
 	readonly #label: string;
-	readonly #fail: ReturnType<typeof failOf>;
+	readonly #fail: ReturnType<typeof failFor>;
 	readonly #daemonPath: string;
 	readonly #kind: "desktop" | "linux";
 	readonly #desktop: Required<DesktopOptions> | undefined;
@@ -263,6 +296,8 @@ export class HostedProvider implements ComputerProvider {
 	readonly #uid: string;
 	readonly #gid: string;
 	readonly #timeouts: HostedTimeouts;
+	/** What foundBy reads with: the timeouts, onNote, which hears of a machine a listing leaves out, and the image option. */
+	readonly #finding: Finding;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
 	readonly #archilEgress: ArchilEgress | undefined;
@@ -274,7 +309,6 @@ export class HostedProvider implements ComputerProvider {
 
 	constructor(host: MachineHost, options: HostedOptions) {
 		const {
-			label,
 			kind = "linux",
 			desktop = {},
 			maxLifetimeMs = host.facts.maxLifetimeMs,
@@ -284,22 +318,39 @@ export class HostedProvider implements ComputerProvider {
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
 			archilEgress,
+			image,
 		} = options;
-		this.id = host.id;
+		const { id, label, capabilities } = host.descriptor;
+		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
+		const configuration = capabilities.find((one) => one.kind === kind);
+		if (configuration === undefined) throw new Error(`${label} offers no ${kind} computer`);
+		this.id = id;
 		this.host = host;
+		this.#configuration = configuration;
 		this.#label = label;
-		this.#fail = failOf(host);
+		this.#fail = failFor(id);
 		this.#onNote = onNote;
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
-		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
+		}
+		// A machine whose create was cut off before its labels were written carries none the janitor lists: only the vendor's
+		// timer ends it. And the most a computer may live, which bounds an extend, would be read from inside the machine.
+		if (host.facts.labels === "machine" && host.facts.lifetime !== "vendor") {
+			throw new Error(
+				`${label} keeps no labels (facts.labels "machine"), so its vendor's timer must end its machines: a machine whose create stopped before its labels were written has none the janitor lists. Declare lifetime "vendor"`,
+			);
+		}
+		if (host.facts.labels === "machine" && host.extend) {
+			throw new Error(
+				`${label} keeps no labels (facts.labels "machine") and has extend: the most a computer may live, which bounds an extend, would be read from a file inside the machine. Leave extend out: its computers end at the deadline create gave them`,
+			);
 		}
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		// The numbers, not the text: "00" is root as much as "0" is.
 		if (Number(user[1]) === 0 || Number(user[2]) === 0) throw new Error(`the daemon user ${daemonUser} is root or in root's group; ${a(label)} computer's daemon runs as neither`);
-		const merged = { ...DEFAULTS, ...timeouts };
+		const merged = timeoutsOf(timeouts);
 		// AbortSignal.timeout and Node's timers take whole ms up to 2^31 - 1 (a fraction throws, a longer one fires at
 		// once), and a call's race adds CALL_SLACK_MS to its bound: refused here, before any machine exists. The listing's
 		// stability window alone may be 0: two consecutive polls, with no time between them asked for.
@@ -316,30 +367,34 @@ export class HostedProvider implements ComputerProvider {
 		this.#maxLifetimeMs = maxLifetimeMs;
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#timeouts = merged;
+		if (image !== undefined && (typeof image !== "string" || image === "")) throw new Error(`image names the image this provider's computers start from, not ${JSON.stringify(image)}`);
+		this.#finding = { ...merged, onNote, image };
 		this.#probeTargets = [...probeTargets];
-		// Extend only where the deadline can follow it: the vendor's timer moved, or the janitor's label.
-		const { lifetime } = host.facts;
-		if ((lifetime === "vendor" && host.setTimer) || (lifetime === "janitor" && host.setLabels)) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
+		// Extend only where the end can follow it: the host moves its timer or its deadline label.
+		if (host.extend) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
 	}
 
-	/** The computer's facts, from the host's and the adapter's options alone. */
+	/** The computer's facts, from the descriptor, the host's facts and the adapter's options alone. */
 	capabilities(): ComputerCapabilities {
-		const { facts } = this.host;
+		const { facts, descriptor } = this.host;
+		const { gpu } = this.#configuration;
 		return {
 			kind: this.#kind,
 			lifetime: facts.lifetime,
-			network: [...facts.network],
-			networkReadBack: facts.networkReadBack,
+			network: [...descriptor.network],
+			// A list is the egress proxy's, init's own (./network.ts): Docker's bounds and ports.
+			...(descriptor.network.includes("allow") ? { allow: structuredClone(HOSTED_ALLOW) } : {}),
+			// The probe and the proxy's policy from inside are the network's truth: no vendor's read of it is taken.
+			networkReadBack: false,
 			isolation: facts.isolation,
 			os: "linux",
 			daemon: facts.daemon,
-			groups: ["exec", "files", "processes", ...(this.#desktop ? DESKTOP_GROUPS : [])],
+			groups: [...this.#configuration.groups],
 			maxLifetimeMs: this.#maxLifetimeMs,
-			release: [...facts.release],
-			...(facts.stopDeletes === undefined ? {} : { stopDeletes: facts.stopDeletes }),
-			...(facts.mounts === undefined ? {} : { mount: [...facts.mounts] }),
+			release: ["delete"],
+			mount: [...descriptor.mounts],
 			vendorAgentPorts: [...facts.vendorAgentPorts],
-			...(facts.gpu === undefined ? {} : { gpu: structuredClone(facts.gpu) }),
+			...(gpu === undefined ? {} : { gpu: structuredClone(gpu) }),
 			...(facts.user === undefined ? {} : { user: [...facts.user] }),
 		};
 	}
@@ -353,9 +408,9 @@ export class HostedProvider implements ComputerProvider {
 		const label = this.#label;
 		// An Archil mount's own rules hold only where the provider takes one; elsewhere checkMount's refusal says why alone.
 		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil" && (capabilities.mount ?? []).includes("archil");
-		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.host.facts.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
+		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.host.descriptor.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
 		const daemonUser = `${this.#uid}:${this.#gid}`;
-		const asked = this.#takesUser() ? given.user : undefined;
+		const asked = this.#takesUser ? given.user : undefined;
 		if (asked !== undefined) {
 			const user = specUserOf(asked);
 			if (user === undefined) refuse("user", "user must be a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it");
@@ -366,6 +421,8 @@ export class HostedProvider implements ComputerProvider {
 				);
 			} else if (archil && user !== ARCHIL_USER) {
 				refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
+			} else if (throughProxy(network) && user.split(":").includes(String(EGRESS_PROXY_USER))) {
+				refuse("user", `the egress proxy of a network open or a list runs as uid and gid ${EGRESS_PROXY_USER} (nobody), so its programs' user may be neither; ask for another uid, such as 1000:1000`);
 			}
 		} else if (archil && daemonUser !== ARCHIL_USER) {
 			refuse(
@@ -374,19 +431,25 @@ export class HostedProvider implements ComputerProvider {
 			);
 		}
 		if (typeof image !== "string" || image === "" || image.includes("\0")) refuse("image", `an image is required: the name of ${a(label)} image`);
+		else if (this.#keeps && !ourImage({ image } as Machine, this.#finding.image)) {
+			// list reads labels only in a machine of our image, so a computer of another would never be found again.
+			refuse("image", `${a(label)} computer keeps its labels inside the machine, and list reads them only in one of this provider's image option or a box image, so ${image} is refused: ${this.#finding.image === undefined ? "ask for a box image" : `ask for ${this.#finding.image} or a box image`}`);
+		}
 		refusals.push(...checkTenure(given, capabilities, label));
-		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
-		else if (network !== "none") refuse("network", 'network is required: "none"');
-		if (labels !== undefined) {
-			const entries = typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
-			const bad = entries === undefined ? "labels must map names to strings" : (entries.map(([key, value]) => labelProblem(key, value, this.host.facts.labelRules?.key)).find(Boolean) ?? this.#labelCount(entries.length, mount));
-			if (bad) refuse("labels", bad);
+		// Only the forms the descriptor declares, each one this computer enforces; any other is refused, never widened.
+		const networkProblem = networkRefusal(label, capabilities.network, network);
+		if (networkProblem) refuse("network", networkProblem);
+		const entries = labels === undefined ? [] : typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
+		const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
+		if (bad) refuse("labels", bad);
+		else if (typeof image === "string" && (!archil || ["disk", "region", "folder"].every((key) => typeof (mount as Record<string, unknown>)[key] === "string"))) {
+			const over = this.#labelsOver(given as unknown as ComputerSpec);
+			if (over) refuse(archil && over.bytes ? "mount" : "labels", over.why);
 		}
 		refusals.push(...checkGpu(given.gpu, capabilities, mount));
-		const taken = new Set<string>(this.host.facts.specFields ?? []);
 		for (const [field, value] of Object.entries(given)) {
-			if (SPEC_FIELDS.has(field) || taken.has(field) || value === undefined) continue;
-			if (field === "cpus" || field === "memoryMb" || field === "pids") refuse(field, `${a(label)} computer has the size of its image: name an image of the size you need, not ${field}`);
+			if (SPEC_FIELDS.has(field) || (field === "user" && this.#takesUser) || value === undefined) continue;
+			if (field === "pids") refuse(field, `${a(label)} computer has the size of its image: name an image of the size you need, not ${field}`);
 			else if (field === "user") refuse(field, `${a(label)} computer's daemon runs as the provider's daemon user (${daemonUser}), never as one a spec names`);
 			else if (field === "workdir") refuse(field, `${a(label)} computer works in ${WORK}, its home; a spec cannot name another`);
 			else refuse(field, `${a(label)} computer does not support ${field}`);
@@ -395,26 +458,100 @@ export class HostedProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	/** Whether the host takes a spec's user (facts.specFields): then a computer's daemon runs as the one a spec names. */
-	#takesUser(): boolean {
-		return (this.host.facts.specFields ?? []).includes("user");
+	/** Whether the host keeps no labels (facts.labels "machine"): the adapter keeps them in the machine, at LABEL_FILE. */
+	get #keeps(): boolean {
+		return this.host.facts.labels === "machine";
+	}
+
+	/**
+	 * The longest a create takes from the vendor's create to the label file: its own call and the wait for the machine to
+	 * run (createMs each), the listing of the name between them (listMs, and a read), and the file's write (execMs), plus
+	 * UNFILED_MARGIN_MS.
+	 */
+	get #unfiledMs(): number {
+		const { createMs, listMs, requestMs, execMs } = this.#timeouts;
+		return 2 * createMs + listMs + requestMs + execMs + UNFILED_MARGIN_MS;
+	}
+
+	/**
+	 * With labels kept in the machine, a machine with no label file is the request's whose name it has (Machine.name, the
+	 * request's own name, never a bare computer- prefix), and a sweep of the name takes it only once it is older than
+	 * #unfiledMs: before that, another instance's create of the request may still be writing its file (provider.md,
+	 * Idempotent create). A machine with no createdAt is never old enough: the vendor's timer ends it.
+	 */
+	#unfiled(machine: Machine, name: string): "young" | "old" | undefined {
+		if (!this.#keeps || machine.labels[COMPUTER_LABEL] !== undefined || machine.name !== name) return undefined;
+		const age = machine.createdAt instanceof Date ? Date.now() - machine.createdAt.getTime() : Number.NaN;
+		return age > this.#unfiledMs ? "old" : "young";
+	}
+
+	/** Writes labels to the machine's label file, root's alone, and answers them as the file reads back. */
+	async #keep(ref: ComputerRef, labels: Record<string, string>, signal?: AbortSignal): Promise<Result<Record<string, string>>> {
+		const what = `writing ${ref.name}'s labels to ${LABEL_FILE}`;
+		const json = Buffer.from(JSON.stringify(labels));
+		const wrote = await runToExit(this.host, ref.id, labelsCommand(json.length), { stdin: [json], ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what });
+		if (!wrote.ok) return wrote;
+		const read = wrote.value.exitCode === 0 ? labelMapOf(wrote.value.stdout) : undefined;
+		if (read === undefined) return this.#fail("refused", `${what} failed (exit ${wrote.value.exitCode}): ${`${wrote.value.stdout} ${wrote.value.stderr}`.trim().slice(0, 300)}`);
+		filedOf(this.host).set(ref.id, read);
+		return ok(read);
+	}
+
+	/** Whether the host takes a spec's user (facts.user): then a computer's daemon runs as the one a spec names. */
+	get #takesUser(): boolean {
+		return this.host.facts.user !== undefined;
 	}
 
 	/** Who one create's daemon runs as, uid:gid: the spec's user where the host takes one, else the provider's daemon user. */
 	#userOf(spec: ComputerSpec): string {
-		return (this.#takesUser() ? specUserOf(spec.user) : undefined) ?? `${this.#uid}:${this.#gid}`;
+		return (this.#takesUser ? specUserOf(spec.user) : undefined) ?? `${this.#uid}:${this.#gid}`;
 	}
 
-	/** Why a spec's labels, with the adapter's own, are more than the vendor takes; undefined when they fit. */
-	#labelCount(count: number, mount: unknown): string | undefined {
-		const max = this.host.facts.labelRules?.max;
+	/**
+	 * Why a spec's labels, with the adapter's own (#labelsOf, as create gives them, each deadline an ISO time at its
+	 * longest), are more, or come to more bytes, or pack into more, than the vendor takes (facts.labels); undefined when
+	 * they fit.
+	 */
+	#labelsOver(spec: ComputerSpec): { bytes: boolean; why: string } | undefined {
+		const room = this.host.facts.labels ?? {};
+		// Stand-ins as long as create's name and deadlines and as mixed, fixed so a spec's answer never changes (attach and a
+		// retry check the spec again): a packed map deflates them as it does create's, give or take a byte, and create packs
+		// its own before the host's call (#stored).
+		const name = "computer-5f3a9c1e7b2d";
+		const labels = this.#labelsOf(spec, name, "2026-11-16T04:15:29.481Z", "2026-11-17T04:05:29.481Z");
+		if (room === "machine") {
+			// The label file is read back whole only up to what a run keeps of its output.
+			const json = Buffer.byteLength(JSON.stringify(labels));
+			return json <= OUTPUT_MAX ? undefined : { bytes: true, why: `${a(this.#label)} computer keeps its labels in the machine, at most ${OUTPUT_MAX} bytes as JSON, and this computer's would come to ${json}: ${shorterWords(labels)}` };
+		}
+		const { count, bytes: max, packed } = room;
+		if (packed) {
+			const fit = this.#stored(labels, name);
+			return "problem" in fit ? { bytes: true, why: fit.problem } : undefined;
+		}
+		const keys = Object.keys(labels);
+		if (count !== undefined && keys.length > count) {
+			// labelProblem refuses a caller's label of the adapter's names, so the two never overlap.
+			const own = keys.length - Object.keys(spec.labels ?? {}).length;
+			return { bytes: false, why: `${a(this.#label)} computer carries at most ${count} labels, the adapter's own among them, and this one's would carry ${keys.length}, ${own} of them the adapter's: give at most ${count - own} labels` };
+		}
 		if (max === undefined) return undefined;
-		const own = 5 + ((mount as { kind?: unknown } | undefined)?.kind === "archil" ? Object.keys(archilLabels({ kind: "archil", disk: "d", region: "r", folder: "f", token: "t" } as ArchilMount)).length : 0);
-		return count + own > max ? `${a(this.#label)} computer takes ${max} labels, ${own} of them the provider's own: ${count} is ${count + own - max} too many` : undefined;
+		const sizes = Object.entries(labels).map(([key, value]) => [key, Buffer.byteLength(key) + Buffer.byteLength(value)] as const);
+		const bytes = sizes.reduce((sum, [, size]) => sum + size, 0);
+		if (bytes <= max) return undefined;
+		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): ${shorterWords(labels)}` };
+	}
+
+	/** The labels as the host is given them: packed where it declares facts.labels.packed, else as they are; or why they don't fit packed, in words. */
+	#stored(labels: Record<string, string>, name: string): { labels: Record<string, string> } | { problem: string } {
+		const room = packedRoom(this.host);
+		if (room === undefined) return { labels };
+		const fit = packLabels(labels, name, room);
+		return "problem" in fit ? { problem: `${a(this.#label)} computer keeps its labels packed, and ${fit.problem}: ${shorterWords(labels)}` } : fit;
 	}
 
 	/** A host call bounded by ms, the caller's signal when given. */
-	#call<T>(what: string, run: (ctx: HostCall) => Promise<Result<T>>, ms: number, signal?: AbortSignal): Promise<Result<T>> {
+	#call<T>(what: string, run: (ctx: HostCall) => Promise<T>, ms: number, signal?: AbortSignal): Promise<Result<T>> {
 		return hostCall(this.host, what, run, ms, signal);
 	}
 
@@ -446,22 +583,29 @@ export class HostedProvider implements ComputerProvider {
 	#labelDiffer(spec: ComputerSpec, name: string, labels: Record<string, string>, seen: string): string[] {
 		const asked = this.#labelsOf(spec, name, labels[DEADLINE_LABEL] ?? "", labels[MAX_LABEL] ?? "");
 		const differ = Object.entries(asked)
-			.filter(([key, value]) => key !== DEADLINE_LABEL && key !== MAX_LABEL && labels[key] !== value)
+			// The GPUs' label is read back as the spec's gpu, held where the user and network are (#again).
+			.filter(([key, value]) => key !== DEADLINE_LABEL && key !== MAX_LABEL && key !== GPU_LABEL && labels[key] !== value)
 			.map(([key, value]) => `label ${key}: asked ${show(value)}, ${seen} ${show(labels[key])}`);
 		const extra = Object.keys(callerLabels(labels)).filter((key) => !Object.hasOwn(asked, key));
 		if (extra.length > 0) differ.push(`labels ${extra.join(", ")}: ${seen}, never asked for`);
 		return differ;
 	}
 
-	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
-		const { listMs } = this.#timeouts;
-		const listed = await listedBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, listMs, signal);
+	/** taken: the vendor refused this create's name as one a machine has (exists), so the name's machine is read once more. */
+	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal, taken?: Result<never>): Promise<Result<CreatedComputer>> {
+		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#finding, signal);
 		if (!listed.ok) return listed;
-		const found = listed.value.filter((machine) => ours(machine.labels, name));
+		// With labels kept in the machine, a young one of the name with none written yet is this request's still being made
+		// (#again waits for its labels); an old one never got them, and is deleted.
+		const found = listed.value.filter((machine) => ours(machine.labels, name) || this.#unfiled(machine, name) === "young");
+		if (found.length === 0 && listed.value.some((machine) => this.#unfiled(machine, name) === "old")) {
+			return this.#fail("exists", `${name} was made for this request and its labels were never written: create with a new request id${await this.#deleteNamed(name)}`);
+		}
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
 		if (found.length === 1) return this.#again(spec, name, found[0] as Machine, signal);
+		if (taken) return taken;
 		const launched = await this.#launch(spec, name, signal);
-		if (!launched.ok) return launched;
+		if (!launched.ok) return launched.error.code === "exists" ? this.#createOnce(spec, name, signal, launched) : launched;
 		const { ref, made } = launched.value;
 		// From here the machine exists: every step takes the caller's signal, and a failure or an abort deletes it.
 		// Another provider instance's create of this request may have made one too (#converge): the oldest is kept.
@@ -495,7 +639,7 @@ export class HostedProvider implements ComputerProvider {
 	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
 	 */
 	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
-		const listed = await listedBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, this.#timeouts.listMs, signal);
+		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#finding, signal);
 		if (!listed.ok) return listed;
 		const holders = listed.value.filter((machine) => ours(machine.labels, name) && alive(machine.state));
 		if (!holders.some((machine) => machine.id !== mine)) return ok(undefined);
@@ -505,21 +649,11 @@ export class HostedProvider implements ComputerProvider {
 		}
 		const [kept, ...others] = holders.sort(oldestFirst(holders));
 		for (const other of others) {
-			const gone = await this.#discard(other, signal);
+			const { letGo, gone } = await this.#remove({ id: other.id, name }, other, signal);
+			if (!letGo.ok) this.#onNote?.({ computer: name, note: `${other.id}, a second machine of one request, was deleted, and ${letGo.error.message}` });
 			if (!gone.ok) return this.#failFrom(gone.error, `${holders.length} machines carry the name ${name}: ${kept?.id}, the oldest, is kept, and ${other.id} could not be deleted (${gone.error.message})`);
 		}
 		return ok(kept);
-	}
-
-	/** A machine create does not keep, deleted and read back gone; a running Archil computer lets go of its folder first. */
-	async #discard(machine: Machine, signal?: AbortSignal): Promise<Result<void>> {
-		const ref = { id: machine.id, name: machine.labels[NAME_LABEL] as string };
-		if (recordedArchil(machine.labels) !== undefined && machine.state === "running") {
-			const letGo = await this.#letGo(ref, signal);
-			if (!letGo.ok) this.#onNote?.({ computer: ref.name, note: `${machine.id}, a second machine of one request, was deleted, and ${letGo.error.message}` });
-		}
-		const killed = await this.#kill(machine.id);
-		return killed.ok ? this.#settle(ref, signal) : killed;
 	}
 
 	/**
@@ -533,19 +667,19 @@ export class HostedProvider implements ComputerProvider {
 		let machine = read.value;
 		let last: { code: ComputerError["code"]; message: string } | undefined;
 		for (;;) {
-			if (machine === undefined || !alive(machine.state) || machine.state === "stopping" || machine.state === "stopped") return this.#fail("exists", endedWords(name));
+			if (machine === undefined || (machine.state !== "starting" && machine.state !== "running")) return this.#fail("exists", endedWords(name));
 			const deadline = deadlineOf(machine);
 			if (deadline !== undefined && deadline.getTime() <= Date.now()) return this.#fail("exists", endedWords(name));
-			if (machine.state === "running") {
+			// With labels kept in the machine: the create making it has not written them yet.
+			const unwritten = machine.state === "running" && this.#unfiled(machine, name) !== undefined;
+			if (unwritten) last = { code: "refused", message: "has no labels written" };
+			if (machine.state === "running" && !unwritten) {
 				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
-				// The image and an Archil mount are in the labels; the user, the network, the GPUs where the vendor reads them back,
-				// and a size where the vendor takes one in a spec and reads it back, are read back. A vendor that reads no size or
-				// GPU back (Modal) cannot show a drift in it.
-				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field) && attached.ok && attached.value.spec[field] !== undefined);
-				const gpu = this.host.facts.gpuReadBack ? (["gpu"] as const) : [];
-				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...gpu, ...sizes]) : [];
+				// The image, an Archil mount and the GPUs are in the labels; the user and the network are read back. No vendor
+				// shows a drift in a size.
+				const drift = attached.ok ? readBackDiffer({ ...spec, network: networkOfForm(formOf(spec.network)) as NetworkSpec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu"]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
@@ -566,16 +700,23 @@ export class HostedProvider implements ComputerProvider {
 		}
 	}
 
-	/** The labels create gives a computer: the caller's, the adapter's own, and an Archil mount's (never its token). */
+	/**
+	 * The labels create gives a computer: the caller's, the adapter's own, and an Archil mount's (never its token). The
+	 * most its deadline may reach only where the host can extend it, the label's one reader: a host with no extend (Modal,
+	 * Daytona) spends none of its label bytes on it (Modal's 512 hold the box image's tag beside an Archil mount's label).
+	 */
 	#labelsOf(spec: ComputerSpec, name: string, deadline: string, maxDeadline: string): Record<string, string> {
+		const network = formOf(spec.network);
 		return {
 			...spec.labels,
 			[COMPUTER_LABEL]: "1",
 			[NAME_LABEL]: name,
 			[DEADLINE_LABEL]: deadline,
 			[IMAGE_LABEL]: spec.image,
-			[MAX_LABEL]: maxDeadline,
+			...(this.host.extend ? { [MAX_LABEL]: maxDeadline } : {}),
+			...(network === "" ? {} : { [NETWORK_LABEL]: network }),
 			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}),
+			...(typeof spec.gpu?.type === "string" && typeof spec.gpu.count === "number" ? { [GPU_LABEL]: `${spec.gpu.type}:${spec.gpu.count}` } : {}),
 		};
 	}
 
@@ -594,6 +735,9 @@ export class HostedProvider implements ComputerProvider {
 		const deadline = new Date(now + lifetimeMs).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		const labels = this.#labelsOf(spec, name, deadline, maxDeadline);
+		// check() packed stand-ins; these deflate a byte apart from them, so the host is never given labels that don't fit.
+		const stored = this.#stored(labels, name);
+		if ("problem" in stored) return this.#fail("refused", `labels: ${stored.problem}`);
 		const archil = spec.mount?.kind === "archil";
 		const user = this.#userOf(spec);
 		const commands = hostedCommands({
@@ -608,69 +752,56 @@ export class HostedProvider implements ComputerProvider {
 			nonce: randomBytes(16).toString("hex"),
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
-			...(this.host.facts.daemon === "child" && this.host.facts.vendorSockets !== undefined ? { vendorSockets: this.host.facts.vendorSockets } : {}),
+			rootOnly: this.host.facts.rootOnly ?? [],
+			network: formOf(spec.network),
 		});
-		const taken = new Set(this.host.facts.specFields ?? []);
 		const request: MachineRequest = {
 			name,
 			image: spec.image,
-			labels,
-			...(this.host.facts.lifetime === "vendor" ? { lifetimeMs } : {}),
-			// An Archil computer's root reaches Archil, so its vendor network is open: its tools' none is init's own, read
-			// back by the probe from inside, as the tool user, like every network none here.
-			network: archil ? "open" : "none",
+			labels: stored.labels,
+			lifetimeMs,
+			backstopAt: new Date(now + this.#maxLifetimeMs + BACKSTOP_MARGIN_MS).toISOString(),
+			// The machine has egress where its tools' network is open or a list, which init's proxy holds to the public
+			// internet (./network.ts), and where an Archil computer's root reaches Archil. Its tools' none is init's own
+			// either way, read back by the probe from inside, as the tool user.
+			egress: archil || throughProxy(spec.network),
 			...(this.host.facts.daemon === "pid1" ? { command: commands.entrypoint } : {}),
 			...(spec.gpu === undefined ? {} : { gpu: spec.gpu }),
-			...(taken.has("cpus") && spec.cpus !== undefined ? { cpus: spec.cpus } : {}),
-			...(taken.has("memoryMb") && spec.memoryMb !== undefined ? { memoryMb: spec.memoryMb } : {}),
-			...(taken.has("workdir") && spec.workdir !== undefined ? { workdir: spec.workdir } : {}),
-			...(taken.has("user") && spec.user !== undefined ? { user } : {}),
+			...(spec.cpus === undefined ? {} : { cpus: spec.cpus }),
+			...(spec.memoryMb === undefined ? {} : { memoryMb: spec.memoryMb }),
+			...(this.#takesUser && spec.user !== undefined ? { user } : {}),
 		};
-		const runtime = this.host.facts.runtime?.(request);
 		const { createMs } = this.#timeouts;
-		// Never cancelled, only raced: an aborted call could leave a machine made whose id never came back.
-		let creating: Promise<Result<{ id: string }>>;
-		try {
-			creating = Promise.resolve(this.host.create(request, { timeoutMs: createMs }));
-		} catch (error) {
-			return this.#fail(codeOfError(this.host, error), `${this.#label}'s create failed: ${words(error)}`);
-		}
-		const raced = await race(this.host, creating, `${this.#label}'s create`, createMs + CALL_SLACK_MS, signal);
-		const created: Result<{ id: string }> = raced.ok ? raced.value : raced;
+		// Never signalled, only raced: an aborted call could leave a machine made whose id never came back. One that lands
+		// after this gave up is deleted by its id; one that fails after it, by its name where it may have made one.
+		const created = await hostCall(this.host, `${this.#label}'s create`, (ctx) => this.host.create(request, { timeoutMs: ctx.timeoutMs }), createMs, signal, (made) =>
+			made.ok ? this.#kill(made.value.id) : mayHaveMade(made.error.code) ? this.#deleteNamed(name) : undefined,
+		);
 		if (!created.ok) {
 			const { code, message } = created.error;
 			if (code === "aborted" || code === "timeout") {
-				// One that lands is deleted by its id; one whose answer never comes, by its name.
 				this.#end(name);
-				creating.then(
-					async (made) => void (made.ok ? await this.#kill(made.value.id) : await this.#deleteNamed(name)),
-					async () => void (await this.#deleteNamed(name)),
-				);
 				return failAs(created.error, `${message}; a machine it makes after this is deleted as it lands, and ${this.#label} ends it by ${deadline} either way`);
 			}
-			// A create the vendor refused made nothing. One that failed otherwise may have: it goes by its name.
-			if (["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"].includes(code)) return created;
+			if (!mayHaveMade(code)) return created;
 			this.#end(name);
 			const swept = await this.#deleteNamed(name);
 			return failAs(created.error, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
 		this.#requests.made(name);
-		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user, ...(runtime === undefined ? {} : { runtime }) } });
+		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user } });
 	}
 
-	/** Deletes a machine create gives up on, then waits, under the caller's signal, until the vendor reads it gone. */
+	/** Deletes a machine create gives up on, then waits, under the caller's signal, until get answers none for it. */
 	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string; transient?: true }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
 		this.#end(ref.name);
 		// A computer create made whole (its Archil folder mounted) lets go of the folder first, as release does.
-		if (mounted) {
-			const read = await this.#get(ref.id);
-			if (read.ok && read.value !== undefined && recordedArchil(read.value.labels) !== undefined && read.value.state === "running") await this.#letGo(ref, signal);
-		}
-		const killed = await this.#kill(ref.id);
-		const gone = killed.ok ? await this.#settle(ref, signal) : killed;
+		const read = mounted ? await this.#get(ref.id) : undefined;
+		const { gone } = await this.#remove(ref, read?.ok ? read.value : undefined, signal);
+		// The delete is never signalled, so an abort is the wait's, after the delete took.
 		const after = gone.ok
 			? "was deleted"
-			: killed.ok && gone.error.code === "aborted"
+			: gone.error.code === "aborted"
 				? `was deleted, and the wait for it to go was aborted; ${this.#label} ends it at its deadline if the delete did not take`
 				: `could not be deleted (${gone.error.message}); it ends at its deadline`;
 		return this.#failFrom(error, `the computer ${ref.name} ${after}: ${error.message}`);
@@ -685,35 +816,42 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Every machine carrying a name create gave, deleted and read back gone: for a create whose answer never came. The
+	 * Every machine carrying a name create gave, deleted and read back gone: for a create that may have made one whose
+	 * id never came (mayHaveMade), never after a refusal, where a machine under the name is another's. The
 	 * listing shows a new machine a moment after the vendor makes it, so it is read for the name until one shows or
-	 * listedMs passes. Best effort, in words.
+	 * listedMs passes, as create's own wait reads it. With labels kept in the machine, one with no label file yet is taken
+	 * only once it is old (#unfiled). Best effort, in words.
 	 */
 	async #deleteNamed(name: string): Promise<string> {
-		const { listedMs, pollMs, listMs } = this.#timeouts;
+		const { listedMs, pollMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
-		let found: Machine[];
-		for (;;) {
-			const listed = await listedBy(this.host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, listMs);
+		let named: Machine[];
+		for (let delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
+			const listed = await foundBy(this.host, "the listing by name", byName(name), this.#finding);
 			if (!listed.ok) return `; a machine named ${name} may be left (${listed.error.message}), which ends at its deadline`;
-			found = listed.value.filter((machine) => ours(machine.labels, name));
-			if (found.length > 0 || Date.now() >= until) break;
-			await pause(Math.min(LISTED_POLL_MS, pollMs));
+			named = listed.value.filter((machine) => ours(machine.labels, name) || this.#unfiled(machine, name) !== undefined);
+			if (named.length > 0 || Date.now() >= until) break;
+			await pause(Math.min(delay, until - Date.now()));
 		}
-		if (found.length === 0) return `; no machine named ${name} was listed within ${seconds(listedMs)}, and any it made ends at its deadline`;
+		const found = named.filter((machine) => this.#unfiled(machine, name) !== "young");
+		const young = named.length - found.length;
+		const left = young === 0 ? "" : `; ${young} machine${young === 1 ? "" : "s"} named ${name} with no labels written yet, younger than ${seconds(this.#unfiledMs)}, left: another create of this request may still be making it`;
+		if (named.length === 0) return `; no machine named ${name} was listed within ${seconds(listedMs)}, and any it made ends at its deadline`;
+		if (found.length === 0) return left;
 		const said: string[] = [];
 		for (const machine of found) {
-			const killed = await this.#kill(machine.id);
-			const gone = killed.ok ? await this.#settle({ id: machine.id, name }) : killed;
+			const { gone } = await this.#remove({ id: machine.id, name }, undefined);
 			said.push(gone.ok ? `${machine.id} was deleted and read back gone` : `${machine.id} may be left (${gone.error.message}), which ends at its deadline`);
 		}
-		return `; the machine named ${name} it made: ${said.join("; ")}`;
+		return `; the machine named ${name} it made: ${said.join("; ")}${left}`;
 	}
 
 	/** The host's delete, never signalled: a delete that cleans up after an abort must outlive it. Not found is done. */
 	async #kill(id: string): Promise<Result<void>> {
 		const killed = await this.#call(`the delete of ${id}`, (ctx) => this.host.delete(id, ctx), this.#timeouts.requestMs);
-		return killed.ok || killed.error.code === "not_found" ? ok(undefined) : killed;
+		if (!killed.ok && killed.error.code !== "not_found") return killed;
+		filedOf(this.host).delete(id);
+		return ok(undefined);
 	}
 
 	/** The pause between two reads of a machine that is starting: the next read comes after it, within createMs. */
@@ -721,23 +859,28 @@ export class HostedProvider implements ComputerProvider {
 		return Math.min(START_POLL_MS, this.#timeouts.pollMs * 10);
 	}
 
-	/** The host's get, bounded by requestMs; a machine the vendor reports as not found is none, as release and settleGone read it. */
+	/**
+	 * The host's get, bounded by requestMs; a machine the vendor reports as not found is none. Labels kept in the machine
+	 * are read from its file once and then as last read.
+	 */
 	async #get(id: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
-		const read = await this.#call(`the read of ${id}`, (ctx) => this.host.get(id, ctx), this.#timeouts.requestMs, signal);
-		return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
+		const read = await readMachine(this.host, id, this.#timeouts.requestMs, signal);
+		return read.ok ? labelled(this.host, read.value, this.#timeouts.requestMs, signal, false) : read;
 	}
 
 	/** The machine running, read while it starts (within createMs); gone or failed is refused in words. */
 	async #running(ref: ComputerRef, signal?: AbortSignal): Promise<Result<Machine>> {
 		const until = Date.now() + this.#timeouts.createMs;
 		for (;;) {
-			const read = await this.#get(ref.id, signal);
+			// Its labels are read after this, as written (#prepare).
+			const read = await readMachine(this.host, ref.id, this.#timeouts.requestMs, signal);
 			if (!read.ok) return read;
 			const machine = read.value;
-			if (machine === undefined) return this.#fail("gone", `${ref.name} was gone before it ran`);
-			if (machine.state === "failed") return this.#fail("vendor", `${this.#label} could not start ${ref.name}${machine.why ? `: ${machine.why}` : ""}`);
+			// A machine the vendor failed is gone in its words: the create stops in them, not at createMs.
+			if (machine?.why !== undefined && machine.state === "gone") return this.#fail("vendor", `${this.#label} could not start ${ref.name}: ${machine.why}`);
+			if (machine === undefined || machine.state === "gone") return this.#fail("gone", `${ref.name} was gone before it ran`);
 			if (machine.state !== "starting") return ok(machine);
-			// Still starting at createMs is what a vendor's outage looks like (a bad image or config is failed, with the
+			// Still starting at createMs is what a vendor's outage looks like (a bad image or config is gone, with the
 			// vendor's words, above): transient, so a caller may fail over.
 			if (Date.now() + this.#startPollMs() >= until) return this.#failFrom({ code: "timeout", transient: true }, `${ref.name} did not start within ${seconds(this.#timeouts.createMs)}`);
 			await pause(this.#startPollMs(), signal);
@@ -745,20 +888,14 @@ export class HostedProvider implements ComputerProvider {
 		}
 	}
 
-	/** Every way a machine, as the vendor reads it back, differs from what create asked for. Pure: no call. */
-	#machineDrift(spec: ComputerSpec, machine: Machine, labels: Record<string, string>): string[] {
-		const found = [...(machine.drift ?? [])];
+	/**
+	 * Every way a machine, as the vendor reads it back, differs from what create asked for: its labels and its state. The
+	 * rest is read from inside (the daemon, the probe). Pure: no call.
+	 */
+	#machineDrift(machine: Machine, labels: Record<string, string>): string[] {
+		const found: string[] = [];
 		for (const [key, value] of Object.entries(labels)) if (machine.labels[key] !== value) found.push(`label ${key}: declared ${show(value)}, read back ${show(machine.labels[key])}`);
-		if (this.host.facts.networkReadBack) {
-			// An Archil computer's vendor network is open, for root to reach Archil; its tools' none is read from inside.
-			const archil = spec.mount?.kind === "archil";
-			const vendor: NetworkPolicy = archil ? "open" : spec.network;
-			const network = machine.network ?? { other: `${this.#label} read no network back` };
-			if (network !== vendor) found.push(`network: declared ${policyWords(vendor)}${archil ? ` (${this.#label}'s, for root to reach Archil)` : ""}, read back ${policyWords(network)}`);
-		}
 		if (machine.state !== "running") found.push(`state: declared "running", read back ${show(machine.state)}`);
-		// No extend has run on a machine create just made: a timer that reads moved ends it later than its spec.
-		if (machine.timerMoved === true) found.push(`timer: declared the spec's lifetime, read back an end of ${machine.endsAt instanceof Date ? machine.endsAt.toISOString() : "nothing"}, later than create set it`);
 		return found;
 	}
 
@@ -766,17 +903,22 @@ export class HostedProvider implements ComputerProvider {
 	 * Everything between the vendor's answer and a computer that passed the read-back, whose value is what the read-back
 	 * recorded that does not refuse it (notes).
 	 */
-	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands, user, runtime }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
-		const { uploadMs, execMs, requestMs } = this.#timeouts;
+	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands, user }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
+		const { uploadMs, execMs } = this.#timeouts;
 		const running = await this.#running(ref, signal);
 		if (!running.ok) return running;
-		if (this.host.prepare) {
-			const prepare = this.host.prepare.bind(this.host);
-			const prepared = await this.#call(`${this.#label}'s settings of ${ref.name}`, (ctx) => prepare(ref.id, ctx), requestMs, signal);
-			if (!prepared.ok) return prepared;
-		}
-		const drift = this.#machineDrift(spec, running.value, labels);
+		// A host that keeps no labels: they go in the machine first, and are read back from there.
+		const kept = this.#keeps ? await this.#keep(ref, labels, signal) : ok(running.value.labels);
+		if (!kept.ok) return kept;
+		const drift = this.#machineDrift({ ...running.value, labels: kept.value }, labels);
 		if (drift.length > 0) return this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		// Before anything of this create's is in the machine: what root runs is root's alone (the Archil helper's sha256,
+		// read at the mount's preflight, is read after this).
+		if ((this.host.facts.rootOnly ?? []).length > 0) {
+			const closed = await runToExit(this.host, ref.id, commands.rootOnly, { ms: execMs, ...(signal ? { signal } : {}), what: `making system paths root's alone in ${ref.name}` });
+			if (!closed.ok) return closed;
+			if (closed.value.exitCode !== 0) return this.#fail("refused", `making system paths root's alone failed (exit ${closed.value.exitCode}): ${`${closed.value.stdout} ${closed.value.stderr}`.trim().slice(0, 300)}`);
+		}
 		const staging = commands.install[4] as string;
 		const bytes = new Uint8Array(daemon.buffer, daemon.byteOffset, daemon.byteLength);
 		const upload = this.host.upload?.bind(this.host);
@@ -795,7 +937,9 @@ export class HostedProvider implements ComputerProvider {
 		// The run's folder, after the daemon is in place (serve runs it) and before init starts: no tool program runs before
 		// it is mounted. A folder mounted for a computer create then gives up on is let go before the delete, never signalled.
 		const started = async () => {
-			const done = await this.#start(spec, ref, commands, { user, ...(runtime === undefined ? {} : { runtime }) }, signal);
+			const gpu = spec.gpu !== undefined;
+			const isolation = (gpu ? this.#configuration.gpu?.isolation : undefined) ?? this.host.facts.isolation;
+			const done = await this.#start(spec, ref, commands, { user, isolation, gpu }, signal);
 			return done.ok && installer !== undefined ? ok([installer, ...done.value]) : done;
 		};
 		if (spec.mount?.kind !== "archil") return started();
@@ -819,14 +963,12 @@ export class HostedProvider implements ComputerProvider {
 	async #start(spec: ComputerSpec, ref: ComputerRef, commands: HostedCommands, want: Expected, signal?: AbortSignal): Promise<Result<string[]>> {
 		const closed: string[] = [];
 		if (this.host.facts.daemon === "child") {
-			// The vendor's own sockets outside /run, closed to the computer's user before any program of its runs.
-			if (commands.sockets !== undefined) {
-				const shut = await runToExit(this.host, ref.id, commands.sockets, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `closing ${this.#label}'s own sockets in ${ref.name}` });
-				if (!shut.ok) return shut;
-				if (shut.value.exitCode !== 0) return this.#fail("refused", `closing ${this.#label}'s own sockets to the computer's user failed (exit ${shut.value.exitCode}): ${`${shut.value.stdout} ${shut.value.stderr}`.trim().slice(0, 300)}`);
-				const found = closedSocketsOf(shut.value.stdout);
-				closed.push(`${this.#label}'s own sockets closed to the computer's user: ${found.join(", ") || `none found (${(this.host.facts.vendorSockets ?? []).join(", ")})`}`);
-			}
+			// The session buses in /tmp, closed to the computer's user before any program of its runs.
+			const shut = await runToExit(this.host, ref.id, commands.sockets, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `closing the session buses in /tmp in ${ref.name}` });
+			if (!shut.ok) return shut;
+			if (shut.value.exitCode !== 0) return this.#fail("refused", `closing the session buses in /tmp to the computer's user failed (exit ${shut.value.exitCode}): ${`${shut.value.stdout} ${shut.value.stderr}`.trim().slice(0, 300)}`);
+			const found = closedSocketsOf(shut.value.stdout);
+			if (found.length > 0) closed.push(`session buses in /tmp closed to the computer's user: ${found.join(", ")}`);
 			const init = await runToExit(this.host, ref.id, commands.start, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `starting the daemon in ${ref.name}` });
 			if (!init.ok) return init;
 			if (init.value.exitCode !== 0) return this.#fail("refused", `starting the daemon failed (exit ${init.value.exitCode}): ${`${init.value.stdout} ${init.value.stderr}`.trim().slice(0, 500)}`);
@@ -841,7 +983,7 @@ export class HostedProvider implements ComputerProvider {
 		try {
 			const archil = spec.mount?.kind === "archil" ? { mount: { kind: "archil" as const, disk: spec.mount.disk, region: spec.mount.region, folder: spec.mount.folder }, epoch: claimEpoch(spec.labels) } : undefined;
 			const expected = archil === undefined ? undefined : { ...archil, expected: readBackOf({ ...archil.mount, token: "" }, archil.epoch) };
-			const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none", true, want, signal, expected);
+			const inside = await this.#checkInside(opened.value, ref.name, networkOfForm(formOf(spec.network)), true, want, signal, expected);
 			if (!inside.ok) return inside;
 			notes = inside.value;
 		} finally {
@@ -893,17 +1035,16 @@ export class HostedProvider implements ComputerProvider {
 		const drift = [...found.value];
 		const notes: string[] = [];
 		let user: string | undefined;
-		if (network === "none") {
-			const probe = await this.#probe(current, name, signal);
-			if (!probe.ok) return probe;
-			user = `${probe.value.uid}:${probe.value.gid}`;
-			drift.push(...probeNetworkDrift(probe.value));
-			if (want.runtime !== undefined) drift.push(...runtimeDrift(want.runtime, probe.value.kernel));
-			notes.push(...probeNotes(probe.value, network));
+		if (typeof network === "string" || !("other" in network)) {
+			const read = await this.#networkDrift(current, name, network, signal);
+			if (!read.ok) return read;
+			user = `${read.value.probe.uid}:${read.value.probe.gid}`;
+			drift.push(...read.value.drift, ...runtimeDrift(want, read.value.probe.kernel));
+			notes.push(...probeNotes(read.value.probe, network));
 		}
 		// Which way init fenced its programs, as hello read it back: said once a way other than the plain one was taken.
 		if (starting && current.hello.fence === "userns-netns") {
-			notes.push(`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${want.runtime ?? "this machine"} may not make one itself`);
+			notes.push(`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${want.isolation ?? "this machine"} may not make one itself`);
 		}
 		const said = user === undefined ? {} : { user };
 		if (archil === undefined) return drift.length === 0 ? { ...ok(notes), ...said } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
@@ -934,9 +1075,11 @@ export class HostedProvider implements ComputerProvider {
 		return { version: VERSION, ...(uid === undefined || gid === undefined ? {} : { uid, gid }), arch: this.host.facts.arch, kind, groups };
 	}
 
-	/** One stdio bridge into the machine, after hello, unchecked. */
-	#open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
-		return openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs: this.#timeouts.requestMs, helloMs, ...(signal ? { signal } : {}) });
+	/** One stdio bridge into the machine, after hello, unchecked; its client says so once the machine is deleted. */
+	async #open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
+		const { requestMs } = this.#timeouts;
+		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
+		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
@@ -949,10 +1092,39 @@ export class HostedProvider implements ComputerProvider {
 		}
 	}
 
-	/** `computerd probe` through the daemon, so it runs as the computer's own user. */
-	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<ProbeReport>> {
+	/**
+	 * Its tools' network as they meet it, against the one create made: the probe, as the computer's own user. Under none,
+	 * no target answers. Under open or a list, still none answers directly (their own loopback alone), init's relay
+	 * answers (the one way out, to the proxy), and the proxy's policy beside its socket holds the form create asked for.
+	 */
+	async #networkDrift(connection: ComputerConnection, name: string, network: NetworkSpec, signal?: AbortSignal): Promise<Result<{ drift: string[]; probe: ProbeReport }>> {
+		if (network === "none") {
+			const probe = await this.#probe(connection, name, signal);
+			return probe.ok ? ok({ drift: probeNetworkDrift(probe.value), probe: probe.value }) : probe;
+		}
+		const probe = await this.#probe(connection, name, signal, [...this.#probeTargets, EGRESS_RELAY]);
+		if (!probe.ok) return probe;
+		const form = formOf(network);
+		const drift: string[] = [];
+		const direct = probe.value.reached.filter((target) => target !== EGRESS_RELAY);
+		if (direct.length > 0) drift.push(`network: declared ${form} through the egress proxy alone, read back a direct answer from ${direct.join(", ")}`);
+		if (!probe.value.reached.includes(EGRESS_RELAY)) drift.push(`network: declared ${form} through the egress proxy, and init's relay at ${EGRESS_RELAY} did not answer from inside`);
+		const { helloMs } = this.#timeouts;
+		const policy = await connection.client.call("files.read", { path: EGRESS_POLICY }, { signal: bounded(helloMs, signal) });
+		if (!policy.ok) {
+			if (policy.error.code === "aborted") return signal?.aborted ? this.#fail("aborted", `reading ${EGRESS_POLICY} in ${name} was aborted`) : this.#fail("timeout", `reading ${EGRESS_POLICY} in ${name} did not answer within ${seconds(helloMs)}`);
+			drift.push(`network: declared ${form}, and the egress proxy's policy ${EGRESS_POLICY} could not be read: ${policy.error.message}`);
+		} else {
+			const served = Buffer.from(policy.value.data, "base64").toString("utf8");
+			if (served !== `${form}\n`) drift.push(`network: declared ${form}, the egress proxy serves ${show(served.trim().slice(0, 300))}`);
+		}
+		return ok({ drift, probe: probe.value });
+	}
+
+	/** `computerd probe` through the daemon, so it runs as the computer's own user: to targets, the configured ones by default. */
+	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal, targets: readonly string[] = this.#probeTargets): Promise<Result<ProbeReport>> {
 		const { probeMs } = this.#timeouts;
-		const argv = [DAEMON_IN_COMPUTER, "probe", ...this.#probeTargets.flatMap((target) => ["--connect", target])];
+		const argv = [DAEMON_IN_COMPUTER, "probe", ...targets.flatMap((target) => ["--connect", target])];
 		const ran = await connection.client.call("exec.run", { argv, timeoutMs: probeMs }, { signal: bounded(probeMs + CALL_SLACK_MS, signal) });
 		if (!ran.ok) {
 			if (signal?.aborted) return this.#fail("aborted", `the probe in ${name} was aborted`);
@@ -969,13 +1141,14 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * Create waits until the listing shows the new computer on two consecutive polls at least listedStableMs apart (and on
 	 * every poll between), so list() shows it once create returns: a listing that showed it once and then not starts over.
+	 * The polls are 150 ms apart at first, the pause doubling up to pollMs, so a vendor slow to list costs a few calls.
 	 */
 	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
 		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
 		let since: number | undefined;
-		for (let hits = 0; ; ) {
-			const listed = await listedBy(this.host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: ref.name }, listMs, signal);
+		for (let hits = 0, delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
+			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
 			if (!listed.ok) return listed;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
 				hits += 1;
@@ -983,7 +1156,7 @@ export class HostedProvider implements ComputerProvider {
 			} else [hits, since] = [0, undefined];
 			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok(undefined);
 			if (Date.now() >= until) return this.#fail("timeout", `the computer was not listed within ${seconds(listedMs)} of its creation`);
-			await pause(Math.min(LISTED_POLL_MS, LISTED_POLL_MAX_MS, pollMs), signal);
+			await pause(Math.min(delay, until - Date.now()), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
 		}
 	}
@@ -991,7 +1164,7 @@ export class HostedProvider implements ComputerProvider {
 	/** This provider's machine for ref, as the vendor reads it, or why not. */
 	async #own(ref: ComputerRef, signal?: AbortSignal): Promise<Result<Machine>> {
 		const found = await this.#get(ref.id, signal);
-		if (!found.ok) return found.error.code === "not_found" ? this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id})`) : found;
+		if (!found.ok) return found;
 		if (found.value === undefined) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id})`);
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer named ${ref.name} has the id ${ref.id}`);
 		return ok(found.value);
@@ -1015,7 +1188,7 @@ export class HostedProvider implements ComputerProvider {
 		const found = await this.#own(ref);
 		if (!found.ok) return found;
 		// A machine on its way out (past its deadline or released, the vendor still deleting it) is gone, not merely stopped.
-		if (found.value.state === "going") return this.#fail("gone", `${ref.name} passed its deadline or was released: it is going`);
+		if (found.value.state === "gone") return this.#fail("gone", `${ref.name} passed its deadline or was released: it is going`);
 		if (found.value.state !== "running") return this.#fail("refused", `${ref.name} is ${found.value.state}, not running: its daemon does not run`);
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
@@ -1034,7 +1207,7 @@ export class HostedProvider implements ComputerProvider {
 			const id = given.id;
 			if (typeof id !== "string" || !MACHINE_ID.test(id)) return this.#fail("invalid", `${String(id)} is not ${a(this.#label)} machine id`);
 			const found = await this.#get(id, signal);
-			if (!found.ok) return found.error.code === "not_found" ? this.#fail("not_found", `no ${this.#label} computer has the id ${id}`) : found;
+			if (!found.ok) return found;
 			if (found.value === undefined || !ours(found.value.labels)) return this.#fail("not_found", `no ${this.#label} computer has the id ${id}`);
 			return this.#attached(found.value, signal);
 		}
@@ -1063,19 +1236,12 @@ export class HostedProvider implements ComputerProvider {
 		const deadline = deadlineOf(machine);
 		if (deadline === undefined) found.push(`deadline: the label ${DEADLINE_LABEL} reads ${show(machine.labels[DEADLINE_LABEL])}, not the ISO time create writes`);
 		const archil = recordedArchil(machine.labels);
-		const network = this.#toolsNetwork(machine);
-		if (typeof network === "object") found.push(`network: ${policyWords(network)}, which this provider never makes`);
-		const resolved = machine.image?.resolved;
-		const image = machine.labels[IMAGE_LABEL] ?? resolved ?? "";
-		// The size the vendor reads back is held to check() where the vendor takes it in a spec, and reported either way.
-		const taken = new Set(this.host.facts.specFields ?? []);
-		const cpus = machine.size?.cpus;
-		const memoryMb = machine.size?.memoryMb;
-		const sized = { ...(taken.has("cpus") && cpus !== undefined ? { cpus } : {}), ...(taken.has("memoryMb") && memoryMb !== undefined ? { memoryMb } : {}) };
-		const spec = { image, lifetimeMs: 1, network: typeof network === "object" ? "open" : network, labels: callerLabels(machine.labels), ...sized } as ComputerSpec;
+		// Its tools' network as create recorded it, read from inside (#checkInside: the probe, and the proxy's policy):
+		// no vendor's read of it is taken.
+		const network = networkOfForm(machine.labels[NETWORK_LABEL]);
+		const image = machine.labels[IMAGE_LABEL] ?? "";
+		const spec = { image, lifetimeMs: 1, network, labels: callerLabels(machine.labels) } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
-		// The vendor's own create options read back, as create holds them (#machineDrift).
-		found.push(...(machine.drift ?? []));
 		let kind: AttachedComputer["spec"]["kind"];
 		let notes: string[] = [];
 		let mount: MountReadBack | undefined;
@@ -1086,7 +1252,7 @@ export class HostedProvider implements ComputerProvider {
 			try {
 				// A host that takes a spec's user made this computer's daemon run as the one its spec named: read back, never root
 				// (an Archil computer's is the tool user); every other runs as the provider's daemon user.
-				const want = this.#takesUser() ? (archil === undefined ? {} : { user: ARCHIL_USER }) : { user: `${this.#uid}:${this.#gid}` };
+				const want = this.#takesUser ? (archil === undefined ? {} : { user: ARCHIL_USER }) : { user: `${this.#uid}:${this.#gid}` };
 				const inside = await this.#checkInside(opened.value, name, network, false, want, signal, archil);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
@@ -1105,118 +1271,89 @@ export class HostedProvider implements ComputerProvider {
 			...ref,
 			spec: {
 				image,
-				...(resolved !== undefined && resolved !== image ? { snapshot: resolved } : {}),
-				user: (this.#takesUser() ? user : undefined) ?? `${this.#uid}:${this.#gid}`,
-				network: spec.network,
-				...(cpus === undefined ? {} : { cpus }),
-				...(memoryMb === undefined ? {} : { memoryMb }),
+				user: (this.#takesUser ? user : undefined) ?? `${this.#uid}:${this.#gid}`,
+				network,
 				workdir: WORK,
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
 				...(mount === undefined ? {} : { mount }),
-				...(machine.gpu === undefined ? {} : { gpu: machine.gpu }),
+				...gpuOf(machine.labels[GPU_LABEL]),
 			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
 	}
 
 	/**
-	 * Settings' test: the host's own, or one list by the adapter's label, its computers counted as the listing reads them
-	 * (no get of each), which makes nothing; a refused key is unauthorized, a vendor not reached unreachable, the message
-	 * never carrying a key.
+	 * Settings' test: one list by the adapter's label, its computers counted as the listing reads them (no get of each),
+	 * which makes nothing; a refused key is unauthorized, a vendor not reached unreachable, the message never carrying a key.
 	 */
 	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
-		const { requestMs, listMs } = this.#timeouts;
-		const tested = this.host.testConnection?.bind(this.host);
-		if (tested) return countTestedAs(this.#label, await this.#call(`${this.#label}'s test`, (ctx) => tested(ctx), requestMs, signal));
-		const listed = await listedBy(this.host, "the listing", { [COMPUTER_LABEL]: "1" }, listMs, signal);
-		return countTested(this.#label, listed.ok ? ok({ count: listed.value.filter((machine) => ours(machine.labels) && alive(machine.state)).length }) : listed);
+		const listed = await listedBy(this.host, "the listing", { [COMPUTER_LABEL]: "1" }, this.#timeouts.listMs, signal);
+		// A host that keeps no labels lists them by their image, and by their name where the vendor keeps one.
+		const keptOurs = (machine: Machine) => ourImage(machine, this.#finding.image) && (machine.name === undefined || NAME.test(machine.name));
+		const counted = (machine: Machine) => (this.#keeps ? keptOurs(machine) : ours(machine.labels)) && alive(machine.state);
+		return countTested(this.#label, listed.ok ? ok({ count: listed.value.filter(counted).length }) : listed);
 	}
 
 	/**
-	 * Every computer this provider made that carries all of these labels, running or stopped, each one's network read
-	 * back (by get, where the listing leaves it out). One deadline, listMs from the call, bounds every page and every get.
+	 * Every computer this provider made that carries all of these labels, running or stopped: the listing finds them, and
+	 * a get of each reads its state, labels and end (foundBy). Its network is the one its label records, as create made
+	 * it (none without one); attach and network() read it from inside.
 	 */
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const problem = filterProblem(labels);
 		if (problem) return this.#fail("invalid", problem);
-		const { listMs, requestMs } = this.#timeouts;
-		const until = Date.now() + listMs;
-		const late = (message: string) => this.#fail("timeout", `list did not finish within ${seconds(listMs)}: ${message}`);
-		const listed = await listedBy(this.host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, listMs, signal);
-		if (!listed.ok) return listed.error.code === "timeout" ? late(listed.error.message) : listed;
+		const { listMs } = this.#timeouts;
+		const listed = await foundBy(this.host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, this.#finding, signal);
+		if (!listed.ok) return listed.error.code === "timeout" ? this.#fail("timeout", `list did not finish within ${seconds(listMs)}: ${listed.error.message}`) : listed;
 		const infos: ComputerInfo[] = [];
-		const shown = (machine: Machine | undefined): machine is Machine => machine !== undefined && ["running", "stopping", "stopped"].includes(machine.state);
-		for (const item of listed.value) {
-			let machine: Machine | undefined = item;
-			if (!ours(machine.labels) || !shown(machine)) continue;
-			if (this.host.facts.networkReadBack && machine.network === undefined) {
-				if (Date.now() >= until) return late(`${infos.length} computers were read back, ${machine.id} and any after it were not`);
-				const read = await this.#call(`the read of ${machine.id}`, (ctx) => this.host.get(item.id, ctx), Math.max(1, Math.min(requestMs, until - Date.now())), signal);
-				// A machine the vendor no longer has, between the listing and the read, is left out.
-				if (!read.ok && read.error.code === "not_found") continue;
-				if (!read.ok) return read.error.code === "timeout" ? late(read.error.message) : read;
-				machine = read.value;
-				// The listing may be older than get: the machine is held to every label again, as get reads them.
-				if (!shown(machine) || !ours(machine.labels) || !Object.entries(labels).every(([key, value]) => machine?.labels[key] === value)) continue;
-			}
+		for (const machine of listed.value) {
+			if (!ours(machine.labels) || (machine.state !== "running" && machine.state !== "stopped")) continue;
 			// list runs nothing in a computer: an Archil computer's mount is the one its label records, under its epoch label.
 			const archil = recordedArchil(machine.labels);
 			infos.push({
 				ref: { id: machine.id, name: machine.labels[NAME_LABEL] as string },
 				labels: { ...machine.labels },
 				deadline: deadlineOf(machine),
-				state: machine.state === "running" ? "running" : "stopped",
-				network: this.#toolsNetwork(machine),
+				state: machine.state,
+				network: networkOfForm(machine.labels[NETWORK_LABEL]),
 				...(archil === undefined ? {} : { mount: archil.expected }),
 			});
 		}
 		return ok(infos);
 	}
 
-	/** The vendor reads the policy back (or the probe stands for it). A change is refused: the network is fixed at create. */
+	/** The probe and the proxy's policy read the network back from inside. A change is refused: it is fixed at create. */
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = this.#refProblem(ref);
 		if (problem) return this.#fail("invalid", problem);
 		const fixed = `${a(this.#label)} computer's network is fixed at create: create a new computer`;
-		if (policy !== undefined && policy !== "none") {
-			const wider = policy === "open" || (typeof policy === "object" && policy !== null && "allow" in policy);
-			return this.#fail("refused", wider ? `${OWN_NETWORK_ONLY}; ${fixed}` : `${fixed}; a network is "none"`);
-		}
+		const refused = policy === undefined ? undefined : networkRefusal(this.#label, this.capabilities().network, policy);
+		if (refused) return this.#fail("refused", `${refused}; ${fixed}`);
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
-		let read = this.#toolsNetwork(found.value);
-		// Its tools' none is read from inside, as the tool user, where the vendor's network is root's (an Archil computer's)
-		// or the vendor reads none back: the daemon's own network namespace's live interfaces are lo alone, none can be
-		// raised (computerd probe), and no probe target answers.
-		const inside = (recordedArchil(found.value.labels) !== undefined || !this.host.facts.networkReadBack) && found.value.state === "running";
-		if (read === "none" && inside) {
+		const recorded = networkOfForm(found.value.labels[NETWORK_LABEL]);
+		let read: NetworkPolicy = recorded;
+		// Its tools' network is read from inside, as the tool user, whatever the vendor's network is (an Archil computer's
+		// root reaches Archil, an open one's proxy the internet): the daemon's own network namespace's live interfaces are
+		// lo alone, none can be raised (computerd probe), no probe target answers directly, and an open or listed one's
+		// relay and proxy serve what its label records.
+		if (found.value.state === "running" && (typeof recorded === "string" || !("other" in recorded))) {
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			try {
-				const drift = await readOwnNetwork(opened.value.client, this.#timeouts.helloMs, bounded(this.#timeouts.helloMs, signal));
-				if (!drift.ok) return this.#fail(drift.error.code, `${ref.name}: ${drift.error.message}`);
-				if (drift.value.length > 0) read = { other: drift.value.join("; ") };
-				const probe = await this.#probe(opened.value, ref.name, signal);
-				if (!probe.ok) return probe;
-				if (probe.value.reached.length > 0) read = { other: `its tools' network was created none, yet from inside an answer came back from ${probe.value.reached.join(", ")}` };
+				const own = await readOwnNetwork(opened.value.client, this.#timeouts.helloMs, bounded(this.#timeouts.helloMs, signal));
+				if (!own.ok) return this.#fail(own.error.code, `${ref.name}: ${own.error.message}`);
+				const drift = await this.#networkDrift(opened.value, ref.name, recorded, signal);
+				if (!drift.ok) return drift;
+				const found = [...own.value, ...drift.value.drift];
+				if (found.length > 0) read = { other: `its tools' network was created ${policyWords(recorded)}, yet from inside: ${found.join("; ")}` };
 			} finally {
 				await opened.value.close();
 			}
 		}
-		if (policy === undefined || policy === read) return ok(read);
-		return this.#fail("refused", `${fixed}: ${ref.name} reads back network ${policyWords(read)}, not ${policy}`);
-	}
-
-	/**
-	 * The tools' network as the vendor's policy shows it: the vendor's own (none where it reads none back), except for an
-	 * Archil computer, whose open vendor network is root's, to reach Archil: its tools' network is init's own, none.
-	 */
-	#toolsNetwork(machine: Machine): NetworkPolicy {
-		const vendor = this.host.facts.networkReadBack ? (machine.network ?? { other: `${this.#label} read no network back` }) : "none";
-		if (recordedArchil(machine.labels) === undefined) return vendor;
-		if (vendor === "open" || !this.host.facts.networkReadBack) return "none";
-		return { other: `an Archil computer whose ${this.#label} network reads ${policyWords(vendor)}, not the open one create makes for root to reach Archil` };
+		if (policy === undefined || isDeepStrictEqual(networkOfForm(formOf(policy)), read)) return ok(read);
+		return this.#fail("refused", `${fixed}: ${ref.name} reads back network ${policyWords(read)}, not ${policyWords(policy)}`);
 	}
 
 	/** One extend of a computer at a time, each reading the deadline the one before it left. */
@@ -1239,9 +1376,10 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Moves the deadline to now + ttlMs, refusing one earlier than it is (before any vendor call), never past create's time plus the cap (init's maximum):
-	 * the vendor's timer (setTimer, then read back) or the janitor's label (setLabels) first, then init's own deadline, to
-	 * the end the vendor reads back. The deadline returned is the one init took.
+	 * Moves the deadline to now + ttlMs, refusing one earlier than it is (before any vendor call), never past create's time
+	 * plus the cap (init's maximum): the host's extend first (its timer or its deadline label), then the end it reads back
+	 * (get, deadlineOf), then init's own deadline, to that end. The deadline returned is the one init took. A host that
+	 * keeps labels in the machine has no extend (the constructor).
 	 */
 	async #extend(ref: ComputerRef, ttlMs: number, signal?: AbortSignal): Promise<Result<{ deadline: Date }>> {
 		const found = await this.#own(ref, signal);
@@ -1260,24 +1398,15 @@ export class HostedProvider implements ComputerProvider {
 			return this.#fail("refused", `${new Date(target).toISOString()} is earlier than ${current.toISOString()}, the deadline ${ref.name} has now: an extend moves the deadline later, never earlier`);
 		}
 		if (current !== undefined && target === current.getTime()) return ok({ deadline: current });
-		const { requestMs } = this.#timeouts;
-		let end: Date;
-		const setTimer = this.host.setTimer?.bind(this.host);
-		if (this.host.facts.lifetime === "vendor" && setTimer) {
-			const moved = await this.#call(`${this.#label}'s timer of ${ref.name}`, (ctx) => setTimer(ref.id, { end: new Date(target), most }, ctx), requestMs, signal);
-			if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label}'s timer did not move, so nothing did: ${moved.error.message}`);
-			const after = await this.#get(ref.id, signal);
-			if (!after.ok || after.value?.endsAt === undefined) {
-				const why = after.ok ? `${ref.name} read back with no end` : after.error.message;
-				return this.#fail(after.ok ? "gone" : after.error.code, `${this.#label}'s timer was asked to move, and reading it back failed: ${why}; init's deadline did not move`);
-			}
-			end = after.value.endsAt;
-		} else {
-			const setLabels = this.host.setLabels?.bind(this.host);
-			if (!setLabels) return this.#fail("unsupported", `${a(this.#label)} computer's deadline cannot move`);
-			end = new Date(target);
-			const moved = await this.#call(`the deadline label of ${ref.name}`, (ctx) => setLabels(ref.id, { [DEADLINE_LABEL]: end.toISOString() }, ctx), requestMs, signal);
-			if (!moved.ok) return this.#fail(moved.error.code, `the deadline label did not move, so nothing did: ${moved.error.message}`);
+		const extend = this.host.extend?.bind(this.host);
+		if (!extend) return this.#fail("unsupported", `${a(this.#label)} computer's deadline cannot move`);
+		const moved = await this.#call(`${this.#label}'s end of ${ref.name}`, (ctx) => extend(ref.id, new Date(target), ctx), this.#timeouts.requestMs, signal);
+		if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label} did not move ${ref.name}'s end, so nothing did: ${moved.error.message}`);
+		const after = await this.#get(ref.id, signal);
+		const end = after.ok && after.value !== undefined ? deadlineOf(after.value) : undefined;
+		if (end === undefined) {
+			const why = !after.ok ? after.error.message : after.value === undefined ? `${ref.name} is gone` : `${ref.name} reads back no deadline`;
+			return this.#fail(!after.ok ? after.error.code : after.value === undefined ? "gone" : "refused", `${this.#label} was asked to move ${ref.name}'s end, and reading it back failed: ${why}; init's deadline did not move`);
 		}
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return this.#fail(opened.error.code, `${ref.name}'s end moved to ${end.toISOString()}, and init's deadline did not: ${opened.error.message}`);
@@ -1296,43 +1425,44 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * delete reads the machine back to check it is this provider's, then deletes it, both never signalled, so a release
 	 * after an abort, or one aborted during the read, still sends the delete; it is idempotent: one the vendor no longer
-	 * has is ok. The vendor answers a delete before the machine is gone, so release then waits (#settle) until the vendor
-	 * reads it gone and no longer lists it, within goneMs and the caller's signal, the one step the signal ends. A running
+	 * has is ok. The vendor answers a delete before the machine is gone, so release then waits (#settle) until get
+	 * answers none (twice running), within goneMs and the caller's signal, the one step the signal ends. A running
 	 * Archil computer lets go of the run's folder first (archilRelease: the final sync through computerd, then checkin as
 	 * root); the delete runs whatever that answers. A folder not let go cleanly loses nothing (every call that changed it
 	 * synced, and the next claim revokes the hold), so it is said through onNote, and the release succeeds once the
-	 * machine is gone. stop, where the host declares it, stops the machine and keeps it.
+	 * machine is gone. A computer here is deleted, never stopped: release stop is refused in words.
 	 */
 	async release(ref: ComputerRef, how: ReleaseHow, { signal }: ReleaseContext = {}): Promise<Result<void>> {
 		const problem = this.#refProblem(ref);
 		if (problem) return this.#fail("invalid", problem);
 		if (how === "detach") return this.#fail("unsupported", `the ${this.#label} provider keeps no computer for an agent (it declares no persistence), so release detach is refused: release it with delete`);
-		if (how !== "stop" && how !== "delete") return this.#fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
-		const stop = this.host.stop?.bind(this.host);
-		if (how === "stop" && !(stop && this.host.facts.release.includes("stop"))) return this.#fail("unsupported", `${a(this.#label)} computer has no stop that this provider declares: release it with delete`);
+		if (how === "stop") return this.#fail("unsupported", `${a(this.#label)} computer is deleted, never stopped and kept: release it with delete`);
+		if (how !== "delete") return this.#fail("invalid", `release is "delete", not ${String(how)}`);
 		const found = await this.#get(ref.id);
-		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
+		if (!found.ok) return found;
 		if (found.value === undefined) return ok(undefined);
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
-		// A stop and a delete alike let go of a running Archil computer's folder first: a stopped one holds no folder.
-		const letGo = recordedArchil(found.value.labels) !== undefined && found.value.state === "running" ? await this.#letGo(ref, signal) : ok(undefined);
-		let done: Result<void>;
-		if (how === "stop" && stop) {
-			// The host only asks: the adapter waits until the machine reads stopped, or gone where a stop deletes it.
-			const { facts } = this.host;
-			const want = facts.stopDeletes || (found.value.gpu !== undefined && facts.gpu?.stopDeletes) ? "gone" : "stopped";
-			const ask = (askSignal?: AbortSignal) => this.#call(`the stop of ${ref.name}`, (ctx) => stop(ref.id, ctx), this.#timeouts.requestMs, askSignal);
-			done = found.value.state === "stopped" || found.value.state === "stopping" ? ok(undefined) : await ask(signal);
-			if (done.ok) done = await this.#settle(ref, signal, want, ask);
-		} else {
-			this.#end(ref.name);
-			const killed = await this.#kill(ref.id);
-			done = killed.ok ? await this.#settle(ref, signal) : killed;
-		}
+		this.#end(ref.name);
+		const { letGo, gone: done } = await this.#remove(ref, found.value, signal);
 		if (letGo.ok) return done;
 		if (!done.ok) return this.#fail(done.error.code, `${done.error.message}; and ${letGo.error.message}`);
-		this.#onNote?.({ computer: ref.name, note: `${ref.name} was ${how === "stop" ? "stopped" : "deleted"}, and ${letGo.error.message}` });
+		this.#onNote?.({ computer: ref.name, note: `${ref.name} was deleted, and ${letGo.error.message}` });
 		return done;
+	}
+
+	/**
+	 * The one delete: machine's folder let go first (where it is a running Archil computer, as read; none for undefined),
+	 * then the host's delete, then the wait until get answers none for it. The callers word what failed.
+	 */
+	async #remove(ref: ComputerRef, machine: Machine | undefined, signal?: AbortSignal): Promise<{ letGo: Result<void>; gone: Result<void> }> {
+		const letGo = await this.#letGoOf(ref, machine, signal);
+		const killed = await this.#kill(ref.id);
+		return { letGo, gone: killed.ok ? await this.#settle(ref, signal) : killed };
+	}
+
+	/** #letGo where machine, as read, is a running Archil computer: a stopped one holds no folder. */
+	#letGoOf(ref: ComputerRef, machine: Machine | undefined, signal?: AbortSignal): Promise<Result<void>> {
+		return machine !== undefined && recordedArchil(machine.labels) !== undefined && machine.state === "running" ? this.#letGo(ref, signal) : Promise.resolve(ok(undefined));
 	}
 
 	/** A running Archil computer's folder let go: the final sync through a connection when it answers, then checkin as root. */
@@ -1345,75 +1475,241 @@ export class HostedProvider implements ComputerProvider {
 		}
 	}
 
-	/** Waits until the vendor reads the machine as wanted (settle): gone after a delete, by default. */
-	#settle(ref: ComputerRef, signal?: AbortSignal, want: "gone" | "stopped" = "gone", ask?: (signal: AbortSignal) => Promise<Result<void>>): Promise<Result<void>> {
-		return settle(this.host, ref, { ...this.#timeouts, want, ...(ask ? { ask } : {}), ...(signal ? { signal } : {}) });
+	/** Waits until the vendor reads the machine gone after its delete (settle). */
+	#settle(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
+		return settle(this.host, ref, { ...this.#timeouts, ...(signal ? { signal } : {}) });
+	}
+}
+
+/** The labels a listing by one computer's name asks for. */
+const byName = (name: string): Record<string, string> => ({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name });
+
+/** The room of a host that keeps its labels packed (facts.labels.packed), or undefined. */
+function packedRoom(host: MachineHost): Exclude<HostFacts["labels"], "machine" | undefined> | undefined {
+	const room = host.facts.labels;
+	return room !== "machine" && room?.packed ? room : undefined;
+}
+
+/** A machine as the host read it, with a packed host's labels unpacked: none where it holds no packed map (not the adapter's). */
+const unpacked = (host: MachineHost, machine: Machine): Machine => (packedRoom(host) === undefined ? machine : { ...machine, labels: unpackLabels(machine.labels) ?? {} });
+
+/**
+ * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
+ * may answer more (MachineHost.list). A packed host is asked for PACKED_NAME alone, the name's where one is asked, and
+ * its machines' labels unpacked. A host that keeps labels in the machine lists none: its machines of another name are
+ * left out, and the rest kept for foundBy to read.
+ */
+export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
+	const name = labels[NAME_LABEL];
+	const asked = packedRoom(host) === undefined ? labels : name === undefined ? {} : { [PACKED_NAME]: name };
+	const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), ms, signal);
+	const keeps = (machine: Machine) => (host.facts.labels === "machine" ? name === undefined || machine.name === undefined || machine.name === name : carries(machine, labels));
+	return listed.ok ? ok(listed.value.map((machine) => unpacked(host, machine)).filter(keeps)) : listed;
+}
+
+/** What foundBy reads with: the timeouts, who hears of a machine a listing leaves out, and the provider's image option. */
+type Finding = Pick<HostedTimeouts, "listMs" | "requestMs"> & { onNote?: ProviderNote | undefined; image?: string | undefined };
+
+/** Whether a machine's image is ours: the provider's image option, or a box image by its name rule (isBoxImage). */
+const ourImage = (machine: Machine, image: string | undefined): boolean => machine.image !== undefined && (machine.image === image || isBoxImage(machine.image));
+
+/** With labels kept in the machine: each machine's label map as its file was last read, by host and machine id. */
+const filed = new WeakMap<MachineHost, Map<string, Record<string, string>>>();
+function filedOf(host: MachineHost): Map<string, Record<string, string>> {
+	let known = filed.get(host);
+	if (known === undefined) filed.set(host, (known = new Map()));
+	return known;
+}
+
+/** A label file's JSON as a label map, or undefined where it is not one. */
+function labelMapOf(text: string): Record<string, string> | undefined {
+	try {
+		const map: unknown = JSON.parse(text);
+		return typeof map === "object" && map !== null && !Array.isArray(map) && Object.values(map).every((value) => typeof value === "string") ? (map as Record<string, string>) : undefined;
+	} catch {
+		return undefined;
 	}
 }
 
 /**
- * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
- * may answer more (MachineHost.list).
+ * A machine of a host that keeps labels in the machine, with the labels its file holds: read through exec while it runs
+ * (fresh), within ms, else as last read, or none. No file (exit 3) is none; a read that fails otherwise, or does not end
+ * within ms, is an error, never none (foundBy leaves the machine out of its listing, in words). Another host's machine is
+ * as read.
  */
-export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
-	const listed = await hostCall(host, what, (ctx) => host.list(labels, ctx), ms, signal);
-	return listed.ok ? ok(listed.value.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value))) : listed;
+async function labelled(host: MachineHost, machine: Machine | undefined, ms: number, signal: AbortSignal | undefined, fresh: boolean): Promise<Result<Machine | undefined>> {
+	if (host.facts.labels !== "machine" || machine === undefined) return ok(machine);
+	const known = filedOf(host);
+	const held = known.get(machine.id);
+	if (machine.state !== "running" || (held !== undefined && !fresh)) return ok({ ...machine, labels: { ...held } });
+	const what = `reading the labels in ${machine.id}`;
+	const read = await runToExit(host, machine.id, labelsCommand(), { ms, ...(signal ? { signal } : {}), what });
+	// Gone since the vendor's read: as a read that finds none.
+	if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
+	if (read.value.exitCode === 3) return ok({ ...machine, labels: {} });
+	const labels = read.value.exitCode === 0 ? labelMapOf(read.value.stdout) : undefined;
+	if (labels === undefined) return failFor(host.descriptor.id)("vendor", `${what} failed (exit ${read.value.exitCode}): ${`${read.value.stdout} ${read.value.stderr}`.trim().slice(0, 300)}`);
+	known.set(machine.id, labels);
+	return ok({ ...machine, labels: { ...labels } });
+}
+
+/** Whether a machine carries every one of these labels. */
+const carries = (machine: Machine, labels: Record<string, string>) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value);
+
+/**
+ * The listing finds, get answers (MachineHost.list): the machines the host's listing by labels names, each read now by
+ * readMachine, within requestMs, and its label file where the host keeps labels in the machine. One the vendor no longer
+ * has (not found) is dropped, and so is one whose get carries not every label, but a machine of the name asked for whose
+ * labels are not written yet. A label file's read that fails or does not end within requestMs leaves its machine out of
+ * this listing alone, told through onNote by its id: one wedged machine never holds up the rest. A listing by a
+ * request's name is the exception: what is left of it may be the request's own, so such a read fails it, as a get that
+ * fails fails the whole. The label file is read only in a machine whose listed image is ours (ourImage): another's is
+ * left out unread, and one that shows no image is left out in words.
+ */
+export async function foundBy(
+	host: MachineHost,
+	what: string,
+	labels: Record<string, string>,
+	{ listMs, requestMs, onNote, image }: Finding,
+	signal?: AbortSignal,
+): Promise<Result<Machine[]>> {
+	const listed = await listedBy(host, what, labels, listMs, signal);
+	if (!listed.ok) return listed;
+	const name = labels[NAME_LABEL];
+	// With labels in the machine, the label read runs only in a machine of our image: never in another's.
+	const readable = (machine: Machine) => {
+		if (host.facts.labels !== "machine") return true;
+		if (machine.image === undefined) onNote?.({ computer: machine.id, note: "its vendor record shows no image, so its labels are not read: this listing leaves it out" });
+		return ourImage(machine, image);
+	};
+	const reads = await Promise.all(
+		listed.value.filter(readable).map(async ({ id }) => {
+			const read = await readMachine(host, id, requestMs, signal);
+			if (!read.ok) return read;
+			const inside = await labelled(host, read.value, requestMs, signal, true);
+			// A listing by a request's name is left with machines of that name or of none (listedBy), and either may be the
+			// request's own: one that can't be read fails the listing, so its create never makes a second.
+			if (inside.ok || inside.error.code === "aborted" || name !== undefined) return inside;
+			onNote?.({ computer: id, note: `${inside.error.message}; this listing leaves it out, and the next one reads it again` });
+			return ok(undefined);
+		}),
+	);
+	// With labels in the machine, one of the name asked for with none written yet is kept too, for the caller to judge.
+	const unfiled = (machine: Machine) => host.facts.labels === "machine" && name !== undefined && machine.name === name && machine.labels[COMPUTER_LABEL] === undefined;
+	const found: Machine[] = [];
+	for (const read of reads) {
+		if (!read.ok) return read;
+		if (read.value !== undefined && (carries(read.value, labels) || unfiled(read.value))) found.push(read.value);
+	}
+	return ok(found);
 }
 
 /**
- * Waits, through waitUntil, until the host reads a machine as wanted, by get and by its name's listing alike, twice
- * running: gone (get answers none, or a state that is not alive, and the listing no longer shows it), or stopped (get
- * and the listing read stopped; gone counts too). After a stop (ask given, whether it keeps the machine or deletes it), a
- * machine that reads running or starting is asked to stop again, and one that reads failed ends the wait. Pauses double
- * from pollMs to 5 s, bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared
- * with the live sweep.
+ * The host's get of one machine, bounded by ms, a packed host's labels unpacked: a machine the vendor reports as not
+ * found is none, never an error.
+ */
+async function readMachine(host: MachineHost, id: string, ms: number, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+	const read = await hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), ms, signal);
+	if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
+	return ok(read.value === undefined ? undefined : unpacked(host, read.value));
+}
+
+/** What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read. */
+function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
+	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (given.length === 0) return reading;
+	const signal = AbortSignal.any(given);
+	if (signal.aborted) return Promise.resolve(undefined);
+	return new Promise((settle) => {
+		const onAbort = () => settle(undefined);
+		signal.addEventListener("abort", onAbort, { once: true });
+		reading.then((value) => {
+			signal.removeEventListener("abort", onAbort);
+			settle(value);
+		});
+	});
+}
+
+/**
+ * A connection that says its computer was deleted (the vendor's own API can delete it mid-run). Once its client answers
+ * gone (the stream ended or failed), the machine is read once, and that one read answers every call in flight at that
+ * moment and every later call. A machine the vendor no longer has, or reads gone with no why (going), makes each of them
+ * not_found in these words; one still there, a failed one, or a read that failed, leaves the client's own answer, as does
+ * a caller's abort or a close during the read. A call with no answer by its own timeout answers timeout at once, as the
+ * client says; the machine is read beside it, and a deleted one ends the connection, so every call still waiting on the
+ * hung transport and every later call answers not_found. A connection its caller closed is never read back.
+ */
+function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, requestMs: number, connection: ComputerConnection): ComputerConnection {
+	const { client } = connection;
+	const closing = new AbortController();
+	let deleted: ComputerError | undefined;
+	let ended: Promise<ComputerError | undefined> | undefined;
+	let checking: Promise<ComputerError | undefined> | undefined;
+	const read = async (): Promise<ComputerError | undefined> => {
+		const got = await readMachine(host, ref.id, requestMs, closing.signal);
+		// Gone with no why is being deleted; a failed machine (gone with its why) keeps the client's own answer.
+		if (got.ok && (got.value === undefined || (got.value.state === "gone" && got.value.why === undefined)) && deleted === undefined && !closing.signal.aborted) {
+			const how = got.value === undefined ? `${label} no longer has it` : `${label} reads it going`;
+			deleted = { code: "not_found", message: `the computer ${ref.name} (${ref.id}) was deleted: ${how}` };
+			// Every call still waiting on the transport settles now, with these words, as later ones do.
+			void connection.close();
+		}
+		return deleted;
+	};
+	const close = () => {
+		closing.abort();
+		return connection.close();
+	};
+	return {
+		...connection,
+		client: {
+			async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
+				if (deleted) return { ok: false, error: deleted };
+				const answered = await client.call(method, params, options);
+				if (answered.ok) return answered;
+				if (deleted) return { ok: false, error: deleted };
+				if (closing.signal.aborted) return answered;
+				if (answered.error.code === "timeout") {
+					checking ??= read().finally(() => (checking = undefined));
+					return answered;
+				}
+				if (answered.error.code !== "gone") return answered;
+				const found = await untilAborted((ended ??= read()), [options?.signal, closing.signal]);
+				return found ? { ok: false, error: found } : answered;
+			},
+			close() {
+				void close();
+			},
+		},
+		close,
+	};
+}
+
+/**
+ * Waits, through waitUntil, until get answers none for a machine after its delete, twice running: the vendor no longer
+ * has it. A machine read gone is still going (a vendor still destroying it), so it holds the wait like any other state.
+ * A listing may show a deleted machine for a while (MachineHost.list), so it is not read. Pauses double from pollMs to
+ * 5 s, bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared with the live sweep.
  */
 export async function settle(
 	host: MachineHost,
 	ref: ComputerRef,
-	{
-		requestMs,
-		listMs,
-		pollMs,
-		goneMs,
-		signal,
-		want = "gone",
-		ask,
-	}: Pick<HostedTimeouts, "requestMs" | "listMs" | "pollMs" | "goneMs"> & { signal?: AbortSignal; want?: "gone" | "stopped"; ask?: (signal: AbortSignal) => Promise<Result<void>> },
+	{ requestMs, pollMs, goneMs, signal }: Pick<HostedTimeouts, "requestMs" | "pollMs" | "goneMs"> & { signal?: AbortSignal },
 ): Promise<Result<void>> {
-	const fail = failOf(host);
-	const doing = ask === undefined ? "release" : "the stop";
+	const fail = failFor(host.descriptor.id);
 	type Read = { failed: Result<never> } | { settled: true } | { last: string };
 	let agreed = 0;
 	let last = "unread";
 	const read = async (readSignal: AbortSignal): Promise<Read> => {
-		const got = await hostCall(host, `the read of ${ref.id}`, (ctx) => host.get(ref.id, ctx), requestMs, readSignal);
-		if (!got.ok && got.error.code !== "not_found") {
+		const got = await readMachine(host, ref.id, requestMs, readSignal);
+		if (!got.ok) {
 			if (got.error.code === "aborted") return { last };
-			return { failed: fail(got.error.code, `${doing} of ${ref.name}: reading it back failed (${got.error.message}); it last read ${last}`) };
+			return { failed: fail(got.error.code, `release of ${ref.name}: reading it back failed (${got.error.message}); it last read ${last}`) };
 		}
-		const machine = got.ok ? got.value : undefined;
-		const state = machine?.state;
+		const state = got.value?.state;
 		last = state ?? "gone (not found)";
-		if (ask !== undefined && state === "failed") return { failed: fail("vendor", `${doing} of ${ref.name}: it went to failed${machine?.why ? `: ${machine.why}` : ""}`) };
-		const reached = state === undefined || (want === "gone" && !alive(state)) ? "gone" : want === "stopped" && state === "stopped" ? "stopped" : undefined;
-		if (reached === undefined) {
+		if (state !== undefined) {
 			agreed = 0;
-			if (ask !== undefined && (state === "running" || state === "starting")) {
-				const again = await ask(readSignal);
-				if (!again.ok && again.error.code !== "aborted") return { failed: again };
-			}
-			return { last };
-		}
-		const listed = await listedBy(host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: ref.name }, listMs, readSignal);
-		if (!listed.ok) {
-			if (listed.error.code === "aborted") return { last };
-			return { failed: fail(listed.error.code, `${doing} of ${ref.name}: the listing failed (${listed.error.message}); it last read ${last}`) };
-		}
-		const item = listed.value.find((one) => one.id === ref.id);
-		if (reached === "gone" ? item !== undefined : item?.state !== "stopped") {
-			agreed = 0;
-			last = reached === "gone" ? `${last}, still listed` : `${last}, listed ${item?.state ?? "not at all"}`;
 			return { last };
 		}
 		return ++agreed >= LISTED_ROUNDS ? { settled: true } : { last };
@@ -1423,7 +1719,7 @@ export async function settle(
 		...(signal ? { signal } : {}),
 		minMs: Math.min(pollMs, RELEASE_POLL_MAX_MS),
 		maxMs: RELEASE_POLL_MAX_MS,
-		what: `${ref.name} to be ${want} after its ${ask === undefined ? "delete" : "stop"}`,
+		what: `${ref.name} to be gone after its delete`,
 		describe: (state) => ("last" in state ? `the vendor read it ${state.last}` : "done"),
 	});
 	if (!waited.ok) return waited;
@@ -1441,32 +1737,28 @@ function oldestFirst(machines: Machine[]): (a: Machine, b: Machine) => number {
 	return (a, b) => (dated && at(a) !== at(b) ? at(a) - at(b) : byId(a, b));
 }
 
-/** What the read-back inside a computer holds it to, beside its spec: its daemon's user and its runtime. */
+/** What the read-back inside a computer holds it to, beside its spec: its daemon's user and the isolation declared. */
 interface Expected {
 	user?: string;
-	runtime?: "vm" | "gvisor";
+	/** The isolation declared for this computer: a GPU computer's own where its GPUs declare one (Modal's gVisor). */
+	isolation?: ComputerCapabilities["isolation"];
+	gpu?: boolean;
 }
 
-/** The probe's kernel against the runtime declared: gVisor exactly where the host runs one (a pid1 host's GPU), a VM's elsewhere. */
-function runtimeDrift(runtime: "vm" | "gvisor", kernel: string): string[] {
+/** The probe's kernel against the isolation declared: gVisor exactly where it says gvisor, never where it says vm. */
+function runtimeDrift({ isolation, gpu }: Expected, kernel: string): string[] {
 	const gvisor = /gvisor/i.test(kernel);
-	if (runtime === "vm" && gvisor) return [`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(kernel)})`];
-	if (runtime === "gvisor" && !gvisor) return [`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(kernel)})`];
+	if (isolation === "vm" && gvisor) return [`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(kernel)})`];
+	if (isolation === "gvisor" && !gvisor) return [`runtime: declared gVisor${gpu ? " (a GPU computer)" : ""}, read back another kernel (${JSON.stringify(kernel)})`];
 	return [];
 }
 
-/** A host's own test, its words kept: unauthorized and unreachable as the shared rule reads them. */
-function countTestedAs(label: string, tested: Result<{ detail: string }>): Result<{ detail: string }> {
-	return tested.ok ? tested : countTested(label, tested);
-}
-
-function labelProblem(key: string, value: unknown, rule?: RegExp): string | undefined {
+function labelProblem(key: string, value: unknown): string | undefined {
 	if (typeof value !== "string") return `the label ${key} must be a string`;
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: a NUL byte cannot be sent to the vendor`;
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	if (key === ARCHIL_MOUNT_LABEL) return `the label ${key} is the provider's own: it records an Archil computer's mount`;
-	if (rule !== undefined && !rule.test(key)) return `the label name ${JSON.stringify(key)} is not one the vendor takes (${rule.source})`;
 	return undefined;
 }
 
@@ -1475,7 +1767,11 @@ function a(label: string): string {
 	return `${/^[AEIOU]/i.test(label) ? "an" : "a"} ${label}`;
 }
 
-/** The shared machine-host adapter: host's machines as a ComputerProvider (see HostedProvider). */
-export function hostedProvider(host: MachineHost, options: HostedOptions): HostedProvider {
-	return new HostedProvider(host, options);
+/** A spec's network as init's form (networkFormOf): "" for none, and for a network check() refuses. */
+function formOf(network: unknown): string {
+	try {
+		return networkFormOf(network as NetworkSpec);
+	} catch {
+		return "";
+	}
 }

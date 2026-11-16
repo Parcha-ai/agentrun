@@ -1,6 +1,6 @@
 ---
 name: phone-computer
-description: Use a phone (a cloud Android or an iPhone) through computer_observe, computer_act, computer_screenshot and computer_script. It covers reading the screen's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and what a phone cannot do. Use when a run has a phone and the task needs its screen or apps.
+description: Use a phone (a cloud Android or an iPhone) through computer_observe, computer_act, computer_screenshot and a codemode script's `computer`. It covers reading the screen's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and what a phone cannot do. Use when a run has a phone and the task needs its screen or apps.
 ---
 
 # Using a phone
@@ -34,12 +34,12 @@ layout, images, colours. Without the `ui` group, observe is the screenshot.
 | `{click: "@e9"}` or `{click: [x, y]}` | A tap; `button: "right"` is a long press. |
 | `{type: "text", into?: "@e3"}` | Types, into the element when named, else into the field in focus. |
 | `{nav: "back"}`, `{nav: "home"}`, `{nav: "app_switch"}` | The system's own navigation. |
-| `{scroll: "@e1", dy: 600}` | Scrolls the element by points: `dy` above 0 shows what is below. |
+| `{scroll: [180, 420], dy: 600}`, with `foreground: true` on the call | Swipes from that point: `dy` above 0 shows what is below. A swipe is the phone's own input, refused unless the call passes `foreground: true`. |
 | `{drag: [[x1, y1], [x2, y2]], ms?}` | One finger along the path. |
 | `{key: "enter"}` | A key, where the phone has keys. |
 
 Each step answers its route and whether a readback verified it; the answer ends with whether the screen changed and its
-new state. `expect: {text: "Android version"}` waits after the steps until that text shows (`gone: true`: until it is
+new state. `expect: {text: "Device name"}` waits after the steps until that text shows (`gone: true`: until it is
 gone). `observe: true` adds the new outline: one call instead of two. The first refused step stops the rest.
 
 Prefer refs. A step at a point is read against a state and refused as **stale** once the screen moved under it:
@@ -48,34 +48,43 @@ states or expects.
 
 **`computer_screenshot` `{region?}`** is the whole screen, or `region: [x, y, w, h]` of it, in pixels.
 
-**`computer_script` `{code}`** runs JavaScript in an isolate whose only binding is `computer`. Its tool description
-gives the `computer` object's types for this phone. The body is an async function: `await` the calls and `return` what
-you need.
+**Scripts: `codemode`.** A `codemode` script has the phone as `computer`, and codemode's description gives its types
+for this phone. The body is an async function: `await` the calls and `return` what you need. Each call is a call of its
+own, asked about and recorded like the tools'.
 
 ```js
 await computer.apps.open("com.android.settings");
 const settings = computer.app("com.android.settings");
 await settings.observe();
+for (let i = 0; i < 4 && !settings.find({ text: "About phone" })[0]; i++) {
+  await settings.scroll([180, 420], { dy: 600 }, { foreground: true });
+  await settings.observe();
+}
 const about = settings.find({ text: "About phone" })[0];
-const page = await settings.press(about.ref, { expect: { text: "Android version" }, observe: true });
-return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /version/i.test(line)) };
+const page = await settings.press(about.ref, { expect: { text: "Device name" }, observe: true });
+return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /name/i.test(line)) };
 ```
 
-**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
-there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+An `expect` is met only by what shows on the screen: a row below the fold is not there until you scroll to it.
 
-```js
-const page = JSON.parse(await tools.computer_observe({ app: "com.android.settings" }));
-const about = page.elements.find((node) => node.name === "About phone");
-```
+App ids come from `computer.apps.list()`: call it before `computer.apps.open`. The tools are there too, as
+`tools.computer_observe(...)` and `tools.computer_act(...)`.
+
+**On Codex** there is no `codemode` and no `computer`: Codex runs scripts in its own code mode, which calls the tools in
+your list. Codex's exec has no top-level `return` (it is a SyntaxError there, and nothing runs): a script's output goes
+through `text(...)`. The phone's apps are `computer_op` there, one call per op with its arguments, named as `computer`'s methods
+are: `computer_op({op: "apps.open", args: {id: "com.android.settings"}})`. Every answer is text, and a failed op never
+throws: an op that ran answers JSON, so `JSON.parse` it. A refused op answers the gate's words, which open with
+`Permission denied:` or `The user denied this`, or give the tool's name then `is read-only for this agent, so this call
+was refused:` or `can't be called:`. A failed op answers its error's words. Neither is JSON: check before you parse.
 
 **The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
 screenshot pixels, for what the app's window can't reach: a swipe from the screen's top edge opens the notification
 shade (`{ type: "swipe", path: [[540, 5], [540, 1200]] }`), and anything outside the app.
 
-**Only the tools you were given.** An agent's computer setting may leave some out: a code-only agent has its script
-tool and no `computer_observe`, `computer_act` or `computer_screenshot`; a tools-only agent has those and no script
-tool; an agent whose exec is off has no shell of any kind. Use what your tool list shows.
+**Only what you were given.** An agent's computer setting may leave some out: a code-only agent drives the phone from
+`codemode` alone, with no `computer_observe`, `computer_act` or `computer_screenshot` in its tool list; an agent whose
+exec is off has no shell of any kind. Use what your tool list and codemode's types show.
 
 ## How to work: observe, then act by ref, then check
 
@@ -89,6 +98,8 @@ tool; an agent whose exec is off has no shell of any kind. Use what your tool li
    screen, the surest way back to a known place.
 
 ## When to write a script
+
+A `codemode` script is one call of yours where tools would be many.
 
 - **Known steps**: open an app, press through a known path, read one value: one script, an `expect` on each page.
 - **A few facts out of a long screen**: `find()` inside the script and return only those, never whole observations.

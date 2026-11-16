@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { callWords, CAPS, foldLabel, groupTimeline, HOST_PHASE, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-lib-support.mjs";
+import { piShaped } from "../dist/store-reads/journal.js";
+import { KINDS as JOURNAL } from "../dist/runner/journal-kinds.js";
 
 /** The root conversation of a Codex run in QA run 3 (F22: "Write a file called hello.md…", then "Now add a second line
  *  saying goodbye"), as serve wrote it from the adapter's events: the first turn's commentary came in a request whose
@@ -239,6 +241,36 @@ test("a nested call sits under its parent, and its result closes it", () => {
   ]);
 });
 
+for (const [label, id, parent, expected] of [
+  ["explicit SDK parent", "callback", "workflow", "workflow"],
+  ["derived managed parent", "script/1", undefined, "script"],
+  ["managed nesting precedence", "script/1", "other", "script"],
+]) test(`recorded call projection preserves ${label} on its call and result`, () => {
+  const shaped = piShaped([
+    { kind: JOURNAL.callStart, data: { callId: id, tool: "read", input: {}, ...(parent ? { parentCallId: parent } : {}) } },
+    { kind: JOURNAL.callEnd, data: { callId: id, tool: "read", status: "done", output: "read" } },
+  ]);
+  assert.equal(shaped[0].recordedCall, true, "SDK and managed journal calls share this projection");
+  assert.equal(shaped[0].data.parentCallId, parent);
+  const rows = timelineOf(shaped).filter(row => row.tool_use_id === id);
+  assert.deepEqual(rows.map(row => [row.kind, row.parent_tool_use_id]), [["tool_use", expected], ["tool_result", expected]]);
+});
+
+test("a recorded call the run's end closed (withRun) reads interrupted with no status, never failed; one a crash cut keeps reading failed", () => {
+  const shaped = piShaped([
+    { kind: JOURNAL.callStart, data: { callId: "exec", tool: "exec", input: {}, nests: true } },
+    { kind: JOURNAL.callEnd, data: { callId: "exec", status: "interrupted", withRun: true } },
+    { kind: JOURNAL.callStart, data: { callId: "cut", tool: "read", input: { path: "x" } } },
+    { kind: JOURNAL.callEnd, data: { callId: "cut", status: "interrupted" } },
+  ]);
+  const rows = timelineOf(shaped);
+  const end = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "exec");
+  assert.deepEqual([end.tool_status, end.summary, end.refused], [null, "Using tool: exec interrupted", undefined]);
+  assert.match(end.tool_result_preview, /^interrupted: /);
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "cut").tool_status, "failed");
+  assert.match(text(rows), /Using tool: exec +interrupted\n.*Read x +failed/);
+});
+
 test("a subagent's rows sit under the call that spawned it", () => {
   const rows = timelineOf([
     user("Find the invoice", 0),
@@ -437,29 +469,29 @@ test("cost: a tool's own request, marked with its label as a compaction is, is a
 
 test("cost: a paid tool's charge is summed with the requests and shown on a line of its own; an unknown one makes the cost unknown; it is no request", () => {
   const a = assistant([{ type: "text", text: "a" }], 0);
-  const charged = (usd) => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", usd, call: "c1" });
+  const charged = (usd) => custom(TOOL_COST, { tool: "monid:faux/person/enrich", charged_by: "monid", usd, call: "c1" });
   const rows = timelineOf([a, charged(0.003)]);
   assert.deepEqual(rows.map((r) => [r.kind, r.summary, r.tool_name, r.tool_use_id]), [
     ["final_answer", "a", null, null],
-    ["phase", "Tool cost: monid charged $0.0030 for monid.run", "monid.run", "c1"],
+    ["phase", "Tool cost: monid charged $0.0030 for monid:faux/person/enrich", "monid:faux/person/enrich", "c1"],
     ["usage", "Cost so far: $0.0130 over 1 model request and 1 paid tool call", null, null],
   ]);
   assert.deepEqual(rows.at(-1).usage, { usd: 0.013, requests: 1 });
   assert.deepEqual(rows[1].usage, { usd: 0.003, requests: 0 }, "its line carries the charge alone, no request");
   const unknown = timelineOf([a, charged(null)]);
   assert.deepEqual(unknown.find((r) => r.kind === "phase").usage, { usd: null, requests: 0 });
-  assert.equal(unknown.find((r) => r.kind === "phase").summary, "Tool cost: monid charged an unknown amount for monid.run");
+  assert.equal(unknown.find((r) => r.kind === "phase").summary, "Tool cost: monid charged an unknown amount for monid:faux/person/enrich");
   assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 1, so_far_usd: 0.01, unpriced: 1 }, "never $0: the known part, and the charge with no price");
   assert.deepEqual(timelineOf([charged(0.003)]).at(-1).usage, { usd: 0.003, requests: 0 }, "a charge alone makes the row");
 });
 
 test("cost: a paid tool call marked before it is sent is in flight while the run is; settled unsettled, a crash cut it and the cost is unknown, never its held figure; its charge settles it", () => {
   const a = assistant([{ type: "text", text: "a" }], 0);
-  const marked = (heldUsd, call = "c1") => custom(TOOL_STARTED, { tool: "monid.run", charged_by: "monid", call, heldUsd });
-  const charged = (usd, call = "c1") => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call, usd });
+  const marked = (heldUsd, call = "c1") => custom(TOOL_STARTED, { tool: "monid:faux/person/enrich", charged_by: "monid", call, heldUsd });
+  const charged = (usd, call = "c1") => custom(TOOL_COST, { tool: "monid:faux/person/enrich", charged_by: "monid", call, usd });
   assert.deepEqual(timelineOf([a, marked(0.05)]).at(-1).usage, { usd: 0.01, requests: 1 }, "in flight: the sum so far");
   const cut = timelineOf([a, marked(1)], { settled: true }).at(-1);
-  assert.deepEqual([cut.usage, cut.summary], [{ usd: null, requests: 1, so_far_usd: 0.01, unpriced: 1 }, "Cost so far: $0.0100 known, 1 not priced, over 1 model request and 1 paid tool call"], "never 1.01: the allowance is no charge; the cut call is a charge with no price");
+  assert.deepEqual([cut.usage, cut.summary], [{ usd: null, requests: 1, so_far_usd: 0.01, unpriced: 1 }, "Cost so far: $0.0100 known, 1 not priced, over 1 model request and 1 paid tool call"], "never 1.01: the hold is no charge; the cut call is a charge with no price");
   assert.deepEqual(timelineOf([a, marked(1), charged(0.003)], { settled: true }).at(-1).usage, { usd: 0.013, requests: 1 }, "settled by its charge");
   assert.deepEqual(timelineOf([marked(0.05)], { settled: true }).at(-1).usage, { usd: null, requests: 0, so_far_usd: 0, unpriced: 1 });
 });

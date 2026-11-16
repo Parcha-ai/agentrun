@@ -76,7 +76,7 @@ function captureLines(t) {
 
 /** An agent granted the fake server's add and delete_thing (per_run: every call needs the token a run is handed), that
  *  learned `tidy`; `graded` real runs of it, each deleting a thing (`deletes` of the one its job names), graded right. */
-async function world(t, { graded = 5, deletes = (id) => id } = {}) {
+async function world(t, { graded = 5, deletes = (id) => id, tools = [ADD, DELETE] } = {}) {
   const lines = captureLines(t);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-replay-tools-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -101,7 +101,7 @@ async function world(t, { graded = 5, deletes = (id) => id } = {}) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.mcp.put({ name: "fake", url: fake.url, auth: "per_run", tools: [ADD, DELETE], sealed: null });
+  await server.mcp.put({ name: "fake", url: fake.url, auth: "per_run", tools, sealed: null });
   await server.agents.create({ id: "agent-1", name: "Tidies" }, { id: "rev-1", kind: "agentic", body: { instructions: "Delete the thing, say the sum.", tools: ["mcp:fake/add", "mcp:fake/delete_thing"], toolSettings: { "mcp:fake/*": { permission: "allow" } }, learning: true } });
   const seed = await landWorkflows(dir, "agent-1", FLOWS);
   const handed = (id) => sealRunMcpAuth(SEAL_KEY, id, { fake: { headers: { authorization: `Bearer ${TOKEN}` }, origin: new URL(fake.url).origin } });
@@ -157,7 +157,7 @@ test("a replay answers its write from the graded run's recording, never sending 
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "workflow", JSON.stringify(second.metrics));
   const decided = (await promotionsOf(server.settings, "agent-1")).filter((one) => one.source === "replay").at(-1);
-  assert.deepEqual({ decided: decided.decided, n: decided.replay.n, wf_acc: decided.replay.wf_acc, skipped_write: decided.replay.skipped_write }, { decided: "promote", n: 5, wf_acc: 1, skipped_write: 0 }, JSON.stringify(decided));
+  assert.deepEqual({ decided: decided.decided, n: decided.replay.n, wf_acc: decided.replay.wf_acc, skipped_write: decided.replay.outcomes.skipped_write }, { decided: "promote", n: 5, wf_acc: 1, skipped_write: 0 }, JSON.stringify(decided));
   const said = [...logs, ...lines, JSON.stringify(await promotionsOf(server.settings, "agent-1")), JSON.stringify(runs), JSON.stringify(fake.log)].join("\n");
   assert.equal(said.includes(TOKEN), false, "the credential is never printed, logged or recorded");
 });
@@ -177,6 +177,27 @@ test("a write whose arguments the recording does not have is never sent: the inp
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.skipped_write }, { decided: "hold", source: "replay", n: 0, skipped_write: 5 });
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.outcomes.skipped_write }, { decided: "hold", source: "replay", n: 0, skipped_write: 5 });
   assert.match(decided.reason, /every one of its 5 graded inputs needs a write the recording doesn't have/);
+  assert.deepEqual(decided.replay.skipped_tools, [{ tool: "mcp:fake/delete_thing", inputs: 5, no_read_only_hint: false }], "a destructive tool: a write, never a missing hint");
+  assert.doesNotMatch(decided.reason, /readOnlyHint/);
+});
+
+test("an MCP tool its server lists with no annotations stops every input: held, and the reason names it and says readOnlyHint, never a data problem", { timeout: 180_000 }, async (t) => {
+  // The live smoke's case: a read tool listed without annotations. The graded runs never called it, so nothing recorded.
+  const { annotations: _none, ...bare } = ADD;
+  const { server, start, replaysEnded, calls, logs } = await world(t, { tools: [bare, DELETE] });
+  const addsBefore = calls("add").length;
+  await start("run-1", 7, "thing-7");
+  const runs = await replaysEnded(5);
+  for (const row of runs) {
+    assert.equal(row.metrics?.replay?.outcome, "skipped_write", JSON.stringify(row.metrics));
+    assert.deepEqual(row.metrics.replay.skipped, { tool: "mcp:fake/add", step: "sum", unmarked: true });
+  }
+  assert.equal(calls("add").length, addsBefore, "an unmarked tool is never sent in a replay");
+  const second = await start("run-2", 8, "thing-8");
+  assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
+  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.outcomes.skipped_write, skipped_tools: decided.replay.skipped_tools }, { decided: "hold", source: "replay", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }] });
+  assert.equal(decided.reason, "nothing was replayed on its 5 graded inputs: add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server");
 });

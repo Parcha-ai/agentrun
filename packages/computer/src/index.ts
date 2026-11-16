@@ -25,9 +25,9 @@ export {
 	type WatchOptions,
 	watchScreen,
 } from "./screen-watch.js";
-// The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and hostedProvider makes it a provider.
+// The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and HostedProvider makes it a provider.
 export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-export { HostedProvider, type HostedOptions, type HostedTimeouts, hostedProvider } from "./hosted/provider.js";
+export { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
 // (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /kubernetes, /modal, /e2b, /agent37, /orgo,
 // /phone-harness, /browserbase, /kernel, /local: each the provider file's name).
@@ -120,7 +120,6 @@ export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorP
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,
-	AGENT37_BOX_TEMPLATE,
 	BROWSER_IMAGE,
 	BROWSERBASE,
 	DAYTONA,
@@ -132,14 +131,11 @@ export {
 	daytonaGpuSnapshot,
 	DOCKER,
 	E2B,
-	E2B_BASE_TEMPLATE,
-	E2B_DESKTOP_TEMPLATE,
 	KERNEL,
 	KUBERNETES,
 	KUBERNETES_DEFAULT_IMAGE,
 	LOCAL,
 	MODAL,
-	MODAL_DEFAULT_IMAGE,
 	ORGO,
 	ORGO_BASE_IMAGE,
 	PHONE_GROUPS,

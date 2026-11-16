@@ -58,7 +58,7 @@ test("the ended graph reads a stored workflow run's completed node from A's jour
   const given = {
     run: { id: "run-1", agent: "agent-1", revision: "rev-1", status: "completed", paused: false, startedAt: now, endedAt: now },
     ended: true, workflow, storeFile: "/does-not-exist/run.sqlite", root, input: { question: "What is six times seven?" },
-    modelCost: 0, llmRead: 0, store, context: BACKGROUND_CONTEXT,
+    modelCost: undefined, llmRead: 0, store, context: BACKGROUND_CONTEXT,
   };
   const result = await runGraph(given);
   const node = workflow.root.steps?.[0] ? "/root/steps/0" : "/root";
@@ -87,7 +87,7 @@ test("the graph names each model node's own execution's model: a later claim's o
   await commitWrites(journal, writes, BACKGROUND_CONTEXT);
   const now = new Date().toISOString();
   const result = await runGraph({ run: { id: "run-1", agent: "agent-1", revision: "rev-1", status: "completed", paused: false, startedAt: now, endedAt: now },
-    ended: true, workflow, root: "", input: { question: "x" }, modelCost: 0, llmRead: 0, store, context: BACKGROUND_CONTEXT });
+    ended: true, workflow, root: "", input: { question: "x" }, modelCost: undefined, llmRead: 0, store, context: BACKGROUND_CONTEXT });
   assert.deepEqual(["/root/steps/0", "/root/steps/1", "/root/steps/2"].map((p) => ({ model: result.nodes[p].model, tier: result.nodes[p].tier })), [
     { model: "fast-model-old", tier: "fast" }, { model: "run-model", tier: undefined }, { model: "fast-model-new", tier: "fast" },
   ], JSON.stringify(result.nodes));

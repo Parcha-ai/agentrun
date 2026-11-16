@@ -11,3 +11,10 @@ export async function consumer(): Promise<void> {
   await client.runs.nope("r1"); // error
   void text;
 }
+
+import * as workflowEngine from "@parcha/agentrun-dsl";
+import { createWorkflowMcpBridge } from "@parcha/agentrun-client/workflows";
+export async function wrongWorkflowHost(): Promise<void> {
+  await createWorkflowMcpBridge({ tools: [], policy: () => "allow" }); // error
+  await createWorkflowMcpBridge({ engine: { inspectWorkflow: workflowEngine.inspectWorkflow, runWorkflow: workflowEngine.runWorkflow }, tools: [], policy: () => "allow" }); // error
+}

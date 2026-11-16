@@ -481,9 +481,9 @@
    "path": "workflow",
    "workflow": "sort-invoice",
    "learned_revision": "a12596c6cf0dfbdae73b9f5f889167171e00b48d",
-   "cost_usd": null,
+   "cost_usd": 0.1281,
    "learning_usd": 0,
-   "total_usd": null
+   "total_usd": 0.1281
   },
   {
    "n": 45,
@@ -883,7 +883,7 @@
   }
  ],
  "total_runs": 80,
- "unknown_cost_runs": 1,
+ "unknown_cost_runs": 0,
  "summary": {
   "takeover": {
    "n": 21,
@@ -895,9 +895,13 @@
   },
   "after": {
    "runs": 59,
-   "mean_usd": 0.127661
+   "mean_usd": 0.115905
   },
-  "times_cheaper": 7.0
+  "after_state": "priced",
+  "times_cheaper": 7.7,
+  "hand_backs": { "ran": 59, "back": 3 },
+  "withheld": null,
+  "replay": { "n": 40, "workflow_pct": 95, "agent_pct": 94, "cleared": true }
  },
  "workflows": []
 }

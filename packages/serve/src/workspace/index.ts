@@ -27,8 +27,7 @@ export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-l
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type AgentComputer, type RunComputer, type RunHold, runTools, type RunTools, type ScriptComputer, withKindTools } from "./run-tools.js";
-export { portOf } from "./computer-ports.js";
-export { computerScriptExecutor, NO_PROGRAMS_WORDS, SCRIPT_DEFAULT_MS, SCRIPT_MAX_MS, ScriptGuard, type ScriptDecide, scriptPreludeOf } from "./computer-script.js";
+export { NO_PROGRAMS_WORDS, portOf } from "./computer-ports.js";
 export { COMPUTER_MCP_NAME, computerMcp, type ComputerMcpAnswer, mcpAnswerOf } from "./computer-mcp.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,

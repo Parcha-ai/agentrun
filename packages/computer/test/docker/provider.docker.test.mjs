@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DockerProvider } from "../../dist/docker.js";
 import { newRequest } from "./request.mjs";
 

@@ -16,9 +16,9 @@ export const T0 = Date.parse("2026-11-08T06:00:00Z");
 export const usd = (tokens, perMillion) => (tokens * perMillion) / 1e6;
 
 /** A cap of `capUsd` (a number, undefined for none, or a function the cap reads before each check) on a clock at T0. */
-export function capOn(capUsd, { mode = "expected", spentUsd = 0, clock = { now: T0 } } = {}) {
+export function capOn(capUsd, { spentUsd = 0, clock = { now: T0 } } = {}) {
   const read = typeof capUsd === "function" ? capUsd : () => capUsd;
-  const cap = createCap({ capUsd: read, mode, spentUsd, now: () => clock.now });
+  const cap = createCap({ capUsd: read, spentUsd, now: () => clock.now });
   return { cap, clock };
 }
 
