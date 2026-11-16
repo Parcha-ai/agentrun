@@ -16,6 +16,7 @@ import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescrip
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
 const { WINDOW_MANAGER } = await import("../dist/desktop.js");
+const VALUES = await import("../dist/hosted/values.js");
 
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
@@ -501,6 +502,27 @@ test("a create the host refused makes nothing and deletes nothing", async () => 
 	assert.equal(refused.error?.code, "invalid");
 	assert.equal(fake.machines.size, 0);
 	assert.deepEqual(fake.events.filter(({ what }) => what === "delete"), []);
+});
+
+test("a named create the vendor refuses as exists (a duplicate name, 409) adopts the machine the name's listing finds, as a retry does; with none listed, the refusal stands", async () => {
+	const fake = fakeHost();
+	const name = nameOf("taken");
+	// Another instance's create of the request made it, and the first listing by the name lags it.
+	const other = fake.add({ labels: { [COMPUTER]: "1", [NAME]: name, [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" } });
+	other.daemon = { path: DAEMON, bytes: DAEMON_BYTES };
+	other.init = { deadline: other.labels[DEADLINE], user: "2510:2510", display: "", max: other.labels[MAX] };
+	other.hidden = 1;
+	const taken = { ...fake.host, create: async () => Promise.reject(new HostError("exists", `POST /v1/machines: 409 the name ${name} is taken`)) };
+	const provider = new HostedProvider(taken, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const adopted = made(await provider.create(SPEC, { requestId: "taken" }));
+	assert.equal(adopted.id, other.id, "the name's machine, adopted");
+	assert.equal(other.deleted, false);
+	// No machine carries the name: the vendor's words stand, and nothing is swept.
+	const lone = fakeHost();
+	const refused = await new HostedProvider({ ...lone.host, create: taken.create }, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }).create(SPEC, { requestId: "taken-alone" });
+	assert.equal(refused.error?.code, "exists");
+	assert.match(refused.error.message, /409 the name computer-[0-9a-f]{12} is taken/);
+	assert.deepEqual(lone.calls.filter(([what]) => what === "delete"), []);
 });
 
 test("a create whose answer is lost or broken is swept by its name: the machine it made is deleted and read back gone", async () => {
@@ -1350,6 +1372,73 @@ test("facts.labels.bytes: the adapter prices the caller's labels with its own at
 	const gpu = setup({ ...WITH_GPU }, { facts: { labels: { bytes: gpuOwn } } });
 	assert.deepEqual(gpu.provider.check({ ...SPEC, gpu: H100 }), [], "at the bound");
 	assert.match(gpu.provider.check({ ...SPEC, gpu: H100, labels: { a: "" } })[0].message, new RegExp(`${GPU_LABEL} 27`));
+});
+
+/** A vendor that stores a machine's labels packed (facts.labels.packed): create packs, get and list unpack, list filters by the name alone. */
+function packedHost(fake, room) {
+	const { packLabels, unpackLabels, PACKED_NAME } = VALUES;
+	const read = (m) => m && { ...m, labels: unpackLabels(m.labels) ?? {} };
+	return {
+		...fake.host,
+		facts: { ...fake.host.facts, labels: room },
+		/** Each create's request, as the adapter gave it. */
+		requests: [],
+		create(req, ctx) {
+			this.requests.push(req);
+			const packed = packLabels(req.labels, req.name, room);
+			assert.equal(packed.problem, undefined, "create packs what check() let through");
+			return fake.host.create({ ...req, labels: packed.labels }, ctx);
+		},
+		get: async (id, ctx) => read(await fake.host.get(id, ctx)),
+		list: async (labels, ctx) => (await fake.host.list(labels[NAME] === undefined ? {} : { [PACKED_NAME]: labels[NAME] }, ctx)).map(read),
+	};
+}
+
+test("facts.labels.packed: the adapter's real labels (a deadline, an image ref, a list, an Archil mount) round-trip exactly under a 5-tag cap, Kubernetes' rules, Cloudflare's names and a string list; a map that can't fit is refused in words", async () => {
+	const { packLabels, unpackLabels } = VALUES;
+	const image = "ghcr.io/parcha-ai/agentrun-box@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	const spec = { ...ARCHIL_SPEC, image, network: { allow: ["api.github.com", "registry.npmjs.org", "93.184.215.0/24"] } };
+	const { fake } = setup(OPEN, { box: { reached: [] } });
+	const host = packedHost(fake, { count: 5, packed: { valueBytes: 256 } });
+	// Made whole on a packed host: every label the adapter reads back by get came back exactly.
+	made(await create(new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), spec));
+	assert.ok(Object.keys(only(fake).labels).length <= 5, "stored in 5 tags");
+	const [{ labels, name }] = host.requests;
+	assert.ok(labels[DEADLINE] && labels["agentrun.computer.image"] === image && labels[NETWORK_LABEL].startsWith("allow:") && labels["agentrun.mount"], JSON.stringify(labels));
+	const DNS = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+	const K8S_VALUE = /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+	const shapes = [
+		// Vercel: 5 tags, values of 256.
+		["a 5-tag cap", { count: 5, packed: { valueBytes: 256 } }, (stored) => assert.ok(Object.keys(stored).length <= 5)],
+		// Kubernetes: names and values of [A-Za-z0-9._-], letters or digits at both ends, at most 63.
+		["Kubernetes", { packed: { valueBytes: 63 } }, (stored) => Object.entries(stored).forEach(([key, value]) => assert.ok(DNS.test(key) && key.length <= 63 && K8S_VALUE.test(value) && value.length <= 63, `${key}=${value}`))],
+		// Cloudflare: 10 labels, names of 16 bytes, values of 64.
+		["Cloudflare", { count: 10, packed: { valueBytes: 64 } }, (stored) => Object.entries(stored).forEach(([key, value]) => assert.ok(key.length <= 16 && value.length <= 64))],
+	];
+	for (const [what, room, holds] of shapes) {
+		const packed = packLabels(labels, name, room);
+		assert.equal(packed.problem, undefined, what);
+		holds(packed.labels);
+		assert.deepEqual(unpackLabels(packed.labels), labels, `${what}: read back exactly`);
+	}
+	// Fly: a list of strings of at most 64, each name=value; read back in any order.
+	const list = Object.entries(packLabels(labels, name, { packed: { valueBytes: 52 } }).labels).map(([key, value]) => `${key}=${value}`);
+	assert.ok(list.every((entry) => entry.length <= 64), list.join(" "));
+	const fromList = Object.fromEntries(list.reverse().map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)]));
+	assert.deepEqual(unpackLabels(fromList), labels, "a string list: read back exactly");
+	assert.equal(unpackLabels({ [NAME]: name, run: "r1" }), undefined, "labels not packed are no packed map");
+	// Too little room: refused in words at check(), and at create before any host call; an Archil computer's mount is the field.
+	const tight = packedHost(fakeHost(OPEN), { count: 3, packed: { valueBytes: 63 } });
+	const refused = new HostedProvider(tight, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }).check(spec);
+	assert.deepEqual(refused.map(({ field }) => field), ["mount"]);
+	assert.match(refused[0].message, /^a Fakehost computer keeps its labels packed, and its labels pack into \d+ labels of \d+ bytes in all, past the 3 labels it keeps: give a shorter image, mount folder, network list or labels$/);
+	assert.match(packLabels(labels, name, { packed: { valueBytes: 10 } }).problem, /values hold at most 10 bytes, too few for the name computer-[0-9a-f]{12}/);
+	const small = setup({}, { facts: { labels: { bytes: 100, packed: {} } } });
+	// A digest's hex, which deflate barely shrinks.
+	const none = await create(small.provider, { ...SPEC, labels: { note: createHash("sha512").update("note").digest("hex") } });
+	assert.equal(none.error?.code, "refused");
+	assert.match(none.error.message, /^labels: a Fakehost computer keeps its labels packed, and its labels pack into 2 labels of \d+ bytes in all, past the 100 bytes it keeps/);
+	assert.deepEqual(small.fake.calls, [], "no host call");
 });
 
 test("Archil: a higher epoch fences the create: nothing mounted, init never starts, and the machine is deleted", async () => {

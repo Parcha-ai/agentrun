@@ -1,12 +1,13 @@
-// Agent37's SSH exec: its instances are reached over SSH (as root, one connection per process, under a wrapper that
-// names the process group), through the stream agent37.ts gives to each instance's sshd (its WebSocket tunnel), and
-// this is its MachineHost.exec. The host's own ssh2 package does the protocol; this package names only the slice it
-// uses (Ssh2Module) and imports nothing at load.
+// MachineHost.exec over SSH, for a vendor whose machines run an sshd: one connection per machine shared by its execs,
+// each process under a wrapper that names its process group, through the stream the host gives to the machine's sshd
+// (Agent37's WebSocket tunnel) and as the login the host gives (Agent37's root and key). Every error it throws or
+// rejects with is redacted of the login's secrets. The host's own ssh2 package does the protocol; this package names
+// only the slice it uses (Ssh2Module) and imports nothing at load.
 import { randomBytes } from "node:crypto";
 import { Duplex, PassThrough } from "node:stream";
-import type { HostCall, MachineProcess } from "./host.js";
-import { boundOf } from "./hosted/process.js";
-import { shellLine } from "./hosted/scripts.js";
+import type { HostCall, MachineProcess } from "../host.js";
+import { boundOf, redact } from "./process.js";
+import { shellLine } from "./scripts.js";
 
 /** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
 export interface Ssh2Readable {
@@ -33,8 +34,9 @@ export interface Ssh2Channel extends Ssh2Readable {
 /** The options of ssh2's Client.connect this provider gives (ssh2@1.17.0 lib/client.js). */
 export interface Ssh2ConnectConfig {
 	sock: Duplex;
-	username: "root";
-	privateKey: string;
+	username: string;
+	privateKey?: string;
+	password?: string;
 	readyTimeout: number;
 	keepaliveInterval: number;
 	keepaliveCountMax: number;
@@ -153,18 +155,28 @@ interface Link {
 	idle?: ReturnType<typeof setTimeout>;
 }
 
+/** How a host logs in to a machine's sshd: as root (MachineHost.exec's user), by a key or a password. */
+export interface SshLogin {
+	username: string;
+	/** A private key in the PEM armor ssh2 reads (see pemOf). */
+	privateKey?: string;
+	password?: string;
+	/** What no error may carry, beside the key and the password, which never do: a key inside the username (Morph's). */
+	secrets?: readonly string[];
+}
+
 export interface SshExecOptions {
 	/** The host's own ssh2 package, or anything with the same slice. */
 	ssh2: Ssh2Module;
-	/** A private key in the PEM armor ssh2 reads (see pemOf). */
-	privateKey: string;
+	/** The login to machine id. */
+	loginOf: (id: string) => SshLogin;
 	tunnelOf: SshTunnelOf;
 }
 
-/** MachineHost.exec over SSH: argv as root, as channels on one connection per machine, shared by its execs. */
+/** MachineHost.exec over SSH: argv as the host's login, as channels on one connection per machine, shared by its execs. */
 export class SshExec {
 	readonly #ssh2: Ssh2Module;
-	readonly #privateKey: string;
+	readonly #loginOf: (id: string) => SshLogin;
 	readonly #tunnelOf: SshTunnelOf;
 	/**
 	 * The SSH connections to each machine, opening, open, or done and still held, until each ends: one, and a second
@@ -172,9 +184,9 @@ export class SshExec {
 	 */
 	readonly #links = new Map<string, Link[]>();
 
-	constructor({ ssh2, privateKey, tunnelOf }: SshExecOptions) {
+	constructor({ ssh2, loginOf, tunnelOf }: SshExecOptions) {
 		this.#ssh2 = ssh2;
-		this.#privateKey = privateKey;
+		this.#loginOf = loginOf;
 		this.#tunnelOf = tunnelOf;
 	}
 
@@ -184,10 +196,11 @@ export class SshExec {
 	}
 
 	/**
-	 * An SSH session as root over the instance's tunnel, its handshake within ctx. A tunnel that fails to open, or closes
-	 * before the SSH handshake, is opened again after a pause, TUNNEL_TRIES times in all within ctx: an instance fresh
-	 * from its create can refuse the first (seen live once in eight creates, the daemon's upload refused). Nothing has
-	 * run before a handshake, so a retry repeats nothing. A refused key or a handshake past its bound is not retried.
+	 * An SSH session as the host's login over the machine's tunnel, its handshake within ctx. A tunnel that fails to
+	 * open, or closes before the SSH handshake, is opened again after a pause, TUNNEL_TRIES times in all within ctx: an
+	 * instance fresh from its create can refuse the first (seen live once in eight creates, the daemon's upload
+	 * refused). Nothing has run before a handshake, so a retry repeats nothing. A refused key or a handshake past its
+	 * bound is not retried.
 	 */
 	async #ssh(id: string, ctx: HostCall): Promise<Ssh2Client> {
 		const bound = boundOf(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
@@ -230,13 +243,14 @@ export class SshExec {
 			quit(givenUp());
 		};
 		stop.addEventListener("abort", drop, { once: true });
+		const { username, privateKey, password } = this.#loginOf(id);
 		try {
 			await Promise.race([opened, quitted]);
 			await Promise.race([
 				new Promise<void>((resolve, reject) => {
 					client.once("ready", resolve);
 					client.once("error", reject);
-					client.connect({ sock: duplex, username: "root", privateKey: this.#privateKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX });
+					client.connect({ sock: duplex, username, privateKey, password, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX });
 				}),
 				quitted,
 			]);
@@ -420,15 +434,30 @@ export class SshExec {
 	}
 
 	/**
-	 * argv as root over SSH, under WRAPPER, as one channel on the machine's shared connection (#start). stdout and
-	 * stderr are the channel's, piped; end sends end of file. wait answers once the channel closes, with the
+	 * error with machine id's login secrets taken out of its message and stack, in place: its class, name and fields stay,
+	 * which the adapter reads its code by. ssh2's words can carry the username, and a host's may hold a key.
+	 */
+	#redacted(id: string, error: unknown): Error {
+		const { privateKey, password, secrets = [] } = this.#loginOf(id);
+		const hidden = [privateKey, password, ...secrets];
+		if (!(error instanceof Error)) return new Error(redact(String(error), hidden));
+		error.message = redact(error.message, hidden);
+		if (error.stack !== undefined) error.stack = redact(error.stack, hidden);
+		return error;
+	}
+
+	/**
+	 * argv as the host's login over SSH, under WRAPPER, as one channel on the machine's shared connection (#start).
+	 * stdout and stderr are the channel's, piped; end sends end of file. wait answers once the channel closes, with the
 	 * exit-status, or -1 for an exit by signal or none. kill ends the process group over a channel of its own (on a
 	 * connection with room), then closes the exec's channel, never a connection; if the close does not come, wait
 	 * answers -1 and the connection takes no new channel.
 	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
-		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`);
+		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`).catch((error: unknown) => {
+			throw this.#redacted(id, error);
+		});
 		const { link: held, channel } = opened;
 		const stdout = new PassThrough();
 		const stderr = new PassThrough();
@@ -453,7 +482,7 @@ export class SshExec {
 			write: (bytes) =>
 				new Promise<void>((resolve, reject) => {
 					if (ended || closed) return reject(new Error(ended ? "stdin was ended" : "the process has ended"));
-					channel.write(bytes, (error) => (error ? reject(error) : resolve()));
+					channel.write(bytes, (error) => (error ? reject(this.#redacted(id, error)) : resolve()));
 				}),
 			end: async () => {
 				if (ended || closed) return;

@@ -67,7 +67,7 @@ import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOpti
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec } from "./process.js";
-import { isWhole } from "./values.js";
+import { isWhole, packLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
@@ -435,9 +435,15 @@ export class HostedProvider implements ComputerProvider {
 	 * longest), are more, or come to more bytes, than the vendor takes (facts.labels); undefined when they fit.
 	 */
 	#labelsOver(spec: ComputerSpec): { bytes: boolean; why: string } | undefined {
-		const { count, bytes: max } = this.host.facts.labels ?? {};
-		const at = new Date(0).toISOString();
+		const { count, bytes: max, packed } = this.host.facts.labels ?? {};
+		// An ISO time is 24 bytes whenever it is; a packed map's deflate reads one of today's as create's would.
+		const at = new Date().toISOString();
 		const labels = this.#labelsOf(spec, "computer-000000000000", at, at);
+		const shorter = `give a shorter image, mount folder${labels[NETWORK_LABEL]?.startsWith("allow:") ? ", network list" : ""} or labels`;
+		if (packed) {
+			const fit = packLabels(labels, "computer-000000000000", this.host.facts.labels);
+			return "problem" in fit ? { bytes: true, why: `${a(this.#label)} computer keeps its labels packed, and ${fit.problem}: ${shorter}` } : undefined;
+		}
 		const keys = Object.keys(labels);
 		if (count !== undefined && keys.length > count) {
 			// labelProblem refuses a caller's label of the adapter's names, so the two never overlap.
@@ -448,7 +454,7 @@ export class HostedProvider implements ComputerProvider {
 		const sizes = Object.entries(labels).map(([key, value]) => [key, Buffer.byteLength(key) + Buffer.byteLength(value)] as const);
 		const bytes = sizes.reduce((sum, [, size]) => sum + size, 0);
 		if (bytes <= max) return undefined;
-		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder${labels[NETWORK_LABEL]?.startsWith("allow:") ? ", network list" : ""} or labels` };
+		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): ${shorter}` };
 	}
 
 	/** A host call bounded by ms, the caller's signal when given. */
@@ -492,14 +498,16 @@ export class HostedProvider implements ComputerProvider {
 		return differ;
 	}
 
-	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
+	/** taken: the vendor refused this create's name as one a machine has (exists), so the name's machine is read once more. */
+	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal, taken?: Result<never>): Promise<Result<CreatedComputer>> {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
 		if (found.length === 1) return this.#again(spec, name, found[0] as Machine, signal);
+		if (taken) return taken;
 		const launched = await this.#launch(spec, name, signal);
-		if (!launched.ok) return launched;
+		if (!launched.ok) return launched.error.code === "exists" ? this.#createOnce(spec, name, signal, launched) : launched;
 		const { ref, made } = launched.value;
 		// From here the machine exists: every step takes the caller's signal, and a failure or an abort deletes it.
 		// Another provider instance's create of this request may have made one too (#converge): the oldest is kept.

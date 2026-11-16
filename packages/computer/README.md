@@ -1538,7 +1538,8 @@ the TTL.
   the deadline to), `public: false`, `networkBlockAll`, `ttlMinutes`, `autoStopInterval` (`autoStopMinutes`; unset, 0,
   since Daytona's idle timer counts only outside traffic and a daemon at work would be stopped), and
   `autoDeleteInterval` (`autoDeleteMinutes`; unset, -1: a stop keeps the sandbox, which the TTL then ends). `POST
-  /sandbox` is never retried; a name Daytona already holds (409) is `exists`. A create that fails without a 4xx
+  /sandbox` is never retried; a name Daytona already holds (409) is `exists`, and the adapter adopts the sandbox the
+  name lists, as a retry does (or answers `exists` when none lists). A create that fails without a 4xx
   answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
   `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
   none from inside, and waits until the label listing shows the new computer twice running (Daytona's listing trails
