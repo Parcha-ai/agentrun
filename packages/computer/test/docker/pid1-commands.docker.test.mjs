@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
+import "./teardown.mjs";
 import { DaemonClient } from "../../dist/index.js";
 import { hostedCommands } from "../../dist/hosted/scripts.js";
 
@@ -244,7 +245,7 @@ describe("the adapter's pid1 commands in a root container with no network", { sk
 			});
 		}
 
-		// Why the adapter refuses root for a host that takes a spec's user (hostedProvider's check): the vendor's exec of the bridge runs /opt/agentrun/computerd
+		// Why the adapter refuses root for a host that takes a spec's user (HostedProvider's check): the vendor's exec of the bridge runs /opt/agentrun/computerd
 		// outside the daemon, with Modal's own root capabilities. After the upload that path is root's, 0755, in a root
 		// 0755 directory under a root / and /opt: a computer user that is not root writes none of them. Root with no
 		// capability still owns every one, so it could rename another program over the path, and the next exec would run

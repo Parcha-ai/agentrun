@@ -1,6 +1,6 @@
 // An answer's structured part: the last fenced `json` block of a final answer, parsed, and checked against an agent's
 // output schema (definition.output_schema). The one reader of it: a completed agentic run's result.output (store-view.ts)
-// and a template eval's schema and target graders (template-eval.ts) read an answer's JSON alike. The runner tells the
+// and a template eval's target graders (template-eval.ts) read an answer's JSON alike. The runner tells the
 // model the schema (outputContract, in every harness's system prompt) and asks once more on a miss (outputRetryWords,
 // runner/adapter-loop.ts).
 import { Compile } from "typebox/schema";
@@ -36,16 +36,30 @@ export function answerJson(answer: string): { value: unknown } | { why: string }
 
 /** A JSON Schema's checker: each problem of a value against it, by path, none for a value that meets it. */
 export type SchemaCheck = (value: unknown) => string[];
+type Validator = ReturnType<typeof Compile>;
 
-/** `schema` compiled to its checker, or why it does not compile. */
-export function schemaCheck(schema: unknown): { check: SchemaCheck } | { why: string } {
+/** Compiled schemas by their JSON: an agent's runs check against the same few schemas over and over. */
+const compiledSchemas = new Map<string, Validator>();
+
+/** `schema` compiled to its checker (and the compiled validator, for a caller that reads each error's keyword and path),
+ *  or why it does not compile. The one wrapper of the compiler: the most recent 256 schemas are kept compiled. `misses`:
+ *  the same problems as `check`, each with the JSON Pointer of the value it is about apart from its words. */
+export function schemaCheck(schema: unknown): { check: SchemaCheck; misses: (value: unknown) => { path: string; words: string }[]; validator: Validator } | { why: string } {
   if (!isObject(schema)) return { why: "it is not a JSON object" };
-  try {
-    const validator = Compile(schema as Parameters<typeof Compile>[0]);
-    return { check: (value) => validator.Errors(value)[1].map((e) => `${e.instancePath || "/"} ${e.message}`) };
-  } catch (error) {
-    return { why: `it does not compile as a JSON Schema: ${(error as Error).message}` };
+  const key = JSON.stringify(schema);
+  let validator = compiledSchemas.get(key);
+  if (!validator) {
+    try {
+      validator = Compile(schema as Parameters<typeof Compile>[0]);
+    } catch (error) {
+      return { why: `it does not compile as a JSON Schema: ${(error as Error).message}` };
+    }
+    if (compiledSchemas.size >= 256) compiledSchemas.delete(compiledSchemas.keys().next().value!);
+    compiledSchemas.set(key, validator);
   }
+  const compiled = validator;
+  const misses = (value: unknown) => compiled.Errors(value)[1].map((e) => ({ path: e.instancePath, words: `${e.instancePath || "/"} ${e.message}` }));
+  return { validator: compiled, misses, check: (value) => misses(value).map((miss) => miss.words) };
 }
 
 /** The section every harness's system prompt ends its instructions with when the agent has an output schema
@@ -60,16 +74,15 @@ export function outputContract(schema: unknown): string | undefined {
  *  with an answer whose last json block misses its output schema. `why` is outputMiss's. */
 export const outputRetryWords = (why: string): string => `Your final JSON did not match the output schema: ${why}. Reply again, ending with the corrected json block.`;
 
-/** Why `answer` misses `schema`, in the retry's words (no block, not JSON, or the first problems against the schema, which
- *  the retry's own sentence already says are the schema's), or undefined when it meets it. Undefined too when the schema
- *  does not compile (a save refuses one): asking the model again cannot mend a schema. */
+/** How structuredAnswer starts the why of a json block the schema refuses; the retry's own sentence already says it. */
+const MISSES = "the answer's json does not meet the output schema: ";
+
+/** Why `answer` misses `schema`, in the retry's words (structuredAnswer's why, less MISSES), or undefined when it meets
+ *  it. Undefined too when the schema does not compile (a save refuses one): asking the model again cannot mend a schema. */
 export function outputMiss(answer: string, schema: unknown): string | undefined {
-  const compiled = schemaCheck(schema);
-  if ("why" in compiled) return undefined;
-  const json = answerJson(answer);
-  if ("why" in json) return json.why;
-  const problems = compiled.check(json.value);
-  return problems.length ? problems.slice(0, 3).join("; ") : undefined;
+  if ("why" in schemaCheck(schema)) return undefined;
+  const read = structuredAnswer(answer, schema);
+  return "why" in read ? read.why.replace(MISSES, "") : undefined;
 }
 
 /** A final answer's structured part against an agent's output schema: the value of its last fenced json block when it
@@ -80,7 +93,7 @@ export function structuredAnswer(answer: string, schema: unknown): { value: unkn
   const json = answerJson(answer);
   if ("why" in json) return json;
   const problems = compiled.check(json.value);
-  return problems.length ? { why: `the answer's json does not meet the output schema: ${problems.slice(0, 3).join("; ")}` } : { value: json.value };
+  return problems.length ? { why: `${MISSES}${problems.slice(0, 3).join("; ")}` } : { value: json.value };
 }
 
 /** A JSON object schema's one field a bare value fills: its only property, else its only required one; undefined for

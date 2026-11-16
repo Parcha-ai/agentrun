@@ -22,28 +22,28 @@ async function answered(cap, request, cost) {
   return note;
 }
 
-test("the typical cost: the next's expected with none priced, the one, then the median after the first; unknown or $0 is no priced request", () => {
+test("the typical cost: the next's own figure with none priced, the one, then the median after the first; unknown or $0 is no priced request", () => {
   assert.equal(typicalCost([], 0.06), 0.06);
   assert.equal(typicalCost([0.2], 0.06), 0.2);
   assert.equal(typicalCost([0.5, 0.1, 0.3, 0.2], 0.06), 0.2, "the median after the first, which wrote the cache");
   assert.equal(typicalCost([null, 0, Number.NaN], 0.06), 0.06);
 });
 
-test("due under three times the typical, not at or above; the same under strict", () => {
+test("due under three times the typical, not at or above", () => {
   assert.deepEqual(wrapUpDue(1, 0.7, 0, 0.1001), { leftUsd: 0.30000000000000004 });
   assert.equal(wrapUpDue(1, 0.7, 0, 0.1), undefined, "at it: not due");
   assert.equal(wrapUpDue(1, 0.6, 0, 0.1), undefined);
   assert.ok(wrapUpDue(1, 0.5, 0.1, 0.2), "held counts as it does in admission");
 });
 
-test("the words, the amount to the cent", () => {
-  assert.equal(wrapUpWords(0.2349), "About $0.23 left of this run's budget: finish now with your answer.");
+test("the words, the amount to the cent, labelled as the server's note", () => {
+  assert.equal(wrapUpWords(0.2349), "AgentRun server note: About $0.23 left of this run's budget: finish now with your answer.");
 });
 
 test("with no priced request the words say the budget, not a finish, at step 0", async () => {
   const { cap } = capWith(0.1);
   const note = cap.note(modelRequest(SONNET45, 10_000, 32_000));
-  assert.equal(note?.words, "This run's budget is about $0.10, enough for little work: answer as soon as you can.");
+  assert.equal(note?.words, "AgentRun server note: This run's budget is about $0.10, enough for little work: answer as soon as you can.");
 });
 
 test("Sonnet 4.5 under $1: no wrap-up at step 0; nothing priced yet, the typical request is its input and a 4,096-token answer, never its whole allowance", () => {
@@ -56,7 +56,7 @@ test("Sonnet 4.5 under $1: no wrap-up at step 0; nothing priced yet, the typical
 test("under $0.10: due at step 0, judged on the first request itself, told in it in the budget's words; then nothing more", async () => {
   const { cap } = capWith(0.1);
   const first = await answered(cap, modelRequest(SONNET45, 10_000, 4_096), 0.02);
-  assert.match(first.words, /^This run's budget is about \$0\.10/);
+  assert.match(first.words, /^AgentRun server note: This run's budget is about \$0\.10/);
   assert.equal(await answered(cap, modelRequest(SONNET45, 10_000, 4_096), 0.02), undefined, "told once");
 });
 
@@ -69,13 +69,13 @@ test("under $0.10, a $0.04 first request: the measured typical makes it due, and
   const { cap } = capWith(0.1);
   assert.equal(await answered(cap, modelRequest(SONNET45, 1_000, 1_000), 0.04), undefined, "not due at step 0 on a small first request");
   const second = await answered(cap, modelRequest(SONNET45, 1_000, 1_000), 0.01);
-  assert.equal(second?.words, "About $0.06 left of this run's budget: finish now with your answer.");
+  assert.equal(second?.words, "AgentRun server note: About $0.06 left of this run's budget: finish now with your answer.");
 });
 
 test("a note taken after the first request was priced is worded by the run's spend", async () => {
   const { cap } = capWith(0.5);
   await answered(cap, modelRequest(SONNET45, 1_000, 1_000), 0.4);
-  assert.equal(cap.note(modelRequest(SONNET45, 1_000, 1_000))?.words, "About $0.10 left of this run's budget: finish now with your answer.");
+  assert.equal(cap.note(modelRequest(SONNET45, 1_000, 1_000))?.words, "AgentRun server note: About $0.10 left of this run's budget: finish now with your answer.");
 });
 
 test("Codex-shaped requests that each need 10,240 output tokens and cost half a cent: the wrap-up comes before the cap refuses the next", async () => {
@@ -87,17 +87,17 @@ test("Codex-shaped requests that each need 10,240 output tokens and cost half a 
   assert.ok(cap.spentUsd() + cap.leastUsd(modelRequest(LUNA, 0, 20_000, { outputTokensLeast: 10_240 })) <= 0.4, "before the cap refuses the next");
 });
 
-test("the least of the request taking the note is priced cache-aware, as its admission prices it", () => {
+test("the least of the request taking the note is priced uncached, as its admission prices it, whatever the session cached", () => {
   const previous = { model: SONNET45.id, cachedTokens: 99_000, inputTokens: 1_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
-  // Uncached, its step-0 typical ($0.39) would make $0.80 left due (3x); read from the cache ($0.05) it is not.
+  // Uncached, its step-0 typical ($0.39) makes $0.80 left due (3x), the cache the session read before notwithstanding.
   const { cap } = capWith(1.2, { spentUsd: 0.4 });
-  assert.equal(cap.note(modelRequest(SONNET45, 100_000, 1_024, { previous })), undefined);
+  assert.match(cap.note(modelRequest(SONNET45, 100_000, 1_024, { recent: [previous] }))?.words ?? "", /^AgentRun server note: This run's budget is about \$0\.80/);
 });
 
 test("at step 0 with no previous request, the next request's least priced uncached makes it due alone (a pin)", () => {
   const { cap } = capWith(0.75);
   const note = cap.note(modelRequest(SONNET45, 100_000, 1_024));
-  assert.match(note?.words ?? "", /^This run's budget is about \$0\.75/);
+  assert.match(note?.words ?? "", /^AgentRun server note: This run's budget is about \$0\.75/);
 });
 
 test("a side call first (a title request) neither takes the note nor is judged as taking it", async () => {
@@ -116,7 +116,7 @@ test("a request that fits what is left only without the note's bytes is sent wit
 });
 
 test("the request that carries the note is held at its bound with the note's bytes in it (a pin)", async () => {
-  const { cap } = capWith(0.1, { mode: "strict" });
+  const { cap } = capWith(0.1);
   const request = modelRequest(SONNET45, 10_000, 1_024);
   const note = cap.note(request);
   const bytes = Buffer.byteLength(note.words, "utf8");
@@ -188,7 +188,7 @@ test("killed after a cent request and reopened: the costs read back hold the mea
 test("killed after it came due at step 0 and before a request took it: the reopened run words it from the run's priced requests", async () => {
   const { marks } = capWith(0.1);
   const reopened = await openCap({ capUsd: () => 0.1, now: () => T0, marks });
-  assert.match(reopened.note(modelRequest(SONNET45, 10_000, 4_096))?.words ?? "", /^This run's budget is about/);
+  assert.match(reopened.note(modelRequest(SONNET45, 10_000, 4_096))?.words ?? "", /^AgentRun server note: This run's budget is about/);
 });
 
 test("the typical counts the run's own model's answers only, never a summary's or a native search's, and a process opened again reads the same", async () => {

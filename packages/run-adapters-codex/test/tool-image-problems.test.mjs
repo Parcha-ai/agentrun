@@ -3,10 +3,12 @@
 // the image, not a request refused later.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { kernelTool } from '../dist/adapter.js';
+import { bridgeTool } from '@parcha/agentrun-kernel/process';
+import { toolImageProblems } from '../dist/tool-images.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64');
-const toolWith = (images) => kernelTool({ name: 'read', description: 'Read.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'a picture', images }) });
+/** The tool `read` answering `images`, bridged as the adapter bridges it: its images checked by toolImageProblems. */
+const toolWith = (images) => bridgeTool({ name: 'read', description: 'Read.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'a picture', images }) }, { imageProblems: (shown) => toolImageProblems('read', shown) });
 const run = (tool) => tool.execute({}, { stepId: 'tool:c1', signal: new AbortController().signal });
 
 test("an image Codex's model can't take is the call's error, by the tool's name and the image's place; a good one goes through", async () => {

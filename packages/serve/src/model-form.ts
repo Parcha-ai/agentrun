@@ -6,6 +6,8 @@ import { ADAPTER_FACTS } from "./adapter-facts.js";
 import { FAUX_ENV, MODEL_KEYS } from "./model.js";
 import { openRouterName } from "./provider.js";
 import { WIRES } from "./wires.js";
+import { PLAN_PROVIDER, planOf, signedIn } from "./chatgpt-plan.js";
+import { PLAN_HARNESSES } from "./harness.js";
 
 /** The current models a person may pick, by vendor, in the vendor's own ids (Anthropic's dashes; OpenRouter's dotted name
  *  for the same model is derived, provider.ts openRouterName). The everyday model first: it is the example a refusal gives.
@@ -40,7 +42,25 @@ export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): strin
   const facts = ADAPTER_FACTS.find((f) => f.id === harness);
   if (env.AGENT_MODEL_BASE_URL && facts?.wire !== "anthropic-messages") return [...new Set([env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].filter((id): id is string => Boolean(id)))];
   const vendors = vendorsOf(harness);
-  return PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)));
+  // Signed in to a ChatGPT plan, its models first for a harness that runs on it (`chatgpt/<model-id>`).
+  const plan = PLAN_HARNESSES.includes(harness) && signedIn(env) ? (planOf(env)?.models ?? []).map((id) => `${PLAN_PROVIDER}/${id}`) : [];
+  return [...plan, ...PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)))];
+}
+
+/** A model a person may pick that runs at $0 (local-models.ts isFree, the kernel's freeModel on its catalog price: all
+ *  zeros, every tier's too), in the form it takes, with its context window in tokens. */
+export type FreeModel = { id: string; context_window: number };
+
+/** The free models offered for `harness` on this server, besides pickerCandidates' (harness.ts harnessOffers drops those
+ *  it does not run): OpenRouter's chat models whose catalog price is all zeros (pi-ai's own and serve's ADDED_MODELS), on
+ *  pi with OpenRouter's key, by id. None for an adapter harness (each runs its own wire's vendor), behind a gateway (its
+ *  ids are its own) or with the faux model. */
+export async function freeCandidates(env: NodeJS.ProcessEnv, harness: string): Promise<FreeModel[]> {
+  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || !env.OPENROUTER_API_KEY || ADAPTER_FACTS.some((f) => f.id === harness)) return [];
+  const [{ builtinModels }, { withLocalModels, isFree }] = await Promise.all([import("@earendil-works/pi-ai/providers/all"), import("./local-models.js")]);
+  return withLocalModels(builtinModels()).getModels("openrouter").filter(isFree)
+    .map((model) => ({ id: `openrouter/${model.id}`, context_window: model.contextWindow }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** A model id with its spelling taken out (case, spaces, dots, dashes), and the provider's segments off. */

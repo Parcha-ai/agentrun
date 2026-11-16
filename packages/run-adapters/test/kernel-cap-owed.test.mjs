@@ -13,7 +13,7 @@ const MODEL_SESSION = "run:run-1";
 /** A model at $1 a million input tokens, its output free. */
 const MODEL = { id: "m", api: "anthropic", price: { input: 1, output: 0 }, outputCeiling: 100 };
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
-const capOf = (store, capUsd) => cap.runCap({ sessions: store, capUsd: () => capUsd, mode: "expected", now: () => T0, modelOf: (id) => (id === MODEL.id ? MODEL : undefined) });
+const capOf = (store, capUsd) => cap.runCap({ sessions: store, capUsd: () => capUsd, modelOf: (id) => (id === MODEL.id ? MODEL : undefined) });
 /** The run's model spend as its booking keeps it: a model request answered at `usd`. */
 async function modelSpent(store, usd) {
   const writer = await store.open(MODEL_SESSION);
@@ -89,7 +89,7 @@ test("a lost claim's hold-only step is given back by the next claim, while a cut
   assert.deepEqual(turns, [{ turn: 1, usd: 0, givenBack: true }], "given back, never booked as cut");
   const model = await next.before({ key: MODEL_SESSION, label: MODEL_SESSION, model: MODEL.id, turn: 2, maxTurns: null, spentUsd: 0, inputTokensMax: 100 });
   assert.ok(model && !("refuse" in model), `the next model request fits: ${JSON.stringify(model)}`);
-  const cut = await cap.runCap({ sessions: store, capUsd: () => 0.04, mode: "expected", now: () => T0, modelOf: (id) => (id === MODEL.id ? MODEL : undefined) }).before({ key: MODEL_SESSION, label: MODEL_SESSION, model: MODEL.id, turn: 2, maxTurns: null, spentUsd: 0, inputTokensMax: 100 });
+  const cut = await cap.runCap({ sessions: store, capUsd: () => 0.04, modelOf: (id) => (id === MODEL.id ? MODEL : undefined) }).before({ key: MODEL_SESSION, label: MODEL_SESSION, model: MODEL.id, turn: 2, maxTurns: null, spentUsd: 0, inputTokensMax: 100 });
   assert.ok(cut && "refuse" in cut, `the cut model request still counts at its hold: ${JSON.stringify(cut)}`);
   near(cut.figures?.spentUsd, 0.05, "its figures: the cut request at its hold, the reserve none");
 });

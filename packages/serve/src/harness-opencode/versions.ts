@@ -12,6 +12,13 @@ export { OPENCODE_VERSION };
 /** The install line for the pinned release (npm installs this platform's binary package with it). */
 export const OPENCODE_INSTALL = `npm install --save-exact opencode-ai@${OPENCODE_VERSION}`;
 
+/** The input tokens the pinned OpenCode (1.19.5) sends in its first model request before the agent's own prompt: the
+ *  model and environment lines it writes around that prompt (its working directory's path left out), with no tool of its
+ *  own (the policy offers only the host's). Counted with o200k_base on the first request the pinned binary sent to a
+ *  scripted provider, 87 tokens, stated at 80 so its date line never puts it over (test/opencode-real.test.mjs keeps it
+ *  at or under that count). The facts' `baseInputTokens`: a save under a cap prices a least step on it. */
+export const OPENCODE_BASE_INPUT_TOKENS = 80;
+
 /**
  * npm's integrity of the pinned launcher and of each platform package, as the registry publishes them. npm checks a
  * download against the lockfile's copy of these; test/pins.test.mjs keeps the repository's lockfile equal to them.

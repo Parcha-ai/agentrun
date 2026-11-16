@@ -58,17 +58,18 @@ const SHOWN = 2000;
  *  Only the head serve can show is read: SHOWN characters, plus room for the longest held value in its widest encoded
  *  form (6 times it, for JSON's \uXXXX; percent is 3, hex 2, base64 4/3) and 16 more. A key whose start the cut can show
  *  starts before SHOWN, so it ends inside that head and is found whole; one that starts later is never shown. So a long
- *  error costs no more to redact than a short one, whatever it holds. */
-export function redacted(text: string, secrets: readonly string[]): string {
+ *  error costs no more to redact than a short one, whatever it holds. `shown`: a head of another length, for a reader
+ *  that is shown more (a template eval's grader reads a call's result to CALL_RESULT_CHARS). */
+export function redacted(text: string, secrets: readonly string[], shown = SHOWN): string {
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
-  const window = SHOWN + 6 * longest + 16;
+  const window = shown + 6 * longest + 16;
   if (text.length <= window) return redactSecrets(text, secrets, Buffer.byteLength(text));
   const out = redactSecrets(text.slice(0, window), secrets, window * 4);
   // A replacement moves what follows it left by at most S characters in all: the shortening, plus 2 for each "[redacted]"
-  // (a value of 8 or 9 characters grows into it). So output[0, SHOWN - S) comes from raw text before SHOWN, where every
+  // (a value of 8 or 9 characters grows into it). So output[0, shown - S) comes from raw text before `shown`, where every
   // key that starts ends inside the window and was found whole; past that, a copy the window cut could come into view.
   const shift = window - out.length + 2 * out.split("[redacted]").length - 2;
-  const keep = SHOWN - shift;
+  const keep = shown - shift;
   return keep <= 0 ? "[redacted]" : `${out.slice(0, keep)}...`;
 }
 
@@ -113,19 +114,21 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
   return valueMatcher(secrets)(out) ? "[redacted]" : out;
 }
 
+/** Whether a number shows a held value. A held value can be all digits (a gateway's key), and a record or a call's
+ *  arguments can quote it as a number: one whose digits hold a held value, by the same rule as a string's, is held. A
+ *  number can also EQUAL a held value whose text differs from its own (a leading zero, 1e21, a long key read lossy). A
+ *  boolean's text is shorter than any held value. */
+export function heldNumber(value: number | bigint, secrets: readonly string[]): boolean {
+  const text = String(value);
+  return redactedAnswer(text, secrets) !== text || secrets.some((secret) => secret.trim() !== "" && Number(secret) === Number(value));
+}
+
 /** `value`, a run's workflow output, with redactedAnswer applied to each string and number in it, property NAMES
  *  included (a dictionary field can be keyed by anything a run wrote), its shape kept. Two names of one object that come
  *  out the same would merge one value over the other: that object is withheld whole, as "[redacted]". */
 export function redactedOutput(value: unknown, secrets: readonly string[]): unknown {
   if (typeof value === "string") return redactedAnswer(value, secrets);
-  // A held value can be all digits (a gateway's key), and a record can quote it as a number: one whose digits hold a held
-  // value, by the same rule as a string's, is withheld as "[redacted]". A boolean's text is shorter than any held value.
-  // A number can also EQUAL a held value whose text differs from its own (a leading zero, 1e21, a long key read lossy).
-  if (typeof value === "number" || typeof value === "bigint") {
-    const text = String(value);
-    const held = redactedAnswer(text, secrets) !== text || secrets.some((secret) => secret.trim() !== "" && Number(secret) === Number(value));
-    return held ? "[redacted]" : value;
-  }
+  if (typeof value === "number" || typeof value === "bigint") return heldNumber(value, secrets) ? "[redacted]" : value;
   if (Array.isArray(value)) return value.map((item) => redactedOutput(item, secrets));
   if (value && typeof value === "object") {
     const entries = Object.entries(value).map(([key, item]) => [redactedAnswer(key, secrets), redactedOutput(item, secrets)] as const);

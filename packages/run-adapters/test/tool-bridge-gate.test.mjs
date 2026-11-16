@@ -116,3 +116,21 @@ test('a deferred tool is not listed to the model, yet a nested call and call() r
   assert.equal((await bridge.call('hidden', {}, 'c6')).text, 'paid', 'and so does a call by name');
   assert.equal(log.length, 2);
 });
+
+test("a nested call given a signal of its own runs on it: one already aborted never reaches the tool's work, while the outer call goes on", async () => {
+  const { drive } = await driveOf('nested-signal');
+  const log = [];
+  const work = { name: 'work', description: 'Works.', inputSchema: { type: 'object' }, replay: 'safe', execute: async (_args, io) => { log.push(io.signal.aborted ? 'cut' : 'whole'); return 'done'; } };
+  const outer = {
+    name: 'outer', description: 'Calls work on a cut signal.', inputSchema: { type: 'object' }, replay: 'safe', nests: true,
+    execute: async (_args, io) => {
+      const own = new AbortController();
+      own.abort(new Error('a sibling failed'));
+      await io.nested.call('work', {}, 'cut', own.signal).catch(() => undefined);
+      return 'outer went on';
+    },
+  };
+  const bridge = toolBridge(drive, [work, outer]);
+  assert.equal((await bridge.call('outer', {}, 'c7')).text, 'outer went on');
+  assert.ok(!log.includes('whole'), `the nested call's work never ran on the outer call's signal alone: ${JSON.stringify(log)}`);
+});

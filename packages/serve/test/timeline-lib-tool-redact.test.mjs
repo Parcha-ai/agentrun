@@ -63,3 +63,17 @@ test("a web_search that failed with a message holding a percent-encoded held key
   assert.doesNotMatch(row.summary, /: ok$/, row.summary);
   assert.deepEqual(leaks(rows), []);
 });
+
+test("a calls read's tool_input withholds a number that shows a held all-digit key, by serve's own rule (heldNumber)", async () => {
+  const { heldNumber, redacted } = await import("../dist/key-refusal.js");
+  // Two held keys that are all digits: one a call quotes as it is, one with a leading zero a JSON number drops.
+  const digits = ["7319", "4628", "501"].join("");
+  const zeroed = ["00", "4815", "162342"].join("");
+  const held = [digits, zeroed];
+  const calls = { result: 8000, redact: (text) => redacted(text, held, 8000), held: (value) => heldNumber(value, held) };
+  const args = { account: Number(digits), pin: Number(zeroed), nested: [{ id: Number(digits) }], max_chars: 8000 };
+  const rows = timelineOf([user("Look it up."), assistant([call("n1", "lookup", args)]), result("n1", "lookup", "found")], { redact: (text) => redacted(text, held), calls });
+  const row = rows.find((r) => r.kind === "tool_use" && r.tool_use_id === "n1");
+  assert.deepEqual(row.tool_input, { account: "[redacted]", pin: "[redacted]", nested: [{ id: "[redacted]" }], max_chars: 8000 });
+  for (const value of held) assert.doesNotMatch(JSON.stringify(rows), new RegExp(String(Number(value))));
+});

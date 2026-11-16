@@ -436,6 +436,37 @@ final class UiTest {
 		eq(Json.obj("route", "semantic", "verified", false), step(phone.call("ui.act", "{\"steps\":[{\"press\":\"" + still + "\"}]}"), 0));
 	}
 
+	static void testAPressThatOpensAnotherAppsPageAnswersThatPage() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		// Settings' search is Settings Intelligence's page. Pressed cold, that app is in front at once and its window
+		// reaches the tree 800 ms later, Settings' own window still there, unchanged, until then (a phone-harness phone
+		// answered "unchanged" here with the search page on its screen).
+		phone.device.searchLagMs = 800;
+		String target = "\"target\":{\"app\":\"" + FakeDevice.SETTINGS + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		String search = (String) phone.node(seen, "Search settings").get("ref");
+		Map<String, Object> acted = phone.call("ui.act", "{" + target + ",\"state\":\"s1\",\"steps\":[{\"press\":\"" + search + "\"}]}");
+		eq(true, acted.get("changed"));
+		eq("s2", acted.get("state"));
+		// The state it answers is the search page's: the app in front, observed since it, shows nothing new.
+		Map<String, Object> front = phone.call("ui.observe", "{\"since\":\"s2\"}");
+		eq(FakeDevice.INTELLIGENCE, map(front.get("app")).get("id"));
+		eq(Json.obj("added", Arrays.asList(), "removed", Arrays.asList(), "changed", Arrays.asList()), front.get("diff"));
+		// The control: a press on the page's own field, which has the focus already, changes nothing.
+		String field = null;
+		for (Object n : list(front, "nodes")) if ("search_src_text".equals(map(n).get("id"))) field = (String) map(n).get("ref");
+		Map<String, Object> still = phone.call("ui.act", "{\"steps\":[{\"press\":\"" + field + "\"}]}");
+		eq(false, still.get("changed"));
+		eq("s4", still.get("state"));
+		// A page of the act's own app (Settings' Network & internet, as About phone) answers changed, as before.
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}");
+		Map<String, Object> again = phone.call("ui.observe", "{" + target + "}");
+		String network = (String) phone.node(again, "Network & internet").get("ref");
+		Map<String, Object> page = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + network + "\"}]}");
+		eq(true, page.get("changed"));
+		eq("Internet", map(phone.call("ui.observe", "{\"since\":\"" + page.get("state") + "\"}").get("window")).get("title"));
+	}
+
 	static void testTheFixtureCanvasTakesOnlyTheForegroundRoute() throws Exception {
 		Check.Phone phone = new Check.Phone();
 		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");

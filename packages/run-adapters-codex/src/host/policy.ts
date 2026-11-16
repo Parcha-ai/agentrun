@@ -27,10 +27,12 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 //
-// A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`);
-// on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`).
+// A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`),
+// or the kernel's local o200k_base count with its margin when that is lower (`responsesLocalInputTokens`), on every
+// route: nothing is asked of OpenAI before a request.
 import type { IncomingHttpHeaders } from "node:http";
-import { NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { PLAN_LIMIT_CODE, PLAN_LIMIT_WORDS } from "@parcha/agentrun-kernel";
+import { lastObjectOf, NATIVE_SEARCH_USD, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -109,10 +111,18 @@ export interface CodexPolicyOptions {
    *  `tool_choice` naming the search is then refused. Absent: the live search is offered whenever `webSearch` is on. */
   searchAllowed?: () => Promise<boolean>;
   /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
-   *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
-   *  latest answer, which is known here before Codex can run anything of it. */
-  announce?: { response(): void; exec(callId: string): void; failed(): void; end(): void };
+   *  `exec(callId, input)` for each code-mode `exec` call it holds, with its script. The session ties a script's nested
+   *  calls to the `exec` of the latest answer, which is known here before Codex can run anything of it. */
+  announce?: { response(): void; exec(callId: string, input?: string): void; failed(): void; end(): void };
+  /** The route is a person's ChatGPT plan (its access token the credential), whose Responses API keeps rules of its own:
+   *  no `max_output_tokens` is sent (none is clamped or added: the proxy limits no output and counts no input on it), the
+   *  keys it does not take are dropped (PLAN_DROPPED_KEYS), a system-role message is refused in words, each request names
+   *  its originator (`agentrun`), and its usage is booked as the plan's (`billing: "plan"`). */
+  plan?: boolean;
 }
+
+/** What a ChatGPT plan's Responses API does not take: dropped from a request on it. */
+const PLAN_DROPPED_KEYS = new Set(["max_output_tokens", "temperature", "top_p", "metadata", "user", "safety_identifier", "truncation", "background", "prompt_cache_retention"]);
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -218,8 +228,8 @@ function cutEnd(text: string): string | undefined {
  * The value of `key` in the response an answer ends with: a stream's `response.completed` (or `response.incomplete`),
  * each `data:` line parsed on its own, or a whole JSON body's. The proxy keeps only the first and last 64 KiB of a long
  * answer, and the completed event carries the whole response (its tools and encrypted reasoning), so its line can be cut
- * at the window's start: then the last `"<key>":{` in the text (the response's, which a JSON string cannot contain
- * unescaped) is read as one JSON object. The usage is looked for in all the text kept; `tool_usage` only in the cut end
+ * at the window's start: then the last `"<key>": {` in the text, whatever its spacing (the kernel's `lastObjectOf`: the
+ * response's, which a JSON string cannot contain unescaped), is read as one JSON object. The usage is looked for in all the text kept; `tool_usage` only in the cut end
  * of the last event (`cutEnd`), since the events before the terminal one carry a `tool_usage` of their own (a count of
  * 0 as the response starts). No completed event, or no `key` in it, is undefined.
  */
@@ -250,17 +260,7 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
     } catch {}
   }
   const scope = key === "usage" ? text : cutEnd(text);
-  if (scope === undefined) return undefined;
-  const mark = `"${key}":{`;
-  const at = scope.lastIndexOf(mark);
-  if (at < 0) return undefined;
-  const json = objectAt(scope, at + mark.length - 1);
-  if (json === undefined) return undefined;
-  try {
-    return JSON.parse(json);
-  } catch {
-    return undefined;
-  }
+  return scope === undefined ? undefined : lastObjectOf(scope, key);
 }
 
 /**
@@ -457,7 +457,7 @@ function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): {
       return;
     }
     const item = isPlain(event) && event.type === "response.output_item.done" && isPlain(event.item) ? event.item : undefined;
-    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id);
+    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id, typeof item.input === "string" ? item.input : "");
   };
   const endLine = () => {
     const done = line;
@@ -511,8 +511,13 @@ export function responsesOutputAsked(body: Record<string, unknown>): number | un
 /** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
  *  allowance when it reasons. */
 export function responsesOutputLeast(body: Record<string, unknown>): number {
-  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  const effort = responsesEffort(body);
   return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
+}
+
+/** The reasoning effort a Responses body asks its model at (`reasoning.effort`), when it names one. */
+export function responsesEffort(body: Record<string, unknown>): string | undefined {
+  return isPlain(body.reasoning) && typeof body.reasoning.effort === "string" && body.reasoning.effort.length > 0 ? body.reasoning.effort : undefined;
 }
 
 /** The reasoning tokens a Responses request may bill that its stream never shows (only a summary of its reasoning
@@ -568,10 +573,38 @@ export function addResponsesNote(body: Record<string, unknown>, text: string): R
   return { ...body, input: [...input, { type: "message", role: "developer", content: [{ type: "input_text", text }] }] };
 }
 
+/** The error codes OpenAI's Responses API gives a ChatGPT plan's request past its limit, with status 429. */
+const PLAN_LIMIT_ERRORS: ReadonlySet<string> = new Set(["usage_limit_exceeded", "subscription_sharing_usage_limit_exceeded"]);
+
+/** A ChatGPT plan's 429 past its limit (PLAN_LIMIT_ERRORS, as the error's `code` or `type`): final, in PLAN_LIMIT_WORDS.
+ *  Any other error goes through as it came (a 429 for the rate, which its client waits out and asks again). */
+export function planLimitOf(status: number, body: string): { message: string; code: string } | undefined {
+  if (status !== 429) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  const error = isPlain(parsed) && isPlain(parsed.error) ? parsed.error : isPlain(parsed) ? parsed : undefined;
+  const named = [error?.code, error?.type].some((value) => typeof value === "string" && PLAN_LIMIT_ERRORS.has(value));
+  return named ? { message: PLAN_LIMIT_WORDS, code: PLAN_LIMIT_CODE } : undefined;
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
   const search = options.webSearch === "live";
+  const plan = options.plan === true;
+  const tokensOf: ProviderPolicy["usageOf"] = search ? (text, body): CodexUsage | undefined => {
+    const usage = usageOf(text);
+    // A request that offered no search (`body`, the one it was sent with: a host's side request through the session's
+    // port, a learned workflow's node that offers only `submit`) ran none: 0, read from the request, never an unknown
+    // count that would make its whole known cost unknown (withWebSearches). One that offered it reads its answer.
+    const offered = Array.isArray(body?.tools) && (body.tools as unknown[]).some((tool) => typeof tool === "object" && tool !== null && isLiveSearch(tool as Record<string, unknown>));
+    if (usage && body && !offered) return { ...usage, webSearches: 0 };
+    return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
+  } : usageOf;
   return {
     id: "codex",
     routes: CODEX_RESPONSES_ROUTES,
@@ -580,7 +613,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";
     },
-    authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
+    authHeaders: (credential) => ({ authorization: `Bearer ${credential}`, ...(plan ? { originator: "agentrun" } : {}) }),
     apply(body, _route, context) {
       // The live search, offered by the request, goes only while the host says web_search may run now: read before this
       // request is shaped, never once for the session. A read that fails offers none.
@@ -588,15 +621,11 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (!asking) return shaped(body, context, search);
       return options.searchAllowed!().then((now) => shaped(body, context, now === true), () => shaped(body, context, false));
     },
-    usageOf: search ? (text, body): CodexUsage | undefined => {
-      const usage = usageOf(text);
-      // A request that offered no search (`body`, the one it was sent with: a host's side request through the session's
-      // port, a learned workflow's node that offers only `submit`) ran none: 0, read from the request, never an unknown
-      // count that would make its whole known cost unknown (withWebSearches). One that offered it reads its answer.
-      const offered = Array.isArray(body?.tools) && (body.tools as unknown[]).some((tool) => typeof tool === "object" && tool !== null && isLiveSearch(tool as Record<string, unknown>));
-      if (usage && body && !offered) return { ...usage, webSearches: 0 };
-      return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
-    } : usageOf,
+    usageOf: plan ? (text, body) => {
+      const usage = tokensOf(text, body);
+      return usage && { ...usage, billing: "plan" as const };
+    } : tokensOf,
+    ...(plan ? { finalError: planLimitOf } : {}),
     filtered,
     cut,
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
@@ -604,10 +633,16 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
+    effortOf: responsesEffort,
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
     contentBytesOf: responsesContentBytes,
-    limitOutput: limitResponsesOutput,
+    // A plan request is held at $0, so it is never counted. A body that offers the live search has no input bound
+    // (below), and is never counted into one.
+    ...(plan ? {} : {
+      limitOutput: limitResponsesOutput,
+      countInputLocally: (body: Record<string, unknown>) => (search && Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search") ? undefined : responsesLocalInputTokens(body)),
+    }),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured (and never
     // counted into a number).
@@ -615,7 +650,6 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;
       return responsesInputOverhead(body);
     } : responsesInputOverhead,
-    countInput: OPENAI_INPUT_COUNTER,
   };
 
   /** The body the provider gets, the live search offered only when `searchNow`. */
@@ -626,7 +660,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     const own = context?.host !== undefined ? sideToolNames(body.tools) : allowed;
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(body)) {
-      if (DROPPED_KEYS.has(key)) continue;
+      if (DROPPED_KEYS.has(key) || (plan && PLAN_DROPPED_KEYS.has(key))) continue;
       if (!BODY_KEYS.has(key) && !(context?.host !== undefined && SIDE_KEYS.has(key))) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
       out[key] = value;
     }
@@ -648,6 +682,10 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
       if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
       out.parallel_tool_calls = false;
+    }
+    if (plan) {
+      if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.role === "system")) throw new ProxyRefusal(400, "A ChatGPT plan takes no system-role message: give those words as instructions or a developer message.");
+      return { ...out, model: options.model, store: false };
     }
     const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
     return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };

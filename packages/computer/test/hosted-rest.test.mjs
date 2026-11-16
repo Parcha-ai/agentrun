@@ -21,6 +21,15 @@ const client = (fetch, extra = {}) => {
 test("httpCode maps a status to one code", () => {
 	const table = { 401: "denied", 403: "denied", 404: "not_found", 410: "not_found", 408: "timeout", 402: "limit", 429: "limit", 507: "limit", 400: "invalid", 409: "invalid", 422: "invalid", 500: "vendor", 502: "vendor" };
 	for (const [status, code] of Object.entries(table)) assert.equal(httpCode(Number(status)), code, status);
+	assert.equal(httpCode(409, true), "exists", "a 409 on a call that carries the machine's name");
+});
+
+test("a 409 on a named call (a create by the machine's name) is exists; on any other call it stays invalid", async () => {
+	const conflict = () => answers({ status: 409, body: '{"error":"name taken"}' }).fetch;
+	const named = await client(conflict()).api.call("POST", "https://api.example.test/machines", { json: { name: "computer-0123456789ab" }, named: true });
+	assert.deepEqual(named, { ok: false, error: { code: "exists", message: 'POST /machines: 409 {"error":"name taken"}' } });
+	const unnamed = await client(conflict()).api.call("PATCH", "https://api.example.test/machines/m1", { json: { ttl: 60 } });
+	assert.equal(unnamed.error.code, "invalid");
 });
 
 test("a call carries the header, a JSON Content-Type, and never follows a redirect; a failure names method, path and status, not the key", async () => {
@@ -90,7 +99,7 @@ test("allPages reads every page, refuses a repeated cursor, and refuses a listin
 	const loop = await allPages(async () => ({ ok: true, value: { items: [1], next: "same" } }), 5, { vendor: "acme", what: "GET /things" });
 	assert.deepEqual(loop.error, { code: "vendor", vendor: "acme", message: "GET /things's cursor same came back twice" });
 	let n = 0;
-	const long = await allPages(async () => ({ ok: true, value: { items: [1], next: true } }), 3, { vendor: "acme", what: "list" });
+	const long = await allPages(async (cursor) => ({ ok: true, value: { items: [1], next: `${cursor ?? ""}x` } }), 3, { vendor: "acme", what: "list" });
 	assert.equal(long.error.message, "list ran past 3 pages");
 	const cut = await allPages(async () => (n++ === 0 ? { ok: true, value: { items: [1], next: "x" } } : { ok: false, error: { code: "timeout", message: "slow" } }), 5, { vendor: "acme", what: "list" });
 	assert.equal(cut.error.message, "slow");

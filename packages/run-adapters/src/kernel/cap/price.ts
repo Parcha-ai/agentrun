@@ -1,14 +1,10 @@
-// The kernel cap's one pricing rule, the same for every harness. A request's input bound (its measured bytes, what its
-// provider adds, what its hosted tools read) is priced at the dearer of the input and cache-write prices; under "expected"
-// the previous request's cache counts at the cache-read price when it ended under CACHE_WARM_MS ago on the same model, so
-// only a cache miss can pass the cap, by at most the request's bound; under "strict" every token uncached. Its output is
-// held at what it is sent with, its thinking budget included.
+// The kernel cap's one pricing rule, the same for every harness: a request at its worst case. Its input bound (its
+// measured bytes, what its provider adds, what its hosted tools read) is priced uncached, every token at the dearer of the
+// input and cache-write prices, so a cache miss costs no more than it was held at; its output at what it is sent with,
+// its thinking budget included. No request can pass the cap.
 import { providerInputOverhead } from "../../host/overhead.js";
-import type { CapMode, ModelCapRequest, ModelPrice, PriceRates, Previous } from "./types.js";
+import type { ModelCapRequest, ModelPrice, PriceRates } from "./types.js";
 
-/** How long after a request ended the next one in its conversation is expected to read its cache: 4 minutes, inside
- *  Anthropic's 5. */
-export const CACHE_WARM_MS = 4 * 60_000;
 /** The tokens a limited request keeps for its answer. */
 export const ANSWER_TOKENS_LEAST = 1_024;
 /** The least thinking budget Anthropic takes. */
@@ -22,10 +18,8 @@ export const CAP_TOLERANCE = 1e-9;
 /** The APIs whose thinking takes a token budget added to the request's own output limit. */
 const BUDGET_APIS: ReadonlySet<string> = new Set(["anthropic-messages", "bedrock-converse-stream"]);
 
-/** A request's input as it is priced: `cached` tokens at the cache-read price, `fresh` at the dearer of input and cache write. */
-export type InputParts = { cached: number; fresh: number };
-/** A price as a function of its input parts and its output tokens, in USD. */
-export type Pricing = (input: InputParts, output: number) => number;
+/** A price as a function of its input tokens (all uncached) and its output tokens, in USD. */
+export type Pricing = (inputTokens: number, output: number) => number;
 
 /** The rates of `price` for a request of `inputTokens` in all (fresh and cached): its tier with the highest threshold
  *  that input is above, else its base rates. pi-ai's calculateCost picks them so, on the same table (the catalog's), and
@@ -42,48 +36,22 @@ export function ratesFor(price: ModelPrice, inputTokens: number): PriceRates {
   return rates;
 }
 
-/** `price` as the cap prices with it: a request's cached input at the cache-read rate, its fresh input at the dearer of
- *  the input and cache-write rates, and its output at the output rate, each at the rates of the tier its whole input
- *  passes (ratesFor). A hold, a worst case and a booking the cap prices are so never under what the provider bills. */
+/** `price` as the cap prices with it: every input token uncached, at the dearer of the input and cache-write rates (a
+ *  cache read is cheaper and a cache write is the dearest an input token bills at), and its output at the output rate,
+ *  each at the rates of the tier its whole input passes (ratesFor). A hold the cap prices is so never under what the
+ *  provider bills for the same tokens, whatever the cache did. */
 export function pricingOf(price: ModelPrice): Pricing {
-  return (parts, output) => {
-    const rates = ratesFor(price, parts.cached + parts.fresh);
-    const read = rates.cacheRead ?? rates.input;
+  return (inputTokens, output) => {
+    const rates = ratesFor(price, inputTokens);
     const fresh = Math.max(rates.input, rates.cacheWrite ?? rates.input);
-    return (parts.cached * read + parts.fresh * fresh + output * rates.output) / 1e6;
+    return (inputTokens * fresh + output * rates.output) / 1e6;
   };
 }
 
-/** The input of a request of `bound` tokens on `model` expected after `previous`, at `now`: its cache read, and its input
- *  after the cache plus what the body grew by at full price. Undefined (all of it uncached) with no previous request, one
- *  on another model, one that ended CACHE_WARM_MS or more ago, or a clock that reads before its end. */
-export function expectedInput(bound: number, previous: Previous | undefined, now: number, model: string): InputParts | undefined {
-  if (!previous || previous.model !== model) return undefined;
-  const gap = now - previous.endedAt;
-  if (!(gap >= 0 && gap < CACHE_WARM_MS)) return undefined;
-  // A conversation only grows between its own requests: a smaller body is not one (a compaction, or another conversation's),
-  // so none of the previous request's cache is known to be read by it. Priced uncached, never under what it can cost.
-  if (bound < previous.boundTokens) return undefined;
-  return { cached: previous.cachedTokens, fresh: previous.inputTokens + Math.max(0, bound - previous.boundTokens) };
-}
-
-/** The session's previous request once `ended` has answered: `ended` itself when it continues the conversation (the first
- *  request, another model's, one measured another way, or one at least as big as the previous), none when it is smaller.
- *  A smaller body is a compaction or another conversation's (a child's, which the proxy cannot tell from the root's):
- *  history resets, so it never sticks on a request the conversation has left and never prices the next from another's
- *  cache. The next request is priced uncached (one miss window), then warm from its own predecessor. */
-export function previousAfter(previous: Previous | undefined, ended: Previous): Previous | undefined {
-  if (previous && previous.model === ended.model && previous.counted === ended.counted && ended.boundTokens < previous.boundTokens) return undefined;
-  return ended;
-}
-
-/** A request priced under `mode`: `cost(output)`, what it is held at (its expected input, never more than uncached), and
- *  `worst(output)`, its input uncached; each with its hosted tools' most fee. */
-export function requestPrice(pricing: Pricing, bound: number, previous: Previous | undefined, now: number, mode: CapMode, model: string, feeUsd = 0): { cost(output: number): number; worst(output: number): number } {
-  const worst = (output: number) => pricing({ cached: 0, fresh: bound }, output) + feeUsd;
-  const parts = mode === "strict" ? undefined : expectedInput(bound, previous, now, model);
-  if (!parts) return { cost: worst, worst };
-  return { cost: (output) => Math.min(pricing(parts, output) + feeUsd, worst(output)), worst };
+/** A request of `bound` input tokens at its worst case: what it costs at `output` tokens, its hosted tools' most fee
+ *  included. It is held at this, so it is booked at no more, answered, missed or cut. */
+export function requestPrice(pricing: Pricing, bound: number, feeUsd = 0): (output: number) => number {
+  return (output) => pricing(bound, output) + feeUsd;
 }
 
 /** A request's whole input bound: its measured bytes, what its provider adds for what it carries, and what its hosted tools

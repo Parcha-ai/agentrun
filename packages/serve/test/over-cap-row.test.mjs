@@ -25,15 +25,12 @@ test("the over-cap row: after the usage row, once its booked cost is past the ca
   for (const [usd, cap] of [[1, 1], [0.5, 1], [null, 1], [2, undefined]]) assert.equal(withOverCap(rows(usd), cap).length, 2, `${usd} under ${cap}`);
 });
 
-test("the over-cap row of a run that passed its cap on a cache miss says by how much and the most it could have, in cents: one row, in these words", () => {
-  const out = withOverCap(rows(0.5267564), 0.5, 0.19603125);
+test("the over-cap row says what was spent and by how much it is over, in cents: one row, in these words, whatever the amount", () => {
+  const out = withOverCap(rows(0.5267564), 0.5);
   assert.equal(out.filter((row) => row.id.endsWith(":over_cap")).length, 1, "one row");
-  assert.equal(out[2].summary, "Went $0.03 over its cap on a cache miss (at most $0.20).");
-  // No bound (strict, a cold request, or a cap passed some other way): the row says what it said, in cents.
-  assert.equal(withOverCap(rows(0.5267564), 0.5, 0)[2].summary, "Spent $0.53, $0.03 over the run's cap of $0.50");
-  assert.equal(withOverCap(rows(0.5267564), 0.5)[2].summary, "Spent $0.53, $0.03 over the run's cap of $0.50");
-  // Over by more than the bound: not the cache miss's doing, so not in its words.
-  assert.equal(withOverCap(rows(0.8), 0.5, 0.1)[2].summary, "Spent $0.80, $0.30 over the run's cap of $0.50");
+  assert.equal(out[2].summary, "Spent $0.53, $0.03 over the run's cap of $0.50");
+  // Over by more: the same words, no excuse for any amount.
+  assert.equal(withOverCap(rows(0.8), 0.5)[2].summary, "Spent $0.80, $0.30 over the run's cap of $0.50");
   // A cap that is no whole number of cents is said in cents, never as a float's tail.
   assert.equal(withOverCap(rows(0.5), 0.38020940000000003)[2].summary, "Spent $0.50, $0.12 over the run's cap of $0.38");
 });

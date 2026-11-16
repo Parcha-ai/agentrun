@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { registryPin } from "./store-helpers.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
@@ -114,7 +115,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
     rmSync(dir, { recursive: true, force: true });
   });
   await server.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(ADD)], sealed: sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
-  await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: await registryPin(server) });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   await before?.({ server });
   const seen = {};
@@ -170,12 +171,13 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
     runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...STEADY });
   };
   /** The runner dies where it stands (no release, its claim left to run out) and another starts on the same store, which
-   *  claims the run once that claim has run out. */
+   *  claims the run once that claim has run out. The short lease belongs to the deliberate crash; the successor uses
+   *  steady timing so ordinary recovery is not constrained by that crash-expiry interval. */
   const crashRunner = () => {
     runner.kill();
     dead.push(...made);
     made = [];
-    runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...timing });
+    runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...STEADY });
   };
   // `settle: false`: the case starts its own wait (a run held mid-commit never settles before its runner is killed).
   return { ...(settle ? await settled() : {}), seen, fake, server, settled, replaceRunner, crashRunner };

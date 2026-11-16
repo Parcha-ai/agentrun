@@ -14,7 +14,7 @@ import { claudeAgentSpec, closeOpenSessions as closeClaude } from "./conformance
 import { closeOpenSessions as closeCodex, codexSpec } from "./conformance-codex.mjs";
 import { closeOpenSessions as closeOpenCode, openCodeSpec } from "./conformance-opencode.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { queue, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 import { runnerGate, verdictOf } from "./gate-support.mjs";
 
 const { CODEMODE, META_TOOLS, metaTools, refusedName, searchTools, TOOLS_CALL, TOOLS_SEARCH } = await import("../dist/runner/meta-tools.js");
@@ -56,12 +56,13 @@ test("tools_search answers only the run's tools it may call: a tool set to deny 
 });
 
 test("tools_call refuses, in words, a call of itself, of the other two, and of a name the run has no tool by: nothing runs", async () => {
-  for (const name of [TOOLS_CALL, CODEMODE, TOOLS_SEARCH, "mcp__hands__codemode"]) assert.match(refusedName(TOOLS_CALL, name, TOOLS), /are called by the model itself, never through each other\. Nothing was run\./, name);
+  const hostName = (given) => given.replace(/^hands_/, "");
+  for (const name of [TOOLS_CALL, CODEMODE, TOOLS_SEARCH, "hands_codemode"]) assert.match(refusedName(TOOLS_CALL, name, TOOLS, hostName), /are called by the model itself, never through each other\. Nothing was run\./, name);
   assert.match(refusedName(TOOLS_CALL, "no_such_tool", TOOLS), /this run has no tool by that name.*Nothing was run\./);
-  assert.equal(refusedName(TOOLS_CALL, "mcp__hands__write_file", TOOLS), undefined, "a harness's name for a run's tool is that tool");
+  assert.equal(refusedName(TOOLS_CALL, "hands_write_file", TOOLS, hostName), undefined, "a harness's name for a run's tool is that tool");
   const calls = [];
   const nested = { call: async (name, args, key) => (calls.push([name, key]), { text: "ran", fresh: true }), memo: async (_key, value) => value };
-  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true }, hostName });
   const refused = await call.call({ name: CODEMODE, args: {} }, { signal: new AbortController().signal, nested });
   assert.equal(refused.isError, true);
   assert.deepEqual(calls, [], "nothing was called");
@@ -79,6 +80,34 @@ test("a codemode script sees the run's tools and nothing else of the run: no pro
   const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
   assert.equal(answer.isError, undefined, answer.text);
   assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "undefined", "undefined", "function", false], answer.text);
+});
+
+test("a script tests for a tool with typeof: a name the run has no tool by reads \"undefined\"", async () => {
+  const nested = { call: async () => ({ text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "return [typeof tools.missing, typeof tools['no-such-tool'], typeof tools?.missing, typeof tools.write_file, `${typeof tools.missing}`, 'typeof tools.missing', typeof tools.missing === 'undefined' ? 'absent' : 'there', 'missing' in tools, 'write_file' in tools];";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "function", "undefined", "typeof tools.missing", "absent", false, true], answer.text);
+  // Nothing around the script can be shadowed by it: its own `Object`, `Proxy` or `undefined` change no answer.
+  const shadowed = await codemode.call({ script: "const Object = {};\nlet Proxy, Reflect;\nlet undefined = 'set';\nreturn [typeof tools.write_file, typeof tools.missing];" }, { signal: new AbortController().signal, nested });
+  assert.equal(shadowed.isError, undefined, shadowed.text);
+  assert.deepEqual(shadowed.structured, ["function", "undefined"], shadowed.text);
+});
+
+test("calling a tool the run doesn't have fails with an error that names it and lists the run's tools; nothing is called", async () => {
+  const calls = [];
+  const nested = { call: async (name) => (calls.push(name), { text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  for (const called of ["return await tools.missing({});", "const one = tools.missing;\nreturn await one({});", "if (typeof tools.missing !== 'function') throw new Error('no missing tool');"]) {
+    const refused = await codemode.call({ script: called }, { signal: new AbortController().signal, nested });
+    assert.equal(refused.isError, true, refused.text);
+    assert.match(refused.text, /The script read tools\.missing, which this run doesn't have\. Its tools are: write_file, web_search, send_email, read_file\./, called);
+  }
+  assert.deepEqual(calls, [], "nothing was called");
+  // A failure that is no TypeError and names no name it read keeps its own words alone.
+  const other = await codemode.call({ script: "typeof tools.missing;\nthrow new Error('out of paper');" }, { signal: new AbortController().signal, nested });
+  assert.match(other.text, /The script failed: out of paper$/, other.text);
 });
 
 test("a script reads a nested call's value: its structured value, else its one text part parsed when that is a JSON object or array, else its text", async () => {
@@ -100,16 +129,75 @@ test("a script reads a nested call's value: its structured value, else its one t
   assert.equal(direct.text, answers.write_file.text, "the text the model reads is the call's text, unchanged");
 });
 
+test("a script stopped by a parked call lists each earlier call's result as the script read it: unescaped JSON where it parsed, a quoted string where not", async () => {
+  // The run again after the person's answer (its start's memo is the first run's): the recorded calls answer from their
+  // records, and the first call that runs now (send_email) ends the script with every call before it listed.
+  const answers = {
+    write_file: { text: JSON.stringify({ default_branch: "main", stars: 0 }) },
+    web_search: { text: "plain words" },
+    read_file: { text: "sent", structured: { id: "m-1" } },
+  };
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { ...answers[name], fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "const r = await tools.write_file({});\nawait tools.web_search({});\nawait tools.read_file({});\nawait tools.send_email({});\nreturn r.stars;";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.match(answer.text, /^The script was stopped/, answer.text);
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.deepEqual(lines, [
+    `1. write_file completed: {"default_branch":"main","stars":0}. Its effect is done; it was not run again.`,
+    `2. web_search completed: "plain words". Its effect is done; it was not run again.`,
+    `3. read_file completed: {"id":"m-1"}. Its effect is done; it was not run again.`,
+    `4. send_email completed: "mailed". Its effect is done; it was not run again.`,
+  ], answer.text);
+});
+
+test("a stopped script lists a call's string value as the script read it: its structured string, never its fuller text", async () => {
+  // A nested call that showed text('note') and returned 'saved': text "note\nsaved", value "saved".
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { text: "note\nsaved", structured: "saved", fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const answer = await codemode.call({ script: "const said = await tools.write_file({});\nawait tools.send_email({});\nreturn said;" }, { signal: new AbortController().signal, nested });
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(lines[0], `1. write_file completed: "saved". Its effect is done; it was not run again.`, answer.text);
+});
+
+test("a script reads a nested call's image with its pixels: image(...) shows it, a returned one is the answer's image, and no text carries its data", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  // As a computer tool answers a screenshot: its value with the image's data left out, the data in its images.
+  const shot = { text: "A screenshot, 1280x800.", images: [{ data: PNG, mimeType: "image/png" }], structured: { type: "image", mimeType: "image/png", width: 1280, height: 800 } };
+  const nested = { call: async () => ({ ...shot, fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const run = (script) => codemode.call({ script }, { signal: new AbortController().signal, nested });
+  const shown = await run("const shot = await tools.web_search({});\nimage(shot);\nreturn { width: shot.width, data: typeof shot.data };");
+  assert.equal(shown.isError, undefined, shown.text);
+  assert.deepEqual(shown.structured, { width: 1280, data: "string" }, shown.text);
+  assert.deepEqual(shown.images, [{ data: PNG, mimeType: "image/png" }], "image(shot) shows the screenshot's pixels");
+  const returned = await run("return await tools.web_search({});");
+  assert.deepEqual(returned.images, [{ data: PNG, mimeType: "image/png" }], "a returned screenshot is the answer's image");
+  assert.deepEqual(returned.structured, shot.structured, "the value keeps its image's place, without its data");
+  for (const answer of [shown, returned]) assert.ok(!answer.text.includes(PNG), `no text carries the image's data: ${answer.text}`);
+  // Stopped after it, the screenshot's line names the image, never its data.
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const again = { call: async (name) => (name === "send_email" ? { text: "mailed", fresh: true } : { ...shot, fresh: false }), memo: async () => first };
+  const stopped = await codemode.call({ script: "await tools.web_search({});\nawait tools.send_email({});" }, { signal: new AbortController().signal, nested: again });
+  assert.match(stopped.text, /1\. web_search completed: \{"type":"image","mimeType":"image\/png","width":1280,"height":800\}\./, stopped.text);
+  assert.ok(!stopped.text.includes(PNG), stopped.text);
+});
+
 /** A pi run of `script` over the suite's tools, its gate `gate(call)`: what each suite tool ran, and the last tool result. */
 async function gatedRun(t, script, gate) {
-  const { server, runners: [store] } = await stores({ runners: 1 });
+  const opened = await stores({ runners: 1 });
+  const { server, runners: [store] } = opened;
   await queue(server, "run-1");
   const { tools, ran } = suiteTools();
   const requests = [];
   const spec = piAdapterSpec({ script, tools: { ...tools, ...fillerTools() }, hooks: quiet }, { requests });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate }));
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   await until(async () => {
     const now = await server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;
@@ -260,12 +348,15 @@ async function metaRun(t, harness, script, own, { native } = {}) {
   const tools = { ...own, ...fillerTools() };
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
-  const { server, runners: [store] } = await stores({ runners: 1 });
+  const opened = await stores({ runners: 1 });
+  const { server, runners: [store] } = opened;
   await queue(server, "run-1");
   const requests = [];
   const spec = harness.name === "pi" ? piAdapterSpec({ script, tools, hooks: quiet }, { requests, ...(native ? { native } : {}) }) : harness.specOf({ script, tools, hooks: quiet });
   const runner = startRunner({ store, createLoop: createAdapterLoop(spec, { restartLimit: MAX_RESTARTS }), name: "runner-a", ...TIMING });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const row = await until(async () => {
     const now = await server.runs.get("run-1");
     return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
@@ -346,23 +437,26 @@ test("a run's catalog tools are deferred only past DEFER_CATALOG_OVER of them: t
   assert.equal(DEFER_CATALOG_OVER, 20);
   assert.equal(defersCatalog(["read", "write", "edit", "bash", "web_fetch"]), false, "built-ins only");
   assert.equal(defersCatalog(["read", ...mcp(1)]), false, "one MCP tool");
-  assert.equal(defersCatalog(["monid_discover", "monid_inspect", "monid_run"]), false, "monid's three");
   assert.equal(defersCatalog(mcp(DEFER_CATALOG_OVER)), false, "exactly the threshold: not yet");
   assert.equal(defersCatalog(mcp(DEFER_CATALOG_OVER + 1)), true, "past it");
-  assert.equal(defersCatalog([...mcp(DEFER_CATALOG_OVER - 3), "monid_discover", "monid_inspect", "monid_run", "monid_run2"].slice(0, 22)), true, "monid's tools count toward it");
+  assert.equal(defersCatalog([...mcp(DEFER_CATALOG_OVER - 3), "monid__apollo__people__match", "monid__apollo__organizations__enrich", "monid__faux__person__enrich", "monid__faux__tweets"]), true, "monid's endpoints count toward it");
+  assert.equal(defersCatalog([...mcp(DEFER_CATALOG_OVER - 3), "monid_run", "monid_discover", "monid_inspect", "monid_x"]), false, "a name with monid's old single _ is no endpoint's");
   const many = Array.from({ length: 40 }, (_, index) => `tool_${index}`);
   assert.equal(defersCatalog(many), false, "built-in tools never defer, however many");
 });
 
 /** A pi run's first model request's tool names, for `tools` (the session's, `{name, replaySafe, run}`) under `gate`, and what ran. */
 async function listedRun(t, script, tools, gate = Object.assign(() => "allow", { permission: async () => "allow" })) {
-  const { server, runners: [store] } = await stores({ runners: 1 });
+  const opened = await stores({ runners: 1 });
+  const { server, runners: [store] } = opened;
   await queue(server, "run-1");
   const requests = [];
   const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate }), { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   await until(async () => {
     const now = await server.runs.get("run-1");
     return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
@@ -415,7 +509,7 @@ test("codemode, tools_search and tools_call each have a setting: allow unless an
   assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_CALL))).offered, all);
 });
 
-test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words; pi's computer codemode stays the kind's", async () => {
+test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words", async () => {
   const gate = (settings, where) => runnerGate({ settings, harness: "pi", ...where });
   for (const name of [CODEMODE, TOOLS_SEARCH, TOOLS_CALL]) {
     assert.equal(await verdictOf(gate({}), name), "allow", `${name}: allow by default`);
@@ -423,7 +517,6 @@ test("the gate: each of the three allows unless its own setting is deny, then a 
     const denied = gate({ [name]: { permission: "deny" } });
     assert.equal(await denied.policy(name), "deny", `${name}: its setting is read`);
     assert.match(await verdictOf(denied, name), /denied|not run|refused|deny/i, `${name}: a call is refused`);
-    assert.equal(await verdictOf(denied, `mcp__hands__${name}`), await verdictOf(denied, name), `${name}: claude-agent's name for it reads the same key`);
     const others = [CODEMODE, TOOLS_SEARCH, TOOLS_CALL].filter((one) => one !== name);
     for (const other of others) assert.equal(await verdictOf(denied, other), "allow", `${name}'s setting does not hold ${other}`);
   }
@@ -445,3 +538,62 @@ for (const harness of HARNESSES.filter((one) => one.discovery)) {
     assert.match(said.join("\n"), /idle/, `the deferred tool ran: ${JSON.stringify(said)}`);
   });
 }
+
+// ---- the follow-ups of a live walk: one verdict on every harness, the three in the server's tool list, one name a script may call ----
+
+/** What claude-agent's adapter was opened with, for `tools` under `gate`: the host's verdict on deferring the catalog. */
+async function claudeVerdict(t, tools, gate) {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const seen = [];
+  const base = claudeAgentSpec({ script: [{ call: "read", args: {} }, { say: "done" }], tools, hooks: quiet });
+  const loop = createAdapterLoop(async (claim, run) => {
+    const spec = await base(claim, run);
+    return { ...spec, gate, adapter: { ...spec.adapter, open: (session, io) => (seen.push(session.deferCatalog), spec.adapter.open(session, io)) } };
+  }, { restartLimit: MAX_RESTARTS });
+  const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await until(async () => {
+    const now = await server.runs.get("run-1");
+    return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
+  }, "the run ended", 30_000);
+  return seen;
+}
+
+test("claude-agent: its own tool search follows the one verdict (over the threshold, both helpers allowed); either helper set to deny lists every tool", async (t) => {
+  const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(21) };
+  const settingOf = (denied) => Object.assign(() => "allow", { permission: async (name) => (name === denied ? "deny" : "allow") });
+  assert.deepEqual(await claudeVerdict(t, tools, settingOf(undefined)), [true], "21 catalog tools, nothing denied: deferred");
+  assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_SEARCH)), [false], "tools_search set to deny: every tool listed, its own search off");
+  assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_CALL)), [false], "tools_call set to deny: the same");
+  assert.deepEqual(await claudeVerdict(t, { read: tools.read, ...catalog(3) }, settingOf(undefined)), [false], "a few catalog tools: nothing deferred");
+});
+
+test("capabilities.tools lists tools_search, tools_call and codemode: each with a line for people, allow or deny, allow by default, and no grant", async () => {
+  const { toolsView } = await import("../dist/tools.js");
+  const listed = toolsView({}, { tools_search: { permission: "deny" } });
+  for (const name of [TOOLS_SEARCH, TOOLS_CALL, CODEMODE]) {
+    const row = listed.find((one) => one.name === name);
+    assert.ok(row, `${name} is listed`);
+    assert.equal(typeof row.blurb, "string");
+    assert.equal(row.meta, true, `${name} is no grant`);
+    assert.deepEqual(row.permissions, ["allow", "deny"], `${name}: allow or deny, never ask`);
+    assert.equal(row.default_permission, "allow");
+    assert.equal(row.permission, name === TOOLS_SEARCH ? "deny" : "allow", `${name}: its setting is in force`);
+  }
+  const { BOUND_TOOLS } = await import("../dist/tools.js");
+  assert.ok(![TOOLS_SEARCH, TOOLS_CALL, CODEMODE].some((name) => BOUND_TOOLS.includes(name)), "none is a tool an agent may name");
+});
+
+test("codemode's description names functions a script can call: the run's own tool names as `tools.<name>`, with the harness prefix said to be left off", async () => {
+  const calls = [];
+  const nested = { call: async (name, args, key) => (calls.push([name, key]), { text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const prefixed = TOOLS.map((one) => ({ ...one, name: `mcp__hn__${one.name}` }));
+  const [, , codemode] = metaTools({ tools: () => prefixed, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const named = [...codemode.description.matchAll(/`tools\.([A-Za-z0-9_]+)`/g)].map((one) => one[1]).filter((name) => name !== "<name>");
+  assert.deepEqual(named, ["mcp__hn__write_file", "mcp__hn__web_search", "mcp__hn__send_email"], `its examples are the run's first tools: ${codemode.description}`);
+  assert.match(codemode.description, /never by the name your own tool list may show for it with a harness's prefix \(`hands_`, `mcp__hands__`\)/);
+  const answer = await codemode.call({ script: named.map((name) => `await tools.${name}({});`).join(" ") + " return 'ok';" }, { signal: new AbortController().signal, nested });
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(calls.map(([name]) => name), prefixed.slice(0, 3).map((one) => one.name), "every name the description gave ran the tool it names");
+});

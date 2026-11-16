@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, follow, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const CLAUDE_MODEL = "claude-haiku-5-5";
 
@@ -16,8 +17,8 @@ const CLAUDE_MODEL = "claude-haiku-5-5";
 async function gateway(t) {
   const seen = [];
   const server = createServer(async (req, res) => {
-    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    // Only the API's own paths count (fixtures/stranger.mjs).
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     seen.push(req.url);
@@ -54,7 +55,7 @@ test("one server offers pi, claude-agent and codex, each on its own settings: a 
   });
   const { api } = await serve(t, { faux: undefined });
   // Each entry's memory and count (harness/2) are this host's: admission.test.mjs reads them.
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map(({ run_memory_mib, max_concurrent_runs, models: _models, ...offer }) => offer), [{ id: "pi", available: true, steer: true, default_model: "agent-model/gpt-test" }, { id: "claude-agent", available: true, steer: true, default_model: "anthropic/claude-sonnet-5-5" }, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test" }, { id: "opencode", available: true, steer: false, default_model: "agent-model/gpt-test" }]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map(({ run_memory_mib, max_concurrent_runs, models: _models, free_models: _free, ...offer }) => offer), [{ id: "pi", available: true, steer: true, default_model: "agent-model/gpt-test" }, { id: "claude-agent", available: true, steer: true, default_model: "anthropic/claude-sonnet-5-5" }, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test" }, { id: "opencode", available: true, steer: false, default_model: "agent-model/gpt-test" }]);
   assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
   const claude = await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${CLAUDE_MODEL}` }));
   assert.equal(claude.status, 201);

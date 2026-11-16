@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import pg from "pg";
 import { agent, client, FAUX, follow, printed, scratch } from "./support.mjs";
-import { client as pgClient, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
+import { client as pgClient, connectionsLeft, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
 const { migrationsIn, openPostgresStore, StoreOwned } = await import("../dist/store/index.js");
 
@@ -32,6 +32,17 @@ function cli(t, args, env) {
     await exited;
   });
   return child;
+}
+
+/** Stop owned deployment children before teardown touches their schemas or data roots, including after an assertion
+ *  fails while a child is still serving. Already-exited children need no further signal. */
+async function stopChildren(children) {
+  for (const child of [...children].reverse()) {
+    if (child.exitCode !== null || child.signalCode !== null) continue;
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    child.kill("SIGTERM");
+    await exited;
+  }
 }
 
 /** The environment a server on the Postgres store at `url`, in `schema`, starts with. */
@@ -114,11 +125,17 @@ test("a role with no CREATE on the database, on a schema that does not exist, is
 
 test("a deploy on Postgres: a second server waits for the first's owner lock instead of exiting; when the first's lock is lost it takes the schema and serves, and the first exits 1", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
   const schema = await freshSchema();
-  t.after(() => dropSchema(schema));
+  const children = [];
+  t.after(async () => {
+    await stopChildren(children);
+    assert.deepEqual(await connectionsLeft([schema]), [], "deployment children have exited before schema teardown");
+    await dropSchema(schema);
+  });
   const root = await scratch(t);
   const env = storeEnv(root, PG_URL, schema);
   const start = (name) => {
     const child = cli(t, ["--data", join(root, name), "--port", "0", "--faux", FAUX, "--no-runner"], env);
+    children.push(child);
     const err = [];
     createInterface({ input: child.stderr }).on("line", (line) => err.push(line));
     const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
@@ -151,14 +168,22 @@ test("a deploy on Postgres: a second server waits for the first's owner lock ins
 for (const [name, secondEnv] of [["its own Postgres schema", (root, schema) => storeEnv(root, PG_URL, schema)], ["SQLite in the data root", (root) => { const { AGENTRUN_STORE_URL: _url, AGENTRUN_STORE_SCHEMA: _schema, ...env } = storeEnv(root, PG_URL, "unused"); return env; }]]) {
   test(`a second server on a data root a server on Postgres holds, on ${name}, is refused: one server per data root, whatever its store`, { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
     const [one, two] = [await freshSchema(), await freshSchema()];
-    t.after(() => dropSchema(one));
-    t.after(() => dropSchema(two));
+    const children = [];
+    t.after(async () => {
+      await stopChildren(children);
+      assert.deepEqual(await connectionsLeft([one, two]), [], "data-root children have exited before schema teardown");
+      await dropSchema(one);
+      await dropSchema(two);
+    });
     const root = await scratch(t);
     // A short drain: the second waits for the drain and its margin (31 s) before it refuses.
     const args = ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner", "--drain-timeout", "1s"];
     const first = cli(t, args, storeEnv(root, PG_URL, one));
+    children.push(first);
     const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(await printed(first, /^Open /m))[1]);
-    const refused = await printed(cli(t, args, secondEnv(root, two)), /^Open /m).then(() => undefined, (error) => error);
+    const second = cli(t, args, secondEnv(root, two));
+    children.push(second);
+    const refused = await printed(second, /^Open /m).then(() => undefined, (error) => error);
     assert.ok(refused, "the second server did not start");
     assert.match(refused.message, /the server exited \(1\)/);
     assert.match(refused.message, /another server holds this data root/);
@@ -231,9 +256,23 @@ test("a least-privilege deployment (a host's three roles): the server as the sch
   await assert.rejects(openPostgresStore({ url: reader.url, schema, role: "runner" }), "and opens no store");
 });
 
-test("a server on Postgres whose store stops reading (its schema dropped under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
+test("a server on Postgres whose store stops reading (its schema renamed under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
   const schema = await freshSchema();
-  t.after(() => dropSchema(schema));
+  const unavailable = await freshSchema();
+  let server, reader;
+  t.after(async () => {
+    // Stop the child before dropping either namespace: background reads must not race cleanup DDL either.
+    if (server && server.exitCode === null && server.signalCode === null) {
+      const exited = new Promise(resolve => server.once("exit", resolve));
+      server.kill("SIGTERM");
+      await exited;
+    }
+    if (reader) {
+      try { await reader.query("ROLLBACK"); } finally { await reader.end(); }
+    }
+    await dropSchema(schema);
+    await dropSchema(unavailable);
+  });
   const root = await scratch(t);
   const env = {
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
@@ -246,11 +285,16 @@ test("a server on Postgres whose store stops reading (its schema dropped under i
     AGENTRUN_STORE_URL: PG_URL,
     AGENTRUN_STORE_SCHEMA: schema,
   };
-  const server = cli(t, ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"], env);
+  server = cli(t, ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"], env);
   const out = await printed(server, /^Open /m);
   const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
   assert.equal((await fetch(`http://127.0.0.1:${port}/v2/health`)).status, 200, "healthy on its store");
-  await dropSchema(schema);
+  // Keep a normal reader in flight. Dropping all tables acquires conflicting locks in an unspecified order and
+  // can deadlock with the server; renaming makes its configured schema unavailable without taking table locks.
+  reader = await pgClient(schema);
+  await reader.query("BEGIN");
+  await reader.query(`SELECT id FROM ${schema}.agents LIMIT 1`);
+  await admin(`ALTER SCHEMA ${schema} RENAME TO ${unavailable}`);
   const startedAt = Date.now();
   const broken = await fetch(`http://127.0.0.1:${port}/v2/health`);
   assert.deepEqual({ status: broken.status, body: await broken.json() }, { status: 503, body: { status: "failing", checks: { store: "does_not_open", disk: "ok" } } });
@@ -259,7 +303,12 @@ test("a server on Postgres whose store stops reading (its schema dropped under i
 
 test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its owner lock, and a runner started apart on it runs what the server's API started, which the server reads completed", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
   const schema = await freshSchema();
-  t.after(() => dropSchema(schema));
+  const children = [];
+  t.after(async () => {
+    await stopChildren(children);
+    assert.deepEqual(await connectionsLeft([schema]), [], "server and runner have exited before schema teardown");
+    await dropSchema(schema);
+  });
   const root = await scratch(t);
   const data = join(root, "agents");
   const env = {
@@ -274,6 +323,7 @@ test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its
     AGENTRUN_STORE_SCHEMA: schema,
   };
   const server = cli(t, ["--data", data, "--port", "0", "--faux", FAUX, "--no-runner"], env);
+  children.push(server);
   const out = await printed(server, /^Open /m);
   const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
   // The server's store is the Postgres schema, and the server holds it: a second server on the schema is refused, and no
@@ -291,6 +341,7 @@ test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its
   assert.equal(run.status, 202, JSON.stringify(run.body));
   // The runner apart: the faux model by the variable a run's process reads it from (server.ts fauxEnvOf).
   const runner = cli(t, ["runner", "--data", data, "--faux", FAUX], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart" });
+  children.push(runner);
   const err = [];
   createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
   const ready = await new Promise((resolve, reject) => {

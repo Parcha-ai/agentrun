@@ -3,6 +3,7 @@
 // helper, with no second copy of the SQL. The launch body itself is opaque here (run-launch.ts owns its shape); sealed
 // bytes are the caller's, which the store never opens.
 import { type RunLaunchInput, type RunLaunchRow, StoreLaunchMissing } from "../store.js";
+import type { Dialect } from "../dialect.js";
 import type { SqliteExecutor } from "./connection.js";
 
 type RunLaunchRecord = { run_id: string; body: string; sealed: Uint8Array | null; created_at: number };
@@ -21,4 +22,13 @@ export async function readLaunch(executor: Pick<SqliteExecutor, "get">, runId: s
   const row = await executor.get<RunLaunchRecord>(`SELECT ${RUN_LAUNCH_COLUMNS} FROM run_launch WHERE run_id = ?`, runId);
   if (!row) throw new StoreLaunchMissing(runId);
   return runLaunchOf(row);
+}
+
+/** The learning start of every run of agent `agentId` that `where` (a condition on runs' columns) keeps, in one read: only
+ *  the body's `learning` member (the notes a run was given, its seed, its # Learned section), never the rest of the body
+ *  and never the sealed bytes, so an agent with thousands of runs reads kilobytes a run, not each run's input. `learning`
+ *  is the member's JSON text, null when the run's body names none. */
+export async function readLearningStarts(executor: Pick<SqliteExecutor, "all"> & { readonly dialect: Dialect }, agentId: string, where: string): Promise<{ runId: string; learning: unknown }[]> {
+  const rows = await executor.all<{ run_id: string; learning: string | null }>(`SELECT run_id, ${executor.dialect.jsonText("body", ["learning"])} AS learning FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND ${where})`, agentId);
+  return rows.map((row) => ({ runId: row.run_id, learning: row.learning === null ? undefined : JSON.parse(row.learning) }));
 }

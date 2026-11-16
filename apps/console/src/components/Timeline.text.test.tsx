@@ -70,7 +70,7 @@ describe("Timeline, a tool step's label", () => {
     for (const [id, word] of [
       ["web_fetch", "Fetch"], ["WebFetch", "Fetch"], ["web_search", "Search"], ["WebSearch", "Search"],
       ["bash", "Shell"], ["Bash", "Shell"], ["shell", "Shell"], ["read", "Read"], ["Read", "Read"], ["write", "Write"],
-      ["edit", "Edit"], ["apply_patch", "Edit"], ["mcp__hands__read", "Read"], ["glob", "Find files"], ["grep", "Search files"],
+      ["edit", "Edit"], ["apply_patch", "Edit"], ["glob", "Find files"], ["grep", "Search files"],
     ] as const) expect(labelOf(id), id).toBe(word);
   });
 
@@ -86,7 +86,6 @@ describe("Timeline, a tool step's label", () => {
   it("makes words of any other id, and says the same for a result row of the older shape", () => {
     expect(labelOf("deploy_staging")).toBe("Deploy staging");
     expect(labelOf("runsGet")).toBe("Runs get");
-    expect(labelOf("mcp__agentrun_serve__runs_get")).toBe("Runs get");
     expect(labelOf("web_fetch", { kind: "tool_result", tool_status: null })).toBe("Fetch");
   });
 

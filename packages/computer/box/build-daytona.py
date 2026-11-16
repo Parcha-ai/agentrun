@@ -1,6 +1,6 @@
 # Build the Archil image (this folder's Dockerfile) as a Daytona snapshot, with Daytona's Python SDK (`pip install
 # daytona`) and its key in DAYTONA_API_KEY, and print the snapshot's name, which a Daytona computer's spec names as its
-# image (no Daytona computer takes an Archil mount: Archil's client hangs on its sandboxes). The name is the recipe's hash (the Dockerfile and the files it copies), so a changed recipe is
+# image (no Daytona computer takes an Archil mount: Archil's client hangs on its sandboxes). The name is the recipe's hash (the Dockerfile and the files it copies, install.sh among them), so a changed recipe is
 # a new snapshot, and the same recipe is the one built before: Daytona then refuses the name, and the printed name is
 # the one to use. Its size is 2 CPUs, 4 GB of memory and a 10 GB disk.
 #
@@ -26,7 +26,7 @@ if args:
     gpu = args[1]
 
 here = os.path.dirname(os.path.abspath(__file__))
-recipe = b"".join(open(os.path.join(here, name), "rb").read() for name in ("Dockerfile", "agentrun-archil"))
+recipe = b"".join(open(os.path.join(here, name), "rb").read() for name in ("Dockerfile", "install.sh", "agentrun-archil"))
 digest = hashlib.sha256(recipe).hexdigest()[:12]
 name = f"agentrun-archil-gpu-{gpu.lower()}-{digest}" if gpu else f"agentrun-archil-{digest}"
 print(f"build-daytona: snapshot {name}", file=sys.stderr)

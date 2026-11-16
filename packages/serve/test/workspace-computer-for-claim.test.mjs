@@ -11,9 +11,12 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { readBackOf } from "@parcha/agentrun-computer";
+import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
+import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
+import { pairedOf } from "../dist/workspace/attached-computers.js";
+import { fauxComputers } from "../dist/faux-computers.js";
 import { computerReadyWords, computerStartingWords } from "../dist/workspace/computer-deps.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { GPU_ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
@@ -90,26 +93,28 @@ function views(refusal) {
   const opened = [];
   const closed = [];
   const holds = [];
+  const gones = [];
   const open = async (args) => {
     holds.push(args.hold);
+    gones.push(args.gone);
     const watched = await args.watch({ frame() {}, ended() {} }, { signal: new AbortController().signal });
     opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: watched.ok });
     if (refusal) return { ok: false, refused: refusal, message: `the store refused the viewer (${refusal})` };
     return { ok: true, view: { close: (why) => void closed.push(why) } };
   };
-  return { open, opened, closed, holds };
+  return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3 } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, hadComputer, epoch = 3, list, spec = SPEC } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(hadComputer ? { hadComputer } : {}) });
   return { root, record, run };
 }
 
@@ -137,6 +142,36 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(record.revoked, 1, "the run's mount credential is removed once, after the computer");
 });
 
+test("an Agent37 desktop starts from the template its prepareImage() answers, where the spec names no image for it", async () => {
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  const { record, run } = await claim({ kind: "desktop", provider: "agent37" }, { keys: { AGENT37_API_KEY: "fake-test-key", AGENT37_SSH_KEY: "not-a-secret" }, groups: ["screen", "input.pointer", "input.keys"], spec });
+  const answer = await run();
+  assert.equal(record.created[0].image, "agentrun/computer:prepared");
+  await answer.release();
+});
+
+test("a Mode 2 Modal sandbox starts from the image its prepareImage() answers (the box image), with the run's folder mounted", async () => {
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  const { record, run } = await claim({ kind: "sandbox", provider: "modal" }, { mode: 2, keys: { MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms" }, spec });
+  const answer = await run();
+  assert.equal(answer.computer.kind, "sandbox");
+  assert.equal(record.created[0].image, "agentrun/computer:prepared");
+  assert.notEqual(record.created[0].mount, undefined, "the run's folder mounted");
+  await answer.release();
+});
+
+test("a Mode 2 E2B sandbox and desktop start from the template its prepareImage() answers (the box template), each with the run's folder mounted", async () => {
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  for (const [kind, groups] of [["sandbox", ["exec", "files", "processes"]], ["desktop", ["exec", "files", "processes", "screen", "input.pointer", "input.keys"]]]) {
+    const { record, run } = await claim({ kind, provider: "e2b" }, { mode: 2, keys: { E2B_API_KEY: "fake-test-key" }, groups, spec });
+    const answer = await run();
+    assert.equal(answer.computer.kind, kind);
+    assert.equal(record.created[0].image, "agentrun/computer:prepared", `${kind}: the prepared template`);
+    assert.notEqual(record.created[0].mount, undefined, `${kind}: the run's folder mounted`);
+    await answer.release();
+  }
+});
+
 test("a desktop opens one proxied live view under the claim with its hold, and on release closes the view 'released' and ends the hold", async () => {
   const view = views();
   const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view });
@@ -162,6 +197,51 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
   assert.equal(hold.take(), false, "the hold is closed");
   assert.equal(await asking, "the run's computer was let go before the person answered");
   assert.deepEqual(record.released, [["c1", "delete"]]);
+});
+
+test("a desktop's view is told whether its computer is gone by the provider's listing under the run's labels (read-only, nothing attached or started): not listed is gone; listed, running or stopped, or a listing that failed, is not", async () => {
+  // The launch's own listing (the run's older claims) answers none; then each answer is the test's, in order.
+  const answers = [];
+  const asked = [];
+  const list = async (labels) => (answers.length ? (asked.push(labels), answers.shift()) : { ok: true, value: [] });
+  const view = views();
+  const { run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view, list });
+  const answer = await run();
+  const [gone] = view.gones;
+  assert.equal(typeof gone, "function", "the view is given the question");
+  const info = (id, state) => ({ ref: { id, name: id }, labels: { "agentrun.run": "run-1", "agentrun.epoch": "3" }, deadline: undefined, state, network: "none" });
+  answers.push(
+    { ok: true, value: [info("c1", "running")] },
+    { ok: true, value: [info("c1", "stopped")] },
+    { ok: false, error: { code: "vendor", vendor: "e2b", message: "E2B answered 503" } },
+    // Deleted, or going: the listing leaves out a machine on its way out.
+    { ok: true, value: [] },
+    { ok: true, value: [info("c2", "running")] },
+  );
+  assert.deepEqual([await gone(), await gone(), await gone(), await gone(), await gone()], [false, false, false, true, true]);
+  assert.deepEqual(asked, Array(5).fill({ "agentrun.run": "run-1", "agentrun.epoch": "3" }), "listed under the run's own labels");
+  await answer.release();
+});
+
+test("a phone ended under the run, outside its release (the service listing it closing, so stopped), is gone: a phone is never stopped and kept; listed running, or a listing that failed, is not", async () => {
+  const answers = [];
+  const asked = [];
+  const list = async (labels) => (answers.length ? (asked.push(labels), answers.shift()) : { ok: true, value: [] });
+  const view = views();
+  const { run } = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: ["screen", "input.touch", "input.keys", "apps", "ui"], machine: "android", view, list });
+  const answer = await run();
+  const [gone] = view.gones;
+  assert.equal(typeof gone, "function", "the phone's view is given the question");
+  const info = (id, state) => ({ ref: { id, name: id }, labels: { "agentrun.run": "run-1", "agentrun.epoch": "3" }, deadline: undefined, state, network: "open" });
+  answers.push(
+    { ok: true, value: [info("c1", "running")] },
+    { ok: false, error: { code: "vendor", vendor: "phone-harness", message: "GET /sessions answered 503" } },
+    { ok: true, value: [info("c1", "stopped")] },
+    { ok: true, value: [] },
+  );
+  assert.deepEqual([await gone(), await gone(), await gone(), await gone()], [false, false, true, true]);
+  assert.deepEqual(asked, Array(4).fill({ "agentrun.run": "run-1", "agentrun.epoch": "3" }), "listed under the run's own labels");
+  await answer.release();
 });
 
 test("a phone's view is opened with its platform, as the phone says it: android, or ios", async () => {
@@ -246,6 +326,133 @@ test("the run's computer of an earlier claim is released before this claim's is 
   const answer = await run();
   assert.deepEqual(record.released, [["old", "delete"]], "epoch 2's released first");
   assert.equal(record.created.length, 1);
+  await answer.release();
+});
+
+// A later claim that starts a fresh computer for a run that had one under an earlier claim says so once, in the ready
+// words, and answers `replaced` (what the model is told and what its acts are checked against). The key is a fact the
+// claim knows for certain: it let go of an older claim's computer of the run (a lost runner, a crash), or the run's
+// journal holds the record an earlier claim wrote when it got the run a computer of its own (`made`, the
+// agentrun.computer.made entry; that claim deleted its computer at a server's stop, or at a park).
+const NEW_WORDS = (kind) => `It's a new ${kind}: the one before is gone, with what was on it.`;
+const OLDER = { ref: { id: "old", name: "old" }, labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" } };
+const DESKTOP = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+
+test("a resumed claim on a fresh computer, its earlier claim's let go, says it's a new one once, in the ready words", async () => {
+  const said = [];
+  const { run } = await claim({ kind: "sandbox", provider: "docker" }, { existing: [OLDER], onConnected: (one) => void said.push(one) });
+  const answer = await run();
+  assert.deepEqual(answer.replaced, { kind: "sandbox", folderKept: false });
+  assert.equal(said.length, 1);
+  assert.equal(computerReadyWords(said[0]), `The sandbox is ready: Linux (amd64), from Docker. ${NEW_WORDS("sandbox")}`);
+  await answer.release();
+  assert.equal(said.length, 1, "said once, never at the release");
+});
+
+test("a later claim of every kind with no older computer left (a server's stop deleted it), whose run's journal says it had one, says it's a new one", async () => {
+  const kinds = [
+    [{ kind: "sandbox", provider: "docker" }, {}, "sandbox", "Linux (amd64), from Docker"],
+    [{ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP }, "desktop", "Linux (amd64), from E2B"],
+    [{ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "fake-test-key" }, groups: ["screen", "input.touch", "input.keys", "apps", "ui"], machine: "android" }, "phone", "Android 15 (amd64), from Phone harness"],
+  ];
+  for (const [setting, options, kind, from] of kinds) {
+    for (const [had, expected] of [[true, { kind, folderKept: false }], [false, undefined]]) {
+      const said = [];
+      const asked = [];
+      const { run } = await claim(setting, { ...options, hadComputer: async () => (asked.push(1), had), onConnected: (one) => void said.push(one) });
+      const answer = await run();
+      assert.equal(asked.length, 1, `${kind}: the journal asked once`);
+      assert.deepEqual(answer.replaced, expected, kind);
+      assert.equal(answer.made, kind, `${kind}: the run's own computer, recorded by the claim's pass`);
+      assert.equal(computerReadyWords(said[0]), `The ${kind} is ready: ${from}.${had ? ` ${NEW_WORDS(kind)}` : ""}`);
+      await answer.release();
+    }
+  }
+});
+
+test("the run's journal is read before anything is rented: a read that fails fails the claim with nothing made", async () => {
+  for (const [setting, options] of [[{ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP }], [{ kind: "sandbox", provider: "docker" }, {}]]) {
+    const { record, run } = await claim(setting, { ...options, hadComputer: async () => { throw new Error("the journal read failed"); } });
+    await assert.rejects(run(), /the journal read failed/);
+    assert.deepEqual(record.created, [], `${setting.kind}: nothing rented`);
+  }
+});
+
+test("a first claim gets no such line and never asks the journal, nor does a later claim that let nothing go and whose run had no computer", async () => {
+  const said = [];
+  const asked = [];
+  const first = await claim({ kind: "sandbox", provider: "docker" }, { epoch: 1, hadComputer: async () => (asked.push(1), true), onConnected: (one) => void said.push(one) });
+  const made = await first.run();
+  assert.equal(made.replaced, undefined);
+  assert.deepEqual(asked, [], "a first claim has nothing before it to ask about");
+  assert.equal(made.made, "sandbox", "its computer recorded, for a later claim");
+  assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker.");
+  await made.release();
+  const later = await claim({ kind: "sandbox", provider: "docker" }, { onConnected: (one) => void said.push(one) });
+  const remade = await later.run();
+  assert.equal(remade.replaced, undefined);
+  assert.equal(computerReadyWords(said[1]), "The sandbox is ready: Linux (amd64), from Docker.");
+  await remade.release();
+});
+
+/** Two ends of one socket, delivering in order (a paired computer's driver on one, the hub on the other). */
+function socketPair() {
+  const ends = [{ text: [], closes: [] }, { text: [], closes: [] }];
+  let closed;
+  const side = (me, peer) => ({
+    send(text) { if (!closed) queueMicrotask(() => peer.text.forEach((listener) => listener(text))); },
+    close(code, reason) {
+      if (closed) return;
+      closed = { code, reason };
+      queueMicrotask(() => [...me.closes, ...peer.closes].forEach((listener) => listener(code, reason)));
+    },
+    onText(listener) { me.text.push(listener); },
+    onClose(listener) { me.closes.push(listener); },
+    get closed() { return closed; },
+  });
+  return [side(ends[0], ends[1]), side(ends[1], ends[0])];
+}
+
+test("a computer that isn't the run's own is neither recorded nor called a new one, and the journal is not asked for it: kind none, --faux's desktop, a paired computer", async () => {
+  const asked = [];
+  const hadComputer = async () => (asked.push(1), true);
+  const none = await (await claim({ kind: "none" }, { hadComputer })).run();
+  assert.equal(none.made, undefined, "kind none");
+
+  const faux = fauxComputers();
+  const fauxDeps = { mode: 1, kinds: faux.kinds, keyTable: faux.keyTable, launch: faux.launch, providers: {}, spec: () => ({ image: "faux", lifetimeMs: 60_000, network: "open" }), check: { readBackOf }, workspace: localWorkspace(scratch()), hadComputer };
+  const fauxDesk = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: "faux-desktop" } }, memoryStore(), fauxDeps);
+  assert.deepEqual([fauxDesk.made, fauxDesk.replaced], [undefined, undefined], "--faux's desktop");
+  await fauxDesk.release();
+
+  const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
+  const row = { id: "c-1", name: "Test Mac", hello: driver.hello(), driver: "0", labels: { owner: "test" }, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
+  const hub = new AttachHub();
+  const [served, computer] = socketPair();
+  serveUiSocket(driver, computer);
+  assert.equal((await hub.accept(pairedOf(row), served)).ok, true);
+  try {
+    const said = [];
+    const store = memoryStore();
+    const pairedDeps = { mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: {}, spec: () => ({ image: "attached", lifetimeMs: 60_000, network: "open" }), check: { readBackOf, epoch: 3 }, workspace: localWorkspace(scratch()), attached: { rows: async () => [row], hub }, hadComputer, onConnected: (one) => void said.push(one) };
+    const held = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: row.id } }, store, pairedDeps);
+    assert.deepEqual([held.made, held.replaced], [undefined, undefined], "a paired computer");
+    assert.deepEqual(said.map((one) => one.replaced), [undefined], "its ready line says no new one");
+    await held.release();
+  } finally {
+    driver.close();
+  }
+  assert.deepEqual(asked, [], "the journal never asked");
+});
+
+test("a Mode 2 computer that mounts the run's folder says the run folder is kept; Mode 1 never claims it", async () => {
+  const said = [];
+  const spec = () => ({ lifetimeMs: 60_000, network: "none" });
+  const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { mode: 2, keys: { E2B_API_KEY: "fake-test-key" }, groups: DESKTOP, spec, existing: [OLDER], onConnected: (one) => void said.push(one) });
+  const answer = await run();
+  assert.notEqual(record.created[0].mount, undefined, "the run's folder mounted");
+  assert.deepEqual(answer.replaced, { kind: "desktop", folderKept: true });
+  assert.equal(computerReadyWords(said[0]), `The desktop is ready: Linux (amd64), from E2B. ${NEW_WORDS("desktop")} The run folder is kept.`);
   await answer.release();
 });
 

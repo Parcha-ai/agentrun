@@ -70,7 +70,7 @@ test("a pack holds dist, box, the README, LICENSE and NOTICE, the egress proxy's
 	const paths = files.map((file) => file.path);
 	for (const path of paths) assert.match(path, /^(?:package\.json|README\.md|LICENSE|NOTICE|dist\/.+|box\/.+)$/, `${path} is outside dist, box, the README, LICENSE and NOTICE`);
 	for (const path of paths) assert.doesNotMatch(path, /\.(?:map|tsbuildinfo)$/, path);
-	for (const path of ["README.md", "LICENSE", "NOTICE", "dist/index.js", "dist/index.d.ts", "dist/mount.js", "dist/mount.d.ts", "box/agentrun-archil", "box/Dockerfile"]) assert.ok(paths.includes(path), `the pack holds ${path}`);
+	for (const path of ["README.md", "LICENSE", "NOTICE", "dist/index.js", "dist/index.d.ts", "dist/mount.js", "dist/mount.d.ts", "box/agentrun-archil", "box/Dockerfile", "box/install.sh"]) assert.ok(paths.includes(path), `the pack holds ${path}`);
 	// The Docker provider binds dist/docker and package.json into each egress proxy container, which runs these with Node
 	// alone: no other module of the package is there.
 	for (const file of EGRESS_CODE) assert.ok(paths.includes(`dist/docker/${file}`), `the pack holds the egress proxy's dist/docker/${file}`);

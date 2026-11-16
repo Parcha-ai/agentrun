@@ -16,7 +16,7 @@ import { MOUNT_KINDS, type MountKind, type MountSpec, readBackOf, WORKSPACE } fr
 import { MAX_OUTPUT_BYTES } from "../../protocol.js";
 import type { ComputerRef, ComputerSpec } from "../../provider.js";
 import type { Case, CaseContext, RunFolder } from "../types.js";
-import { assertIsolated } from "./isolation.js";
+import { assertIsolated, assertRootRunsClosed } from "./isolation.js";
 import { b64, CASE_LABEL, decode } from "./util.js";
 
 /** The claim epoch the run-folder cases make their computers under. */
@@ -205,7 +205,7 @@ const archilToken = mount(
 
 /**
  * "isolated, and durable through the root side", on one Archil computer: a tool sees loopback alone and reaches neither a
- * vendor's agent nor any address; and a tool's write in /workspace, by a program (exec.run) and by files.write, is read
+ * vendor's agent nor any address, and can write nothing root runs; and a tool's write in /workspace, by a program (exec.run) and by files.write, is read
  * through the disk's file API right after the call returns, with no checkin. So the per-call sync goes out from the
  * archil client and serve, which run as root outside the tools' namespace.
  */
@@ -216,8 +216,10 @@ const archilIsolatedDurable = mount(
 		const { ref } = await mounted(t, folder, EPOCH, "mount-archil-isolated-durable");
 		const connected = await t.connect(ref);
 		// isolation.vendor-agent's own check, on this Archil computer: lo alone, refused at the vendor's agent and outside,
-		// and no path unix socket a tool connects to but the computer's own (computerd's, the sync socket).
+		// and no unix socket a tool connects to but the computer's own (computerd's, the sync socket).
 		await assertIsolated(t, connected.client);
+		// isolation.root-runs' check too, where the Archil helper and client are there to check.
+		await assertRootRunsClosed(t, connected.client);
 		const nonce = randomBytes(6).toString("hex");
 		const ran = await t.exec(["sh", "-c", `printf '%s\\n' ${nonce} > exec-${nonce}.txt`], { cwd: WORKSPACE }, connected.client);
 		t.equal(ran.exitCode, 0, `a program's write at ${WORKSPACE}: its exit code (${ran.err.trim()})`);

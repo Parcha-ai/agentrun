@@ -4,6 +4,7 @@
 // next run of the same file sweeps them first. `raw` reads and writes a store's rows directly, on either database, with
 // the same `?` statements.
 import { createHash } from "node:crypto";
+import { connect, createServer } from "node:net";
 import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach } from "node:test";
@@ -160,15 +161,55 @@ if (onPostgres) {
   });
 }
 
-/** Drops `schema` and everything in it, ending first any test client of it still holding a transaction open. */
-export async function dropSchema(schema) {
+/** Drops `schema` and everything in it, ending first any test client of it still holding a transaction open. A server
+ *  still connected to the schema (one a test drops it under) keeps its own transactions going, in its own table order: the
+ *  drop takes each table's lock in the order Postgres drops them, so it can meet one of them in a cycle, and Postgres
+ *  ends the drop as the victim ("deadlock detected", 40P01). Nothing was dropped (it is one statement), so it is asked
+ *  again: the other side's transaction has ended by then. `tries` bounds it. */
+export async function dropSchema(schema, tries = 10) {
   const c = await client();
   try {
     await c.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1 AND pid <> pg_backend_pid()", [`agentrun-test:${schema}`]);
-    await c.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await c.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+        return;
+      } catch (error) {
+        if (error?.code !== "40P01" || attempt >= tries) throw error;
+      }
+    }
   } finally {
     await c.end();
   }
+}
+
+/** A loopback link to the test Postgres that holds every chunk `ms` each way before it passes it on: each round trip
+ *  costs at least 2 × `ms`, whatever the database's own speed (a database a few ms away, as a loaded host's is). Its URL,
+ *  and `close()`, which ends it and its connections: call it after the stores opened on the URL are closed. */
+export async function farLink(ms) {
+  const target = new URL(PG_URL);
+  const sockets = new Set();
+  const server = createServer((socket) => {
+    const upstream = connect(Number(target.port || 5432), target.hostname);
+    for (const [from, to] of [[socket, upstream], [upstream, socket]]) {
+      sockets.add(from);
+      from.setNoDelay(true);
+      from.on("error", () => undefined);
+      // Timers of one length fire in the order they were set: the chunks keep their order.
+      from.on("data", (chunk) => setTimeout(() => to.writable && to.write(chunk), ms));
+      from.on("close", () => setTimeout(() => to.destroy(), ms));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = new URL(PG_URL);
+  url.host = `127.0.0.1:${server.address().port}`;
+  return {
+    url: url.toString(),
+    close: () => new Promise((resolve) => {
+      for (const socket of sockets) socket.destroy();
+      server.close(resolve);
+    }),
+  };
 }
 
 /** A store's place as a test passes it around: SQLite's file path, or "pg:<schema>". */

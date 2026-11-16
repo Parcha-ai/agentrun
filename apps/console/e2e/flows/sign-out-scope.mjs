@@ -28,7 +28,7 @@ export default {
       await dialog.getByRole("button", { name: "Sign out everywhere" }).click();
       await page.getByRole("heading", { name: "Sign in" }).waitFor();
       // The other browser's next read finds its session ended.
-      await other.getByRole("button", { name: "Agents" }).first().click();
+      await other.getByRole("button", { name: "Connected agents", exact: true }).first().click();
       await other.getByText("You were signed out. Sign in to go on.").waitFor();
       check(!(await sessionOf(other)), "the other browser's session outlived Sign out everywhere");
     } finally {

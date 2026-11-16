@@ -61,6 +61,21 @@ describe("editBody", () => {
     expect(body.definition).not.toHaveProperty("thinking");
   });
 
+  it("converts a workflow to agentic using the requested instructions, model and thinking, not the saved kind", () => {
+    const result = editBody(w, { workflow: undefined, instructions: "Investigate the ticket.", model: "anthropic/example-model", thinking: "high" }, "Convert");
+    expect(result.definition).toMatchObject({ instructions: "Investigate the ticket.", model: "anthropic/example-model", thinking: "high", version: workflow.body.revisions + 1 });
+    expect(result.definition).not.toHaveProperty("workflow");
+    expect(result.unchanged).toBe(false);
+  });
+
+  it("converts agentic to workflow by trimming agentic prompt fields from the requested workflow, keeping common settings", () => {
+    const saved = { ...agent.body, definition: { ...agent.body.definition, thinking: "high", harness: "codex", computer: { kind: "desktop", provider: "e2b" } } } as never;
+    const result = editBody(saved, { workflow: WORKFLOW_STARTER }, "Convert");
+    expect(result.definition).toMatchObject({ workflow: WORKFLOW_STARTER, harness: "codex", computer: { kind: "desktop", provider: "e2b" }, tools: agent.body.definition.tools, version: agent.body.revisions + 1 });
+    for (const key of ["instructions", "model", "thinking"]) expect(result.definition).not.toHaveProperty(key);
+    expect(result.unchanged).toBe(false);
+  });
+
   it("sends no empty model: empty means the server's default", () => {
     expect(editBody(a, { model: "" }, "").definition).not.toHaveProperty("model");
   });
@@ -365,5 +380,16 @@ describe("sandbox-only tools", () => {
 describe("places in the definition", () => {
   it("toolOffers keeps a tool's reason, for a tool the server can't run with nothing missing", () => {
     expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }]);
+  });
+});
+
+describe("toolOffers, a host tool over the run's own tools (capabilities' `meta`)", () => {
+  it("is no grant: tools_search, tools_call and codemode are not offered to an agent, Settings → Tools sets them", () => {
+    const offered = toolOffers([
+      { name: "read", available: true, harnesses: ["pi"] },
+      { name: "tools_search", available: true, meta: true, harnesses: ["pi"] },
+      { name: "codemode", available: true, meta: true, harnesses: ["pi"] },
+    ]);
+    expect(offered.map((t) => t.name)).toEqual(["read"]);
   });
 });

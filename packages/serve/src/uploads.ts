@@ -19,6 +19,11 @@ export const MAX_UPLOAD_BYTES = 50 * 2 ** 20;
 export const MAX_FILES_PER_RUN = 20;
 /** Where a run finds its files: `work/inputs/<path>`, each file's `path` with its folders. */
 export const INPUTS_DIR = "inputs";
+/** The run's opening message as a file of its inputs/ (`inputs/message.md`): the start's text `content` byte for byte,
+ *  so a long one (a pasted diff) is read by its path and named to a subagent, never copied into a call. The name is the
+ *  message's alone: an upload at that path takes the next free one (`message-2.md`), with a message or without, and a
+ *  run with no text message has no such file. */
+export const MESSAGE_FILE = "message.md";
 /** The data directory's folder of uploads. */
 export const UPLOADS_DIR = "files";
 const RECORD = "file.json";
@@ -418,6 +423,9 @@ export class Uploads {
     const workspace = workspaceAt(work);
     await uploadTestHooks.beforeCopy?.(workspace);
     const names = takenNames(workspace);
+    // inputs/message.md is the run's message's (MESSAGE_FILE), never an upload's.
+    const top = await names(INPUTS_DIR);
+    if (!top.has(MESSAGE_FILE)) top.set(MESSAGE_FILE, "file");
     for (const file of files) {
       const segments = file.path.split("/");
       let dir = INPUTS_DIR;
@@ -478,6 +486,21 @@ export class Uploads {
 
 /** The words a run fails in when its files cannot be copied into its workspace at its claim. */
 export const notCopied = (why: string): string => `The run's files could not be copied into its workspace: ${why}`;
+
+/** At a run's claim: its opening message (`message`, the start's text content) saved as inputs/message.md
+ *  (MESSAGE_FILE) when it has one and the file is not there yet, then its uploaded files (`ids`) copied in as
+ *  copyRunFiles copies them. Neither, and nothing is written. */
+export async function placeRunInputs(data: string, runId: string, workspace: Workspace, ids: readonly string[], message: string): Promise<void> {
+  if (ids.length) await copyRunFiles(data, runId, workspace, ids);
+  if (!message) return;
+  const there = await workspace.list(INPUTS_DIR).then((entries) => entries.some((entry) => entry.name === MESSAGE_FILE), () => false);
+  if (there) return;
+  try {
+    await workspace.write(`${INPUTS_DIR}/${MESSAGE_FILE}`, Buffer.from(message, "utf8"));
+  } catch (error) {
+    throw new Error(`The run's message could not be saved in its workspace as ${INPUTS_DIR}/${MESSAGE_FILE}: ${(error as Error).message}`, { cause: error });
+  }
+}
 
 /** At a run's claim: its uploaded files (`ids`, the launch's file_ids) copied into its work/inputs/ once, from its hold
  *  (Uploads.hold), and the hold let go. A resumed claim finds inputs/ there and copies nothing, so the copy's suffixes

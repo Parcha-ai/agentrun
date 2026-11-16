@@ -15,13 +15,16 @@ import { MCP_SOURCES, type McpSource } from "./mcp-sources.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
-import type { PinScalar, PinValue } from "./tool-gate.js";
-import { formatToolName, isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, parseToolName } from "./tool-names.js";
+import { harnessOf } from "./harness-table.js";
+import { chooseModel, FAUX_ENV, harnessRuns, hostModel, MODEL_KEYS, providerModels, THINKING_LEVELS, type Tier } from "./model.js";
+import { harnessModel } from "./runnable.js";
+import { isPinKeys, type PinKeys, type PinScalar, type PinValue } from "./tool-gate.js";
+import { formatToolName, isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { MOVE_FIELD } from "./trigger-composio.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
@@ -37,30 +40,28 @@ export const MANIFEST = "agent.md";
 
 /** A package's model tier, mapped to the server's own (model.ts Tier: AGENT_MODEL_FAST, AGENT_MODEL, AGENT_MODEL_STRONG). */
 export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balanced: "default", strong: "strong" };
-export const PARAMETER_TYPES = ["string", "number", "integer", "boolean"] as const;
-/** What a string parameter's value is, for a form to ask for it as such: a schedule's cron line, or an IANA time zone
- *  (market-monitor's schedule). A form shows a schedule picker and a time-zone choice; the value is the same text. */
-export const PARAMETER_FORMATS = ["cron", "timezone"] as const;
-export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
+const SCALAR_TYPES = ["string", "number", "integer", "boolean"] as const;
+/** A case's grader types. The answer's output schema is no grader's: every graded run of a package with `output` is held
+ *  to it by the server's own verdict (template-eval.ts outputVerdict). */
+export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbox"] as const;
 /** The entries of a package's `computer` preference list: `shell`, a computer that gives the agent a shell here (bash);
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
 export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output"];
 /** What a package is for, shown on a marketplace page and the console's list: display only, never applied. */
 export const CATEGORIES = ["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] as const;
 const TAG = /^[a-z0-9-]{1,32}$/;
 const MAX_TAGS = 8;
 /** An MCP need's reason: one line, shown on the apply screen beside its tools. */
 const MAX_REASON = 280;
-/** The files an examples/<name>/ folder holds: the run's input, its answer, and the answer as a reader sees it. */
-const EXAMPLE_FILES = ["input.json", "output.json", "output.md"];
-/** A run input's types (`inputs`): a parameter's, and a list of one of them. */
-export const INPUT_TYPES = [...PARAMETER_TYPES, "array"] as const;
-/** What a string input's value is: a form asks for it as such, and the server checks the JSON Schema formats it knows
- *  (cron and timezone, as a parameter's, are for the form alone). */
-export const INPUT_FORMATS = ["uri", "email", "hostname", "date", "date-time", "uuid", ...PARAMETER_FORMATS] as const;
-/** An input's keys: a parameter's, and what a run form and a JSON Schema say beside them. */
+/** An input's or a parameter's types: a scalar, or a list of one. */
+export const INPUT_TYPES = [...SCALAR_TYPES, "array"] as const;
+/** What a string input's or parameter's value is: a form asks for it as such, and the server checks the JSON Schema
+ *  formats it knows. cron and timezone are for the form alone (a schedule picker, a zone choice); where a parameter fills
+ *  a schedule, the schedule's own check reads the value at apply. */
+export const INPUT_FORMATS = ["uri", "email", "hostname", "date", "date-time", "uuid", "cron", "timezone"] as const;
+/** An input's or a parameter's keys: what a form and a JSON Schema say of one field. */
 const INPUT_KEYS = ["type", "required", "pattern", "enum", "format", "default", "description", "title", "examples", "minimum", "maximum", "minLength", "maxLength", "items"];
 /** A list input's `items`: a scalar's keys alone. */
 const ITEM_KEYS = ["type", "pattern", "enum", "format", "minimum", "maximum", "minLength", "maxLength"];
@@ -81,6 +82,9 @@ const SAMPLES = { string: "x", number: 1, integer: 1, boolean: true } as const;
 const FORMAT_SAMPLES: Record<string, string> = { uri: "https://example.com", email: "someone@example.com", hostname: "example.com", date: "2026-01-01", "date-time": "2026-01-01T00:00:00Z", uuid: "00000000-0000-4000-8000-000000000000", cron: "0 9 * * *", timezone: "UTC" };
 /** A scalar's sample: its first choice, else one of its format, else one of its type. */
 const sampleOf = (spec: { type?: unknown; enum?: unknown; format?: unknown }): unknown => (Array.isArray(spec.enum) ? spec.enum[0] : FORMAT_SAMPLES[spec.format as string] ?? SAMPLES[spec.type as ScalarType]);
+/** A composio trigger's fields this server sets when it makes the trigger on Composio (composio-triggers.ts). */
+const COMPOSIO_SET = ["instance_id", "hook", MOVE_FIELD] as const;
+
 /** An agent id in the shape an apply gives a trigger's target, for that check. */
 const SAMPLE_AGENT = `agt_${"0".repeat(24)}`;
 // semver.org's own expression, SemVer 2.0.0.
@@ -91,28 +95,65 @@ const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
- *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, granted to the agent, and `allow`, those of them the
- *  package asks the owner to allow (a consent screen shows it, with `reason`). The package sets no permission itself: an
- *  apply's `grants`, the owner's answer, do. `pin`, by tool: the arguments each of its calls must carry (a value, or
+ *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent may be granted, and `allow`, those of
+ *  them the package asks the owner to grant (a consent screen shows it, with `reason`). Neither the package nor an apply
+ *  sets a permission: an apply's `grants`, the owner's ticks, grant the tools, and each call follows this server's tool settings
+ *  (a write asks unless the owner allowed it there, a read follows the server's Allow reads, approvals never lifts an ask). `pin`, by tool: the arguments each of its calls must carry (a value, or
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
  *  destination the owner set. */
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>> };
+/** One of a package's model choices (manifest `model.choices`): a model and the harness it runs on, which an owner picks
+ *  by `id` at install (apply's overrides.choice) in place of the package's tier and preference. `label` names it on the
+ *  install form; `warning`, shown there word for word beside it; `note`, a setup line; `secrets`, the keys only this
+ *  choice needs, refused at apply as the package's own are. Apply runs the agent on exactly this model, or refuses. */
+export type ModelChoice = { id: string; label: string; model: string; harness: string; warning?: string; note?: string; secrets: string[] };
+/** A package's model choices at most, a choice label's length, and a warning's or a note's. */
+const MAX_CHOICES = 3;
+const MAX_CHOICE_LABEL = 40;
+const MAX_CHOICE_TEXT = 300;
+const CHOICE_FIELDS = ["id", "label", "model", "harness", "warning", "note", "secrets"];
+const CHOICE_WORDS = "{id, label, model, harness, warning?, note?, secrets?}";
+
+/** A manifest's `model.choices`, checked: each problem said through `bad`, in words that say the rule. A choice's harness
+ *  is one of the package's `harness` list (`harness`), or any this server knows when the package names none. */
+function modelChoices(given: unknown, harness: readonly string[] | undefined, bad: (message: string) => void): ModelChoice[] {
+  if (!Array.isArray(given) || !given.length || given.length > MAX_CHOICES) return bad(`model.choices is a list of 1 to ${MAX_CHOICES} choices, each ${CHOICE_WORDS}: the models an owner may pick one of at install`), [];
+  const text = (value: unknown, max: number) => typeof value === "string" && value.trim() !== "" && value.length <= max;
+  const ids = new Set<unknown>();
+  const out: ModelChoice[] = [];
+  given.forEach((choice, i) => {
+    const at = `model.choices[${i}]`;
+    if (!isObject(choice)) return bad(`${at} is ${CHOICE_WORDS}`);
+    let ok = true;
+    const no = (message: string) => { ok = false; bad(message); };
+    for (const issue of unknownFields(choice, CHOICE_FIELDS)) no(`${at} has no field ${issue.field}: a choice is ${CHOICE_WORDS}`);
+    if (typeof choice.id !== "string" || !NAME.test(choice.id) || choice.id.length > 64) no(`${at}.id is lowercase letters, digits and dashes, at most 64: what an apply's overrides.choice names`);
+    else if (ids.has(choice.id)) no(`${at}.id ${choice.id} is an earlier choice's: each choice has its own id`);
+    ids.add(choice.id);
+    if (!text(choice.label, MAX_CHOICE_LABEL)) no(`${at}.label is text of 1 to ${MAX_CHOICE_LABEL} characters, shown beside the choice at install`);
+    if (typeof choice.model !== "string" || !MODEL_REF.test(choice.model)) no(`${at}.model is "provider/model-id"`);
+    const harnesses: readonly string[] = harness ?? HARNESSES;
+    if (typeof choice.harness !== "string" || !harnesses.includes(choice.harness)) no(`${at}.harness is one of ${harness ? `the package's harness list (${harness.join(", ")})` : HARNESSES.join(", ")}: the choice runs on it`);
+    if (choice.warning !== undefined && !text(choice.warning, MAX_CHOICE_TEXT)) no(`${at}.warning is text of 1 to ${MAX_CHOICE_TEXT} characters, shown word for word beside the choice at install`);
+    if (choice.note !== undefined && !text(choice.note, MAX_CHOICE_TEXT)) no(`${at}.note is text of 1 to ${MAX_CHOICE_TEXT} characters, a setup line shown beside the choice at install`);
+    const secrets = choice.secrets ?? [];
+    if (!Array.isArray(secrets) || !secrets.every((name) => typeof name === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(name))) no(`${at}.secrets is a list of key names, as the package's secrets`);
+    else {
+      if (new Set(secrets).size !== secrets.length) no(`${at}.secrets names one key twice`);
+      for (const name of secrets.filter((one) => !PACKAGE_SECRETS.includes(one))) no(`${at}.secrets names ${name}, a key this server cannot hold: a choice needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
+    }
+    if (ok) out.push({ id: choice.id as string, label: choice.label as string, model: choice.model as string, harness: choice.harness as string, ...(typeof choice.warning === "string" ? { warning: choice.warning } : {}), ...(typeof choice.note === "string" ? { note: choice.note } : {}), secrets: secrets as string[] });
+  });
+  return out;
+}
+
 /** A need mapped to the saved MCP server an apply gives it (`server`, its saved name). */
 export type McpServed = McpNeed & { server: string };
-type Scalar = string | number | boolean;
-type ScalarType = (typeof PARAMETER_TYPES)[number];
-/** A parameter: a scalar, or (`type: array`) a list of one, its `items` that scalar's JSON Schema (an input's vocabulary). */
-type Parameter = { type: (typeof INPUT_TYPES)[number]; items?: Json; required: boolean; description: string; pattern?: string; enum?: Scalar[]; format?: (typeof PARAMETER_FORMATS)[number]; default?: Scalar | Scalar[] };
+type ScalarType = (typeof SCALAR_TYPES)[number];
 /** Whether `value` is of the scalar type `type`. */
 const ofType = (type: ScalarType, value: unknown): boolean => (type === "integer" ? Number.isSafeInteger(value) : type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === type);
-/** Whether `text` matches `pattern`; a pattern that does not compile matches nothing (it is reported on its own). */
-const safeTest = (pattern: string, text: string): boolean => {
-  try {
-    return new RegExp(pattern, "u").test(text);
-  } catch {
-    return false;
-  }
-};
+/** A compiled field schema's (fieldsSchema's) properties, by name. */
+export const fieldsOf = (schema: Json): Record<string, Json> => schema.properties as Record<string, Json>;
 /** A schedule's fields a parameter may fill: its time, read by the server as the schedule, and checked at apply. */
 const SCHEDULE_FIELDS = ["cron", "timezone"];
 /** Where an imported package came from (POST /v2/templates/import): its source as given, ref and all (the ref an upgrade
@@ -136,14 +177,12 @@ export type Package = {
   /** What it is for and its tags (CATEGORIES, TAG): display only. */
   category?: (typeof CATEGORIES)[number];
   tags: string[];
-  /** examples/<name>/, each checked (its input against the input schema, its answer against the output schema): shown on
-   *  a marketplace page, never given to the agent. */
-  examples: string[];
   /** Harness ids in the order the package prefers them; absent, any (the server's default). */
   harness?: string[];
   /** The agent's tier and the model it prefers on it; `fast` and `strong`, the model it prefers for each of those tiers
-   *  when a subagent runs on it (runner/subagent.ts), compiled into the definition's model_tiers (packageTiers). */
-  model?: { tier: string; prefer?: string; fast?: string; strong?: string };
+   *  when a subagent runs on it (runner/subagent.ts), compiled into the definition's model_tiers (packageTiers);
+   *  `choices`, the named models an owner may pick one of at install instead (apply's overrides.choice). */
+  model?: { tier: string; prefer?: string; fast?: string; strong?: string; choices?: ModelChoice[] };
   effort?: string;
   /** Absent, the tools the server gives a new agent that names none. */
   tools?: string[];
@@ -159,7 +198,9 @@ export type Package = {
   /** What the server checks out in each run's folder before its first turn (the definition's `checkout`,
    *  runner/pr-checkout.ts): the pull request the run's GitHub event names. */
   checkout?: "pull_request";
-  parameters: Record<string, Parameter>;
+  /** The setup an apply takes (manifest `parameters`), compiled as `inputs` are (fieldsSchema): a closed object schema,
+   *  with no properties when the package names none. */
+  parameters: Json;
   /** Each run's typed input (manifest `inputs`), compiled: the agent's input_schema. Absent, a run takes {content}. */
   inputSchema?: Json;
   secrets: string[];
@@ -174,7 +215,6 @@ export type Package = {
   output?: { schema: string };
   /** The output schema's JSON, parsed (GET /v2/templates shows it). */
   outputSchema?: Json;
-  checks: string[];
   instructions: string;
   /** Skill files by path under the agent's skills folder (`review/SKILL.md`), each rule beside each SKILL.md. */
   skills: Record<string, string>;
@@ -188,11 +228,12 @@ export class PackageError extends Error {
   }
 }
 
-/** The source kinds whose accept rules a parameter may fill: a github trigger's, and a webhook trigger's (a provider that
- *  sends every trigger of a project to one URL, as Composio does, is filtered to the owner's own repository by them). */
-const FILTERED_KINDS = ["github", "webhook"];
+/** The source kinds whose accept rules a parameter may fill: a github trigger's, a webhook trigger's (a provider that
+ *  sends every trigger of a project to one URL is filtered to the owner's own repository by them), and a composio
+ *  trigger's. */
+const FILTERED_KINDS = ["github", "webhook", "composio"];
 
-/** A github or webhook source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+/** A github, webhook or composio source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
  *  condition's list, and `rest`, the source without them. */
 function whereIns(source: Json): { ins: unknown[]; rest: Json } {
   const ins: unknown[] = [];
@@ -218,6 +259,28 @@ export function githubTriggerWords(packageName: string, source: Json): string {
 }
 const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue", release: "release" };
 
+/** The refusals of a trigger's create that mean this server can't set it up yet, by the trigger's source kind: an apply
+ *  skips that trigger, never the apply, and says so under triggers.<i> (not_set_up_here). Any other refusal (a bad event
+ *  or config, a 422, Composio's own error on the create) undoes the apply. GitHub's: no GitHub App here. Composio's: no
+ *  public URL to send to, no connected account (or several) for the saved server's user, or the project's subscription
+ *  at another address, which only the owner moves, from the console. */
+export const TRIGGER_NOT_SET_UP_YET: Readonly<Record<string, readonly string[]>> = {
+  github: ["github_not_connected"],
+  composio: ["composio_no_public_url", "composio_not_connected", "composio_account_ambiguous", "composio_subscription_elsewhere"],
+};
+
+/** Whether refusal `code` of a trigger of source kind `kind` is one TRIGGER_NOT_SET_UP_YET skips. */
+export const notSetUpYet = (kind: unknown, code: string): boolean => typeof kind === "string" && Object.hasOwn(TRIGGER_NOT_SET_UP_YET, kind) && TRIGGER_NOT_SET_UP_YET[kind]!.includes(code);
+
+/** What an apply says of a composio trigger it skipped (notSetUpYet): which trigger, and the refusal's own words. */
+export function composioTriggerSkipped(packageName: string, trigger: Json, why: string): string {
+  const source = isObject(trigger.source) ? trigger.source : {};
+  return `The ${packageName} template's trigger ${String(trigger.name)} (Composio ${String(source.event)} on ${String(source.server)}) was not made: ${why}`;
+}
+
+/** Where the owner makes a composio trigger an apply skipped, once what refused it is fixed. */
+export const COMPOSIO_TRIGGER_FIX = "Once that's fixed, make it from Triggers → New app trigger for this agent, with the same event and config.";
+
 /** What an apply says of a github trigger it skipped because GitHub is not connected here: what to do, and what the
  *  trigger would then run on, in the package's own words ("Code review runs on each pull request to acme/widgets."). */
 export const githubTriggerUnconnected = (packageName: string, source: Json): string =>
@@ -240,23 +303,32 @@ const filled = (value: unknown, given: Record<string, unknown>): unknown =>
   : isObject(value) ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, filled(item, given)]))
   : value;
 
-/** A trigger's target.input filled: a value that is one placeholder alone takes the parameter's value with its type (a
- *  list stays a list, an integer an integer), and is dropped when the parameter was given none, so the input schema sees
- *  the field absent; other text is filled as text. */
+/** Text filled from `given`, the one rule a trigger's input and a pin share: text that is one placeholder alone takes the
+ *  parameter's value with its type (a list stays a list, an integer an integer), undefined when it was given none; other
+ *  text is filled as text. Each caller keeps its own rule for a value given none. */
+const typedFilled = (text: string, given: Record<string, unknown>): unknown => {
+  const whole = WHOLE.exec(text);
+  return whole ? givenOf(given, whole[1]!) : filled(text, given);
+};
+
+/** A trigger's target.input filled (typedFilled): a whole placeholder given no value is dropped, so the input schema
+ *  sees the field absent. */
 const inputFilled = (value: unknown, given: Record<string, unknown>): unknown => {
-  if (typeof value === "string") {
-    const whole = WHOLE.exec(value);
-    return whole ? givenOf(given, whole[1]!) : filled(value, given);
-  }
+  if (typeof value === "string") return typedFilled(value, given);
   if (Array.isArray(value)) return value.map((item) => inputFilled(item, given)).filter((item) => item !== undefined);
   if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inputFilled(item, given)]).filter(([, item]) => item !== undefined));
   return value;
 };
 
-/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), the rest as text. */
+/** A trigger filled from the apply's parameters: its target.input and a composio source's config typed (inputFilled),
+ *  its enabled the boolean its one placeholder names, the rest as text. */
 const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
   const out = filled(trigger, given) as Json;
   if (isObject(trigger.target) && trigger.target.input !== undefined) out.target = { ...(out.target as Json), input: inputFilled(trigger.target.input, given) };
+  if (typeof trigger.enabled === "string" && WHOLE.test(trigger.enabled)) out.enabled = typedFilled(trigger.enabled, given);
+  // A composio trigger's config is typed as a pin's values are: a value that is one placeholder alone takes the
+  // parameter's type (an integer config field gets an integer).
+  if (isObject(trigger.source) && trigger.source.kind === "composio" && isObject(trigger.source.config)) out.source = { ...(out.source as Json), config: inputFilled(trigger.source.config, given) };
   return out;
 };
 
@@ -265,7 +337,7 @@ const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
  *  other placeholders). Each problem is told through `bad`; a tool whose pin reads is kept. */
 function pinOf(pin: unknown, server: string, tools: readonly string[], at: string, bad: (message: string) => void): Record<string, Record<string, PinValue>> {
   const out: Record<string, Record<string, PinValue>> = {};
-  if (!isObject(pin)) return bad(`${at} is {<tool>: {<argument>: <value or \${parameters.<name>}, or a list of them>}}, by the entry's tools`), out;
+  if (!isObject(pin)) return bad(`${at} is {<tool>: {<argument>: <value or \${parameters.<name>}, a list of them, or {keys: [<key or \${parameters.<name>}>]}>}}, by the entry's tools`), out;
   for (const [tool, args] of Object.entries(pin)) {
     if (!tools.includes(tool)) {
       bad(`${at}.${tool}: ${tool} is not one of this entry's tools (${tools.join(", ")}): a pin fixes the arguments of a tool the package lists`);
@@ -278,25 +350,32 @@ function pinOf(pin: unknown, server: string, tools: readonly string[], at: strin
   return out;
 }
 
-/** A pin's scalar filled from the apply's `given` parameters: text that is one placeholder alone takes the parameter's
- *  value as given (its type kept: an integer pins an integer); other text is filled as text. `empty`: the parameters its
- *  placeholders name that were given no value (absent, or ""), so the pin cannot hold what the owner meant. */
+/** A pin's scalar filled from the apply's `given` parameters (typedFilled: an integer pins an integer), a list's items
+ *  as text. `empty`: the parameters its placeholders name that were given no value (absent, or ""), so the pin cannot
+ *  hold what the owner meant. */
 function scalarFilled(value: PinScalar, given: Record<string, unknown>): { value: PinScalar; empty: string[] } {
   if (typeof value !== "string") return { value, empty: [] };
-  const named = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]!);
-  const empty = named.filter((name) => unset(givenOf(given, name)));
-  const whole = WHOLE.exec(value);
-  if (whole && !empty.length) {
-    const one = given[whole[1]!];
-    if (typeof one === "string" || typeof one === "number" || typeof one === "boolean") return { value: one, empty };
-  }
-  return { value: filled(value, given) as string, empty };
+  const empty = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]!).filter((name) => unset(givenOf(given, name)));
+  const one = typedFilled(value, given);
+  return { value: !empty.length && (typeof one === "string" || typeof one === "number" || typeof one === "boolean") ? one : (filled(value, given) as string), empty };
 }
-/** A pin's value filled (scalarFilled), each of a one-of list's in its order. One placeholder alone of a list parameter
- *  pins the list as a one-of: any of the values the owner gave. */
+/** A keys pin's keys filled as text (scalarFilled), in their order; a key that is one placeholder alone of a list
+ *  parameter adds each of its items: any of the fields the owner named. */
+function keysFilled(keys: readonly string[], given: Record<string, unknown>): { value: PinKeys; empty: string[] } {
+  const each = keys.map((key) => {
+    const whole = WHOLE.exec(key);
+    const list = whole ? givenOf(given, whole[1]!) : undefined;
+    if (Array.isArray(list) && list.length) return { value: list.map(asText), empty: [] };
+    const one = scalarFilled(key, given);
+    return { value: [asText(one.value)], empty: one.empty };
+  });
+  return { value: { keys: each.flatMap((one) => one.value) }, empty: each.flatMap((one) => one.empty) };
+}
+/** A pin's value filled (scalarFilled), each of a one-of list's in its order, a keys pin's keys (keysFilled). One
+ *  placeholder alone of a list parameter pins the list as a one-of: any of the values the owner gave. */
 function pinFilled(value: PinValue, given: Record<string, unknown>): { value: PinValue; empty: string[] } {
-  const whole = typeof value === "string" ? WHOLE.exec(value) : null;
-  const list = whole ? givenOf(given, whole[1]!) : undefined;
+  if (isPinKeys(value)) return keysFilled(value.keys, given);
+  const list = typeof value === "string" ? typedFilled(value, given) : undefined;
   if (Array.isArray(list) && list.length) return { value: list as PinValue, empty: [] };
   if (!Array.isArray(value)) return scalarFilled(value as PinScalar, given);
   const each = value.map((one) => scalarFilled(one, given));
@@ -358,7 +437,7 @@ export function memoryFiles(name: string, where: string, files: ReadonlyMap<stri
 
 /** A scalar input's (or a list's item's) JSON Schema from its manifest keys, each checked by `bad` (said at `at`):
  *  pattern, format and lengths for a string, bounds for a number, an enum of distinct values of its type. */
-function scalarSchema(type: (typeof PARAMETER_TYPES)[number], f: Json, at: string, bad: (message: string) => void): Json {
+function scalarSchema(type: ScalarType, f: Json, at: string, bad: (message: string) => void): Json {
   const out: Json = { type };
   const text = type === "string";
   const numeric = type === "number" || type === "integer";
@@ -395,56 +474,57 @@ function scalarSchema(type: (typeof PARAMETER_TYPES)[number], f: Json, at: strin
 }
 
 /**
- * A package's `inputs`, each run's typed input, compiled to the agent's input_schema: a closed object schema of each
- * input by its machine name, required unless it says `required: false`. The vocabulary is a parameter's (type, required,
- * pattern, enum, format, default, description) plus title, examples, minimum/maximum, minLength/maxLength, and `type:
- * array` of a scalar (`items`); nothing else. A default and each example meet their own input. `content` is the run's
- * message: named, it is a string. Undefined when the package names none.
+ * A package's `inputs` (each run's typed input, the agent's input_schema) or `parameters` (the setup an apply takes),
+ * compiled: a closed object schema of each field by its machine name, required unless it says `required: false`. The
+ * vocabulary: type, required, title, description, examples, default, enum, pattern, format, minimum/maximum,
+ * minLength/maxLength, and `type: array` of a scalar (`items`); nothing else. A default (on a field that is not
+ * required) and each example meet their own field. An input named `content` is the run's message: a string. Undefined
+ * when the package names none.
  */
-function inputsSchema(value: unknown, bad: (message: string) => void): Json | undefined {
+function fieldsSchema(value: unknown, of: "inputs" | "parameters", bad: (message: string) => void): Json | undefined {
   if (value === undefined) return undefined;
-  if (!isObject(value) || !Object.keys(value).length) return bad("inputs is a mapping of each run input, by its name"), undefined;
+  if (!isObject(value) || !Object.keys(value).length) return bad(`${of} is a mapping of each field, by its name`), undefined;
   const properties: Record<string, Json> = {};
   const required: string[] = [];
   for (const [key, f] of Object.entries(value)) {
-    const at = `inputs.${key}`;
+    const at = `${of}.${key}`;
     if (!PARAMETER.test(key)) {
-      bad(`${at}: an input's name is lowercase letters, digits and _, starting with a letter, at most 64`);
+      bad(`${at}: a name is lowercase letters, digits and _, starting with a letter, at most 64`);
       continue;
     }
     if (!isObject(f) || !(INPUT_TYPES as readonly unknown[]).includes(f.type)) {
       bad(`${at} is {type: ${INPUT_TYPES.join(" | ")}, required?, title?, description?, examples?, default?, enum?, pattern?, format?, minimum?, maximum?, minLength?, maxLength?, items? (an array's scalar)}`);
       continue;
     }
-    for (const issue of unknownFields(f, INPUT_KEYS)) bad(`${at} has no field ${issue.field}: an input's fields are ${INPUT_KEYS.join(", ")}`);
-    if (key === "content" && f.type !== "string") bad(`${at} is a string: content is the run's message`);
+    for (const issue of unknownFields(f, INPUT_KEYS)) bad(`${at} has no field ${issue.field}: the fields are ${INPUT_KEYS.join(", ")}`);
+    if (of === "inputs" && key === "content" && f.type !== "string") bad(`${at} is a string: content is the run's message`);
     if (f.required !== undefined && typeof f.required !== "boolean") bad(`${at}.required is true or false`);
     for (const word of ["title", "description"]) if (f[word] !== undefined && !(typeof f[word] === "string" && (f[word] as string).trim())) bad(`${at}.${word} is text`);
     let schema: Json;
     if (f.type === "array") {
       const items = f.items;
       for (const word of ["pattern", "format", "enum", "minimum", "maximum", "minLength", "maxLength"]) if (f[word] !== undefined) bad(`${at}.${word} goes on its items: a list's keys are type, items and the words`);
-      if (!isObject(items) || !(PARAMETER_TYPES as readonly unknown[]).includes(items.type) || unknownFields(items, ITEM_KEYS).length) {
-        bad(`${at}.items is {type: ${PARAMETER_TYPES.join(" | ")}} and that scalar's keys: a list input is a list of a scalar`);
+      if (!isObject(items) || !(SCALAR_TYPES as readonly unknown[]).includes(items.type) || unknownFields(items, ITEM_KEYS).length) {
+        bad(`${at}.items is {type: ${SCALAR_TYPES.join(" | ")}} and that scalar's keys: a list is a list of a scalar`);
         continue;
       }
-      schema = { type: "array", items: scalarSchema(items.type as (typeof PARAMETER_TYPES)[number], items, `${at}.items`, bad) };
+      schema = { type: "array", items: scalarSchema(items.type as ScalarType, items, `${at}.items`, bad) };
     } else {
       if (f.items !== undefined) bad(`${at}.items is for type: array`);
-      schema = scalarSchema(f.type as (typeof PARAMETER_TYPES)[number], f, at, bad);
+      schema = scalarSchema(f.type as ScalarType, f, at, bad);
     }
     if (typeof f.title === "string") schema.title = f.title;
     if (typeof f.description === "string") schema.description = f.description;
-    // A default and each example meet the input they are of, as the server checks a run's value of it.
+    // A default and each example meet the field they are of, as the server checks a value given for it.
     const compiled = schemaCheck(schema);
     const meets = (one: unknown) => !("why" in compiled) && !compiled.check(one).length;
     if (f.examples !== undefined) {
       if (Array.isArray(f.examples) && f.examples.length && f.examples.every(meets)) schema.examples = f.examples;
-      else bad(`${at}.examples is a list of one or more values the input takes`);
+      else bad(`${at}.examples is a list of one or more values it takes`);
     }
     if (f.default !== undefined) {
-      if (f.required !== false) bad(`${at} is required and has a default: a default is for an input a run may leave out (required: false)`);
-      else if (!meets(f.default)) bad(`${at}.default is not a value the input takes`);
+      if (f.required !== false) bad(`${at} is required and has a default: a default is for one that may be left out (required: false)`);
+      else if (!meets(f.default)) bad(`${at}.default is not a value it takes`);
       else schema.default = f.default;
     }
     properties[key] = schema;
@@ -503,21 +583,19 @@ export function readPackage(from: string | PackageFiles): Package {
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
   if (kind(MANIFEST) !== "file") throw new PackageError(dir, [`${MANIFEST}: missing: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body)`]);
   for (const entry of src.entries("")) {
-    if (entry.isDirectory() && !["skills", "rules", "evals", "examples"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/, evals/ and examples/");
+    if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
   // The agent's files' bytes (evals/ is the package's own test data, never part of an agent) under POST /v2/agents'
   // limits, an eval's file under MAX_EVAL_FILE_BYTES alone; every file, evals/ too, counts toward MAX_PACKAGE_FILES. A
   // file under evals/ an agent is given all the same (the answer's schema, which becomes its output_schema and is in its
-  // instructions) keeps the agent's limits: checked once the manifest names it, before it is read. examples/ is never an
-  // agent's either: each of its files keeps a package file's own limit.
+  // instructions) keeps the agent's limits: checked once the manifest names it, before it is read.
   const listed = files("");
-  const all = listed.filter((path) => !path.startsWith("evals/") && !path.startsWith("examples/"));
+  const all = listed.filter((path) => !path.startsWith("evals/"));
   const sizes = all.map((path) => [path, src.size(path)] as const);
   const agentBytes = sizes.reduce((sum, [, size]) => sum + size, 0);
   const limits = [
     ...listed.filter((path) => path.startsWith("evals/") && src.size(path) > MAX_EVAL_FILE_BYTES).map((path) => `${path}: is over ${MAX_EVAL_FILE_BYTES} bytes, an eval file's limit`),
-    ...listed.filter((path) => path.startsWith("examples/") && src.size(path) > MAX_FILE_BYTES).map((path) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...sizes.filter(([, size]) => size > MAX_FILE_BYTES).map(([path]) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...(agentBytes > MAX_PACKAGE_BYTES ? [`the package's files are over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit`] : []),
     ...(listed.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
@@ -540,11 +618,14 @@ export function readPackage(from: string | PackageFiles): Package {
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);
   const ref = (value: unknown) => value === undefined || (typeof value === "string" && MODEL_REF.test(value));
-  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer", ...MODEL_TIER_NAMES]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && ref(f.model.prefer) && MODEL_TIER_NAMES.every((tier) => ref((f.model as Record<string, unknown>)[tier])))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id", ${MODEL_TIER_NAMES.map((tier) => `${tier}?: "provider/model-id"`).join(", ")}}`);
+  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer", ...MODEL_TIER_NAMES, "choices"]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && ref(f.model.prefer) && MODEL_TIER_NAMES.every((tier) => ref((f.model as Record<string, unknown>)[tier])))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id", ${MODEL_TIER_NAMES.map((tier) => `${tier}?: "provider/model-id"`).join(", ")}, choices?: [${CHOICE_WORDS}]}`);
+  // The named models an owner may pick one of at install; the package's own tier and preference stay the default.
+  const choices = isObject(f.model) && f.model.choices !== undefined ? modelChoices(f.model.choices, harness, (message) => bad(MANIFEST, message)) : undefined;
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
   if (tools?.some(isMcpName)) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
-  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
+  // A monid endpoint (monid:<provider>/<endpoint> or monid:<provider>/*) is granted as written and pinned at the apply's save.
+  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !(isMonidName(tool) && parseToolName(tool)) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, isMonidName(tool) ? `tools: ${MONID_NAME_WORDS(tool)}` : `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
   const mcp: McpNeed[] = [];
   // Each need by where its tools come from (source, toolkit), never by a saved server's name: the package names its tools
   // mcp:<toolkit>/<tool>, and apply maps the toolkit to the server the owner saved for it.
@@ -593,50 +674,10 @@ export function readPackage(from: string | PackageFiles): Package {
   }
   // The server's checkout before each run's first turn: the pull request the run's GitHub event names, at its head.
   if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
-  const parameters: Record<string, Parameter> = {};
-  for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
-    // A list of a scalar (a watch's companies), its items in an input's vocabulary: what apply takes, and a trigger's
-    // target.input fills whole.
-    if (isObject(p) && p.type === "array") {
-      const items = p.items;
-      if (!PARAMETER.test(key) || unknownFields(p, ["type", "required", "items", "description", "default"]).length || !(p.required === undefined || typeof p.required === "boolean") || !(typeof p.description === "string" && p.description.trim()) || !isObject(items) || !(PARAMETER_TYPES as readonly unknown[]).includes(items.type) || unknownFields(items, ITEM_KEYS).length) {
-        bad(MANIFEST, `parameters.${key} is {type: array, items: {type: ${PARAMETER_TYPES.join(" | ")}, and that scalar's ${ITEM_KEYS.slice(1).join(", ")}}, required?, default?, description}, its name lowercase`);
-        continue;
-      }
-      const schema = { type: "array", items: scalarSchema(items.type as ScalarType, items, `parameters.${key}.items`, (message) => bad(MANIFEST, message)) };
-      const check = schemaCheck(schema);
-      const takes = (value: unknown) => !("why" in check) && !check.check(value).length;
-      if (p.default !== undefined) {
-        if (!takes(p.default)) bad(MANIFEST, `parameters.${key}.default is a list its items take`);
-        if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
-      }
-      parameters[key] = { type: "array", items: schema.items, required: p.required === true, description: p.description as string, ...(p.default !== undefined && takes(p.default) ? { default: p.default as Scalar[] } : {}) };
-      continue;
-    }
-    const ok =PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "enum", "format", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
-    if (!ok) {
-      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), enum?, format? (strings), default?, description} (or type: array, items: a scalar), its name lowercase`);
-      continue;
-    }
-    try {
-      if (typeof p.pattern === "string") new RegExp(p.pattern, "u");
-    } catch {
-      bad(MANIFEST, `parameters.${key}.pattern is not a regular expression`);
-    }
-    // What a string's value is (a cron line, a time zone), for a form to ask for it as such.
-    const format = p.format === undefined ? undefined : p.type === "string" && (PARAMETER_FORMATS as readonly unknown[]).includes(p.format) ? (p.format as Parameter["format"]) : (bad(MANIFEST, `parameters.${key}.format is one of ${PARAMETER_FORMATS.join(", ")}, on a string parameter`), undefined);
-    // A closed set of values (a form shows a choice, never a pattern): one or more, each of the parameter's type, once.
-    const choices = p.enum === undefined ? undefined : Array.isArray(p.enum) && p.enum.length > 0 && p.enum.every((one) => ofType(p.type as ScalarType, one)) && new Set(p.enum).size === p.enum.length ? (p.enum as Scalar[]) : (bad(MANIFEST, `parameters.${key}.enum is a list of one or more distinct ${p.type as string} values`), undefined);
-    if (choices && typeof p.pattern === "string") bad(MANIFEST, `parameters.${key} has an enum and a pattern: the enum says the values, so leave the pattern out`);
-    if (choices && p.default !== undefined && !choices.includes(p.default as Scalar)) bad(MANIFEST, `parameters.${key}.default is not one of its enum`);
-    if (p.default !== undefined) {
-      if (!ofType(p.type as ScalarType, p.default)) bad(MANIFEST, `parameters.${key}.default is a ${p.type as string}, as the parameter is`);
-      else if (typeof p.pattern === "string" && typeof p.default === "string" && !safeTest(p.pattern, p.default)) bad(MANIFEST, `parameters.${key}.default does not match its pattern`);
-      if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
-    }
-    parameters[key] = { type: p.type as ScalarType, required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(choices ? { enum: choices } : {}), ...(format ? { format } : {}), ...(p.default !== undefined && ofType(p.type as ScalarType, p.default) ? { default: p.default as Scalar } : {}) };
-  }
-  const inputSchema = inputsSchema(f.inputs, (message) => bad(MANIFEST, message));
+  // The setup an apply takes, in the inputs' grammar, by the same compiler; none, a schema of no fields.
+  const parameters = fieldsSchema(f.parameters, "parameters", (message) => bad(MANIFEST, message)) ?? { type: "object", additionalProperties: false, properties: {} };
+  const fields = fieldsOf(parameters);
+  const inputSchema = fieldsSchema(f.inputs, "inputs", (message) => bad(MANIFEST, message));
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
   // Each run's limit: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given.
@@ -655,6 +696,19 @@ export function readPackage(from: string | PackageFiles): Package {
     if (triggerNames.has(name)) bad(MANIFEST, `triggers[${i}]: two triggers are named ${name}`);
     triggerNames.add(name);
     if (!isObject(target) || target.kind !== "start_run" || target.agent_id !== undefined) bad(MANIFEST, `triggers[${i}].target is a start_run with no agent_id: the agent is the one the package makes`);
+    // What makes a composio trigger on Composio is this server's to set, at the create: a package carrying it would run on
+    // an instance made elsewhere, or move the project's subscription here unasked.
+    const source = isObject(trigger) ? trigger.source : undefined;
+    const set = isObject(source) && source.kind === "composio" ? COMPOSIO_SET.filter((field) => source[field] !== undefined) : [];
+    if (set.length) bad(MANIFEST, `triggers[${i}].source holds ${set.join(" and ")}, which this server sets when it makes a composio trigger on Composio: a template can't carry ${set.length > 1 ? "them" : "it"}. Leave ${set.length > 1 ? "them" : "it"} out, or make the trigger from the console on this server (Triggers → New app trigger) once the agent is made.`);
+    // Its server is one of the package's own needs, by its toolkit, as mcp:<toolkit>/<tool> names its tools: no saved
+    // server's name, which is only the author's. The apply makes it on the saved server that need resolves to
+    // (onServers). A required need: one with no saved server refuses the apply, so the trigger is never made without one.
+    if (isObject(source) && source.kind === "composio") {
+      const need = mcp.find((one) => one.toolkit === source.server);
+      if (!need || need.source !== "composio") bad(MANIFEST, `triggers[${i}].source.server ${JSON.stringify(source.server)} names no MCP need of the package with source: composio: a template's composio trigger names that need's toolkit (server: github for the need {source: composio, toolkit: github}), and the apply makes it on the saved Composio server the need resolves to`);
+      else if (!need.required) bad(MANIFEST, `triggers[${i}].source.server ${need.toolkit}: the trigger's server is the mcp need of the toolkit ${need.toolkit}, so that need is required: true. An optional one may have no saved server here, and the trigger would have none`);
+    }
   });
   if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;
@@ -673,17 +727,17 @@ export function readPackage(from: string | PackageFiles): Package {
       }
     }
   }
-  const checks = list(f.checks, "checks", (check) => NAME.test(check));
   const instructions = manifest?.body.trim() ?? "";
   if (manifest && !instructions) bad(MANIFEST, "its body is empty: the body is the agent's instructions");
   for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
-    for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
+    for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(fields, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
-  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), and a
-  // github or webhook trigger's where `in` values (the repository it takes, say); a trigger's other settings are the
-  // package's own, checked here. A parameter that sets a time has a default, so the schedule the package ships is checked
-  // here too; one a github or webhook trigger's where takes is required or has a default, so the trigger never fills
-  // empty and takes no event.
+  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), a
+  // github, webhook or composio trigger's where `in` values (the repository it takes, say), and a composio trigger's
+  // config values (what Composio watches for it: the owner's repository, team or label); a trigger's other settings,
+  // a composio trigger's server and event among them, are the package's own, checked here. A parameter that sets a time
+  // has a default, so the schedule the package ships is checked here too; one a where or a composio config takes is
+  // required or has a default, so the trigger never fills empty.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
@@ -691,18 +745,35 @@ export function readPackage(from: string | PackageFiles): Package {
     const fixed = Object.entries(trigger).flatMap(([key, value]) =>
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
+      : key === "source" && filtered && isObject(value) && value.kind === "composio" ? Object.entries(whereIns(value).rest).filter(([k]) => k !== "config").map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
+      : key === "enabled" && typeof value === "string" ? []
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github, webhook or composio trigger's where in values, a composio trigger's config values, or an mcp pin's values`);
+    // enabled is true, false, or one boolean parameter with a default, filled at apply (triggerFilled): the trigger is on
+    // or off by the owner's answer, and by the package's default when the apply leaves it out.
+    if (typeof trigger.enabled === "string") {
+      const rule = `triggers[${i}].enabled is true, false, or one placeholder alone, "\${parameters.<name>}", naming a boolean parameter with a default`;
+      const whole = WHOLE.exec(trigger.enabled);
+      const spec = whole && Object.hasOwn(fields, whole[1]!) ? fields[whole[1]!] : undefined;
+      if (!whole) bad(MANIFEST, rule);
+      else if (spec && spec.type !== "boolean") bad(MANIFEST, `${rule}: parameters.${whole[1]} is a ${spec.type as string}`);
+      else if (spec && spec.default === undefined) bad(MANIFEST, `${rule}: parameters.${whole[1]} has no default, and the trigger is on or off even when the apply leaves it out`);
+    }
     if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
-        if (Object.hasOwn(parameters, used) && !parameters[used]!.required && parameters[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
+        if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
+      }
+    }
+    if (isObject(trigger.source) && trigger.source.kind === "composio") {
+      for (const used of new Set(strings(trigger.source.config).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
+        if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.config, so it is required or has a default: a composio trigger filled empty watches nothing of the owner's (Composio refuses a required config value left empty)`);
       }
     }
     if (!timed) return;
     for (const field of SCHEDULE_FIELDS) {
       for (const [, used] of strings((trigger.source as Json)[field]).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) {
-        if (Object.hasOwn(parameters, used!) && parameters[used!]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.${field}, so it needs a default: the schedule the package ships is checked with it`);
+        if (Object.hasOwn(fields, used!) && fields[used!]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.${field}, so it needs a default: the schedule the package ships is checked with it`);
       }
     }
   });
@@ -753,48 +824,18 @@ export function readPackage(from: string | PackageFiles): Package {
     evals.push(entry.name);
     const own = files(at).map((path) => path.slice(at.length + 1));
     for (const path of own.filter((p) => !(p === "prompt.md" || p === "case.yaml" || /^graders\/[^/]+\.md$/.test(p) || p.startsWith("fixtures/")))) bad(`${at}/${path}`, "a case holds prompt.md, graders/*.md, case.yaml and fixtures/ only");
+    const caseDoc = own.includes("case.yaml") ? parseDocument(text(`${at}/case.yaml`), { uniqueKeys: true }) : undefined;
+    if (caseDoc?.errors.length) bad(`${at}/case.yaml`, "is not YAML");
+    // An email case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has no body.
+    const emailCase = !!caseDoc && !caseDoc.errors.length && isObject(caseDoc.toJS()) && (caseDoc.toJS() as Json).email !== undefined;
     if (!own.includes("prompt.md")) bad(at, "has no prompt.md");
-    else if (!front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
-    if (own.includes("case.yaml") && parseDocument(text(`${at}/case.yaml`), { uniqueKeys: true }).errors.length) bad(`${at}/case.yaml`, "is not YAML");
+    else if (!emailCase && !front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
     const graders = own.filter((p) => p.startsWith("graders/"));
     if (!graders.length) bad(at, "has no graders/*.md");
     for (const path of graders) {
       const grader = front(`${at}/${path}`);
       if (!grader) continue;
       if (!(GRADER_TYPES as readonly unknown[]).includes(grader.data.type)) bad(`${at}/${path}`, `type is one of ${GRADER_TYPES.join(", ")}`);
-      else if (grader.data.type === "schema" && !inside(grader.data.schema)) bad(`${at}/${path}`, "a schema grader names its schema: a JSON Schema file in the package");
-    }
-  }
-
-  // examples/<name>/: a run's input (input.json, checked against the input schema in force), its answer (output.json,
-  // checked against the output schema when the package has one) and, optionally, that answer as a reader sees it
-  // (output.md). Shown on a marketplace page; never given to the agent, never applied.
-  const examples: string[] = [];
-  const answerCheck = isObject(outputSchema) ? schemaCheck(outputSchema) : undefined;
-  for (const entry of kind("examples") === "dir" ? src.entries("examples") : []) {
-    const at = `examples/${entry.name}`;
-    if (!entry.isDirectory() || !NAME.test(entry.name)) {
-      bad(at, "examples/ holds only example folders, each named in lowercase letters, digits and dashes");
-      continue;
-    }
-    examples.push(entry.name);
-    const own = files(at).map((path) => path.slice(at.length + 1));
-    for (const path of own.filter((p) => !EXAMPLE_FILES.includes(p))) bad(`${at}/${path}`, `an example holds ${EXAMPLE_FILES.slice(0, -1).join(", ")} and ${EXAMPLE_FILES.at(-1)} only`);
-    const json = (file: string): { value: unknown } | undefined => {
-      if (!own.includes(file)) return bad(at, `has no ${file}`), undefined;
-      try {
-        return { value: JSON.parse(text(`${at}/${file}`)) };
-      } catch {
-        return bad(`${at}/${file}`, "is not JSON"), undefined;
-      }
-    };
-    const input = json("input.json");
-    if (input && !isObject(input.value)) bad(`${at}/input.json`, "is not a JSON object: it is a run's input");
-    else if (input) for (const issue of inputIssues(input.value as Json, inputSchemaOf(inputSchema))) bad(`${at}/input.json`, `${issue.message}, as a run's input is`);
-    const output = json("output.json");
-    if (output && answerCheck && "check" in answerCheck) {
-      const wrong = answerCheck.check(output.value);
-      if (wrong.length) bad(`${at}/output.json`, `does not match the output schema: ${wrong.slice(0, 3).join("; ")}`);
     }
   }
 
@@ -802,16 +843,16 @@ export function readPackage(from: string | PackageFiles): Package {
   const p: Package = {
     id: name, origin: null, name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
-    ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags, examples,
-    ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as NonNullable<Package["model"]> } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
+    ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
+    ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
-    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
+    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
   // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
   // trigger's times are read as of the epoch, so its form is checked here and a date that has passed is the apply's
   // refusal, never a server's start.
-  const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? (spec.type === "array" ? [sampleOf(spec.items!)] : sampleOf(spec))]));
+  const samples = Object.fromEntries(Object.entries(fields).map(([key, spec]) => [key, spec.default ?? (spec.type === "array" ? [sampleOf(spec.items as Json)] : sampleOf(spec))]));
   const declared = Object.fromEntries(MODEL_TIER_NAMES.flatMap((tier) => (p.model?.[tier] ? [[tier, p.model[tier]!]] : [])));
   // Every MCP tool ticked, each served under its toolkit's name: the widest agent an apply can make, so each tool the
   // package lists is checked as a grant.
@@ -826,9 +867,14 @@ export function readPackage(from: string | PackageFiles): Package {
     const target = at ? (p.triggers[Number(at[1])]?.target as Json | undefined) : undefined;
     const value = at && isObject(target) && isObject(target.input) ? target.input[at[2]!] : undefined;
     const whole = typeof value === "string" ? WHOLE.exec(value) : null;
-    return !!whole && Object.hasOwn(parameters, whole[1]!) && parameters[whole[1]!]!.default === undefined;
+    return !!whole && Object.hasOwn(fields, whole[1]!) && fields[whole[1]!]!.default === undefined;
   };
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  // A trigger's enabled given as text is said above, by its own rule, not again as POST /v2/triggers words it.
+  const saidEnabled = (field: string): boolean => {
+    const at = /^triggers\.(\d+)\.enabled$/.exec(field);
+    return !!at && typeof p.triggers[Number(at[1])]?.enabled === "string";
+  };
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (!saidEnabled(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }
@@ -858,12 +904,19 @@ export function packageView(p: Package) {
   return {
     id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher ?? null,
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
-    category: p.category ?? null, tags: p.tags, examples: p.examples,
+    category: p.category ?? null, tags: p.tags,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
+    harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
+}
+
+/** A package's model as GET /v2/templates lists it: each choice whole, a warning or note it has none of null. */
+function modelView(model: Package["model"]) {
+  if (!model) return null;
+  const { choices, ...rest } = model;
+  return { ...rest, ...(choices ? { choices: choices.map(({ id, label, model: ref, harness, warning, note, secrets }) => ({ id, label, model: ref, harness, warning: warning ?? null, note: note ?? null, secrets })) } : {}) };
 }
 
 /** A package as an import answers it: its listing, and every text its agent would be given, the instructions and each
@@ -897,10 +950,11 @@ export class TemplateRegistry {
   }
 }
 
-/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model}}`), checked against the package:
- *  the parameters as given, the MCP tools the owner allows (each one the package lists, by its gate name), and the model
- *  asked for in place of the package's. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, Scalar | Scalar[]>; grants: string[]; servers: Record<string, string>; model?: string; approvals?: Approvals } {
+/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model?, choice?, approvals?}}`), checked
+ *  against the package: the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the
+ *  package lists, by its gate name), and the model asked for in place of the package's: one of its own (`model`), or one
+ *  of the package's model choices by id (`choice`), never both. 422 naming every field that is wrong. */
+export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals } {
   const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides"]);
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
@@ -919,49 +973,49 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
   }
   const given = body.parameters ?? {};
   if (!isObject(given)) issues.push({ field: "parameters", reason: "wrong_type", message: "parameters is an object of the package's parameters, by name" });
-  const parameters: Record<string, Scalar | Scalar[]> = {};
-  for (const [key, value] of Object.entries(isObject(given) ? given : {})) {
-    const spec = Object.hasOwn(p.parameters, key) ? p.parameters[key] : undefined;
-    const typed = spec && (spec.type === "array" ? Array.isArray(value) : ofType(spec.type, value));
-    // A list's items, each checked as an input's are (the full compiler): the first problem, said at the parameter.
-    const itemIssue = spec?.type === "array" && typed ? inputIssues({ [key]: value }, { type: "object", properties: { [key]: { type: "array", items: spec.items } } }, "parameters")[0] : undefined;
-    if (!spec) issues.push({ field: `parameters.${key}`, reason: "not_allowed", message: `The package ${p.name} takes no parameter ${key}.` });
-    else if (!typed) issues.push({ field: `parameters.${key}`, reason: "wrong_type", message: `parameters.${key} is ${spec.type === "array" ? `a list of ${(spec.items as Json).type as string}` : `a ${spec.type}`}: ${spec.description}` });
-    else if (itemIssue) issues.push({ ...itemIssue, field: `parameters.${key}`, message: `${itemIssue.message}: ${spec.description}` });
-    else if (spec.type === "array") parameters[key] = value as Scalar[];
-    else if (spec.enum && !spec.enum.includes(value as string | number | boolean)) issues.push({ field: `parameters.${key}`, reason: "not_an_option", message: `parameters.${key} is one of ${spec.enum.join(", ")}: ${spec.description}` });
-    else if (spec.pattern && !new RegExp(spec.pattern, "u").test(value as string)) issues.push({ field: `parameters.${key}`, reason: "bad_format", message: `parameters.${key} is ${spec.description}` });
-    else parameters[key] = value as string | number | boolean;
-  }
-  for (const [key, spec] of Object.entries(p.parameters)) {
-    const absent = isObject(given) && (!Object.hasOwn(given, key) || given[key] === undefined || given[key] === "");
-    if (spec.required && absent) issues.push({ field: `parameters.${key}`, reason: "missing", message: `parameters.${key} is required: ${spec.description}` });
-    else if (absent && spec.default !== undefined) parameters[key] = spec.default;
-  }
+  // A parameter left blank (left out, or "") takes its default; then they are checked as a run's input is (the same
+  // compiler, the same words), so a blank required one is missing.
+  // A declared parameter given blank is left out (its default filled); an undeclared one stays, for the check to refuse.
+  const fields = fieldsOf(p.parameters);
+  const blank = (key: string) => !isObject(given) || givenOf(given, key) === undefined || given[key] === "";
+  const parameters: Json = Object.fromEntries([
+    ...Object.entries(isObject(given) ? given : {}).filter(([key]) => !blank(key) || !Object.hasOwn(fields, key)),
+    ...Object.entries(fields).filter(([key, spec]) => blank(key) && spec.default !== undefined).map(([key, spec]) => [key, spec.default]),
+  ]);
+  if (isObject(given)) issues.push(...inputIssues(parameters, p.parameters, "parameters"));
   const overrides = body.overrides ?? {};
-  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?, approvals?}" });
-  else {
-    issues.push(...unknownFields(overrides, ["model", "approvals"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model and the approvals alone." })));
+  if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?, choice?, approvals?}" });
+  const choices = p.model?.choices ?? [];
+  const choice = isObject(overrides) ? choices.find((one) => one.id === overrides.choice) : undefined;
+  if (isObject(overrides)) {
+    issues.push(...unknownFields(overrides, ["model", "choice", "approvals"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model (one of its own, or one of the package's choices) and the approvals alone." })));
     if (overrides.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(overrides.approvals)) issues.push({ field: "overrides.approvals", reason: "not_an_option", message: `overrides.approvals is one of ${APPROVALS.join(", ")}: never runs the agent unattended, while a deny still refuses` });
     if (overrides.model !== undefined && !(typeof overrides.model === "string" && MODEL_REF.test(overrides.model))) issues.push({ field: "overrides.model", reason: "bad_format", message: 'overrides.model is "provider/model-id"' });
+    // A choice is the package's model and harness together; a model of the owner's own says something else: never both.
+    if (overrides.choice !== undefined && overrides.model !== undefined) issues.push({ field: "overrides.choice", reason: "not_allowed", message: "overrides.choice and overrides.model say different things: send one, a choice of the package's by its id or a model of your own." });
+    else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, servers, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
- *  with a key for its provider, but never through a gateway (AGENT_MODEL_BASE_URL), which never said it serves it: then
- *  a warning says so. Else the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL or
- *  AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
+ *  with a key for its provider, else `refused` (preferUnrunnable): apply makes nothing, never the tier's model in its
+ *  place. Through a gateway (AGENT_MODEL_BASE_URL), which never said it serves `prefer`, it is not used and a warning says
+ *  so. With no `prefer`, or one skipped there, the server's model for its tier (hostModel: AGENT_MODEL_FAST, AGENT_MODEL
+ *  or AGENT_MODEL_STRONG, else the default of a model key it holds), unless that is a gateway's own id with no provider,
  *  which no definition can name: then no model, and the agent runs on the server's default (a warning when the tier's
  *  model is not that default). No model either when the package names none or the server has none. */
-export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string }> {
+export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model"], harness: string): Promise<{ model?: string; warning?: string; refused?: { why: string; fix: string } }> {
   if (!model) return {};
   // Through a gateway, only the gateway knows what it serves: a preferred model it never named is not picked, and the
   // owner is told (overrides.model picks one it serves).
   const gateway = Boolean(env.AGENT_MODEL_BASE_URL);
   const skipped = model.prefer && gateway ? `model.prefer ${model.prefer} is not used: this server reaches its models through a gateway, which has not said it serves that model.` : undefined;
-  if (!skipped && model.prefer && harnessRuns(env, model.prefer, harness) && !("why" in (await chooseModel(env, model.prefer, "default", harness)))) return { model: model.prefer };
+  if (model.prefer && !gateway) {
+    const refused = await preferUnrunnable(env, model.prefer, harness, Boolean(model.choices?.length));
+    return refused ? { refused } : { model: model.prefer };
+  }
   const tier = MODEL_TIERS[model.tier]!;
   const id = hostModel(env, tier, harness);
   // A gateway's own id (no provider) is no "provider/model-id" a definition can name: the agent is left to the server's
@@ -973,6 +1027,48 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
     : undefined;
   const warning = [skipped, runsOn, skipped ? "overrides.model picks another the gateway serves." : undefined].filter(Boolean).join(" ");
   return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
+}
+
+/** `model` on `harness` as a save and a run take it (runnable.ts harnessModel, on the harness's own route), and where it
+ *  runs, refused all the same when no catalog here lists the entry its runs are priced by (the harness's priceModel):
+ *  claude-agent takes any Anthropic id on its own, and a package's model no catalog knows makes an agent whose runs fail
+ *  at the provider. A faux model server runs any. */
+async function modelHere(env: NodeJS.ProcessEnv, harness: string, model: string): ReturnType<typeof harnessModel> {
+  const chosen = await harnessModel(env, harness, model, true);
+  if (!chosen || !("model" in chosen) || env[FAUX_ENV]) return chosen;
+  const priced = harnessOf(env, harness)?.priceModel(env, chosen.model) ?? chosen.model;
+  if ((await providerModels(env)).getModel(priced.provider, priced.modelId)) return chosen;
+  return { why: `${model} is not a model ${harness} runs here: no model catalog here lists it`, host: false, needs: "model" };
+}
+
+/** Why this server can't run a package's `prefer` on `harness`, and what the owner does about it, as `{why, fix}` in
+ *  words; undefined when it can. Asked as a save and a run ask it (runnable.ts harnessModel), on the harness's own
+ *  route: codex reaches an OpenAI model through OpenRouter's key alone. A missing key names its provider and Settings → Model keys; a model no catalog here
+ *  lists, or one the harness does not run, only another model: overrides.model, or a model choice where the package
+ *  has them (`choices`). */
+async function preferUnrunnable(env: NodeJS.ProcessEnv, prefer: string, harness: string, choices: boolean): Promise<{ why: string; fix: string } | undefined> {
+  const other = `apply with overrides.model${choices ? " or one of the package's model choices (overrides.choice)" : ""}.`;
+  const another = `${other[0]!.toUpperCase()}${other.slice(1)}`;
+  if (!harnessRuns(env, prefer, harness)) return { why: `${harness} does not run it`, fix: another };
+  const chosen = await modelHere(env, harness, prefer);
+  if (chosen && "model" in chosen) return undefined;
+  if (chosen && "why" in chosen && chosen.needs === "model") return { why: "no model catalog here lists it", fix: another };
+  const row = MODEL_KEYS.find((one) => one.id === prefer.slice(0, prefer.indexOf("/")));
+  if (chosen && "why" in chosen && chosen.needs === "key" && row && !env[row.field]) return { why: `no ${row.label} key is saved here`, fix: `Save ${/^[AEIOU]/.test(row.label) ? "an" : "a"} ${row.label} key in Settings → Model keys, or ${other}` };
+  return { why: (chosen === undefined ? `${harness} does not run here` : "refused" in chosen ? chosen.refused : chosen.why).replace(/\.$/, ""), fix: another };
+}
+
+/** Why this server can't run a model choice's model on its harness, in words; undefined when it can. As with `prefer`
+ *  (packageModel), a choice is never swapped for the tier's model: the owner who picked it gets it, or apply refuses. The
+ *  harness is the server's offer of it (`offer`, capabilities' harnesses): one not available here runs nothing. The model
+ *  is asked of the harness's own route, as a save and a run ask it (runnable.ts harnessModel). A gateway
+ *  (AGENT_MODEL_BASE_URL) never said it serves the model, so a choice is refused there, as `prefer` is skipped. */
+export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoice, offer: { available: boolean; reason?: string } | undefined): Promise<string | undefined> {
+  if (!offer?.available) return `${choice.harness} is not available here${offer?.reason ? `: ${offer.reason.replace(/\.$/, "")}` : ""}`;
+  if (env.AGENT_MODEL_BASE_URL) return "this server reaches its models through a gateway, which has not said it serves that model; overrides.model picks one it serves";
+  if (!harnessRuns(env, choice.model, choice.harness)) return `${choice.harness} does not run that model here`;
+  const chosen = await modelHere(env, choice.harness, choice.model);
+  return chosen === undefined ? `${choice.harness} does not run here` : "refused" in chosen ? chosen.refused : "why" in chosen ? chosen.why : undefined;
 }
 
 /** A computer setting as a definition names it (`definition.computer`). */
@@ -1038,26 +1134,27 @@ export async function packageTiers(env: NodeJS.ProcessEnv, model: Package["model
 
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
  *  every `${parameters.x}` filled. `grants`, the owner's answer at apply (the tools ticked, by the saved servers' names):
- *  of the package's tools on `mcp`, its needs each served by a saved server, those alone are granted, beside the package's tools (or, when it names
- *  none, `defaultTools`, those this server gives a new agent), each set to allow but those `held` (a deny the owner set on
- *  this server holds them: granted, never allowed). A tool left unticked is not the agent's at all, so no harness offers
- *  it and approvals never, which lifts an ask of a tool the agent has, has nothing to lift: the owner grants it later in
- *  the agent's tools. A tool the package pins gets its pin, filled, in the agent's tool settings, whatever its permission
- *  and ticked or not (it holds once the tool is granted later); one whose pin fills empty (its parameter not given) is set
- *  to deny instead, and named in `unpinned` (by gate name, with the parameters not given): a send with no destination set
- *  never runs. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpServed[]; defaultTools: readonly string[]; grants: readonly string[]; held?: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
+ *  of the package's tools on `mcp`, its needs each served by a saved server, those alone are granted, beside the package's
+ *  tools (or, when it names none, `defaultTools`, those this server gives a new agent). A grant writes no permission: each
+ *  call follows this server's tool settings, so under approvals ask a write asks the owner unless the owner allowed it
+ *  there, a read runs where the owner turned on Allow reads for its server and asks otherwise, and a deny the owner set on this server still holds; approvals
+ *  never lifts those asks. A tool left unticked is not the agent's at all, so no harness offers it and approvals never,
+ *  which lifts an ask of a tool the agent has, has nothing to lift: the owner grants it later in the agent's tools. A
+ *  tool the package pins gets its pin, filled, in the agent's tool settings, ticked or not (it holds once the tool is
+ *  granted later); one whose pin fills empty (its parameter not given) is set to deny instead, and named in `unpinned`
+ *  (by gate name, with the parameters not given): a send with no destination set never runs. */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpServed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   // The ticks, in the package's order: never a tool of a server not saved here, nor one the owner did not tick.
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool))).filter((tool) => chosen.grants.includes(tool));
-  const allowed = granted.filter((tool) => !chosen.held?.includes(tool));
   // The computer its list picked (pickComputer): its tools less the shell tools that computer does not run; a package
   // that names none is given that computer's shell tools, as a new agent in a box is given the box's.
   const pick = chosen.computer;
   const own = pick ? (p.tools ?? pick.defaults).filter((tool) => !pick.dropped.includes(tool)) : p.tools;
   const named = own && (p.tools || own.length) ? own : undefined;
   const tools = granted.length ? [...(named ?? (pick ? [] : chosen.defaultTools)), ...granted] : named;
-  const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
+  // No permission for a tick: a grant is no allow (this server's tool settings decide). Only a pin, or a pin's empty fill's deny.
+  const settings: Record<string, { permission?: "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy }> = {};
   // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants. With
   // a picked computer, only where the agent's tools hold bash: none for a bash the computer dropped, or never gave.
   if (p.toolPolicy && (!pick || tools?.includes("bash"))) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
@@ -1135,7 +1232,7 @@ const MCP_NAME_IN_TEXT = new RegExp(`(?<![A-Za-z0-9_.:/-])mcp:${SERVER_PART}/(?:
  *  way. Any other name, or one outside the grammar, as it is. */
 export function onServerName(name: string, servers: Readonly<Record<string, string>>): string {
   const parsed = parseToolName(name);
-  if (!parsed || parsed.kind === "plain" || !Object.hasOwn(servers, parsed.server)) return name;
+  if (!parsed || (parsed.kind !== "mcp" && parsed.kind !== "mcp-server") || !Object.hasOwn(servers, parsed.server)) return name;
   return formatToolName({ ...parsed, server: servers[parsed.server]! });
 }
 
@@ -1147,7 +1244,16 @@ export function onServerNames(text: string, servers: Readonly<Record<string, str
 }
 
 /** `p` as the agent an apply makes on `servers` sees it: its instructions and each skill file with the package's tool
- *  names on the saved servers' (onServerNames). Nothing else of it names a server: its pins and allow are by tool. */
+ *  names on the saved servers' (onServerNames), and each composio trigger's server, its need's toolkit, the saved server
+ *  that need resolved to (onServerTrigger). Nothing else of it names a server: its pins and allow are by tool. */
 export function onServers(p: Package, servers: Readonly<Record<string, string>>): Package {
-  return { ...p, instructions: onServerNames(p.instructions, servers), skills: Object.fromEntries(Object.entries(p.skills).map(([path, text]) => [path, onServerNames(text, servers)])) };
+  return { ...p, instructions: onServerNames(p.instructions, servers), skills: Object.fromEntries(Object.entries(p.skills).map(([path, text]) => [path, onServerNames(text, servers)])), triggers: p.triggers.map((trigger) => onServerTrigger(trigger, servers)) };
+}
+
+/** Trigger `trigger` on the saved servers of `servers` ({toolkit: saved name}): a composio one's `source.server`, the
+ *  toolkit of the package's need (readPackage), the saved server the apply resolved that need to. Any other as it is. */
+function onServerTrigger(trigger: Json, servers: Readonly<Record<string, string>>): Json {
+  const source = trigger.source;
+  if (!isObject(source) || source.kind !== "composio" || typeof source.server !== "string" || !Object.hasOwn(servers, source.server)) return trigger;
+  return { ...trigger, source: { ...source, server: servers[source.server]! } };
 }

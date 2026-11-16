@@ -12,7 +12,8 @@ package desktop
 // read, into its own copy of the screen, and makes a frame when a pixel or the pointer's place changed, at most one
 // each frameGap. While nothing changes it reads no pixels at all, and looks only where the pointer is, each frameGap.
 // An X server with no DAMAGE extension is refused, unsupported, in words: the watch has no other way to see a change.
-// Each read holds the display only while it reads, so input.actions and screen.shot go on meanwhile. One connection
+// A read never holds the display (hold): its requests all answer, so no error of one reaches a holder's Sync, and frames
+// go on while an input.actions batch holds it, waits and all, as a person watching sees the typing. One connection
 // keeps one watch (its seq, its copy of the screen and the newest frame); a second watch on it waits its turn. The rest
 // of each of the last two frames over a chunk is held for screen.read, as screen.shot's PNG is, so an ask ahead never
 // drops the frame before it.
@@ -189,9 +190,9 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 			}
 		}
 		region := w.take()
-		cursor, changed, at, err := d.look(ctx, w, region)
+		cursor, changed, at, err := d.look(w, region)
 		if err != nil {
-			// Not read (a cancel while input held the display, or the display went): the next look reads it.
+			// Not read (the display went): the next look reads it.
 			w.damaged(region)
 			return nil, err
 		}
@@ -235,14 +236,11 @@ func pause(ctx context.Context, d time.Duration, wake chan struct{}) error {
 	return nil
 }
 
-// look holds the display while it reads the region of the screen into the watch's copy (the whole screen on the first
-// read, or once its size changed) and where the pointer is; an empty region reads no pixels. changed says whether a
-// pixel of the copy changed; at is when it had the display.
-func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle) (cursor [2]int, changed bool, at time.Time, err error) {
-	if err := d.hold(ctx, "screen.watch"); err != nil {
-		return cursor, false, at, err
-	}
-	defer d.letGo()
+// look reads the region of the screen into the watch's copy (the whole screen on the first read, or once its size
+// changed) and where the pointer is; an empty region reads no pixels. changed says whether a pixel of the copy changed;
+// at is when it read. It does not hold the display: GetGeometry, GetImage and QueryPointer each answer, with their error
+// if they fail, so a batch holding the display meanwhile still reads its own errors alone.
+func (d *Display) look(w *watching, region image.Rectangle) (cursor [2]int, changed bool, at time.Time, err error) {
 	at = time.Now()
 	c, err := d.connection()
 	if err != nil {

@@ -128,8 +128,6 @@ PREFIX = "AgentRun demo "
 NAME = PREFIX + RUN
 # /tmp is a link to /private/tmp: Finder and TextEdit answer with the real path, so the root is named by it.
 ROOT = "/private/tmp/agentrun-demos"
-# The step kinds a ui.act step may name (the protocol's UiStep keys), as serve's record reads them.
-STEP_KINDS = ("press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag")
 APPS = {"com.apple.iCal": "Calendar", "com.apple.Notes": "Notes", "com.apple.finder": "Finder", "com.apple.TextEdit": "TextEdit", "com.apple.Safari": "Safari",
         "com.apple.systempreferences": "System Settings"}
 # The apps the sandbox's AppleScript drives, whose Automation grants Computerd needs. System Settings' task makes and
@@ -711,8 +709,6 @@ class Task:
         # What the task's fixture changed in a running app for the movie (Notes' window), each undone by the teardown
         # on its connection, last first, or after a setup that failed (undo_setup): (words, undo(c)).
         self.undo = []
-        # Each ref the task's observes showed, as serve's record names it: its role, and its name when it has one.
-        self.names = {}
 
     def say(self, text, caption=None):
         """Prints the step's own words; captions it with `caption` (a computer call's words) or those."""
@@ -720,24 +716,13 @@ class Task:
         if self.rec:
             self.rec.caption(caption or text)
 
-    def words(self, call):
-        """A scripted call's caption (call_words), with --movie only: with no movie there is no caption, and the run
-        needs no serve build."""
-        return call_words(call) if self.rec else None
-
-    def step_row(self, step):
-        """A ui.act step as serve's record keeps it: its kind, the element it acts on as the task's observes named it, a
-        key step's chord (call-words.mjs keeps only what the record keeps), a nav step's place. Never a typed value."""
-        kind = next((k for k in STEP_KINDS if k in step), "step")
-        ref = step.get("into") if kind == "type" else step.get(kind)
-        row = {"do": kind}
-        if isinstance(ref, str) and ref in self.names:
-            row["on"] = self.names[ref]
-        if kind == "key":
-            row["keys"] = step["key"]
-        if kind == "nav":
-            row["nav"] = step["nav"]
-        return row
+    def words(self, method, params, reply):
+        """A scripted call's caption (call_words, from its params and answer as serve records it), with --movie only:
+        with no movie there is no caption, and the run needs no serve build."""
+        if not self.rec:
+            return None
+        answer = {"ok": False, "error": reply["error"]} if "error" in reply else {"ok": True, "value": reply.get("result")}
+        return call_words({"method": method, "params": params, "answer": answer})
 
     def call(self, method, params, label, not_found=None):
         """One call, timed and recorded. not_found: the words for a not_found the caller expects (a poll for a window
@@ -756,9 +741,8 @@ class Task:
         if method == "ui.observe":
             entry["nodes"] = len(r.get("nodes", []))
             self.shown = (r.get("window") or {}).get("id") or self.shown
-            for n in r.get("nodes", []):
-                name = " ".join((n.get("name") or "").split())
-                self.names[n["ref"]] = {"role": n["role"], **({"name": name} if name else {})}
+            # A look's nodes name each ref a later step acts on, in call-words.mjs as in serve's record.
+            self.words(method, params, reply)
         self.calls.append(entry)
         # A route, with " unverified" when no readback saw the step's effect; or the refusal's kind.
         routes = ", ".join(
@@ -815,9 +799,12 @@ class Task:
             params["state"] = state
         if foreground:
             params["foreground"] = True
-        # The caption is the step's words as the console says them, from the steps asked: a refused one fails the task.
-        self.say(label, self.words({"method": "ui.act", "app": self.app, "ok": True, "steps": [self.step_row(s) for s in steps]}))
+        # The caption, at the act's start, is the call's words as the console says them: a refused step fails the task.
+        print(f"  {self.id}: {label}", flush=True)
+        at = self.rec.clock() if self.rec else None
         reply = self.call("ui.act", params, label)
+        if self.rec:
+            self.rec.caption(self.words("ui.act", params, reply), at)
         if "error" in reply:
             raise Failed(f"{label}: {reply['error'].get('message')}")
         r = reply["result"]
@@ -842,14 +829,19 @@ class Task:
     def wait_for(self, text, label, seconds=20):
         """Until the task's window (or, before one is pinned, the app's main one) shows the text: an expect, asked again
         while there is no window yet."""
-        self.say(label, self.words({"method": "ui.act", "app": self.app, "ok": True, "steps": [], "expect": "met"}))
+        print(f"  {self.id}: {label}", flush=True)
+        at = self.rec.clock() if self.rec else None
         deadline = time.monotonic() + seconds
         while True:
             params = {"target": self.target(), "steps": [], "expect": {"text": text, "timeoutMs": 3000}}
             reply = self.call("ui.act", params, label, not_found="no window yet")
-            if (reply.get("result") or {}).get("expect") == "met":
+            met, late = (reply.get("result") or {}).get("expect") == "met", time.monotonic() > deadline
+            # The caption, at the wait's start, is the last try's words.
+            if self.rec and (met or late):
+                self.rec.caption(self.words("ui.act", params, reply), at)
+            if met:
                 return
-            if time.monotonic() > deadline:
+            if late:
                 why = (reply.get("error") or {}).get("message") or f"the expect was {(reply.get('result') or {}).get('expect')}"
                 raise Failed(f"{label}: no window of {self.app} showed {text!r} in {seconds} s: {why}")
             time.sleep(0.5)
@@ -1470,7 +1462,7 @@ words_process = None
 
 
 def call_words(call):
-    """A computer call (serve's record of one, or a scripted call in its shape) as the line a person reads ("Opened
+    """A computer call (serve's record of one, or a scripted call's method, params and answer) as the line a person reads ("Opened
     TextEdit", "Selected all (⌘A), typed into the text box"), by serve's own words for it (call-words.mjs, one process
     for the whole run): the console's run page shows the same line on the step's row and in its call list."""
     global words_process

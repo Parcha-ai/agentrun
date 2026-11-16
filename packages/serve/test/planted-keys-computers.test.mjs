@@ -87,7 +87,7 @@ async function planted(t) {
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
   const owner = async (method, path, body) => {
-    const res = await call(server.port, { method, path, headers: { ...json, cookie, origin }, body: body ?? {} });
+    const res = await call(server.port, { method, path, headers: { ...json, cookie, origin }, body });
     let parsed;
     try { parsed = JSON.parse(res.text); } catch {}
     return { status: res.status, text: res.text, json: parsed };

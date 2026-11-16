@@ -59,8 +59,7 @@ import { daemonStage, daemonVerified, egressStage, egressStaged } from "./docker
 import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { type DockerVolume, OLD_ENGINE, outsideWords, subpathOf, VOLUME_SUBPATH_ENGINE, volumeMount, volumeOf } from "./docker/volume.js";
 import { addressBytes } from "./docker/egress-table.js";
-import type { KindCapabilities } from "./kinds.js";
-import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
+import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -88,13 +87,13 @@ import { countTested } from "./test-connection.js";
 const fail = failFor("docker");
 
 /**
- * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
+ * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Alpine and Xvfb).
  * computerd stays the first process and starts nothing of its own: create gives it DISPLAY, then starts the X server
  * through it with process.start (startDisplay in ./desktop.ts).
  */
 export type DockerDesktopOptions = DesktopOptions;
 
-/** A computer's egress proxy, for a spec whose network is an allowlist (src/docker/egress.ts). */
+/** A computer's egress proxy, for a spec whose network is open or an allowlist (src/docker/egress.ts). */
 export interface DockerEgressOptions {
 	/** The proxy container's image: one with Node 22.19 or later as `node`. Default EGRESS_IMAGE, pinned by digest. */
 	image?: string;
@@ -104,7 +103,7 @@ export interface DockerEgressOptions {
 	readyMs?: number;
 	/**
 	 * The Docker host's own addresses, each an IP address, which the proxy refuses as the host's (this-host), beside this
-	 * machine's public ones. Required for an allowlist when this provider's interfaces are not the Docker host's: it runs
+	 * machine's public ones. Required for open or an allowlist when this provider's interfaces are not the Docker host's: it runs
 	 * in a container (containerSigns), or its docker CLI talks to a daemon that is not a local unix socket.
 	 */
 	hostAddresses?: string[];
@@ -125,7 +124,7 @@ export interface DockerProviderOptions {
 	 *  under a directory another user may write. Default ~/.cache/agentrun-computer; the provider reads no
 	 *  environment, XDG_CACHE_HOME included. */
 	daemonCache?: string;
-	/** The egress proxy of a computer whose network is an allowlist. */
+	/** The egress proxy of a computer whose network is open or an allowlist. */
 	egress?: DockerEgressOptions;
 	/** Makes every computer a desktop (kind desktop): its image must have the X server. */
 	desktop?: DockerDesktopOptions;
@@ -149,11 +148,6 @@ export interface DockerProviderOptions {
 	volume?: { name: string; root: string };
 }
 
-/** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
-export const MOUNT: readonly MountKind[] = DOCKER.mounts;
-
-/** The machine kind and groups of each configuration (its descriptor's): a linux computer, and a desktop. */
-export const CAPABILITIES: readonly KindCapabilities[] = DOCKER.capabilities;
 
 /** What create() takes: the provider's options, the daemon optional. */
 export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
@@ -365,7 +359,7 @@ export class DockerProvider implements ComputerProvider {
 			user: ["root", "uid"],
 			release: ["stop", "delete"],
 			stopDeletes: false,
-			mount: [...MOUNT],
+			mount: [...DOCKER.mounts],
 		};
 	}
 
@@ -383,12 +377,13 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, a bind or an
-	 *  allowlist on a host that remaps user ids, and an allowlist on a Docker host this provider does not run on. */
+	 *  open or an allowlist (each through the egress proxy) on a host that remaps user ids or that this provider does not
+	 *  run on. */
 	check(spec: ComputerSpec): Refusal[] {
 		const host = this.#host;
 		const remapped = host?.remap !== undefined && spec?.mount?.kind === "bind" ? [{ field: "mount", message: remapWords(host.remap, String(spec.mount.path)) }] : [];
 		const allowed: Refusal[] = [];
-		if (isAllow(spec?.network)) {
+		if (spec?.network === "open" || isAllow(spec?.network)) {
 			if (host?.remap !== undefined) allowed.push({ field: "network", message: remapAllowWords(host.remap) });
 			if (typeof this.#elsewhere === "string" && this.#egress.hostAddresses === undefined) allowed.push({ field: "network", message: elsewhereWords(this.#elsewhere) });
 		}
@@ -563,8 +558,8 @@ export class DockerProvider implements ComputerProvider {
 		const folder = bound === undefined ? undefined : this.#mountOf(bound, WORKSPACE, false);
 		if (folder !== undefined && !folder.ok) return folder;
 		const folderMount = folder?.value;
-		// An allowlist: the list as the proxy reads it, and the proxy's code, built.
-		const allow = typeof spec.network === "object" ? (allowOf(spec.network.allow) as { list: string[] }).list : undefined;
+		// Open or an allowlist: what the proxy serves ("open", or the list as it reads it), and the proxy's code, built.
+		const allow = spec.network === "open" ? ("open" as const) : typeof spec.network === "object" ? (allowOf(spec.network.allow) as { list: string[] }).list : undefined;
 		if (allow !== undefined) {
 			// With the volume option, the code is staged below the volume's root, where the Docker daemon can mount it from:
 			// the copy (0755 directories, 0644 files) is what the computer's user must read.
@@ -614,7 +609,7 @@ export class DockerProvider implements ComputerProvider {
 		const lifetimeFrom = Date.now();
 		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
 		if (allow !== undefined) {
-			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
+			// The proxy first, ready before the computer exists: a computer never runs with a network it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, attempt, signal);
 			if (!started.ok) {
 				// Another create of this request, in another process, runs its proxy: what it makes is the request's.
@@ -636,8 +631,8 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
 		args.push("--ipc", "private", "--cgroupns", "private");
-		// An allowlist's computer has no network either: its one way out is the proxy's socket.
-		args.push("--network", spec.network === "open" ? "bridge" : "none");
+		// No computer has a network of Docker's: open's and an allowlist's one way out is the proxy's socket.
+		args.push("--network", "none");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
 		// Memory and swap together are the memory: swap never adds to it.
 		const memory = `${memoryMb}m`;
@@ -650,8 +645,8 @@ export class DockerProvider implements ComputerProvider {
 		// the volume was made, so this run never pulls.
 		if (allow !== undefined) args.push("--mount", `type=volume,src=${egressNameOf(name)},dst=${EGRESS_MOUNT},readonly`, "--pull", "never");
 		args.push("--workdir", spec.workdir ?? WORK);
-		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops. With an
-		// allowlist it relays its loopback port 3128 to the proxy's socket, and names that port as every program's proxy.
+		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops. With open
+		// or an allowlist it relays its loopback port 3128 to the proxy's socket, and names that port as every program's proxy.
 		args.push(spec.image, "init", "--deadline", deadline, ...(allow === undefined ? [] : [RELAY_FLAG, EGRESS_SOCKET]));
 
 		const started = await this.#run(args, signal);
@@ -788,7 +783,7 @@ export class DockerProvider implements ComputerProvider {
 	 * bound, until the proxy logs its ready line. A proxy that ends first fails with its own last words. The caller
 	 * removes whatever was made when this fails.
 	 */
-	async #startEgress(name: string, user: string, deadline: string, allow: string[], specLabels: Record<string, string>, attempt: string, signal?: AbortSignal): Promise<Result<void>> {
+	async #startEgress(name: string, user: string, deadline: string, allow: string[] | "open", specLabels: Record<string, string>, attempt: string, signal?: AbortSignal): Promise<Result<void>> {
 		const proxy = egressNameOf(name);
 		// The proxy and its volume carry the create's attempt too: its cleanup removes only what it made.
 		const labels = { ...specLabels, [ATTEMPT_LABEL]: attempt };
@@ -1454,7 +1449,7 @@ function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS
  * own addresses as this-host only when it knows them, and here it does not.
  */
 function elsewhereWords(why: string): string {
-	return `${why}, so this provider's own interfaces are not the Docker host's, and the egress proxy could not refuse the host's own addresses: pass them as egress.hostAddresses, or ask for network none or open`;
+	return `${why}, so this provider's own interfaces are not the Docker host's, and the egress proxy could not refuse the host's own addresses: pass them as egress.hostAddresses, or ask for network none`;
 }
 
 /** Whether a spec's network is an allowlist. */
@@ -1468,7 +1463,7 @@ const isAllow = (network: unknown): network is { allow: unknown } => typeof netw
 function remapAllowWords(remap: "userns" | "rootless"): string {
 	return (
 		`this Docker host remaps user ids (${remap === "userns" ? "userns-remap" : "rootless Docker"}), so the egress volume and the proxy's code are ` +
-		"owned by host ids the computer's user does not map to, and the provider cannot give it an allowlist: ask for network none or open, " +
+		"owned by host ids the computer's user does not map to, and the provider cannot give it open or an allowlist, each through that proxy: ask for network none, " +
 		"or use a Docker host that does not remap ids"
 	);
 }

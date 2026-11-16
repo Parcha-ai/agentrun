@@ -17,6 +17,7 @@ import { servedSkill } from "../dist/learn/skills.js";
 import { ended, git, resnap } from "./learn-support.mjs";
 import { agent, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 const OPENCODE_STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
@@ -45,7 +46,7 @@ async function learnedSkill(data, id) {
 async function gateway(t, answer) {
   const seen = [];
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let text = "";
     for await (const chunk of req) text += chunk;
     const body = JSON.parse(text || "{}");

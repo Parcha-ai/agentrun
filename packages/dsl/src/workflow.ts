@@ -1,11 +1,11 @@
 import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
-import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
+import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, quoteCheck, type AcceptPredicate } from "./predicates.js";
 import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, GUARD_FIELDS, GUARD_SIGNALS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type GuardSignal, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
-import { DECISION_ERROR_MAX, DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
+import { DECISION_ERROR_MAX, DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule, type DecisionStateSent } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeIssues } from "./workflow-shape.js";
@@ -389,6 +389,9 @@ export type WorkflowDeps = {
     provider?: string;
     /** The images the request carried, by digest (never the bytes), as the host loaded them. */
     images?: DecisionImageDigest[];
+    /** The state the provider sent, and the values it cut, when it cut any to fit its model's context: the receipt
+     *  records it, not the state asked. A failed request's DecisionProviderError carries it as `stateSent`. */
+    state_sent?: DecisionStateSent;
   }>;
   /** The host's step guards (StepGuard), asked after each guarded step ran and before its state is committed: what the
    *  step saw (`input`), what it wrote (`output`), and its own confidence (`self`: an agent or decide node's submitted
@@ -397,6 +400,11 @@ export type WorkflowDeps = {
    *  back: it escalates (kind `guard`, stage the step's label) with the step's state. A workflow that holds a guard is
    *  refused before any node runs on a host without it. */
   guardStep?: (params: GuardStepParams) => Promise<GuardVerdict>;
+  /** Escalate nodes the host records instead of obeying, by label (a child workflow's as its events name it,
+   *  `parent/child`): one it says true of evaluates its `when` as any does and says so in its `escalate.evaluated` event
+   *  (`soft: true`), and the run goes on past it whether it fired or not. A replay reads what the workflow would have
+   *  answered past a check it is measuring. Absent: every escalate that fires hands the job back. */
+  softEscalate?: (label: string) => boolean;
   /** Records one typed-question request and what its answers decide. It is awaited before the answers
    *  reach state, an event or a branch, so a durable recorder holds every decision the run acted on; a
    *  rejection fails the node. A request the judge could not answer, or one cancelled in flight, is
@@ -574,7 +582,10 @@ function containsReportNode(node: WorkflowNode | undefined): boolean {
 }
 const PREDICATES: ReadonlySet<string> = new Set(WORKFLOW_PREDICATES);
 
-function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; type?: unknown; of?: unknown; instructions?: unknown; gte?: unknown; state?: unknown }): string[] {
+/** Whether one dotted state path is the other or lies under it. */
+const pathsOverlap = (a: string, b: string): boolean => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+
+function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; type?: unknown; of?: unknown; instructions?: unknown; gte?: unknown; state?: unknown; field?: unknown; pages?: unknown }): string[] {
   const out: string[] = [];
   if (pred.predicate === "in") {
     if (!String(pred.path || "").trim()) out.push("in needs a path");
@@ -587,6 +598,15 @@ function predicateShapeErrors(pred: { predicate: string; path?: string; values?:
   if (pred.predicate === "field_type") {
     if (!String(pred.path || "").trim()) out.push("field_type needs a path");
     if (!(FIELD_TYPES as readonly unknown[]).includes(pred.type)) out.push(`field_type needs a type of ${FIELD_TYPES.join("|")}, not ${JSON.stringify(pred.type) ?? "none"}`);
+  }
+  if (pred.predicate === "quote_missing") {
+    const path = String(pred.path || "").trim();
+    if (!path) out.push("quote_missing needs a path (the quote, or the list of them)");
+    if (pred.field !== undefined && !(typeof pred.field === "string" && pred.field.trim())) out.push("quote_missing.field must name the quote in each item: a non-empty path");
+    const pages = pred.pages;
+    if (!Array.isArray(pages) || !pages.length || pages.some((page) => typeof page !== "string" || !page.trim())) out.push("quote_missing needs pages: a non-empty list of state paths holding the text of the pages this run fetched");
+    // A page path that is the quotes, or holds them, or sits inside them, finds every quote in itself.
+    else if (path) for (const page of pages as string[]) if (pathsOverlap(page, path)) out.push(`quote_missing reads its quotes as a page: pages names "${page}", which overlaps path "${path}"`);
   }
   if (pred.predicate === "not" && (!pred.of || typeof pred.of !== "object" || Array.isArray(pred.of))) out.push(`not needs "of", one mechanical predicate`);
   if (pred.predicate === "ask") {
@@ -972,7 +992,13 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
     pred = negated(pred);
     if (!reachability || reachability.unknowable || !pred || typeof pred !== "object") return;
     const available = produced ?? reachability.available;
-    const { predicate, path: at, key } = pred as { predicate?: unknown; path?: unknown; key?: unknown };
+    const { predicate, path: at, key, pages } = pred as { predicate?: unknown; path?: unknown; key?: unknown; pages?: unknown };
+    // quote_missing reads its pages too: a page no input key or earlier node writes holds no text, so every quote misses.
+    if (predicate === "quote_missing" && Array.isArray(pages)) for (const page of pages) {
+      if (typeof page !== "string" || !page.trim()) continue;
+      const head = page.split(".")[0];
+      if (!available.has(head)) fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${label}): ${field}.pages reads "${page}" but no input key or earlier node produces "${head}"; every quote would miss`);
+    }
     const read = predicate === "no_new_items" ? key : predicate === "ask" ? undefined : at;
     if (typeof read !== "string" || !read.trim()) return;
     const head = read.split(".")[0];
@@ -1467,8 +1493,13 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
             for (const [name, pred] of [["until", p.until], ["fail_when", p.fail_when]] as const) {
               if (pred === undefined) { if (name === "until") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.until is required`); continue; }
               if (!checkPredicate(pred, label, path, `poll.${name}`, "poll")) continue;
-              const predPath = (negated(pred) as { path?: string }).path;
+              const read = negated(pred) as { predicate?: string; path?: string; pages?: unknown };
+              const predPath = read.path;
               if (resultShape && typeof resultShape === "object" && predPath && resultPathMissing(resultShape, predPath)) fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): poll.${name} path "${predPath}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); the poll could never settle`);
+              // quote_missing also reads its pages from the result: one outside it misses every quote, poll after poll.
+              if (resultShape && typeof resultShape === "object" && read.predicate === "quote_missing" && Array.isArray(read.pages)) for (const page of read.pages) {
+                if (typeof page === "string" && page && resultPathMissing(resultShape, page)) fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): poll.${name} pages "${page}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); every quote would miss and the poll could never settle`);
+              }
             }
             if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.interval_s must be a finite number of at least 0.1 seconds`);
             if (!(Number.isFinite(p.deadline_s) && p.deadline_s >= (Number(node.deadline_s) || 0))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.deadline_s must be a finite number at least deadline_s`);
@@ -1585,6 +1616,11 @@ export class EscalationSignal extends Error {
 }
 
 async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>, deps: WorkflowDeps, at: { label: string; kind: "loop" | "escalate" }, workflow?: Workflow): Promise<{ holds: boolean; detail?: Record<string, unknown> }> {
+  // A quote check says how many quotes it read and how many no page holds, as counts: never their text.
+  if (pred.predicate === "quote_missing") {
+    const { checked, missed } = quoteCheck(pred, state);
+    return { holds: missed > 0, detail: { quotes_checked: checked, quotes_missed: missed } };
+  }
   if (pred.predicate !== "ask") return { holds: predicateMatches(pred, state) };
   const ask = pred as AskPredicate;
   const asked = ask.state ? interpolateValue(ask.state, state, at.label) : promptStateOf(state, workflow);
@@ -2302,7 +2338,12 @@ async function decide<T>(
       ...(recorded.evidence ? { evidence: recorded.evidence } : {}), ...(recorded.provider ? { provider: recorded.provider } : {}) };
   }
   const request: JudgeRequest = { label: ask.label, kind: ask.judgeKind, ...(item ? { item } : {}), executionPath: path, signal, state: ask.state, questions: ask.questions, decisionId: id, ...choice, ...(images ? { images } : {}) };
-  const seen = stateSeen(ask.state);
+  /** The state the provider sent and the values it cut, when it sent other than `ask.state`: from its result, or from the
+   *  error of a request that failed after it was prepared. */
+  const sentOf = (result: JudgeResult | undefined, error: unknown): DecisionStateSent | undefined => {
+    const sent = result?.state_sent ?? (error instanceof DecisionProviderError ? error.stateSent : undefined);
+    return sent && typeof sent === "object" && Array.isArray(sent.cut) ? sent : undefined;
+  };
   /** The images a receipt names: as the host loaded them, else by token and reference alone. */
   const imagesOf = (result: JudgeResult | undefined): DecisionImageDigest[] | undefined => {
     if (!images) return undefined;
@@ -2321,6 +2362,9 @@ async function decide<T>(
     const answers = result?.answers && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers : {};
     const refused = refusedQuestions(answers);
     const source = result?.confidence_source;
+    // What the judge saw is what its provider sent: a value cut to fit the model's context is kept as cut, and named.
+    const sent = sentOf(result, outcome.error);
+    const seen = stateSeen(sent ? sent.state : ask.state);
     return {
       v: DECISION_RECEIPT_VERSION, id, at: new Date().toISOString(), node: ask.label, kind: ask.kind, item: item?.index ?? null, execution_path: path, request: position,
       status: outcome.status, state_sha256, questions: ask.questions, answers,
@@ -2334,6 +2378,7 @@ async function decide<T>(
       ...(evidenceOf(result) ? { evidence: evidenceOf(result) } : {}),
       ...(images ? { images: imagesOf(result) } : {}),
       state: seen.state, state_truncated: seen.truncated,
+      ...(sent ? { state_cut: sent.cut.map(({ path, bytes, sent_bytes }) => ({ path, bytes, sent_bytes })) } : {}),
       ...(outcome.error !== undefined ? errorOfReceipt(String(outcome.error instanceof EscalationSignal ? outcome.error.escalation.summary : (outcome.error as Error)?.message || outcome.error)) : {}),
     };
   };
@@ -2354,8 +2399,11 @@ async function decide<T>(
     // rejected was billed, and is booked at its cost, or an unknown one.
     const lost = error instanceof DecisionProviderError && error.code === "outcome_unknown";
     const charge = chargedCost(error);
-    const spent: JudgeResult | undefined = charge !== undefined ? { answers: {}, cost_usd: charge,
-      ...((error as DecisionProviderError).costBasis !== undefined ? { cost_basis: (error as DecisionProviderError).costBasis } : {}) } : undefined;
+    // A request cut to fit that failed carries the state it was sent: the recorder sizes the request by it, not by the state asked.
+    const sentState = sentOf(undefined, error);
+    const spent: JudgeResult | undefined = charge !== undefined || sentState ? { answers: {}, ...(charge !== undefined ? { cost_usd: charge } : {}),
+      ...((error as DecisionProviderError).costBasis !== undefined ? { cost_basis: (error as DecisionProviderError).costBasis } : {}),
+      ...(sentState ? { state_sent: sentState } : {}) } : undefined;
     // The status is read before the caller reacts: a request that fails on its own is `failed`, even when
     // its failure is what cancels the others.
     const failed = receipt(spent, { status: signal?.aborted && !lost ? "cancelled" : "failed", rule: null, action: null, error });
@@ -2671,6 +2719,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
     ...(deps.runEffect ? { runEffect: params => deps.runEffect!({ ...params, node: relabel(params.node) }) } : {}),
     ...(deps.runJudge ? { runJudge: params => deps.runJudge!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
     ...(deps.guardStep ? { guardStep: params => deps.guardStep!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
+    ...(deps.softEscalate ? { softEscalate: label => deps.softEscalate!(`${prefix}/${label}`) } : {}),
     ...(deps.recordDecision ? { recordDecision: (receipt, exchange) => deps.recordDecision!({ ...receipt, node: `${prefix}/${receipt.node}` }, { ...exchange, request: { ...exchange.request, label: `${prefix}/${exchange.request.label}` } }) } : {}),
     ...(deps.runCode ? { runCode: (node, state, ctx) => deps.runCode!(relabel(node), state, { ...ctx, label: `${prefix}/${ctx.label}` }) } : {}),
     ...(recovery ? { recovery: {
@@ -2947,6 +2996,156 @@ function withSiblingUncertainty(primary: unknown, uncertainties: Set<EffectOutco
   return additional.length
     ? new AggregateError([primary, ...additional], "Workflow branches failed with uncertain effects; reconcile each effect before retrying", { cause: primary })
     : primary;
+}
+
+/** Who may have written a state key last, over every path a run can take to a point: a judge, or anything else (the
+ *  input, a draft, a call, a code node). A key no step wrote holds the input's value: `other`. */
+type StateWriters = Map<string, ReadonlySet<"judge" | "other">>;
+const JUDGE_WROTE: ReadonlySet<"judge" | "other"> = new Set(["judge"]);
+const OTHER_WROTE: ReadonlySet<"judge" | "other"> = new Set(["other"]);
+const writersOf = (state: StateWriters, key: string) => state.get(key) ?? OTHER_WROTE;
+/** The writers after any one of `states`: each key's writers on every one of them. */
+function joinWriters(states: readonly StateWriters[]): StateWriters {
+  const out: StateWriters = new Map();
+  for (const key of new Set(states.flatMap((state) => [...state.keys()]))) {
+    const each = states.map((state) => writersOf(state, key));
+    out.set(key, each.every((writers) => writers === each[0]) ? each[0] : new Set(each.flatMap((writers) => [...writers])));
+  }
+  return out;
+}
+const sameWriters = (a: StateWriters, b: StateWriters): boolean =>
+  a.size === b.size && [...a].every(([key, writers]) => { const other = b.get(key); return other !== undefined && other.size === writers.size && [...writers].every((w) => other.has(w)); });
+/** Past this nesting, or this many passes over a loop's body, softEscalates reads every escalate as hard. */
+const SOFT_WALK_DEPTH = 256;
+const SOFT_WALK_PASSES = 16;
+class SoftWalkTooDeep extends Error {}
+
+/** Where a node's writes are read from: the writers before it runs (`state`), the walk for the nodes it runs, the label
+ *  prefix its steps run under (a child workflow's `parent/`), and what an escalate reads. */
+type WritesAt = {
+  state: StateWriters;
+  walk: (inner: unknown, from: StateWriters, prefix?: string) => StateWriters;
+  wrote: (key: unknown, writers: ReadonlySet<"judge" | "other">, from?: StateWriters) => StateWriters;
+  prefix: string;
+  escalate: (label: string, soft: boolean) => void;
+};
+type Doc = Record<string, unknown>;
+const docOf = (value: unknown): Doc | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Doc) : undefined);
+/** A node that writes its value under its `as`, else its label (mergeStageDelta, runCallNode, runPickNode, runSiftNode). */
+const writesItsKey = (node: Doc, at: WritesAt) => at.wrote(typeof node.as === "string" && node.as !== "" ? node.as : node.label, OTHER_WROTE);
+/** The state keys an `ask` predicate reads (evaluatePredicate): the head of each `{path}` its `state` and its `images`
+ *  interpolate, both `state` and the key after it for a `{state.…}` reference (interpolateValue tries either). With no
+ *  `state` it reads the whole state, the input with it: no key list, so none. */
+function askHeads(ask: Doc): string[] {
+  if (ask.state === undefined) return [];
+  const heads: string[] = [];
+  // String values only, at any depth: interpolateValue replaces values, so an object key that looks like a reference is a literal.
+  const read = (value: unknown): void => {
+    if (typeof value === "string") {
+      for (const m of value.matchAll(/\{([a-zA-Z0-9_.$]+)\}/g)) {
+        const [head, next] = m[1]!.split(".");
+        heads.push(head!);
+        if (head === "state" && next) heads.push(next);
+      }
+    } else if (Array.isArray(value)) value.forEach(read);
+    else if (value && typeof value === "object") Object.values(value).forEach(read);
+  };
+  read(ask.state);
+  read(ask.images);
+  return heads;
+}
+
+/** What each node kind writes to the state when runNodeBody (below) runs it: the writers of every key after the node runs
+ *  from `at.state`. One entry per kind, so a new kind says here what it writes. A chain runs its steps in order; a route
+ *  one branch, any of them, after its `as` (its choice); a parallel its branches each from the same state, a key one wrote
+ *  taking that branch's writer; a loop its body once or more, each pass from the last's; a map its body per item on its
+ *  own copy (with `item`, `item_index`), only its `as` (and `failedAs`) left after; a child workflow on its own state, only
+ *  its `as` left after. A judge writes its `as` and `<as>$answers`; a code node with no `as` may write any key. */
+const NODE_WRITES: { readonly [K in WorkflowNodeKind]: (node: Doc, at: WritesAt) => StateWriters } = {
+  chain: (node, at) => (Array.isArray(node.steps) ? node.steps : []).reduce<StateWriters>((state, step) => at.walk(step, state), at.state),
+  route: (node, at) => {
+    const routed = at.wrote(node.as, OTHER_WROTE);
+    const bodies = docOf(node.branches) ? Object.values(node.branches as Doc).map((branch) => docOf(branch)?.body) : [];
+    return bodies.length ? joinWriters(bodies.map((body) => at.walk(body, routed))) : routed;
+  },
+  parallel: (node, at) => {
+    const outs = (Array.isArray(node.branches) ? node.branches : []).map((branch) => at.walk(branch, at.state));
+    const merged: StateWriters = new Map(at.state);
+    for (const key of new Set(outs.flatMap((out) => [...out.keys()]))) {
+      const writers = outs.filter((out) => out.get(key) !== at.state.get(key));
+      if (writers.length) merged.set(key, joinWriters(writers).get(key)!);
+    }
+    return merged;
+  },
+  loop: (node, at) => {
+    let entry = at.state;
+    for (let pass = 0; pass < SOFT_WALK_PASSES; pass++) {
+      const out = at.walk(node.body, entry);
+      const next = joinWriters([at.state, out]);
+      if (sameWriters(next, entry)) return out;
+      entry = next;
+    }
+    throw new SoftWalkTooDeep();
+  },
+  map: (node, at) => {
+    at.walk(node.body, at.wrote("item_index", OTHER_WROTE, at.wrote("item", OTHER_WROTE)));
+    return at.wrote(node.failedAs, OTHER_WROTE, at.wrote(node.as, OTHER_WROTE));
+  },
+  workflow: (node, at) => {
+    at.walk(docOf(node.workflow)?.root, new Map(), typeof node.label === "string" ? `${at.prefix}${node.label}/` : at.prefix);
+    return at.wrote(node.as, OTHER_WROTE);
+  },
+  // A judge writes its `as` and the question's answers at `<as>$answers` (runJudgeNode): both are the judge's.
+  judge: (node, at) => at.wrote(node.as, JUDGE_WROTE, typeof node.as === "string" ? at.wrote(`${node.as}$answers`, JUDGE_WROTE) : at.state),
+  escalate: (node, at) => {
+    if (typeof node.label !== "string") return at.state;
+    let when = docOf(node.when);
+    while (when?.predicate === "not") when = docOf(when.of);
+    const heads = when?.predicate === "ask" ? askHeads(when) : typeof when?.path === "string" ? [when.path.split(".")[0]!] : [];
+    at.escalate(node.label, heads.length > 0 && heads.every((head) => { const writers = writersOf(at.state, head); return writers.size === 1 && writers.has("judge"); }));
+    return at.state;
+  },
+  code: (node, at) => {
+    if (typeof node.as === "string" && node.as !== "") return at.wrote(node.as, OTHER_WROTE);
+    return new Map([...at.state].map(([key, writers]) => [key, writers.has("other") ? writers : new Set([...writers, "other" as const])]));
+  },
+  report: (_node, at) => at.wrote("report_markdown", OTHER_WROTE),
+  artifact: (_node, at) => at.wrote("artifact", OTHER_WROTE),
+  agent: writesItsKey, decide: writesItsKey, extract: writesItsKey, pick: writesItsKey, sift: writesItsKey, call: writesItsKey,
+};
+
+/** The writers after `value` (a node of a workflow document) runs from `state` (NODE_WRITES). Each escalate's verdict
+ *  lands in `verdicts`, false on any pass where it is not soft. */
+function walkWriters(value: unknown, state: StateWriters, prefix: string, verdicts: Map<string, boolean>, depth: number): StateWriters {
+  const node = docOf(value);
+  if (!node) return state;
+  if (depth > SOFT_WALK_DEPTH) throw new SoftWalkTooDeep();
+  const writes = Object.hasOwn(NODE_WRITES, node.node as string) ? NODE_WRITES[node.node as WorkflowNodeKind] : writesItsKey;
+  return writes(node, {
+    state, prefix,
+    walk: (inner, from, at = prefix) => walkWriters(inner, from, at, verdicts, depth + 1),
+    wrote: (key, writers, from = state) => (typeof key === "string" && key !== "" ? new Map(from).set(key, writers) : from),
+    escalate: (label, soft) => { const name = `${prefix}${label}`; verdicts.set(name, (verdicts.get(name) ?? true) && soft); },
+  });
+}
+
+/** The escalate nodes of a workflow document that read a judge's output, by label as a run names its step (a child's
+ *  `parent/child`, as WorkflowDeps.softEscalate is asked): each whose `when` (under any number of `not`s) reads a field a
+ *  judge node wrote (an `ask` predicate: every key its `state` reads, and it reads at least one), the judge being the step that last wrote that path's head on every path a run can take to the
+ *  escalate (a judge an extract overwrites, one in only some of a route's branches, one a code node with no `as` may have
+ *  overwritten, are not). A judge's field is one model's opinion of a draft the workflow already wrote, so a host that
+ *  measures the check may record it instead of obeying it (WorkflowDeps.softEscalate) and read the draft past it. A
+ *  document too deep to walk, or whose loop's writes do not settle, has none. The document is read as it is: no
+ *  validation, and a malformed node writes nothing it cannot name. */
+export function softEscalates(doc: unknown): Set<string> {
+  const verdicts = new Map<string, boolean>();
+  try {
+    walkWriters(docOf(doc)?.root, new Map(), "", verdicts, 0);
+  } catch (error) {
+    if (error instanceof SoftWalkTooDeep) return new Set();
+    throw error;
+  }
+  return new Set([...verdicts].flatMap(([name, soft]) => (soft ? [name] : [])));
 }
 
 async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
@@ -3261,8 +3460,9 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const pathValue = (node.when as { path?: string })?.path
         ? String((node.when as { path?: string }).path).split(".").reduce<any>((acc, key) => (acc == null ? acc : acc[key]), state)
         : undefined;
-      deps.onEvent?.({ type: "escalate.evaluated", label: node.label, detail: { fired, path: (node.when as { path?: string })?.path ?? null, path_resolved: pathValue !== undefined, ...(evaluated.detail ?? {}) } });
-      if (fired) {
+      const soft = deps.softEscalate?.(node.label) === true;
+      deps.onEvent?.({ type: "escalate.evaluated", label: node.label, detail: { fired, path: (node.when as { path?: string })?.path ?? null, path_resolved: pathValue !== undefined, ...(evaluated.detail ?? {}), ...(soft ? { soft: true } : {}) } });
+      if (fired && !soft) {
         throw new EscalationSignal({ kind: node.kind, stage: node.stage, summary: interpolate(node.summary, state), state, label: node.label, executionPath: executionPath(deps) });
       }
       return state;

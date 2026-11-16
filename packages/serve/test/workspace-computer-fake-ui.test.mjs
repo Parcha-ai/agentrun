@@ -1,7 +1,8 @@
 // The computer's tools on the fake ui driver (packages/computer fake-ui-driver.ts): a scripted app over the wire, its ui
 // group run through UiEngine, so refs survive, an act settles before it answers and an expect is polled until it holds.
-// The per-step tools, computer_script and the claim's MCP server answer the same values from one surface: observe, then
-// act by ref with an expect; the same steps as one script; a point read against a state that moved, refused as stale.
+// The per-step tools, a codemode script's `computer` (over those tools and computer_op) and the claim's MCP server answer
+// the same values from one surface: observe, then act by ref with an expect; the same steps as one script; a point read
+// against a state that moved, refused as stale.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +12,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { AttachHub, attachedProvider } from "@parcha/agentrun-computer";
 import { FakeUiDriver, fakeUiConnection, NEXT_ANIMATE_MS, NEXT_MS, serveUiSocket, UI_FIXTURE } from "@parcha/agentrun-computer/fake-ui-driver";
+import { bindComputer } from "@parcha/agentrun-computer/surface";
 import { computerMcp, localWorkspace, runTools } from "../dist/workspace/index.js";
 
 const dirs = [];
@@ -20,9 +22,20 @@ after(async () => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
 const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal });
+/** The fixture's app opened as a script's computer.apps.open opens it: computer_op's apps.open. */
+const openApp = (tools) => call(tools, "computer_op", { op: "apps.open", args: { id: UI_FIXTURE.id } });
+/** A script's `computer` over the run's tools, as codemode binds it (runner/meta-tools.ts scriptComputer). */
+const STEP_TOOLS = { observe: "computer_observe", act: "computer_act", screenshot: "computer_screenshot" };
+function scriptComputer(run, tools) {
+  return bindComputer(async (op, args) => {
+    const answer = STEP_TOOLS[op] ? await call(tools, STEP_TOOLS[op], args) : await call(tools, "computer_op", { op, args });
+    if (answer.isError) throw new Error(`${answer.text} ${JSON.stringify(answer.structured ?? null)}`);
+    return answer.structured;
+  }, run.computer.card);
+}
 
-/** A run on a fresh fake ui desktop: its tools, bound to it, the fixture's app opened by a script (the tools open no
- *  app: a script's computer.apps.open does, as the kind skills teach). */
+/** A run on a fresh fake ui desktop: its tools, bound to it, the fixture's app opened by computer_op (the step tools open
+ *  no app: a script's computer.apps.open does, as the kind skills teach). */
 async function fakeRun(options = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-fake-ui-"));
   dirs.push(dir);
@@ -30,7 +43,7 @@ async function fakeRun(options = {}) {
   closing.push(() => connection.close());
   const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: connection.client }, hello: connection.hello }, { mode: 1, context: ctx });
   const tools = run.hostTools(run.kindTools);
-  const opened = await call(tools, "computer_script", { code: `await computer.apps.open(${JSON.stringify(UI_FIXTURE.id)});` });
+  const opened = await openApp(tools);
   assert.equal(opened.isError, false, opened.text);
   return { run, tools };
 }
@@ -40,7 +53,7 @@ const stateless = (text, value) => ({ text: text.replace(/^state s\d+/, "state")
 
 test("observe, then press by ref with an expect: the act settles, the expect is met, and the window's new state is named", async () => {
   const { run, tools } = await fakeRun();
-  assert.ok(run.kindTools.includes("computer_observe") && run.kindTools.includes("computer_act") && run.kindTools.includes("computer_script"), JSON.stringify(run.kindTools));
+  assert.ok(run.kindTools.includes("computer_observe") && run.kindTools.includes("computer_act") && run.kindTools.includes("computer_op") && !run.kindTools.includes("computer_script"), JSON.stringify(run.kindTools));
   assert.ok(!run.kindTools.includes("computer_screenshot"), "no screen group: no screenshot tool");
   const observed = await call(tools, "computer_observe", { app: UI_FIXTURE.id });
   assert.equal(observed.isError, false, observed.text);
@@ -55,17 +68,12 @@ test("observe, then press by ref with an expect: the act settles, the expect is 
 });
 
 test("the same steps as one script answer what the tools answer, and return only what the next decision needs", async () => {
-  const { tools } = await fakeRun();
-  const code = [
-    `const app = computer.app(${JSON.stringify(UI_FIXTURE.id)});`,
-    "await app.observe();",
-    "const save = app.find({ role: 'button', text: 'Save' })[0];",
-    "const done = await app.press(save.ref, { expect: { text: 'Saved' } });",
-    "return { met: done.expect, route: done.steps[0].route };",
-  ].join("\n");
-  const scripted = await call(tools, "computer_script", { code });
-  assert.equal(scripted.isError, false, scripted.text);
-  assert.deepEqual(scripted.structured, { met: "met", route: "semantic" });
+  const { run, tools } = await fakeRun();
+  const app = scriptComputer(run, tools).app(UI_FIXTURE.id);
+  await app.observe();
+  const save = app.find({ role: "button", text: "Save" })[0];
+  const done = await app.press(save.ref, { expect: { text: "Saved" } });
+  assert.deepEqual({ met: done.expect, route: done.steps[0].route }, { met: "met", route: "semantic" });
 });
 
 test("a point read against a state the window has left is refused as stale, in the computer's words", async () => {
@@ -133,7 +141,7 @@ test("a run's release closes its connection: the call in flight comes back abort
   dirs.push(dir);
   const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: connected.client }, hello: connected.hello }, { mode: 1, context: ctx });
   const tools = run.hostTools(run.kindTools);
-  assert.equal((await call(tools, "computer_script", { code: `await computer.apps.open(${JSON.stringify(UI_FIXTURE.id)});` })).isError, false);
+  assert.equal((await openApp(tools)).isError, false);
   const waiting = call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [], expect: { text: "never", timeoutMs: 30_000 } });
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal((await provider.release(held, "delete")).ok, true);
@@ -146,13 +154,13 @@ test("a run's release closes its connection: the call in flight comes back abort
 });
 
 test("a step the computer can't read is refused in words, by the tool and by a script alike", async () => {
-  const { tools } = await fakeRun();
+  const { run, tools } = await fakeRun();
   const act = tools.find((tool) => tool.name === "computer_act");
   assert.equal(act.inputSchema.properties.steps.items.anyOf.length, 9, "the schema types each step shape");
   assert.match(act.description, /type UiStep = \{ press: UiRef; \}/, "and the description declares them as TypeScript");
   // A provider that doesn't constrain its calls to the schema can still send one: the computer refuses it.
   const byTool = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ tap: "@e1" }] });
-  const byScript = await call(tools, "computer_script", { code: `return await computer.app(${JSON.stringify(UI_FIXTURE.id)}).act([{ tap: "@e1" }]);` });
+  const byScript = await scriptComputer(run, tools).app(UI_FIXTURE.id).act([{ tap: "@e1" }]).then((value) => ({ isError: false, text: JSON.stringify(value) }), (error) => ({ isError: true, text: error.message }));
   for (const [how, answer] of [["tool", byTool], ["script", byScript]]) {
     const words = `${answer.text} ${JSON.stringify(answer.structured ?? null)}`;
     assert.equal(answer.isError, true, `${how}: ${words}`);

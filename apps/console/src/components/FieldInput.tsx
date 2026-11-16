@@ -14,12 +14,10 @@ const TEXT_TYPE: Record<string, string> = { date: "date", email: "email", uri: "
 /** One field of a form of typed fields, its label and help over its widget: a template's parameter on the Apply screen,
  *  and an agent's typed input field in the run forms, drawn the same. The value is the form's text ("true"/"false" for a
  *  box, a list one item a line); what it sends is the caller's. `help`: the field's own words (a cron line's or a zone's
- *  without their format, which the picker says in words); its pattern is the server's to check, never printed.
- *  `typedInput`: a run's typed input field, which nothing fills in when it is left out, so a default choice is offered by
- *  its own value (a template's parameter left out takes its default at apply). */
-export function FieldInput({ field: p, label, help, value, onChange, typedInput = false }: { field: FieldSpec; label: string; help?: ReactNode; value: string; onChange: (text: string) => void; typedInput?: boolean }) {
+ *  without their format, which the picker says in words); its pattern is the server's to check, never printed. */
+export function FieldInput({ field: p, label, help, value, onChange }: { field: FieldSpec; label: string; help?: ReactNode; value: string; onChange: (text: string) => void }) {
   const hint = placeholderOf(p);
-  const options = choiceOptions(p, { sent: typedInput });
+  const options = choiceOptions(p);
   return (
     <label className="block">
       <span className="caps text-small font-semibold">{label}{p.required && <span className="text-destructive-text"> *</span>}</span>

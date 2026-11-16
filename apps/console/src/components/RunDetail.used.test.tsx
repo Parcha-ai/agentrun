@@ -19,7 +19,7 @@ const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-
 });
 const LEARNS: Run["learning"] = { detail: null, at: "2026-11-11T10:00:09Z", state: "dropped", reason: "empty" };
 const answer = (used: LearnedUse): RunLearningRead => ({
-  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", merged: null, pending: [], verdict: null, problems: [],
+  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", merged: null, pending: [], verdict: null, problems: [], compiled: null, draft_errors: [],
   cost_usd: { grade: null }, tokens: { grade: null }, used,
 });
 const USED: LearnedUse = {
