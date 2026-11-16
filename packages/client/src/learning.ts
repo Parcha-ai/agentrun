@@ -3,7 +3,7 @@
 import { AgentRun, type ClientOptions } from './client.js';
 import { AgentRunRefused, AgentRunTimeout, AgentRunUsage } from './errors.js';
 
-export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk';
+export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk' | 'eve';
 
 export interface BackendWorkflowToolManifest {
   name: string;
@@ -178,7 +178,7 @@ export class BackendLearningClient {
 
   async begin(source: BackendLearningStart, signal?: AbortSignal): Promise<BackendLearningSession> {
     signal?.throwIfAborted();
-    if (source.runtime !== 'claude-agent-sdk' && source.runtime !== 'codex-sdk') throw new AgentRunUsage('Unsupported backend SDK runtime.');
+    if (source.runtime !== 'claude-agent-sdk' && source.runtime !== 'codex-sdk' && source.runtime !== 'eve') throw new AgentRunUsage('Unsupported backend SDK runtime.');
     if (typeof source.input !== 'string' || typeof source.instructions !== 'string') throw new AgentRunUsage('SDK input and source instructions must be strings.');
     // Freeze the source before the registration request: caller mutation cannot change the policy after validation.
     const start = clone({ ...source, ...(this.#config.workflows ? { workflow_tools: [...this.#config.workflows.catalog], workflow_adapters: [...this.#config.workflows.adapters] } : {}) });

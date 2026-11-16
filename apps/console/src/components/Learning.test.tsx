@@ -911,7 +911,7 @@ describe("learning-loop integration with source-owned execution", () => {
     expect(story.querySelector('[data-testid="stage-took_over"]')).toBeNull();
     expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
   });
-  it.each(["claude-agent-sdk", "codex-sdk"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
+  it.each(["claude-agent-sdk", "codex-sdk", "eve"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
     const t = await open(agent(true, { sdk: { runtime } }));
     const story = t.host.querySelector('[data-testid="loop-story"]')!;
     expect(story.textContent).toContain("Your backend keeps launching each run");

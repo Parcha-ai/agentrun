@@ -1,0 +1,59 @@
+{
+  "name": "@parcha/agentrun-eve",
+  "version": "0.1.0-beta.43",
+  "private": true,
+  "description": "An eve extension that connects existing agents to AgentRun and supplies checked learning on their next turn.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=24.22.3"
+  },
+  "eve": {
+    "extension": {
+      "source": "./extension",
+      "dist": "./dist/extension"
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && eve extension build && tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=2 'test/*.test.mjs'",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@parcha/agentrun-client": "0.1.0-beta.43",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "eve": "1.0.0"
+  },
+  "peerDependencies": {
+    "eve": "1.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/eve"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai"
+}
