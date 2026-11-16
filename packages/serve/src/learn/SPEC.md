@@ -124,6 +124,15 @@ The notes the section gives neither way are left out, and the run's log names th
 
 ## What a run may propose
 
+Which runs are asked: a run of an agent whose learning is `"notes"` is asked its end-of-run turn at every end. A run of
+an agent with `learning: true` (one that compiles workflows) is asked it only when its owner gave feedback on the run (a
+grade's words, or a message after its first); without it nothing is asked and $0 is spent looking back, and a compile
+turn that is due is asked alone. An SDK task carries no owner feedback, so its runs learn through the compile turn
+alone. The compile turn asks for the first workflow when the notes and runs say it is due, and
+for a revision of one only when its promotion record holds it (a replay under the bar, or graded runs under the agent's
+accuracy), once per hold. A hand-back, a stop by the money rule and a wrong grade of a served run ask for none: each is
+one sample, and the hold reads it among the workflow's others.
+
 When a run ends, its end-of-run turn answers with the notes it would keep, one ` ```note <file>.md ` block each
 (`reflectPrompt`, `parseReflection`), and, only when the work repeats, one skill in a ` ````skill <name> ` block (four
 backticks, so a code block inside it stays in it) and one workflow draft in a ` ````workflow <name> ` block: front

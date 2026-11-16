@@ -39,19 +39,12 @@ function refusal(e: unknown): string {
 /** What a round says when its run ended before it took the grade's words (`feedback_status` `not_run`). */
 export const NOT_RUN = "The review could not run.";
 
-/** What came of the grade, in words: the round it opened (`feedback`, running, done or never run), or that it was kept with none
- *  (the form's NO_WORDS says before sending that a wrong grade without words opens none). A finished `revise` round says
- *  "revised" only when the run's learning kept the workflow's revision (its newest round merged with that workflow); a
- *  draft that failed its checks, a `No change.` or a grader that kept nothing of it changed nothing. */
-function outcome(graded: RunGraded, reviewing: boolean, learning: Run["learning"]): string {
+/** What came of the grade, in words: the look-back round it opened (`feedback`, running, done or never run), or that it was
+ *  kept with none (the form's NO_WORDS says before sending that a wrong grade without words opens none; a grade of a run
+ *  its learned workflow answered alone opens none either: the workflow's graded hold reads it). */
+function outcome(graded: RunGraded, reviewing: boolean): string {
   if (graded.feedback && graded.feedback_status === "not_run") return NOT_RUN;
   if (graded.feedback === "look_back") return reviewing ? "The agent is looking back on your words." : "The agent looked back on your words.";
-  if (graded.feedback === "revise") {
-    if (reviewing) return "The learned workflow that answered is being revised with your grade.";
-    const kept = learning?.state === "merged" ? learning.workflows?.find((w) => !graded.workflow || w.name === graded.workflow) : undefined;
-    if (!kept) return "The agent looked back at your grade; nothing changed.";
-    return kept.pending ? "The learned workflow that answered was revised with your grade. The revision waits for your OK." : "The learned workflow that answered was revised with your grade.";
-  }
   return "Kept for this agent.";
 }
 
@@ -92,7 +85,7 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
   const form = open === "auto" ? (graded ? "closed" : "choose") : open;
   const canGrade = ended && !reviewing;
   const exp = expectedOf(expected);
-  const said = graded ? outcome(graded, reviewing, run.learning) : null;
+  const said = graded ? outcome(graded, reviewing) : null;
 
   const send = async (correct: boolean) => {
     if (sending.current || !onGrade) return;

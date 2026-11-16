@@ -2956,7 +2956,7 @@ export interface operations {
         path: "agent" | "handed_back" | "workflow" | "replay";
         workflow: string | null;
         workflow_digest: string | null;
-        feedback: "revise" | "look_back" | null;
+        feedback: "look_back" | null;
         feedback_status: "running" | "ended" | "not_run" | null;
       };
     } | null;
@@ -3363,7 +3363,7 @@ export interface operations {
       path: "agent" | "handed_back" | "workflow" | "replay";
       workflow: string | null;
       workflow_digest: string | null;
-      feedback: "revise" | "look_back" | null;
+      feedback: "look_back" | null;
       expected?: Record<string, unknown>;
     };
   };

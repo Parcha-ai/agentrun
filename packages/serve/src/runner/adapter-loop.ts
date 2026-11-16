@@ -178,7 +178,7 @@ export interface AdapterRunSpec {
   readonly workflowFirst?: WorkflowFirst;
   /** The learned workflow that fits the run but that the money rule stopped from running first (workflow-first.ts
    *  costLineOf): the loop keeps why on the root (WORKFLOW_FIRST, outcome needs_revision, the two numbers) as the agent
-   *  takes the run, and the run's end-of-run turn asks for its revision. */
+   *  takes the run. The stop asks for no revision. */
   readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
@@ -3690,14 +3690,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const theSession = session;
     const requestId = reflectRequestId(claim.runId, again, round, step);
     const theRecord = cliRecord;
-    // A grade's feedback round (feedbackNow): its first ask is told the grade first (feedback-round.ts feedbackAsk), and,
-    // when the agent never took the job (its learned workflow answered alone: its session is new), the job and the
-    // workflow's answer before it, cut of every secret the runner holds, as a follow-up's are.
+    // A grade's feedback round (feedbackNow): its first ask is told the grade first (feedback-round.ts feedbackAsk), cut
+    // of every secret the runner holds. Only a run the agent finished opens one, so its session saw the job.
     if (feedbackNow && !again && step === undefined) {
       const cut = (text: string) => (deps.redact ? deps.redact(text) : text);
-      const servedNow = theSession.state === "new" ? servedAnswerOf(await entriesOf(gate.journal, conversation.id, context)) : undefined;
-      const seen = servedNow && specNow ? { job: specNow.input, served: { workflow: servedNow.workflow, answer: cut(servedNow.answer) } } : undefined;
-      prompt = `${feedbackAsk({ ...feedbackNow, text: cut(feedbackNow.text) }, seen)}\n\n${prompt}`;
+      prompt = `${feedbackAsk({ ...feedbackNow, text: cut(feedbackNow.text) })}\n\n${prompt}`;
     }
     let timer: NodeJS.Timeout | undefined;
     try {

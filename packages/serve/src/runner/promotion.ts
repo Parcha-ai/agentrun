@@ -17,7 +17,7 @@
 // failure; but a revision that hands back every input it replayed would never answer alone, and is held.
 // The champion keeps serving meanwhile: while the folder's revision (the challenger) replays, or once it is held, the
 // digest promoted last (learn/promote.ts championOf) serves the run, read from the learning commit its record names, so
-// a wrong served grade asks for a revision and never stops the workflow serving. The challenger serves once its replay
+// a wrong served grade is kept for the graded hold and never stops the workflow serving. The challenger serves once its replay
 // promotes it. Only the money rule (workflow-first.ts) and a graded hold of the champion itself stop it. Who serves is
 // the champion alone, read at every run's claim, a queued run's included (servingNow): a digest's own promote record
 // never serves it once another digest was promoted after it, nor once the champion is held (then the agent). A run
