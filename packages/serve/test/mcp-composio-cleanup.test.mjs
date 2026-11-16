@@ -32,7 +32,7 @@ async function setup(t, options = {}) {
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     return saved.body;
   };
-  return { composio, log, api: server.api, put, save };
+  return { composio, log, server, api: server.api, put, save };
 }
 /** The DELETE calls sent to Composio since `from` (a count of calls), by path. */
 const deletes = (s, from = 0) => s.composio.calls.slice(from).filter((call) => call.method === "DELETE").map((call) => call.path);
@@ -188,6 +188,33 @@ test("a delete that starts while a save reusing its auth config and account is s
   assert.equal(last.status, 200, JSON.stringify(last.body));
   assert.deepEqual(s.composio.madeConfigs.github, []);
   assert.equal(s.composio.linked.size, 0);
+});
+
+test("an ordinary save that keeps the credential, listed at the server's address while a save over it at Composio holds the turn, is refused once that save moved the row: the row keeps the new address, nothing written over it", async (t) => {
+  const s = await setup(t);
+  await s.save("gh");
+  const first = s.composio.mcpIds[0];
+  const shown = (await s.api("GET", "/settings/mcp-servers/gh")).body.url;
+  // The save over it makes its MCP server and is held there, in the turn, before it writes the row.
+  const held = s.composio.hold("/api/v3.1/mcp/servers/custom", "POST");
+  const over = s.put("gh");
+  await held.reached;
+  // An ordinary save of the same server, its credential kept: it reads the row and lists the address it names, then waits.
+  const listedAt = () => s.composio.mcpLog.filter((entry) => entry.method === "tools/list" && entry.path.includes(`/v3/mcp/${first}/`)).length;
+  const before = listedAt();
+  const keeping = s.api("PUT", "/settings/mcp-servers/gh", { url: shown, auth: { type: "headers" } });
+  for (let waited = 0; listedAt() === before && waited < 10_000; waited += 20) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(listedAt() > before, "the ordinary save listed the server's address before the save over it wrote");
+  held.release();
+  const [saved, kept] = await Promise.all([over, keeping]);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const second = s.composio.mcpIds[1];
+  assert.ok(!s.composio.mcpLive.has(first), "the save over it removed the MCP server the row named before");
+  assert.equal(kept.status, 412, JSON.stringify(kept.body));
+  assert.deepEqual([kept.body.error.code, kept.body.error.message], ["precondition_failed", "The MCP server gh's credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again."]);
+  const row = await s.server.store.mcp.server("gh");
+  assert.ok(row.url.includes(`/v3/mcp/${second}`), `the row names the MCP server the save over it made: ${row.url}`);
+  assert.ok(s.composio.mcpLive.has(second));
 });
 
 test("a save over a server as another user removes the account the earlier save made, and says so; the auth config it still stands on stays", async (t) => {
