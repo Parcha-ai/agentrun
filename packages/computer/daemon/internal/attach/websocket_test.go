@@ -476,6 +476,22 @@ func TestAnUpgradeThatIsNotOneFails(t *testing.T) {
 	}
 }
 
+func TestAnUpgradeWithConnectionOnTwoLinesIsTaken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		sum := sha1.Sum([]byte(req.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+		conn, rw, _ := w.(http.Hijacker).Hijack()
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: keep-alive\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(sum[:]) + "\r\nSec-WebSocket-Protocol: " + subprotocol + "\r\n\r\n")
+		_ = rw.Flush()
+	}))
+	defer srv.Close()
+	conn, err := Dial(context.Background(), wsURL(srv), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close(CloseGoingAway, "")
+}
+
 func TestItPingsAndClosesWith4408WhenNothingIsHeard(t *testing.T) {
 	pings := make(chan sent, 64)
 	srv := upgrade(t, func(conn net.Conn, r *bufio.Reader) {

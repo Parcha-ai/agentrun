@@ -144,7 +144,9 @@ func handshake(nc net.Conn, u *url.URL, o Options) (*Conn, error) {
 	}
 	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 	accept, protocol := res.Header.Get("Sec-WebSocket-Accept"), res.Header.Get("Sec-WebSocket-Protocol")
-	upgrades := slices.ContainsFunc(strings.Split(res.Header.Get("Connection"), ","), func(token string) bool { return strings.EqualFold(strings.TrimSpace(token), "upgrade") })
+	// Connection may come as several lines, each a list: the token is in any of them.
+	connection := strings.Join(res.Header.Values("Connection"), ",")
+	upgrades := slices.ContainsFunc(strings.Split(connection, ","), func(token string) bool { return strings.EqualFold(strings.TrimSpace(token), "upgrade") })
 	if !upgrades || !strings.EqualFold(res.Header.Get("Upgrade"), "websocket") || accept != base64.StdEncoding.EncodeToString(sum[:]) || protocol != o.Subprotocol {
 		return nil, fmt.Errorf("the server's 101 is not a WebSocket of the subprotocol %s (Sec-WebSocket-Protocol %q)", o.Subprotocol, protocol)
 	}
