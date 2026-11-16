@@ -161,6 +161,10 @@ const forbidden = [
   ['bearer_secret', /\bBearer\s+[A-Za-z0-9._-]{24,}/],
   ['literal_credential', /(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"][^'"\n]{8,}['"]/i],
 ];
+// Northflank's domain is an internal domain because AgentRun's own hosting runs there. The provider scorecard cites
+// Northflank's public docs as a vendor, so an https URL under that domain's /docs/ path, in that one file only, is
+// reviewed; any other mention of the domain on the same line, or the domain in any other file, still blocks.
+const vendorDocsCitation = { path: 'packages/computer/SCORECARD.md', url: /https:\/\/northflank\.com\/docs\//g };
 const findings = [], reviewed = [], files = [];
 function scan(path, content) {
   const lines = content.split('\n');
@@ -174,7 +178,10 @@ function scan(path, content) {
         const proof = { path, line: index + 1, rule, lineSha256: sha256(line) };
         // Public examples/tests may use explicit fake credentials, never plausible secrets.
         const fakeCredential = rule === 'literal_credential' && /^(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"](?:fake-test-key|fake|test-key|example|your-key|YOUR_[A-Z_]+|not-a-secret)['"]$/i.test(matched);
+        const docsCitation = rule === 'internal_domain' && path === vendorDocsCitation.path &&
+          ![line, decoded].some(text => text.replaceAll(vendorDocsCitation.url, '').toLowerCase().includes(matched.toLowerCase()));
         if (fakeCredential) reviewed.push({ ...proof, reason: 'Explicit fake/example credential literal.' });
+        else if (docsCitation) reviewed.push({ ...proof, reason: 'public vendor documentation citation' });
         else findings.push(proof);
       }
     }
