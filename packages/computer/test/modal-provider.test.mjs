@@ -24,9 +24,9 @@ const APP = "computers";
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** The box image the release publishes, tagged with box/recipe.mjs's hash: the Dockerfile, then the helper it copies, 12 hex. */
+/** The box image the release publishes, tagged with box/recipe.mjs's hash: the Dockerfile, then install.sh and the helper it copies, 12 hex. */
 const BOX_IMAGE = `ghcr.io/parcha-ai/agentrun-box:${createHash("sha256")
-	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.update(Buffer.concat(["Dockerfile", "install.sh", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
 	.digest("hex")
 	.slice(0, 12)}`;
 const ENTRYPOINT_MARK = "# agentrun-computer: entrypoint";

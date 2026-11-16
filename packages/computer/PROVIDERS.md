@@ -340,9 +340,46 @@ for `egress: false`, as Agent37's `create` sends) is optional hardening and neve
 make no network namespace, init can't fence and refuses to start, so the shared adapter doesn't fit: declare nothing
 your machines can't hold.
 
-E2B's names no `defaultImage`: it says `prepareImage`, and the provider's `prepareImage()` answers the box template
-(`boxE2bTemplate()` in `box-image.ts`) with no call, so a sandbox and a desktop that mount an Archil disk start from
-an image that has its client. A vendor whose stock image will do names it in `defaultImage` by setting kind instead.
+**Your image.** A vendor whose stock image will do names it in `defaultImage` by setting kind. A computer that mounts
+an Archil disk or shows a desktop needs the box image (`box/`), so E2B's descriptor names no `defaultImage`: it says
+`prepareImage: true`, and the provider class has `prepareImage(ctx)`. A server calls it before its first create and puts
+its answer in `spec.image` ([the contract](../../spec/computer/provider.md#prepareimage)). The in-tree ones are the
+references: E2B answers a public template (`boxE2bTemplate()`) and Modal a public registry tag (`boxImageRef()`), both
+with no call; Agent37 registers the published image as a template (`agentrun-box-<hash>`); Docker builds locally.
+
+If your vendor builds images in your account (a snapshot, a blueprint, a template), build the box image there.
+`box/install.sh` is every step of its build, as POSIX shell. Boot your vendor's base (`python:3.12-slim`, the box
+Dockerfile's `FROM`), put `install.sh` and `agentrun-archil` in one folder, run `install.sh` as root, and snapshot the
+machine under a name that carries the recipe's hash. The provider in `test/conformance-image.test.mjs` runs this on the
+fake host, with an in-memory vendor:
+
+```ts
+async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void } = {}): Promise<Result<string>> {
+	const name = `agentrun-box-${boxRecipeHash()}`; // install.sh is in the hash: a changed build is a new name
+	const vendor = (this.host as VendorHost).client;
+	try {
+		if (await vendor.findSnapshot(name, ctx)) return ok(name); // a second call ends here: no build, no onWait
+		ctx.onWait?.("build", name);
+		const machine = await vendor.boot("python:3.12-slim", ctx);
+		try {
+			for (const file of ["install.sh", "agentrun-archil"]) {
+				await vendor.upload(machine, `/tmp/agentrun-box/${file}`, await readFile(new URL(`../box/${file}`, import.meta.url)), ctx);
+			}
+			await vendor.run(machine, ["sh", "-c", "sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box"], ctx); // as root
+			await vendor.snapshot(machine, name, ctx); // the name taken already: another build of it, so wait for that one
+		} finally {
+			await vendor.delete(machine, ctx);
+		}
+		return ok(name);
+	} catch (error) {
+		return fail(codeOfError(this.host, error), `building the box image ${name}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+```
+
+Call `onWait` only when you build or pull. `install.sh` ends the same when run twice on one machine, so a retried build
+is safe. A first build takes minutes, once per account and recipe. The Core case `provider.prepare-image` calls
+`prepareImage` twice and fails a second call that builds, pulls or answers another image.
 
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 
