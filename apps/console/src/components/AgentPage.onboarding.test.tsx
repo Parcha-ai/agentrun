@@ -243,6 +243,42 @@ describe("AgentPage production onboarding", () => {
     expect(page.getRun).toHaveBeenCalledTimes(outcome === "success" ? 2 : 1);
   });
 
+  it("reconfirms the full result after an immediate refresh of the same run", async () => {
+    const done = success();
+    let confirmations = 0;
+    const page = await open(quietAgent(), { fullRead: async () => ++confirmations === 1 ? done : {
+      ...done, result: { output: null, final_answer: "Invalid answer", output_error: "Answer does not meet the schema" },
+    } });
+    expect(page.onboarding()).not.toBeNull();
+    await page.focus();
+    expect(page.getRun).toHaveBeenCalledTimes(2);
+    expect(page.onboarding()).toBeNull();
+  });
+
+  it("reconfirms a changed full result when immediate reads batch the loading state", async () => {
+    const agent = quietAgent();
+    const done = success();
+    let confirmations = 0;
+    const getRun = vi.fn(async () => ++confirmations === 1 ? done : {
+      ...done, result: { output: null, final_answer: "Invalid answer", output_error: "Answer does not meet the schema" },
+    });
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host); roots.push(root);
+    const v2 = {
+      getAgent: async () => ({ agent, etag: null }),
+      statsOver: async () => ({}),
+      listAgentRuns: async () => ({ runs: [done], next_cursor: null }),
+      getRun,
+    };
+    act(() => root.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, go: () => {} })));
+    await settle();
+    expect(host.querySelector('[aria-label="Production onboarding"]')).not.toBeNull();
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await settle();
+    expect(getRun).toHaveBeenCalledTimes(2);
+    expect(host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+  });
+
   it("waits for refreshed agent metadata and respects a live job outside the loaded history", async () => {
     const done = success();
     const metadata = deferred<Agent>();
@@ -255,5 +291,29 @@ describe("AgentPage production onboarding", () => {
     await act(async () => metadata.resolve({ ...agent, runs: { count: 100, live: 1 } }));
     expect(page.onboarding()).toBeNull();
     expect(page.host.querySelector('[aria-label="Live jobs"]')?.textContent).toContain("outside the loaded history");
+  });
+
+  it.each(["manual", "focus"] as const)("a %s refresh that cannot confirm agent metadata hides onboarding until metadata and the full run are freshly confirmed", async (trigger) => {
+    const agent = quietAgent();
+    const done = success();
+    const confirmation = deferred<Run>();
+    let metadataReads = 0, fullReads = 0;
+    const page = await open(agent, {
+      agentRead: async () => {
+        if (++metadataReads === 2) throw new Error("Agent metadata unavailable");
+        return agent;
+      },
+      fullRead: async () => ++fullReads === 1 || metadataReads === 2 ? done : confirmation.promise,
+    });
+    expect(page.onboarding()).not.toBeNull();
+    const refresh = () => trigger === "manual" ? page.click("Refresh agent") : page.focus();
+    await refresh();
+    expect(page.onboarding()).toBeNull();
+    expect(page.getRun).toHaveBeenCalledTimes(1);
+    await refresh();
+    expect(page.getRun).toHaveBeenCalledTimes(2);
+    expect(page.onboarding()).toBeNull();
+    await act(async () => confirmation.resolve(done));
+    expect(page.onboarding()).not.toBeNull();
   });
 });

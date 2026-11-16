@@ -30,12 +30,14 @@ async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | n
   let reads = 0;
   let timelines = 0;
   let listings = 0;
+  let currentRun = listed;
   const v2 = {
     getAgent: async () => ({ agent: current, etag: '"r1"' }),
     statsOver: async () => ({}),
-    listAgentRuns: async () => ({ runs: [listings++ ? reread() : listed], next_cursor: null }),
+    listAgentRuns: async () => { if (listings++) currentRun = reread(); return { runs: [currentRun], next_cursor: null }; },
     getTimeline: async () => { timelines++; return timeline(); },
-    getRun: async () => { reads++; return reread(); },
+    // Confirming a full record observes the current server state; it does not advance the learning job.
+    getRun: async () => { reads++; return currentRun; },
     agentLearning: async () => EMPTY,
     updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => { current = { ...current, revision: "r2", revisions: 2, definition: body.definition }; return { agent: current, etag: '"r2"' }; },
   };
@@ -107,7 +109,7 @@ describe("AgentPage's Learning tab", () => {
     await settle();
     expect(row()).toContain("Learned 1 note");
     expect(p.host.querySelector('section[aria-label="Latest run"]')).toBeNull();
-    expect(p.reads()).toBe(0);
+    expect(p.reads()).toBe(3); // Initial onboarding confirmation and one fresh confirmation after each refresh.
     expect(p.timelines()).toBe(0);
   });
 });
