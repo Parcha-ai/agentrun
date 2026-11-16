@@ -289,9 +289,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   const [held, setHeld] = useState<Record<string, "met" | "unmet" | "unread">>({});
   const [heldTries, setHeldTries] = useState(0);
   const neededIds = needed.map((r) => r.id).join(" ");
+  // Each read again keeps the last answer shown until the new one comes.
   useEffect(() => {
     let live = true;
-    setHeld({});
     for (const r of APPLY_REQUIREMENTS.filter((x) => neededIds.split(" ").includes(x.id))) {
       r.met(v2).then((ok) => { if (live) setHeld((was) => ({ ...was, [r.id]: ok ? "met" : "unmet" })); }, () => { if (live) setHeld((was) => ({ ...was, [r.id]: "unread" })); });
     }
@@ -299,6 +299,14 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   }, [v2, neededIds, heldTries]);
   const waiting = needed.filter((r) => held[r.id] !== "met");
   const reading = waiting.find((r) => held[r.id] === undefined);
+  // One set up in another tab (a mailbox saved under Settings → Email) is read again when this window is back in focus.
+  const someWaiting = waiting.length > 0;
+  useEffect(() => {
+    if (!someWaiting) return;
+    const again = () => setHeldTries((n) => n + 1);
+    window.addEventListener("focus", again);
+    return () => window.removeEventListener("focus", again);
+  }, [someWaiting]);
   const body = { parameters: fieldValues(form, values), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals, ...(choice ? { choice } : {}) } };
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.

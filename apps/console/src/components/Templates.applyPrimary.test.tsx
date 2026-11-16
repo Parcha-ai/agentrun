@@ -108,6 +108,20 @@ describe("a plain template that reads mail", () => {
     expect(applyTemplate).toHaveBeenCalledTimes(1);
   });
 
+  it("reads the mailbox again when the window is back in focus: one saved in another tab enables Apply", async () => {
+    let account = NONE;
+    const v2 = client([inbox], async () => account);
+    const host = await mount(v2, inbox.id);
+    expect(button(host, "Apply")!.disabled).toBe(true);
+    account = SAVED;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(host.querySelector("[data-requirement]")).toBeNull();
+    expect(button(host, "Apply")!.disabled).toBe(false);
+    const reads = v2.emailAccount.mock.calls.length;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(v2.emailAccount.mock.calls.length).toBe(reads);
+  });
+
   it("says a failed read in one plain line with Try again, never the server's raw refusal", async () => {
     let answer: () => Promise<EmailAccount> = async () => { throw new ClientError(422, "unprocessable", "raw refusal words"); };
     const host = await mount(client([inbox], () => answer()), inbox.id);
