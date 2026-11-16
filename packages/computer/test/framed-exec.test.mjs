@@ -260,8 +260,10 @@ test("the pid wrapper's line is the pid and its start time, and the kill script 
 	assert.ok(kids.every((kid) => stat(kid) !== undefined), "and its children too");
 	assert.equal(kill(start), 0);
 	assert.deepEqual(await once(child, "exit"), [null, "SIGKILL"]);
-	for (let at = 0; at < 100 && kids.some((kid) => stat(kid) !== undefined && stat(kid)[0] !== "Z"); at++) await pause(20);
-	assert.deepEqual(kids.filter((kid) => stat(kid) !== undefined && stat(kid)[0] !== "Z"), [], "every process under it is killed");
+	// One read of its stat per check: a process that ends between two reads is gone, not a TypeError.
+	const running = (kid) => (stat(kid)?.[0] ?? "Z") !== "Z";
+	for (let at = 0; at < 100 && kids.some(running); at++) await pause(20);
+	assert.deepEqual(kids.filter(running), [], "every process under it is killed");
 });
 
 test("framedExec reads events no faster than stdout is read, and kill() lets a held reader go", async () => {
