@@ -741,7 +741,10 @@ test("the quote check re-picks once: a checked answer step that hands back on it
   const { state: _, ...wholeState } = ANSWER_STEP;
   assert.deepEqual(again((loop) => (loop.body = wholeState)), [NO_DRAFT("answer", "repick")], "no state map: the whole state, pages included");
   assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP })), [], "the facts and the draft as {answer?}");
-  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{answer.evidence?}" } })), [], "the draft's quotes");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{answer.evidence?}" } })), [NO_DRAFT("answer", "repick")], "the draft is the whole answer key, never a part of it");
+  // #3025 review (Greptile r3): no path below the key is validated, so none counts: `answer.missing?` passes no check
+  // the answer could satisfy, and the retry would get null on both passes.
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{answer.missing?}" } })), [NO_DRAFT("answer", "repick")], "a path the answer has not");
   // #3025 review (Greptile r2): "{state.answer?}" reads a real `state` key's answer first (placeholderValue), and the
   // run's input or a fast step may carry one, so it is no draft read: only a path that resolves to the answer key is.
   assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{state.answer.evidence?}" } })), [NO_DRAFT("answer", "repick")], "under state.: a real state key's first");
