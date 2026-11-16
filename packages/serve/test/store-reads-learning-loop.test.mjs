@@ -190,7 +190,7 @@ test("GET /agents/{id}/learning/loop: empty before any compile, in the schema's 
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.equal((await api("POST", "/agents", agent("sorter"))).status, 201);
   const read = await api("GET", "/agents/sorter/learning/loop");
-  assert.deepEqual([read.status, read.body], [200, { agent: "sorter", compiles: [], guards: [] }]);
+  assert.deepEqual([read.status, read.body], [200, { agent: "sorter", completed_runs: 0, compiles: [], guards: [] }]);
   assert.deepEqual(schemaProblems(doc, doc.paths["/agents/{agent_id}/learning/loop"].get.responses["200"].content["application/json"].schema, read.body), []);
   assert.equal((await api("GET", "/agents/nobody/learning/loop")).status, 404);
 });

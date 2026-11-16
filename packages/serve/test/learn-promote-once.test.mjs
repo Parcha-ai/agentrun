@@ -312,12 +312,10 @@ async function stoppedAndHeld(t, secondNeeds) {
 test("(c) a stopped workflow is never asked a recompile: with `answer` stopped and `second` held, both fitting, the ask revises `second`", { timeout: 180_000 }, async (t) => {
   const w = await stoppedAndHeld(t);
   await w.start("run-1", "Question 10");
-  const asks = w.asks.get("run-1");
-  assert.equal(asks.length > 0, true, "the held workflow is asked its revision");
-  for (const ask of asks) {
-    assert.ok(ask.startsWith("One more turn: revise your learned workflow `second`"), ask.slice(0, 160));
-    assert.ok(!ask.includes("revise your learned workflow `answer`"), "never the stopped one");
-  }
+  // The compile turn's retries (a draft that failed its dry run is asked again) are not revision asks.
+  const revisions = w.asks.get("run-1").filter((ask) => ask.startsWith("One more turn: revise your learned workflow"));
+  assert.equal(revisions.length > 0, true, "the held workflow is asked its revision");
+  for (const ask of revisions) assert.ok(ask.startsWith("One more turn: revise your learned workflow `second`"), `never the stopped one: ${ask.slice(0, 160)}`);
 });
 
 test("(c) a stopped workflow is never asked a recompile, whatever else is held: `answer` stopped, `second` held but not fitting the run, no compile ask", { timeout: 180_000 }, async (t) => {
