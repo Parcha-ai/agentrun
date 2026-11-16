@@ -453,9 +453,8 @@ const judgeDraft = `\`\`\`\`workflow check\n---\ndescription: Checks a claim; us
   v: 2, name: "check",
   schemas: { In: { type: "object", required: ["claim"], properties: { claim: { type: "string" } } }, Check: { type: "object", required: ["right"], properties: { right: { type: "boolean", description: "Is the claim right?" } } } },
   input: { schemaId: "In" }, output: { schemaId: "Check", path: "check" },
-  // The guard the compile turn asks a judgment step for (learn/compile.ts guardProblems holds the draft to it): its own
-  // confidence, no Jev by default.
-  root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check", guard: { signal: "self", threshold: 0.7 } }] },
+  // No step guard: the compile turn asks for none (learn/compile.ts guardProblems refuses one).
+  root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check" }] },
 })}\n\`\`\`\``;
 
 test("on a run with decision providers the compile turn allows judge nodes and a compiled judge workflow is kept; with none it offers none, the draft is refused on every attempt and its errors go with the learning", async (t) => {
@@ -468,10 +467,9 @@ test("on a run with decision providers the compile turn allows judge nodes and a
     const turn = await w.turnOf(row);
     const prompt = compileAskIn(turn.users).replace(/\s+/g, " ");
     assert.ok(prompt, "the run was asked its compile turn");
-    // No Jev by default (S1): even with the faux Jev a provider, the judgment steps are asked for a self guard, never jev
-    // or both.
-    assert.ok(prompt.includes('"guard": {"signal": "self"'), "a self guard");
-    assert.ok(!/"signal": ?"(jev|both)"/.test(prompt), `no Jev guard asked: ${prompt.match(/.{0,80}"signal": ?"(jev|both)".{0,40}/)?.[0]}`);
+    // No step guard, Jev or none (S2), and no Jev default (S1): code checks and escalate steps hand a case back.
+    assert.ok(prompt.includes("Author no step guard"), "no guard asked");
+    assert.ok(!prompt.includes('"guard": {"signal"'), "none to copy");
     const kept = await w.server.learning.proposal("run-1");
     assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
     assert.equal(kept.proposal.workflows, decided ? 1 : 0, `the judge draft is ${decided ? "kept" : "left out"}: ${JSON.stringify(kept.proposal).slice(0, 400)}`);

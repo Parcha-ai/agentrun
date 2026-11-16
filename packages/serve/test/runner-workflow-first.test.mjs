@@ -403,6 +403,44 @@ test("a quote miss re-picks once: the re-pick's found quote answers alone, one m
   assert.deepEqual(first.row.metrics?.loops, [{ node: "repick", iterations: 1, met: true, workflow: "answer" }]);
 });
 
+// The compact re-pick (learn/compile.ts's worked example, compactStateProblems): a fast extract copies the facts from
+// the page, and the answer step reads only those facts and its own draft through its state map, the draft as
+// "{answer?}": null on the first pass (no missing_interpolation before any draft exists), the failed draft on the second.
+// Neither answer request carries the page.
+const ANSWER_FROM_FACTS = "Answer the question from the facts, quoting them; a draft that is not null failed the quote check.";
+const compactRepickFlow = {
+  ...citedFlow,
+  schemas: { ...citedFlow.schemas, Facts: { type: "object", required: ["lines"], properties: { lines: { type: "array", items: { type: "string" } } } } },
+  root: { node: "chain", steps: [
+    { node: "extract", label: "facts", instructions: "Copy the page's lines about the workshop, exactly.", state: { page: "{page}" }, out: "Facts", as: "facts", tier: "fast" },
+    { node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: QUOTES_MISSING }, body: { node: "decide", label: "answer", instructions: ANSWER_FROM_FACTS, state: { question: "{question}", facts: "{facts}", draft: "{answer?}" }, out: "Answer", as: "answer" } },
+    citedFlow.root.steps[1],
+  ] },
+};
+
+test("the compact re-pick: the answer reads the fast extract's facts and its draft as {answer?}, null on the first pass and the failed draft on the second, and never the page", async (t) => {
+  const quotes = [MISSED, FOUND];
+  let answers = 0;
+  const submitted = (body) => (textOf(body).includes(ANSWER_FROM_FACTS) ? { answer: "Lisbon", evidence: [{ quote: quotes[Math.min(answers++, 1)] }] } : { lines: [FOUND] });
+  const run = await piRun(t, { ...cited(MISSED), flows: [{ name: "answer", description: "Answers from a page, quoting it", workflow: compactRepickFlow }], submitted });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.deepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"], "the first pass ran: its absent draft read as null");
+  assert.equal(run.row.metrics?.path, "workflow", JSON.stringify(run.row.metrics));
+  assert.deepEqual(run.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, workflow: "answer" }]);
+  const [facts, ...rest] = submits(run.gateway);
+  assert.ok(textOf(facts.body).includes("hand-made wallets"), "the fast extract reads the page");
+  const [draft, again, ...more] = rest.filter((request) => textOf(request.body).includes(ANSWER_FROM_FACTS));
+  assert.ok(draft && again && !more.length, `two answers, the draft and its re-pick: ${rest.length}`);
+  assert.match(textOf(draft.body), /"draft":null/, "the first pass reads a null draft");
+  assert.ok(!textOf(draft.body).includes(MISSED), "no draft yet on the first pass");
+  assert.ok(textOf(again.body).includes(MISSED), "the re-pick reads its failed draft");
+  for (const answer of [draft, again]) {
+    assert.ok(textOf(answer.body).includes(FOUND), "it reads the facts");
+    assert.ok(!textOf(answer.body).includes("hand-made wallets"), "never the page");
+  }
+  assert.deepEqual(run.gateway.requests.filter((request) => !isNode(request)), [], "no agent request");
+});
+
 /** A request's last message, trimmed: an end-of-run turn's is its prompt. */
 const lastOf = (body) => textOf({ messages: (body?.messages ?? []).slice(-1) }).trim();
 /** The agent's requests that are a compile turn's (a new workflow or a revision), or the look-back's, by their last message. */

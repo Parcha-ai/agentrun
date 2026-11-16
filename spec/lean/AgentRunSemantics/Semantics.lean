@@ -198,12 +198,14 @@ def interpText (s : State) : List TextPart → Except Path String
     | none => .error p
 
 mutual
-/-- `interpolateValue`: a missing path is an error (`missing_interpolation`). -/
+/-- `interpolateValue`: a missing path is an error (`missing_interpolation`); a missing
+optional one is null. -/
 def interp (s : State) : Tmpl → Except Path Value
   | .lit v => .ok v
   | .ref p => match resolveRef s p with
     | some v => .ok v
     | none => .error p
+  | .opt p => .ok ((resolveRef s p).getD .null)
   | .text parts => (interpText s parts).map .str
   | .arr xs => (interpList s xs).map .arr
   | .obj kvs => (interpFields s kvs).map .obj

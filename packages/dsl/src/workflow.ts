@@ -1603,10 +1603,17 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
   return errors.length ? { ok: false, errors, issues, ...(warnings.length ? { warnings } : {}) } : { ok: true, ...(warnings.length ? { warnings } : {}) };
 }
 
+/** The value a `{path}` placeholder reads from state, in interpolation's lookup order: the path as written, else, for a
+ *  `state.` path, the path after `state.` (so `{state.x}` reads a real `state` key first). undefined when neither
+ *  resolves. Every placeholder the engine fills reads through it; a static check of what a step reads can too. */
+export function placeholderValue(state: Record<string, unknown>, path: string): unknown {
+  const v = getPath(state, path);
+  return v === undefined && path.startsWith("state.") ? getPath(state, path.slice(6)) : v;
+}
+
 function interpolate(template: string, state: Record<string, unknown>): string {
   return template.replace(/\{([a-zA-Z0-9_.$]+)\}/g, (_, p) => {
-    let v = getPath(state, p);
-    if (v === undefined && p.startsWith("state.")) v = getPath(state, p.slice(6));
+    const v = placeholderValue(state, p);
     return v === undefined || v === null ? `(${p} unset)` : typeof v === "string" ? v : JSON.stringify(v);
   });
 }
@@ -1897,19 +1904,21 @@ function shapeFromSchema(schema: Record<string, unknown>): unknown {
   return Object.fromEntries(Object.entries(properties).map(([key, sub]) => [key, shapeFromSchema(sub as Record<string, unknown>)]));
 }
 
+/** `interpolateValue`: a whole-string placeholder keeps its value's type; one marked optional (`"{draft?}"`) is null while
+ *  its path is absent (a loop's first pass, before the step that writes it ran) instead of failing. Only a whole string
+ *  may be marked: inside a longer string `{draft?}` is literal text. */
 function interpolateValue(value: unknown, state: Record<string, unknown>, stage: string = "interpolation"): unknown {
   if (typeof value === "string") {
-    const whole = value.match(/^\{([a-zA-Z0-9_.$]+)\}$/);
+    const whole = value.match(/^\{([a-zA-Z0-9_.$]+)(\?)?\}$/);
     if (whole) {
       const p = whole[1];
-      let v = getPath(state, p);
-      if (v === undefined && p.startsWith("state.")) v = getPath(state, p.slice(6));
+      const v = placeholderValue(state, p);
+      if (v === undefined && whole[2]) return null;
       if (v === undefined) throw new WorkflowStateError(`interpolation path "${p}" is not present in the state`, stage, p, "missing_interpolation");
       return v;
     }
     return value.replace(/\{([a-zA-Z0-9_.$]+)\}/g, (_, p) => {
-      let v = getPath(state, p);
-      if (v === undefined && p.startsWith("state.")) v = getPath(state, p.slice(6));
+      const v = placeholderValue(state, p);
       if (v === undefined) throw new WorkflowStateError(`interpolation path "${p}" is not present in the state`, stage, p, "missing_interpolation");
       return typeof v === "string" ? v : JSON.stringify(v);
     });

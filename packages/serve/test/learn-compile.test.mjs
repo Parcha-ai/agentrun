@@ -10,20 +10,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
-import { CANARY } from "./fixtures/faux-jev.mjs";
 import { baseOf, added, DRAFT_PATH, note, README_PATH, readme, richWorkflow } from "./learn-format-support.mjs";
-import { scratch, withEnv } from "./support.mjs";
 import { git, repoOf } from "./learn-support.mjs";
 
 const compile = await import("../dist/learn/compile.js");
 const { draftProblems, draftDryRun } = await import("../dist/learn/skills.js");
-const { answerTierProblems, checkProposal, quoteCheckProblems } = await import("../dist/learn/check.js");
+const { answerTierProblems, checkProposal, compactStateProblems, quoteCheckProblems } = await import("../dist/learn/check.js");
 const { compiledInto, parseNoteFile } = await import("../dist/learn/notes.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { seedOf } = await import("../dist/learning.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { reflectRequestId, reflectRanges } = await import("../dist/runner/end-of-run.js");
-const { decisionProvidersIn } = await import("../dist/decisions.js");
 const reflect = await import("../dist/learn/reflect.js");
 const learningEnd = await import("../dist/runner/learning-end.js");
 const { runLearningBody } = await import("../dist/learning-routes.js");
@@ -32,7 +29,6 @@ const { said } = await import("../dist/learning-words.js");
 const { labelled } = await import("../dist/reflect-range.js");
 const reflect_ = reflect;
 
-const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const NOTES = [{ file: "rule-1.md", text: note({ name: "Rule 1", description: "First" }) }, { file: "rule-2.md", text: note({ name: "Rule 2", description: "Second" }) }];
 const ASK = (extra = {}) => ({ mode: "new", reference: compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), notes: NOTES, traces: [], tools: ["web_fetch"], judges: false, ...extra });
 
@@ -57,37 +53,46 @@ test("the compile reference is generated from the DSL's own author contract, wit
     assert.equal(host.nodeKinds.includes("judge"), judges);
     for (const kind of ["extract", "decide", "agent", "call", "escalate"]) assert.ok(host.nodeKinds.includes(kind), kind);
     assert.match(ref, /`web_fetch`/);
-    assert.match(ref, /### Step guards/, "the DSL's own guard section, generated");
-    assert.ok(ref.includes(`"guard": {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`), "without Jev every judgment step is asked for a guard on its own confidence");
-    assert.match(ref, /This run cannot call Jev/, "jev and both only when the run can call Jev (the Jev test below)");
-    assert.doesNotMatch(ref, /"predicate": "lt", "path": "<as>\.confidence"/, "no confidence-escalate stand-in: the guard hands back");
+    assert.match(ref, /Author no step guard \(no `guard` field, no confidence threshold\): code checks and escalate steps hand a case back\./, "no guard asked of any step");
+    assert.doesNotMatch(ref, /"guard": \{"signal"/, "no guard given to copy");
+    assert.match(ref, /A model step off the fast tier \(no `"tier": "fast"`: the answering step among them\) never reads a page a call step fetched\./, "the compact state rule");
+    assert.doesNotMatch(ref, /"predicate": "lt", "path": "<as>\.confidence"/, "no confidence-escalate stand-in");
   }
   assert.match(compile.compileReference(dsl, { tools: [], judges: false }), /There is no tool for a call node to run: author no call node\./);
 });
 
-test("the worked example is a whole job the checks pass, its judgment steps guarded on their own confidence, with an escalate step; with decision providers a judge node too", async (t) => {
-  const calls = join(await scratch(t), "jev.jsonl");
-  withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: calls, AGENTRUN_TEST_FAUX_JEV_COST: "0.00002" });
-  const registry = await decisionProvidersIn({ TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
-  assert.ok(registry?.providers.jev, "setup: the faux Jev");
-  for (const judges of [false, true]) {
-    const doc = compile.compileExample(judges);
+// The worked example is the cascade skeleton (H1, H5d): fetch, a fast extract writes compact facts, the answer on the
+// agent's model reads only those facts and its own draft, a quote_missing check after a re-pick loop of 2, and an escalate
+// for a case the policy does not cover. Every check the compile turn's draft meets passes it, and it carries no guard.
+test("the worked example is the cascade skeleton and every check passes it: the DSL's, the dry run, the answer's tier, compact state, the quote check and re-pick, no guard", async () => {
+  for (const fetches of [true, false]) {
+    const doc = compile.compileExample(fetches);
     const text = JSON.stringify(doc);
-    const decisions = judges ? { providers: registry.providers, default: registry.default } : undefined;
-    assert.deepEqual(draftProblems(dsl, text, [], {}, {}, decisions), [], `judges ${judges}`);
+    const tools = fetches ? [compile.EXAMPLE_TOOL] : [];
+    assert.deepEqual(draftProblems(dsl, text, tools), [], `fetches ${fetches}: the DSL's checks`);
     const dry = await draftDryRun(dsl, text, JSON.stringify(compile.EXAMPLE_INPUT));
-    assert.notEqual(dry.status, "failed", JSON.stringify(dry));
-    const kinds = dsl.inspectWorkflow(doc).nodes.map((node) => node.kind);
-    for (const kind of ["extract", "decide", "escalate"]) assert.ok(kinds.includes(kind), `${kind} in ${kinds}`);
-    assert.equal(kinds.includes("judge"), judges);
-    const decide = doc.root.steps.find((step) => step.node === "decide");
-    assert.deepEqual(decide.guard, { signal: "self", threshold: compile.GUARD_THRESHOLD }, "the decide step is guarded on its own confidence");
-    assert.ok(!("confidence" in doc.schemas[decide.out].properties), "its confidence goes beside its record, never in its value");
-    if (judges) assert.deepEqual(doc.root.steps.find((step) => step.node === "judge").guard, decide.guard);
-    assert.equal(dsl.validateWorkflow(doc, { executeCode: false, tools: [] }).ok, true);
+    assert.equal(dry.status, "passed", JSON.stringify(dry));
+    assert.deepEqual(answerTierProblems(doc), [], `fetches ${fetches}: the answer's tier`);
+    assert.deepEqual(compactStateProblems(doc), [], `fetches ${fetches}: compact state`);
+    assert.deepEqual(quoteCheckProblems(doc), [], `fetches ${fetches}: the quote check and its re-pick`);
+    assert.deepEqual(compile.guardProblems(doc), [], `fetches ${fetches}: no guard`);
+    const checked = checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, text), added(README_PATH, readme)], outcome: "completed", tools, dsl });
+    assert.deepEqual(checked.problems, [], `fetches ${fetches}: checkProposal`);
+    assert.doesNotMatch(text, /"guard"|"threshold"|"signal"|"jev"/, "no guard field anywhere");
+    assert.equal(dsl.validateWorkflow(doc, { executeCode: false, tools }).ok, true);
   }
-  // Without decision providers the judge example is refused: the example the prompt shows always fits the run.
-  assert.notDeepEqual(draftProblems(dsl, JSON.stringify(compile.compileExample(true)), []), []);
+  // The skeleton, step by step.
+  const doc = compile.compileExample(true);
+  assert.deepEqual(doc.root.steps.map((step) => `${step.node}:${step.label}${step.tier ? `@${step.tier}` : ""}`), ["extract:target@fast", "call:fetch", "extract:facts@fast", "loop:repick", "escalate:quotes", "escalate:unclear"]);
+  const loop = doc.root.steps[3];
+  assert.equal(loop.maxIters, 2);
+  assert.deepEqual(loop.until, { predicate: "not", of: doc.root.steps[4].when }, "the loop waits on the escalate's own check");
+  assert.equal(doc.root.steps[4].when.predicate, "quote_missing");
+  assert.deepEqual(doc.root.steps[4].when.pages, ["page"], "against the page as fetched");
+  assert.equal(loop.body.node, "decide");
+  assert.equal("tier" in loop.body, false, "the answer on the agent's model");
+  assert.deepEqual(loop.body.state, { target: "{target}", facts: "{facts}", draft: "{answer?}" }, "the facts and its own draft, never the page");
+  assert.equal(doc.root.steps[5].when.predicate, "field_equals", "an uncovered case hands back on a value a step wrote");
 });
 
 test("the compile prompt: no tool, the reference, the worked example, the input's field names (never values), the tools, the notes and traces fenced as data, and one block asked for", () => {
@@ -96,7 +101,7 @@ test("the compile prompt: no tool, the reference, the worked example, the input'
   assert.ok(prompt.startsWith("One more turn: write this agent's job as a learned workflow."));
   assert.match(prompt, /Use no tool in this turn\./);
   assert.ok(prompt.includes("## The workflow language") && prompt.includes(ASK().reference));
-  assert.match(prompt, /## A worked example\n[\s\S]*````workflow refund-request\n---\ndescription: /);
+  assert.match(prompt, /## A worked example\n[\s\S]*````workflow licence-check\n---\ndescription: /);
   assert.match(prompt, /This run's input has these fields: `content` \(string\), `count` \(number\)\./);
   assert.ok(!prompt.includes("SECRET-VALUE-1"), "the input's values stay out");
   assert.match(prompt, /A call node may run only these tools: web_fetch\.\nWhat each tool a call node may run takes and gives:\n- `web_fetch`: Read a page/);
@@ -291,54 +296,27 @@ test("a run's timeline shows the compile turn's asks in the host's words, never 
   assert.deepEqual(rows.map(({ text }) => text), [said.asked, said.askedCompile, said.askedCompileAgain]);
 });
 
-// Jev by default (SPEC 11-13): a run that can call Jev (its decision providers hold jev,
-// not denied) asks each judgment step for a guard on its own confidence and Jev's together (`both`), and each extract or
-// call step, which reports no confidence, for Jev alone (`jev`); a run that can't asks `self` on the judgment steps and
-// no guard elsewhere. Every guard starts at GUARD_THRESHOLD until a refit (learn/refit.ts) fits it.
-test("Jev by default: with Jev, judgment steps are asked for a both guard and extract and call steps for a jev guard; without it, self alone", () => {
-  const both = `"guard": {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`;
-  const jev = `"guard": {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`;
-  const self = `"guard": {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`;
-  assert.equal(compile.GUARD_THRESHOLD, 0.7);
-  const withJev = compile.compileReference(dsl, { tools: ["web_fetch"], judges: true, jev: true });
-  assert.equal(withJev, dsl.authorContract({ host: compile.learnedHost({ tools: ["web_fetch"], judges: true, jev: true }) }));
-  assert.ok(withJev.includes(both), "judgment steps: both");
-  assert.match(withJev, /every decide, agent, judge, pick and sift step a guard `"guard": \{"signal": "both"/);
-  assert.ok(withJev.includes(jev), "extract and call steps: jev");
-  assert.match(withJev, /every extract and call step a guard `"guard": \{"signal": "jev"/);
-  assert.ok(!withJev.includes(self), "never self alone where Jev can be asked");
-  for (const judges of [false, true]) {
-    const without = compile.compileReference(dsl, { tools: ["web_fetch"], judges, jev: false });
-    assert.ok(without.includes(self), `judges ${judges}: self`);
-    assert.ok(!without.includes(both) && !without.includes(jev), `judges ${judges}: never jev or both`);
-    assert.match(without, /This run cannot call Jev: a guard reads `self` alone, never `jev` or `both`, and an extract or call step takes no guard\./);
+// No step guard (the cascade skeleton): code checks (quote_missing) and escalate steps hand a case back, with Jev or
+// without; a run that can call Jev is asked for no guard either.
+test("no step guard: with Jev or without, judges or none, the reference asks for no guard and gives none to copy", () => {
+  for (const judges of [false, true]) for (const jev of [false, true]) {
+    const ref = compile.compileReference(dsl, { tools: ["web_fetch"], judges, jev });
+    assert.equal(ref, dsl.authorContract({ host: compile.learnedHost({ tools: ["web_fetch"], judges, jev }) }));
+    assert.match(ref, /Author no step guard/, `judges ${judges}, jev ${jev}`);
+    assert.doesNotMatch(ref, /"guard": \{"signal"|This run cannot call Jev|GUARD_THRESHOLD/, `judges ${judges}, jev ${jev}`);
   }
-  // Jev is a decision provider: a run that has one may still have no Jev (another provider, or jev set to deny).
-  assert.equal(compile.compileReference(dsl, { tools: [], judges: true }), compile.compileReference(dsl, { tools: [], judges: true, jev: false }), "jev is off unless asked");
+  assert.equal(compile.compileReference(dsl, { tools: [], judges: true }), compile.compileReference(dsl, { tools: [], judges: true, jev: true }), "Jev changes nothing the compile turn is told");
+  assert.equal(compile.GUARD_THRESHOLD, undefined, "no threshold to start a guard at");
 });
 
-test("Jev by default: the worked example with Jev guards its judgment steps on both and its extract step on Jev, and the checks and the dry run pass it; without Jev, self", async (t) => {
-  const calls = join(await scratch(t), "jev.jsonl");
-  withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: calls, AGENTRUN_TEST_FAUX_JEV_COST: "0.00002" });
-  const registry = await decisionProvidersIn({ TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
-  const decisions = { providers: registry.providers, default: registry.default };
-  const doc = compile.compileExample(true, true);
-  const step = (kind) => doc.root.steps.find((one) => one.node === kind);
-  assert.deepEqual(step("decide").guard, { signal: "both", threshold: compile.GUARD_THRESHOLD });
-  assert.deepEqual(step("judge").guard, { signal: "both", threshold: compile.GUARD_THRESHOLD });
-  assert.deepEqual(step("extract").guard, { signal: "jev", threshold: compile.GUARD_THRESHOLD });
-  assert.deepEqual(draftProblems(dsl, JSON.stringify(doc), [], {}, {}, decisions), []);
-  const dry = await draftDryRun(dsl, JSON.stringify(doc), JSON.stringify(compile.EXAMPLE_INPUT));
-  assert.notEqual(dry.status, "failed", JSON.stringify(dry));
-  // Without Jev the same job guards on its own confidence, and its extract step takes none.
-  for (const judges of [false, true]) {
-    const plain = compile.compileExample(judges, false);
-    assert.deepEqual(plain.root.steps.find((one) => one.node === "decide").guard, { signal: "self", threshold: compile.GUARD_THRESHOLD });
-    assert.equal(plain.root.steps.find((one) => one.node === "extract").guard, undefined);
-  }
-  // A run with no Jev refuses the Jev example: the example the prompt shows always fits the run.
-  assert.notDeepEqual(draftProblems(dsl, JSON.stringify(doc), []), []);
-  assert.match(compile.compilePrompt(ASK({ judges: true, jev: true, reference: compile.compileReference(dsl, { tools: ["web_fetch"], judges: true, jev: true }) })), /"signal":"jev"/, "the prompt's example is the Jev one");
+test("the prompt's worked example fits the run: with a tool, the fetch skeleton naming the stand-in tool; with none, facts from the input and no call; never a guard", () => {
+  const fetching = compile.compilePrompt(ASK({ judges: true, jev: true }));
+  assert.ok(fetching.includes(JSON.stringify(compile.compileExample(true))), "the fetch skeleton, whole");
+  assert.match(fetching, new RegExp(`\`${compile.EXAMPLE_TOOL}\` stands for the tool your runs read with`));
+  const none = compile.compilePrompt(ASK({ tools: [], reference: compile.compileReference(dsl, { tools: [], judges: false }) }));
+  assert.ok(none.includes(JSON.stringify(compile.compileExample(false))), "no tool: the skeleton without its call");
+  assert.doesNotMatch(none, /"node":"call"/);
+  for (const prompt of [fetching, none]) assert.doesNotMatch(prompt, /"guard":/);
 });
 
 // A workflow its promotion holds (runner/promotion.ts: its replay on the agent's graded inputs fell under the bar) asks
@@ -402,48 +380,38 @@ test("GET /runs/{id}/learning: compiled.promoted is null until its promotion is 
   assert.equal(body({ promoted: false }).promoted, false);
 });
 
-// #2641 review (class A): a draft the checks keep is held to the guards the ask asked for (learnedHost's rules) before
-// it is accepted; a missing or wrong guard goes back through the retry loop, never into a workflow that runs a judgment
-// with no hand-back.
-const strip = (doc, kinds) => JSON.parse(JSON.stringify(doc, (key, value) => (value && typeof value === "object" && kinds.includes(value.node) ? Object.fromEntries(Object.entries(value).filter(([k]) => k !== "guard")) : value)));
-test("guardProblems: every judgment step guarded, with Jev every extract and call step on Jev, without Jev no guard reads it", () => {
-  for (const judges of [false, true]) {
-    assert.deepEqual(compile.guardProblems(compile.compileExample(judges, true), { jev: true }), [], `judges ${judges}, Jev: the example passes`);
-    assert.deepEqual(compile.guardProblems(compile.compileExample(judges, false), { jev: false }), [], `judges ${judges}, no Jev: the example passes`);
-  }
-  const bare = compile.guardProblems(strip(compile.compileExample(true, true), ["decide", "judge"]), { jev: true });
-  assert.deepEqual(bare, [
-    `the judge step "policy" has no guard: give it {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`,
-    `the decide step "answer" has no guard: give it {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`,
-  ]);
-  // With Jev, an extract or call step reports no confidence: Jev alone checks it.
-  assert.deepEqual(compile.guardProblems(compile.compileExample(false, false), { jev: true }), [`the extract step "facts" has no guard: give it {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`]);
-  const selfOnExtract = compile.compileExample(false, true);
-  selfOnExtract.root.steps[0].guard = { signal: "self", threshold: 0.7 };
-  assert.deepEqual(compile.guardProblems(selfOnExtract, { jev: true }), [`the extract step "facts" reports no confidence of its own: its guard reads jev, {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`]);
-  // Without Jev, a guard that reads it would hand every case back.
-  assert.deepEqual(compile.guardProblems(compile.compileExample(false, true), { jev: false }), [
-    `the extract step "facts" has a guard that reads jev, and this run cannot call Jev: an extract or call step takes no guard`,
-    `the decide step "answer" has a guard that reads both, and this run cannot call Jev: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`,
-  ]);
-  // Nested steps are read too (a map's body, a route's branches).
-  const nested = { v: 2, name: "n", schemas: {}, root: { node: "map", label: "each", itemsPath: "items", body: { node: "agent", label: "inner" } } };
-  assert.deepEqual(compile.guardProblems(nested, { jev: false }), [`the agent step "inner" has no guard: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`]);
+// #2641 review (class A), the cascade skeleton: a draft the checks keep is held to learnedHost's rules before it is
+// accepted, and those ask for no step guard: a guard on any step goes back through the retry loop with which step.
+const GUARDED = (kind, label) => `the ${kind} step "${label}" has a guard: author no step guard (drop its "guard"); code checks and escalate steps hand a case back`;
+const guardedExample = () => {
+  const doc = compile.compileExample(false);
+  doc.root.steps[1].guard = { signal: "self", threshold: 0.7 };
+  return doc;
+};
+test("guardProblems: any step's guard is refused, nested steps included; the worked example has none", () => {
+  for (const fetches of [true, false]) assert.deepEqual(compile.guardProblems(compile.compileExample(fetches)), [], `fetches ${fetches}`);
+  assert.deepEqual(compile.guardProblems(guardedExample()), [GUARDED("decide", "answer")]);
+  const extract = compile.compileExample(false);
+  extract.root.steps[0].guard = { signal: "jev", threshold: 0.7 };
+  assert.deepEqual(compile.guardProblems(extract), [GUARDED("extract", "facts")]);
+  // Nested steps are read too (a map's body).
+  const nested = { v: 2, name: "n", schemas: {}, root: { node: "map", label: "each", itemsPath: "items", body: { node: "agent", label: "inner", guard: { signal: "both", threshold: 0.7 } } } };
+  assert.deepEqual(compile.guardProblems(nested), [GUARDED("agent", "inner")]);
 });
 
-test("compileTurn: a draft the checks keep but missing a guard the ask asked for goes back with which step, and the guarded one is kept", async () => {
-  const unguarded = JSON.stringify(strip(compile.compileExample(false), ["decide"]));
-  const guarded = JSON.stringify(compile.compileExample(false));
+test("compileTurn: a draft the checks keep but carrying a guard goes back with which step, and the one without is kept", async () => {
+  const guarded = JSON.stringify(guardedExample());
+  const plain = JSON.stringify(compile.compileExample(false));
   const asked = [];
   const result = await compile.compileTurn({
-    ask: async (prompt, attempt) => (asked.push(prompt), { answer: `\`\`\`\`workflow refund-request\n---\ndescription: d\n---\n${attempt === 1 ? unguarded : guarded}\n\`\`\`\`` }),
+    ask: async (prompt, attempt) => (asked.push(prompt), { answer: `\`\`\`\`workflow refund-request\n---\ndescription: d\n---\n${attempt === 1 ? guarded : plain}\n\`\`\`\`` }),
     compile: ASK(), answer: "",
-    check: async (answer) => ({ state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/refund-request/workflow.json", text: answer.includes(unguarded) ? unguarded : guarded }] } }),
+    check: async (answer) => ({ state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/refund-request/workflow.json", text: answer.includes(guarded) ? guarded : plain }] } }),
   });
   assert.equal(asked.length, 2, "asked again");
-  assert.match(asked[1], /guard: the decide step "answer" has no guard/);
-  assert.deepEqual(result.record.attempts, [{ ok: false, errors: [`guard: the decide step "answer" has no guard: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`] }, { ok: true, errors: [] }]);
-  assert.match(result.kept.answer, /"guard"/);
+  assert.match(asked[1], /guard: the decide step "answer" has a guard/);
+  assert.deepEqual(result.record.attempts, [{ ok: false, errors: [`guard: ${GUARDED("decide", "answer")}`] }, { ok: true, errors: [] }]);
+  assert.doesNotMatch(result.kept.answer, /"guard"/);
 });
 
 // #2641 review (class B): the compile turn reads the agent's notes whole; notes past NOTES_MAX compile nothing and say
@@ -491,13 +459,14 @@ test("a compile trace's feedback is the person's messages alone: the server's an
 // `state` or `args` value that happens to hold a `node` key.
 test("guardProblems walks steps alone: a call's args or a step's state holding a `node` key is data, never a step", () => {
   const doc = { v: 2, name: "n", schemas: {}, root: { node: "chain", steps: [
-    { node: "call", label: "file", via: "tool", tool: "web_fetch", args: { node: "agent", nested: [{ node: "decide" }] }, out: "R", as: "r", deadline_s: 30 },
-    { node: "decide", label: "answer", state: { r: "{r}", shape: { node: "judge" } }, out: "A", as: "a", guard: { signal: "self", threshold: 0.7 } },
+    { node: "call", label: "file", via: "tool", tool: "web_fetch", args: { node: "agent", guard: { signal: "self", threshold: 0.7 }, nested: [{ node: "decide", guard: {} }] }, out: "R", as: "r", deadline_s: 30 },
+    { node: "decide", label: "answer", state: { r: "{r}", shape: { node: "judge", guard: {} } }, out: "A", as: "a" },
   ] } };
-  assert.deepEqual(compile.guardProblems(doc, { jev: false }), []);
+  assert.deepEqual(compile.guardProblems(doc), []);
   // The steps under a parallel, a loop and a route are steps.
-  const deep = { root: { node: "parallel", branches: [{ node: "loop", body: { node: "agent", label: "a" } }, { node: "route", branches: { x: { body: { node: "decide", label: "d" } } } }] } };
-  assert.deepEqual(compile.guardProblems(deep, { jev: false }).map((line) => line.split(" has ")[0]), ['the agent step "a"', 'the decide step "d"']);
+  const guard = { signal: "self", threshold: 0.7 };
+  const deep = { root: { node: "parallel", branches: [{ node: "loop", body: { node: "agent", label: "a", guard } }, { node: "route", branches: { x: { body: { node: "decide", label: "d", guard } } } }] } };
+  assert.deepEqual(compile.guardProblems(deep).map((line) => line.split(" has ")[0]), ['the agent step "a"', 'the decide step "d"']);
 });
 
 // Track A, A1 (H1, 300 merchants out of sample): the workflow that held the agent's accuracy at 11% of its cost does its
@@ -510,16 +479,17 @@ test("the answering step runs on the agent's model: a draft whose answering node
   legwork.root.steps[0].tier = "fast";
   assert.deepEqual(checked(legwork).problems, [], "a legwork step on fast passes");
   const strong = structuredClone(legwork);
-  strong.root.steps[2].tier = "strong";
+  strong.root.steps[3].tier = "strong";
   assert.deepEqual(checked(strong).problems, [], "the answer on strong passes: only fast is refused");
   const fast = structuredClone(legwork);
-  fast.root.steps[2].tier = "fast";
+  fast.root.steps[3].tier = "fast";
   assert.deepEqual(checked(fast).problems, [{ rule: "workflow", path: DRAFT_PATH, detail: 'the extract step "refund" writes the answer (output.path "verdict") on tier "fast": the answering node runs on the agent\'s model: drop its tier' }]);
-  for (const judges of [false, true]) for (const jev of [false, true]) {
-    const doc = compile.compileExample(judges, jev);
-    const answer = doc.root.steps.find((step) => step.as === doc.output.path);
+  for (const fetches of [true, false]) {
+    const doc = compile.compileExample(fetches);
+    const top = doc.root.steps.find((step) => step.as === doc.output.path || step.body?.as === doc.output.path);
+    const answer = top?.node === "loop" ? top.body : top;
     assert.equal(answer?.node, "decide", "the example's answering step is its decide step");
-    assert.equal("tier" in answer, false, `judges ${judges}, jev ${jev}: the example's answer names no tier`);
+    assert.equal("tier" in answer, false, `fetches ${fetches}: the example's answer names no tier`);
     assert.equal(doc.root.steps.find((step) => step.label === "facts").tier, "fast", "its legwork stays on fast");
   }
   assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /The step that writes the answer \(`output.path`\) names no tier: it runs on the agent's model\./);
@@ -563,12 +533,134 @@ test("answerTierProblems: the answering step is the model node writing output.pa
   assert.deepEqual(answerTierProblems({ root: { node: "agent", label: "answer", tier: "fast" } }), []);
 });
 
+// Compact state (check A): chain14b's drafts fed whole pages to the answering step on the agent's model (4.1 requests a
+// run at ~70k cached tokens each, $0.364 a served run), where the research shape (a fast extract's compact facts to the
+// answer) booked ~$0.08. A model step off the fast tier never reads a page a call fetched: through its state map, or,
+// with none, the whole state. One refusal line the compile retry acts on.
+const COMPACT = (kind, label, what) => `the ${kind} step "${label}" runs off the fast tier and reads ${what}: a page reaches a step on the agent's model only through a fast-tier step's output. Give it a "state" map naming only compact keys (the facts a fast-tier extract step wrote from the pages; in a re-pick loop its own draft too, as "{<its as>?}"), or, for legwork, "tier": "fast"`;
+const READS_PAGE = '"{page}", a page a call step fetched';
+const READS_WHOLE = 'the whole run state (it has no "state" map), the page "page" included';
+const pagedDraft = (steps) => ({
+  v: 2, name: "find-policies",
+  schemas: {
+    Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+    Page: { type: "object" },
+    Facts: { type: "object", properties: { lines: { type: "array", items: { type: "string" } } }, required: ["lines"] },
+    Verdict: { type: "object", properties: { refunds: { type: "boolean" } }, required: ["refunds"] },
+  },
+  input: { schemaId: "Store" }, output: { schemaId: "Verdict", path: "verdict" },
+  root: { node: "chain", steps: [{ node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 }, ...steps] },
+});
+const VERDICT = (state) => ({ node: "decide", label: "answer", instructions: "Say whether the store gives refunds.", ...(state ? { state } : {}), out: "Verdict", as: "verdict" });
+const FACTS = { node: "extract", label: "facts", instructions: "Copy the page's refund lines.", state: { page: "{page}" }, out: "Facts", as: "facts", tier: "fast" };
+
+test("compact state (a): an answer step on the agent's model reading a call's page is refused, through its state map or the whole state, in one line the retry acts on", () => {
+  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  assert.deepEqual(checked(pagedDraft([VERDICT({ page: "{page}" })])), [{ rule: "workflow", path: DRAFT_PATH, detail: COMPACT("decide", "answer", READS_PAGE) }], "a state map naming the page");
+  assert.deepEqual(checked(pagedDraft([VERDICT()])), [{ rule: "workflow", path: DRAFT_PATH, detail: COMPACT("decide", "answer", READS_WHOLE) }], "no state map: the whole state");
+  assert.deepEqual(checked(pagedDraft([VERDICT({ text: "{state.page.text}" })])), [{ rule: "workflow", path: DRAFT_PATH, detail: COMPACT("decide", "answer", READS_PAGE) }], "a field under the page, by state.");
+  const strong = VERDICT({ page: "{page}" });
+  strong.tier = "strong";
+  assert.deepEqual(compactStateProblems(pagedDraft([strong])), [COMPACT("decide", "answer", READS_PAGE)], "strong is off the fast tier too");
+});
+
+test("compact state (b): the same draft with a fast extract in between passes; legwork on fast may read the page", () => {
+  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  assert.deepEqual(checked(pagedDraft([FACTS, VERDICT({ facts: "{facts}" })])), []);
+  assert.deepEqual(checked(pagedDraft([{ ...FACTS, state: undefined }, VERDICT({ facts: "{facts}", url: "{url}" })])), [], "a fast step reads the whole state; the run's own input is compact");
+  // The fast extract between, but the answer still reads the page beside the facts: refused.
+  assert.deepEqual(compactStateProblems(pagedDraft([FACTS, VERDICT({ facts: "{facts}", page: "{page}" })])), [COMPACT("decide", "answer", READS_PAGE)]);
+  // No state map after the facts: the whole state still holds the page.
+  assert.deepEqual(compactStateProblems(pagedDraft([FACTS, VERDICT()])), [COMPACT("decide", "answer", READS_WHOLE)]);
+});
+
+test("compactStateProblems: pages through maps, picks, composed workflows and loops; a model step's write ends a page; decision nodes and a workflow with no call are not read", () => {
+  const flow = (steps) => ({ v: 2, name: "n", schemas: {}, output: { schemaId: "V", path: "verdict" }, root: { node: "chain", steps } });
+  const call = (as) => ({ node: "call", label: `get_${as}`, via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as, deadline_s: 30 });
+  const decide = (label, state) => ({ node: "decide", label, instructions: "Decide.", ...(state ? { state } : {}), out: "V", as: label });
+  // A map over pages: its item is a page in its body; a map whose body fetches collects pages.
+  assert.deepEqual(compactStateProblems(flow([call("pages"), { node: "map", label: "each", itemsPath: "pages", as: "read", body: decide("one", { page: "{item}" }) }])), [COMPACT("decide", "one", '"{item}", a page a call step fetched')]);
+  assert.deepEqual(compactStateProblems(flow([{ node: "map", label: "each", itemsPath: "urls", as: "more", body: call("got") }, decide("verdict", { more: "{more}" })])), [COMPACT("decide", "verdict", '"{more}", a page a call step fetched')]);
+  // A pick over pages picks a page.
+  assert.deepEqual(compactStateProblems(flow([call("pages"), { node: "pick", label: "best", itemsPath: "pages", describe: "{item.url}", instructions: "The page about refunds.", as: "best" }, decide("verdict", { best: "{best}" })])), [COMPACT("decide", "verdict", '"{best}", a page a call step fetched')], "a pick reads no tier, but what it picked is a page");
+  // A composed workflow: its child sees a page through its input; its answer is a page when the child's is.
+  const child = (root) => ({ v: 2, name: "c", schemas: {}, output: { schemaId: "V", path: "out" }, root });
+  assert.deepEqual(compactStateProblems(flow([call("page"), { node: "workflow", label: "sub", workflow: child(decide("out")), input: { p: "{page}" }, as: "sub" }])), [COMPACT("decide", "out", 'the whole run state (it has no "state" map), the page "p" included')]);
+  assert.deepEqual(compactStateProblems(flow([{ node: "workflow", label: "sub", workflow: child(call("out")), input: {}, as: "sub" }, decide("verdict", { sub: "{sub}" })])), [COMPACT("decide", "verdict", '"{sub}", a page a call step fetched')]);
+  // A fast step writing over a page's key ends it; a loop's second pass sees its first's pages.
+  assert.deepEqual(compactStateProblems(flow([call("page"), { node: "extract", label: "page", instructions: "Trim.", out: "V", as: "page", tier: "fast" }, decide("verdict", { page: "{page}" })])), []);
+  assert.deepEqual(compactStateProblems(flow([{ node: "loop", label: "again", maxIters: 2, until: { predicate: "exists", path: "verdict" }, body: { node: "chain", steps: [decide("verdict", { last: "{late?}" }), call("late")] } }])), [COMPACT("decide", "verdict", '"{late}", a page a call step fetched')], "the second pass reads the first's fetch");
+  // A decision node goes to its decision provider, not a tier; nothing fetched, nothing refused.
+  assert.deepEqual(compactStateProblems(flow([call("page"), { node: "judge", label: "j", state: { page: "{page}" }, out: "V", as: "verdict" }])), []);
+  assert.deepEqual(compactStateProblems(flow([decide("verdict")])), []);
+});
+
+// #3025 review (Greptile r1): the walk follows the runtime. A parallel merges its branches' patches and a route runs one
+// branch, so a key every path replaced with compact facts is no page after them; a loop runs until its page marks stop
+// changing, not twice; a map's failedAs rows are short errors; "{state.x}" reads a real `state` key first.
+const r1 = {
+  flow: (steps) => ({ v: 2, name: "n", schemas: {}, output: { schemaId: "V", path: "verdict" }, root: { node: "chain", steps } }),
+  call: (as) => ({ node: "call", label: `get_${as}`, via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as, deadline_s: 30 }),
+  fast: (as, state) => ({ node: "extract", label: `trim_${as}`, instructions: "Trim.", state, out: "V", as, tier: "fast" }),
+  decide: (state) => ({ node: "decide", label: "answer", instructions: "Decide.", state, out: "V", as: "verdict" }),
+};
+test("compactStateProblems (r1, branches): a key a parallel's writing branch or every route branch replaced with facts is no page after it; one left on any path is", () => {
+  const { flow, call, fast, decide } = r1;
+  const parallel = (branches) => ({ node: "parallel", label: "both", branches });
+  assert.deepEqual(compactStateProblems(flow([call("page"), parallel([fast("page", { page: "{page}" }), fast("other", { url: "{url}" })]), decide({ page: "{page}" })])), [], "the parallel's branch replaced it");
+  assert.deepEqual(compactStateProblems(flow([call("page"), parallel([fast("other", { url: "{url}" }), fast("more", { url: "{url}" })]), decide({ page: "{page}" })])), [COMPACT("decide", "answer", READS_PAGE)], "no branch wrote it: still a page");
+  assert.deepEqual(compactStateProblems(flow([call("other"), parallel([fast("page", { url: "{url}" }), call("page2")]), decide({ page2: "{page2}" })])), [COMPACT("decide", "answer", '"{page2}", a page a call step fetched')], "a branch's own fetch is a page after it");
+  const route = (a, b) => ({ node: "route", label: "kind", valuePath: "kind", branches: { a: { body: a }, b: { body: b } }, as: "picked" });
+  assert.deepEqual(compactStateProblems(flow([call("page"), route(fast("page", { page: "{page}" }), fast("page", { page: "{page}" })), decide({ page: "{page}" })])), [], "every route branch replaced it");
+  assert.deepEqual(compactStateProblems(flow([call("page"), route(fast("page", { page: "{page}" }), fast("other", { url: "{url}" })), decide({ page: "{page}" })])), [COMPACT("decide", "answer", READS_PAGE)], "one branch left it: still a page");
+});
+
+test("compactStateProblems (r1, loops): a page moving a -> b -> c across passes reaches c on the third; the walk runs until the marks stop changing, within maxIters", () => {
+  const { flow, call, decide } = r1;
+  const copy = (from, to) => ({ node: "map", label: `copy_${to}`, itemsPath: from, resultPath: "item", as: to, body: { node: "chain", steps: [] } });
+  const abc = (maxIters) => flow([{ node: "loop", label: "again", maxIters, until: { predicate: "field_true", path: "verdict.done" }, body: { node: "chain", steps: [copy("b", "c"), copy("a", "b"), call("a"), decide({ c: "{c}" })] } }]);
+  assert.deepEqual(compactStateProblems(abc(3)), [COMPACT("decide", "answer", '"{c}", a page a call step fetched')], "pass three reads c's pages");
+  assert.deepEqual(compactStateProblems(abc(2)), [], "two passes never carry the page to c");
+});
+
+test("compactStateProblems (r1, failedAs): a map's failedAs rows are short errors, never its input's pages", () => {
+  const { flow, call, fast, decide } = r1;
+  const each = { node: "map", label: "each", itemsPath: "pages", as: "read", failedAs: "errors", body: fast("gist", { page: "{item}" }) };
+  assert.deepEqual(compactStateProblems(flow([call("pages"), each, decide({ read: "{read}", errors: "{errors}" })])), []);
+});
+
+test("compactStateProblems (r1, state.): \"{state.text}\" reads a real `state` key first, as interpolateValue does, then the key after `state.`", () => {
+  const { flow, call, fast, decide } = r1;
+  assert.deepEqual(compactStateProblems(flow([call("state"), decide({ text: "{state.text}" })])), [COMPACT("decide", "answer", '"{state}", a page a call step fetched')]);
+  assert.deepEqual(compactStateProblems(flow([call("page"), decide({ text: "{state.page.text}" })])), [COMPACT("decide", "answer", READS_PAGE)]);
+  assert.deepEqual(compactStateProblems(flow([call("page"), fast("state", { page: "{page}" }), decide({ text: "{state.text}" })])), [], "a compact state key; the fallback key text holds no page");
+});
+
+test("check B on the skeleton's shape: a quote output (evidence[].quote) without a quote_missing check, or with one but no re-pick, or a re-pick blind to its draft, is refused naming what to add", () => {
+  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: [compile.EXAMPLE_TOOL], dsl }).problems.map(({ detail }) => detail);
+  const skeleton = compile.compileExample(true);
+  const without = (labels) => ({ ...skeleton, root: { ...skeleton.root, steps: skeleton.root.steps.filter((step) => !labels.includes(step.label)) } });
+  const unlooped = (doc) => ({ ...doc, root: { ...doc.root, steps: doc.root.steps.map((step) => (step.node === "loop" ? step.body : step)) } });
+  assert.deepEqual(checked(skeleton), []);
+  const noCheck = checked(unlooped(without(["quotes"])));
+  assert.equal(noCheck.length, 1);
+  assert.match(noCheck[0], /^the answer carries quotes \(Answer\.evidence\[\]\.quote\) and the workflow fetches pages: check them in code, with an escalate \{"predicate": "quote_missing", "path": "answer\.evidence", "field": "quote", "pages": \["page"\]\}/);
+  const noRepick = checked(unlooped(skeleton));
+  assert.equal(noRepick.length, 1);
+  assert.match(noRepick[0], /hands it back on its first quote miss: give it one re-pick first, the step in a loop \{"node": "loop", "label": "repick", "maxIters": 2/);
+  assert.match(noRepick[0], /its failed draft as an optional placeholder, "draft": "\{answer\?\}"/, "the refusal names the draft's placeholder");
+  const blind = structuredClone(skeleton);
+  blind.root.steps[3].body.state = { target: "{target}", facts: "{facts}" };
+  assert.deepEqual(checked(blind), [NO_DRAFT("answer", "repick")]);
+});
+
 // H5: a Jev judge asked whether an answer's quotes were verbatim runs of the fetched pages flagged 149 of 170 answers,
 // while 416 of 429 quotes were in those pages (verbatim, or after case, quote, dash and space normalisation, or read as
 // letters and digits alone). The quote check of a compiled workflow is the DSL's code predicate, quote_missing: a draft
 // whose answer carries quotes and which fetches pages is refused without one, in words the compile retry acts on.
 // `repick` (with a check): the answer step re-picks once before the check hands back (a loop of 2 until it passes).
-const ANSWER_STEP = { node: "decide", label: "answer", instructions: "Say whether {page} states a refund policy, quoting it.", out: "Answer", as: "answer" };
+// The answer step reads the fast extract's facts and its own draft ("{answer?}"), never the page (compact state).
+const ANSWER_STEP = { node: "decide", label: "answer", instructions: "Say whether the facts state a refund policy, quoting them; a draft that is not null failed the quote check.", state: { facts: "{facts}", draft: "{answer?}" }, out: "Answer", as: "answer" };
 const QUOTES_WHEN = (check) => ({ predicate: "quote_missing", path: "answer.evidence", field: "quote", ...check });
 const repickOf = (check, body = ANSWER_STEP) => ({ node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: QUOTES_WHEN(check) }, body });
 const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {}, repick = true } = {}) => ({
@@ -610,7 +702,7 @@ test("the quote check is code: a draft whose answer carries quotes and which fet
 // H5d (preregistered): on a quote miss, the answer step once more over the run's pages kept 26 of 31 misses, right 76.9%
 // against the draft's 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost 21.7%. So a checked
 // answer re-picks once before its check hands back: the step writing it is a loop of 2 until that check passes.
-const NO_REPICK = (step) => `the step "${step}" writes the answer and the escalate "quotes" hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`;
+const NO_REPICK = (step) => `the step "${step}" writes the answer and the escalate "quotes" hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}}, "body": <the step>} in its place, the step with a "state" map naming the compact facts it answers from and its failed draft as an optional placeholder, "draft": "{answer?}" (null on the first pass, before any draft exists; the failed draft on the second) and its instructions saying that a draft there failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`;
 
 test("the quote check re-picks once: a checked answer step that hands back on its first miss is refused; in a loop of 2 until that check passes it passes; more passes, or a loop until anything else, is refused", () => {
   const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
@@ -630,20 +722,26 @@ test("the quote check re-picks once: a checked answer step that hands back on it
   const inner = { node: "escalate", label: "inner_quotes", when: QUOTES_WHEN({ pages: ["page"] }), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" };
   assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, inner] })), [INNER_CHECK("repick", "inner_quotes")], "a check in the loop's chain");
   assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, { node: "route", label: "which", branches: { a: { body: inner }, b: { body: { node: "chain", steps: [] } } } }] })), [INNER_CHECK("repick", "inner_quotes")], "a check deeper in the body");
-  // The re-pick reads the failed draft only when its step takes the whole state: the DSL sends a step with a `state` map
-  // only the keys it names (each pass a fresh model session), and naming the answer there fails the first pass, which
-  // has no draft yet. The one shape that sees the draft is no `state` map at all.
-  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { page: "{page}" } })), [NO_DRAFT("answer", "repick")], "an explicit state without the draft");
-  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { page: "{page}", draft: "{answer}" } })), [NO_DRAFT("answer", "repick")], "an explicit state naming the answer, unset on the first pass");
-  assert.deepEqual(again((loop) => (loop.body = { node: "route", label: "which", branches: { a: { body: { ...ANSWER_STEP, state: { page: "{page}" } } }, b: { body: ANSWER_STEP } } })), [NO_DRAFT("answer", "repick")], "deeper in the body");
-  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP })), [], "no state map: the whole state, the draft included");
+  // The re-pick reads its failed draft through its `state` map as an optional placeholder ("{answer?}": null on the
+  // first pass, the draft on the second). A map without the draft never sees it; naming it unmarked fails the first
+  // pass; no map reads the whole state, the pages included, which compact state refuses on the agent's model.
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}" } })), [NO_DRAFT("answer", "repick")], "a state map without the draft");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{answer}" } })), [NO_DRAFT("answer", "repick")], "the draft unmarked, unset on the first pass");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "was {answer?}" } })), [NO_DRAFT("answer", "repick")], "marked inside a longer string: literal text, no draft");
+  assert.deepEqual(again((loop) => (loop.body = { node: "route", label: "which", branches: { a: { body: { ...ANSWER_STEP, state: { facts: "{facts}" } } }, b: { body: ANSWER_STEP } } })), [NO_DRAFT("answer", "repick")], "deeper in the body");
+  const { state: _, ...wholeState } = ANSWER_STEP;
+  assert.deepEqual(again((loop) => (loop.body = wholeState)), [NO_DRAFT("answer", "repick")], "no state map: the whole state, pages included");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP })), [], "the facts and the draft as {answer?}");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{state.answer.evidence?}" } })), [], "the draft's quotes, under state.");
   assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [{ node: "extract", label: "note", instructions: "Note the page.", state: { page: "{page}" }, out: "Facts", as: "note", tier: "fast" }, ANSWER_STEP] })), [], "a step in the loop not writing the answer may name its state");
   // The compile turn is told the same.
-  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `"maxIters": 2`/);
-  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /the check after the loop, never inside it/);
-  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /the step in the loop has no `state` map, so it reads the whole run state and its second pass sees the failed draft/);
+  const ref = compile.compileReference(dsl, { tools: ["web_fetch"], judges: false });
+  assert.match(ref, /one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `"maxIters": 2`/);
+  assert.match(ref, /the check after the loop, never inside it/);
+  assert.match(ref, /the step in the loop reads the compact facts and its own failed draft through its `state` map, e\.g\. `\{"facts": "\{facts\}", "draft": "\{answer\?\}"\}`/);
+  assert.doesNotMatch(ref, /has no `state` map, so it reads the whole run state/, "#3016's no-map advice is gone: it reads the pages");
 });
-const NO_DRAFT = (step, loop) => `the step "${step}" in the re-pick loop "${loop}" writes the answer from a "state" map, which passes it only the keys it names, so its second pass never sees the failed draft (and naming the answer there fails the first pass, before any draft exists): give it no "state" map, so it reads the whole run state, the failed draft included`;
+const NO_DRAFT = (step, loop) => `the step "${step}" in the re-pick loop "${loop}" writes the answer without reading its failed draft, so its second pass writes the same miss again: give it a "state" map naming the compact facts it answers from and its failed draft as an optional placeholder, "draft": "{answer?}" (null on the first pass, before any draft exists; the failed draft on the second). Naming it unmarked ("{answer}") fails the first pass, and no "state" map reads the whole state, the pages included`;
 const INNER_CHECK = (loop, check) => `the re-pick loop "${loop}" holds the quote_missing escalate "${check}" in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`;
 
 // A loop's `until` is one predicate, and no predicate joins two quote_missing checks: a loop watching one of several

@@ -28,12 +28,12 @@ test("SDK compile checks use the declared callback contract, without requiring a
  assert.deepEqual(guardProblems(doc, { jev: false, workflowAdapters: ["runNode"] }), []);
  const out = await compileTurn({ compile: ask(["runNode"]), answer: "", ask: async () => ({ answer: block(doc) }), check: async () => checked(doc) });
  assert.ok(out.kept, JSON.stringify(out));assert.equal(out.record.attempts.length, 1);
- assert.ok(guardProblems(doc, { jev: false }).length, "managed compilation still requires its confidence guard");
+ assert.deepEqual(guardProblems(doc), [], "managed compilation asks for no guard either");
 });
 test("SDK compiler rejects guards because no guardStep callback is declared, even with runNode", () => {
  const doc = flow({ node: "decide", label: "answer", instructions: "Return readiness.", out: "Answer", as: "answer", guard: { signal: "self", threshold: 0.7 } });
  assert.match(guardProblems(doc, { jev: false, workflowAdapters: ["runNode"] }).join(" "), /guardStep/);
- assert.deepEqual(guardProblems(doc, { jev: false }), [], "managed confidence guard remains accepted");
+ assert.match(guardProblems(doc).join(" "), /has a guard: author no step guard/, "managed compilation refuses it too");
 });
 test("each stateless SDK retry carries the original contract/catalog/notes and the bounded redacted failed draft", async () => {
  const doc = flow({ node: "call", label: "status", via: "tool", tool, args: {}, out: "Answer", as: "answer", deadline_s: 5 });
