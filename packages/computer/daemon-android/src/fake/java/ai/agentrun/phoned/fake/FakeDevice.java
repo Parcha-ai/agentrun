@@ -742,6 +742,8 @@ public final class FakeDevice implements Device {
 	public volatile int encodes;
 	/** The pixels the last watchShot read, as the scene draws them: its shade and size. */
 	private String lastWatched;
+	/** Run as a watchShot has read the screen: a test's cancel at that moment. */
+	public volatile Runnable afterWatchRead;
 
 	@Override
 	public Screen screen() {
@@ -759,8 +761,15 @@ public final class FakeDevice implements Device {
 				String pixels = secure != null ? null : shade + "|" + width + "x" + height;
 				boolean same = pixels != null && pixels.equals(lastWatched);
 				lastWatched = pixels;
+				Runnable after = afterWatchRead;
+				if (after != null) after.run();
 				if (skipUnchanged && same) return null;
 				return frame(null, maxEdge, "jpeg", quality, shade);
+			}
+
+			@Override
+			public void forgetWatched() {
+				lastWatched = null;
 			}
 		};
 	}

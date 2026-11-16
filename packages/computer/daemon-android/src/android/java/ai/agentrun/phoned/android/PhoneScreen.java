@@ -58,11 +58,26 @@ final class PhoneScreen implements Device.Screen {
 		boolean same = lastWatched != null && frame.sameAs(lastWatched);
 		forget();
 		lastWatched = frame;
-		if (skipUnchanged && same) return null;
+		if (skipUnchanged && same) {
+			// A black screen may have become a secure window's with no pixel changed: that is refused, never unchanged.
+			if (allBlack(frame, appArea(frame))) {
+				String secure = secureFocus();
+				if (secure != null) {
+					forget();
+					return new Device.Shot(new byte[0], 0, 0, secure);
+				}
+			}
+			return null;
+		}
 		Device.Shot s = encoded(frame, null, maxEdge, "jpeg", Bitmap.CompressFormat.JPEG, quality);
 		// A secure window's black frame is never the one to compare with: each read of it is refused again.
 		if (s.secure != null) forget();
 		return s;
+	}
+
+	@Override
+	public void forgetWatched() {
+		forget();
 	}
 
 	private void forget() {

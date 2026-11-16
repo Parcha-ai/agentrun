@@ -107,4 +107,18 @@ final class ScreenTest {
 		eq(false, phone.call("screen.watch", "{\"after\":3,\"waitMs\":400}").get("changed"));
 		eq(wide, phone.device.encodes);
 	}
+
+	static void testAWatchCancelledAsItReadsAChangeLeavesThatChangeForTheNextWatch() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		eq(1L, phone.call("screen.watch", "{\"after\":0}").get("seq"));
+		phone.device.internet();
+		Wire.Cancel cancel = new Wire.Cancel();
+		phone.device.afterWatchRead = cancel::cancel;
+		refuses("aborted", () -> phone.phoned.handle("screen.watch", Params.of(Json.parse("{\"after\":1,\"waitMs\":1000}"), "params"), cancel));
+		phone.device.afterWatchRead = null;
+		// The read the cancel cut off was never sent: the next watch is given that screen, not told it is unchanged.
+		Map<String, Object> next = phone.call("screen.watch", "{\"after\":1,\"waitMs\":1000}");
+		eq(2L, next.get("seq"));
+		eq(true, next.get("changed"));
+	}
 }

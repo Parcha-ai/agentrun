@@ -169,8 +169,16 @@ public final class Shots {
 				// When the newest frame is this size and quality's, a read whose pixels are the last read's is not
 				// encoded again (null: unchanged).
 				boolean skip = seq > 0 && key.equals(newestKey);
-				Device.Shot s = allowed(device.screen().watchShot(Math.max(frameWidth, frameHeight), quality, skip));
-				cancel.check();
+				Device.Shot s;
+				try {
+					s = allowed(device.screen().watchShot(Math.max(frameWidth, frameHeight), quality, skip));
+					cancel.check();
+				} catch (RuntimeException e) {
+					// A read cut off before it became the newest frame is not the one to compare with: the next is
+					// encoded.
+					device.screen().forgetWatched();
+					throw e;
+				}
 				// The size is in the digest: a phone turned to landscape may give the same bytes, the other way round.
 				byte[] now = s == null ? digest : sha256(s.width + "x" + s.height + "|" + d.width + "x" + d.height + "|" + key, s.bytes);
 				if (seq == 0 || !Arrays.equals(now, digest)) {

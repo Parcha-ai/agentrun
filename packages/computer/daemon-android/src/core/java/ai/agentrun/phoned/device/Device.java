@@ -142,6 +142,9 @@ public interface Device {
 		default Shot watchShot(int maxEdge, int quality, boolean skipUnchanged) {
 			return shot(null, maxEdge, "jpeg", quality);
 		}
+
+		/** Drops the pixels the last watchShot read, when that read never became the newest frame: the next is encoded. */
+		default void forgetWatched() {}
 	}
 
 	/** One encoded frame. */
