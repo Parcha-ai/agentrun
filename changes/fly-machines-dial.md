@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
+kind: feature
+---
+Fly Machines is a computer provider (`fly`, `@parcha/agentrun-computer/fly`): a dial host whose machines boot the box image and dial the server, with `FLY_API_TOKEN` and the app (`flyApp`) as its settings. Its Core runs inside the server the machines dial: `node packages/serve/scripts/dial-conformance.mjs --provider fly`, with `COMPUTER_FLY_API_TOKEN`, `COMPUTER_FLY_APP`, `AGENTRUN_PUBLIC_URL` and `PORT` set, which the server's image carries.

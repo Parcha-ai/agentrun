@@ -124,9 +124,11 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
 	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
+	// Fly Machines start from the box image's registry tag, which Fly pulls at each create, in the operator's own app.
+	assert.deepEqual([extra.fly.prepareImage, extra.fly.local, extra.fly.settings], [true, undefined, [{ name: "flyApp", option: "app" }]]);
 	for (const [id, fields] of Object.entries(extra)) {
-		if (id !== "modal") assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (id !== "modal" && id !== "fly") assert.equal(fields.settings, undefined, id);
+		if (!["docker", "agent37", "modal", "e2b", "fly"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);

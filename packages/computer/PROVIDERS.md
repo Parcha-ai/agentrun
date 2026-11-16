@@ -436,6 +436,29 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 
+#### Worked example: Fly Machines
+
+[`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
+`create` posts the box image as `config.image`, `req.boot.env` as `config.env` and the labels as `config.metadata`, with
+`auto_destroy: true` and restart policy `"no"`: once init's deadline ends the daemon, the machine stops and Fly destroys
+it. `list` filters by `metadata.<key>=<value>`, `get` reads `config.image` back, `delete` passes `force=true`, and
+`extend` writes the deadline label alone, for the janitor. Each Fly fact has its doc link in the file, and the ones the
+docs leave open say **unverified**.
+
+Its conformance module ([`src/conformance/fly.ts`](src/conformance/fly.ts)) reads `COMPUTER_FLY_API_TOKEN` and
+`COMPUTER_FLY_APP`, and its `dialKit()` refuses in words: Core has to run inside the server the machines dial.
+`packages/serve/scripts/dial-conformance.mjs` is that server. It runs serve's attach routes on `$PORT` and builds the
+provider with their tokens and hub, then runs Core with `--long` and prints the report between
+`DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`:
+
+```sh
+COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
+  node packages/serve/scripts/dial-conformance.mjs --provider fly
+```
+
+The script is in the server's image at `/opt/agentrun/packages/serve/scripts/`, so a host that runs the image can run it
+with the address it serves at.
+
 ### Wire it up
 
 Your provider class hands the host to `HostedProvider`, which turns it into a whole `ComputerProvider`, the interface
