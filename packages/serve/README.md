@@ -2286,7 +2286,8 @@ folder the server ships. `GET /v2/templates` lists them; `POST /v2/templates/{na
 overrides?: {model}}` makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
 package's `version` is SemVer and never `definition.version`, the agent's revision number. A package's `composio` trigger names its
 need's toolkit as its `server` (`server: github` for a required `{source: composio, toolkit: github}` need), and apply makes it
-on the saved Composio server that need maps to; one this server can't set up yet (no public URL, say) is skipped with a
+on the saved Composio server that need maps to, its `config` filled from the parameters it names
+(`repo: "${parameters.repo}"`); one this server can't set up yet (no public URL, say) is skipped with a
 warning, as a github trigger is with GitHub not connected. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.

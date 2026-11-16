@@ -228,11 +228,12 @@ export class PackageError extends Error {
   }
 }
 
-/** The source kinds whose accept rules a parameter may fill: a github trigger's, and a webhook trigger's (a provider that
- *  sends every trigger of a project to one URL, as Composio does, is filtered to the owner's own repository by them). */
-const FILTERED_KINDS = ["github", "webhook"];
+/** The source kinds whose accept rules a parameter may fill: a github trigger's, a webhook trigger's (a provider that
+ *  sends every trigger of a project to one URL is filtered to the owner's own repository by them), and a composio
+ *  trigger's. */
+const FILTERED_KINDS = ["github", "webhook", "composio"];
 
-/** A github or webhook source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+/** A github, webhook or composio source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
  *  condition's list, and `rest`, the source without them. */
 function whereIns(source: Json): { ins: unknown[]; rest: Json } {
   const ins: unknown[] = [];
@@ -319,12 +320,15 @@ const inputFilled = (value: unknown, given: Record<string, unknown>): unknown =>
   return value;
 };
 
-/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), its enabled the boolean its one
- *  placeholder names, the rest as text. */
+/** A trigger filled from the apply's parameters: its target.input and a composio source's config typed (inputFilled),
+ *  its enabled the boolean its one placeholder names, the rest as text. */
 const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
   const out = filled(trigger, given) as Json;
   if (isObject(trigger.target) && trigger.target.input !== undefined) out.target = { ...(out.target as Json), input: inputFilled(trigger.target.input, given) };
   if (typeof trigger.enabled === "string" && WHOLE.test(trigger.enabled)) out.enabled = typedFilled(trigger.enabled, given);
+  // A composio trigger's config is typed as a pin's values are: a value that is one placeholder alone takes the
+  // parameter's type (an integer config field gets an integer).
+  if (isObject(trigger.source) && trigger.source.kind === "composio" && isObject(trigger.source.config)) out.source = { ...(out.source as Json), config: inputFilled(trigger.source.config, given) };
   return out;
 };
 
@@ -728,11 +732,12 @@ export function readPackage(from: string | PackageFiles): Package {
   for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(fields, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
-  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), and a
-  // github or webhook trigger's where `in` values (the repository it takes, say); a trigger's other settings are the
-  // package's own, checked here. A parameter that sets a time has a default, so the schedule the package ships is checked
-  // here too; one a github or webhook trigger's where takes is required or has a default, so the trigger never fills
-  // empty and takes no event.
+  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), a
+  // github, webhook or composio trigger's where `in` values (the repository it takes, say), and a composio trigger's
+  // config values (what Composio watches for it: the owner's repository, team or label); a trigger's other settings,
+  // a composio trigger's server and event among them, are the package's own, checked here. A parameter that sets a time
+  // has a default, so the schedule the package ships is checked here too; one a where or a composio config takes is
+  // required or has a default, so the trigger never fills empty.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
@@ -740,10 +745,11 @@ export function readPackage(from: string | PackageFiles): Package {
     const fixed = Object.entries(trigger).flatMap(([key, value]) =>
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
+      : key === "source" && filtered && isObject(value) && value.kind === "composio" ? Object.entries(whereIns(value).rest).filter(([k]) => k !== "config").map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
       : key === "enabled" && typeof value === "string" ? []
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github, webhook or composio trigger's where in values, a composio trigger's config values, or an mcp pin's values`);
     // enabled is true, false, or one boolean parameter with a default, filled at apply (triggerFilled): the trigger is on
     // or off by the owner's answer, and by the package's default when the apply leaves it out.
     if (typeof trigger.enabled === "string") {
@@ -757,6 +763,11 @@ export function readPackage(from: string | PackageFiles): Package {
     if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
         if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
+      }
+    }
+    if (isObject(trigger.source) && trigger.source.kind === "composio") {
+      for (const used of new Set(strings(trigger.source.config).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
+        if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.config, so it is required or has a default: a composio trigger filled empty watches nothing of the owner's (Composio refuses a required config value left empty)`);
       }
     }
     if (!timed) return;
