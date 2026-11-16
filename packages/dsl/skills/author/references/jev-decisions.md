@@ -41,11 +41,14 @@ large contexts at meaningful boundaries while retaining their qualifiers.
 The adapter has no default byte ceiling. A host may explicitly configure
 `maxStateBytes`; local size errors then report the measured UTF-8 JSON bytes and
 that host's limit before any HTTP request is sent. Provider context limits are
-separate and token-based, not a fixed bytes-to-tokens conversion. Jev 1.13's
-documented contract, checked on 2026-09-22, allows 32k tokens for state plus the
-longest question and 64k for state plus all questions combined; check the selected
-model's current contract. Oversized provider requests remain
-errors, not permission to truncate evidence or silently retry a different graph.
+separate and token-based. Jev 1.13's and 1.14's documented contract, checked on
+2026-11-16, allows 32k tokens for state plus the longest question and 64k for
+state plus all questions combined, and 262k for both with long context. The Jev
+adapter never sends a request over it: one that may not fit the default goes
+whole with long context, which is slower and less accurate; one that may not fit
+that either has its longest state values cut, each ending ` [cut]`. A judge that
+must read every word partitions its evidence in the graph instead (below); do not
+count on long context or cuts as the design.
 
 `sift` sends its items together, in as few requests as the host's limits allow:
 when the items exceed `maxQuestionsPerRequest` or the host's
