@@ -28,7 +28,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-const { putGrade, promotionsOf, REFIT_EVERY } = await import("../dist/learn/promote.js");
+const { putGrade, promotionsOf, recordPromotion, REFIT_EVERY } = await import("../dist/learn/promote.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -294,4 +294,34 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
     assert.deepEqual(w.asks.get(`run-${i}`), [], `run-${i} compiles nothing`);
   }
   assert.equal((await w.replays()).length, 10, "no third check");
+});
+
+/** Two learned workflows of an agent: `answer` stopped (its one recompile's check held it too) and `second` held (its
+ *  recompile still owed). `secondNeeds`: a field `second`'s input takes, so a run without it does not fit `second`. */
+async function stoppedAndHeld(t, secondNeeds) {
+  const second = { ...answerFlow(REVISED), name: "second", schemas: { ...answerFlow().schemas, In: { type: "object", required: secondNeeds ?? ["question"], properties: { question: { type: "string" }, other: { type: "string" } } } } };
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, flows: [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }, { name: "second", description: "Answers it again as a number", workflow: second }] });
+  const at = new Date().toISOString();
+  const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7 };
+  const hold = (workflow, digest, check) => ({ workflow, digest, at, decided: "hold", source: "check", reason: "held", check });
+  await recordPromotion(w.server.settings, "agent-1", hold("answer", DIGEST, { ...bar, attempt: 2, n: 5, alone: 4, agreed: 3, stopped: true }), () => true);
+  await recordPromotion(w.server.settings, "agent-1", hold("second", workflowDigest({ workflow: JSON.stringify(second) }), { ...bar, attempt: 1, n: 5, alone: 4, agreed: 2 }), () => true);
+  return w;
+}
+
+test("(c) a stopped workflow is never asked a recompile: with `answer` stopped and `second` held, both fitting, the ask revises `second`", { timeout: 180_000 }, async (t) => {
+  const w = await stoppedAndHeld(t);
+  await w.start("run-1", "Question 10");
+  const asks = w.asks.get("run-1");
+  assert.equal(asks.length > 0, true, "the held workflow is asked its revision");
+  for (const ask of asks) {
+    assert.ok(ask.startsWith("One more turn: revise your learned workflow `second`"), ask.slice(0, 160));
+    assert.ok(!ask.includes("revise your learned workflow `answer`"), "never the stopped one");
+  }
+});
+
+test("(c) a stopped workflow is never asked a recompile, whatever else is held: `answer` stopped, `second` held but not fitting the run, no compile ask", { timeout: 180_000 }, async (t) => {
+  const w = await stoppedAndHeld(t, ["question", "other"]);
+  await w.start("run-1", "Question 10");
+  assert.deepEqual(w.asks.get("run-1"), []);
 });

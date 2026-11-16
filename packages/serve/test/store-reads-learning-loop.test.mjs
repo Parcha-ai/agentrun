@@ -22,11 +22,12 @@ const row = (node, p, threshold = 0.7, signal = "jev", workflow = "sort-invoice"
 
 /** A store with just what the read reads: the agent's runs, its settings (grades, promotions) and each run's kept learning
  *  (a row, or a list of rounds' rows `{ at, row }` oldest first). proposal(id) is the newest round, as the store's. */
-function storeOf({ runs, grades = [], promotions = [], kept = {} }) {
+function storeOf({ runs, grades = [], promotions = [], kept = {}, learning = true }) {
   const settings = new Map([["learning.grades.sorter", { v: 1, items: grades }], ["learning.promotions.sorter", { v: 1, items: promotions }]]);
   const roundsOf = (id) => (kept[id] === undefined ? [] : Array.isArray(kept[id]) ? kept[id].map(({ at, row }, i) => ({ round: i + 1, createdAt: at, proposal: row })) : [{ round: 1, createdAt: T0 + 3_600_000, proposal: kept[id] }]);
   return {
     runs: { list: async () => runs },
+    agents: { get: async () => ({ currentRevision: "rev" }), revision: async () => ({ body: { learning } }) },
     settings: { get: async (key) => settings.get(key) },
     learning: { proposal: async (id, round) => (round === undefined ? roundsOf(id).at(-1) : roundsOf(id)[round - 1]) },
   };
@@ -192,4 +193,18 @@ test("GET /agents/{id}/learning/loop: empty before any compile, in the schema's 
   assert.deepEqual([read.status, read.body], [200, { agent: "sorter", compiles: [], guards: [] }]);
   assert.deepEqual(schemaProblems(doc, doc.paths["/agents/{agent_id}/learning/loop"].get.responses["200"].content["application/json"].schema, read.body), []);
   assert.equal((await api("GET", "/agents/nobody/learning/loop")).status, 404);
+});
+
+test("the loop's read counts the agent's own completed runs toward its compile, at most compile_after: 150 of 200 for 150 runs", async () => {
+  const own = (n) => Array.from({ length: n }, (_, i) => runOf(`own-${i}`, i, { path: "agent" }, { outcome: "completed" }));
+  const others = [
+    runOf("served", 500, { path: "workflow" }, { outcome: "completed" }),
+    runOf("replayed", 501, { path: "replay" }, { outcome: "completed" }),
+    runOf("failed", 502, { path: "agent" }, { outcome: "failed" }),
+    runOf("imported", 503, { path: "agent" }, { outcome: "completed", importedFrom: "x" }),
+  ];
+  const at = async (n, learning) => (await agentLoopOverStore(storeOf({ runs: [...own(n), ...others], learning }), "sorter")).completed_runs;
+  assert.equal(await at(150, { compile_after: 200 }), 150);
+  assert.equal(await at(250, { compile_after: 200 }), 200);
+  assert.equal(await at(7, true), 7);
 });

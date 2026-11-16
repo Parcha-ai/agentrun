@@ -210,12 +210,12 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
   }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
   // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next. Its
-  // compile counts completed runs only, as the server's trigger does (learn/compile.ts compileDue): the cost
+  // compile count is the server's (the loop read's completed_runs, what compileDue counts: the agent's own completed runs, never the one page of runs this tab reads): the cost
   // series' total counts failed and cancelled runs too. The newest runs read hold enough: the count stops at the threshold.
   const execution = agent.definition.native ? "native" : backendSdkOf(agent.definition) ? "sdk" : "hosted";
   const story = storyOf({
     notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
-    runs: runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
+    runs: loop?.completed_runs ?? 0, workflows, cost, promotions, serving, loop,
     mode: agent.definition.learning === "notes" ? "notes" : "full",
     execution, compileAfter: compileAfterOf(agent.definition.learning),
   });
