@@ -1,7 +1,7 @@
 import { dollars } from "./format";
 import type { Client, FieldIssue } from "./client";
 import { type FieldSpec, fieldValues, schemaFields } from "./inputForm";
-import { type McpServer, SOURCE_LABEL } from "./mcp";
+import { MCP_URL_PRESETS, type McpServer, SOURCE_LABEL } from "./mcp";
 import { browserZone } from "./schedules";
 import type { TemplateApply, TemplateView } from "./v2";
 
@@ -115,11 +115,14 @@ type McpNeed = TemplateView["mcp"][number];
 export const matchesOf = (need: McpNeed, saved: readonly Pick<McpServer, "name" | "source" | "toolkit">[]): string[] =>
   saved.filter((s) => s.source === need.source && s.toolkit === need.toolkit).map((s) => s.name).sort();
 /** Where a need not set up here is set up (Settings → MCP servers, its add form filled): the Composio preset with the
- *  toolkit and its actions, GitHub's server on the GitHub App, or a server under the toolkit's name. */
+ *  toolkit and its actions, GitHub's server on the GitHub App, or a server under the toolkit's name, with the URL preset
+ *  whose toolkit it is (MCP_URL_PRESETS: github is GitHub (token)) filled when there is one. */
 export function setUpHref(need: McpNeed): string {
   const toolkit = encodeURIComponent(need.toolkit);
   if (need.source === "composio") return `#/settings/mcp?add=${toolkit}&preset=composio&toolkit=${toolkit}&tools=${need.tools.map((x) => encodeURIComponent(x.name)).join(",")}`;
-  return need.source === "github" ? "#/settings/mcp?add=github&auth=github_app" : `#/settings/mcp?add=${toolkit}`;
+  if (need.source === "github") return "#/settings/mcp?add=github&auth=github_app";
+  const preset = MCP_URL_PRESETS.find((p) => p.name === need.toolkit);
+  return `#/settings/mcp?add=${toolkit}${preset ? `&preset=${preset.id}` : ""}`;
 }
 
 /** A template whose setup is only its parameters: no MCP tool to tick, no server to pick, no key to save. The console
