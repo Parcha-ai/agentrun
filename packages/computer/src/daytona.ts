@@ -4,10 +4,10 @@
 // stdin sent as the command's input. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
 // Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
-import { PassThrough } from "node:stream";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, orThrow, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
@@ -157,11 +157,6 @@ async function sandboxOf(api: Rest, idOrName: string, signal?: AbortSignal): Pro
 	const sb = found.value as Sandbox | null;
 	return typeof sb?.id === "string" ? ok(sb) : vendorFail("daytona", `GET /sandbox/${idOrName}: no sandbox in the answer`);
 }
-
-/** The log stream's output for one channel: a failure ends the stream with it, and one nobody reads is not an uncaught error. */
-const channel = () => new PassThrough().on("error", () => {});
-const push = (stream: PassThrough, bytes: Uint8Array) => void (stream.writableEnded || stream.destroyed || stream.write(bytes));
-const finish = (stream: PassThrough, error?: Error) => void (error ? stream.destroy(error) : stream.end());
 
 /** Daytona's sandboxes as a MachineHost (../host.ts). */
 class DaytonaHost implements MachineHost {
@@ -375,36 +370,70 @@ class DaytonaHost implements MachineHost {
 	}
 
 	/**
-	 * A session command of its own: argv as one shell line, run async with no input echo, as the toolbox's user (root, or
-	 * one with passwordless sudo, which the adapter's scripts use). Its output comes from the command's log stream, where
-	 * Daytona prefixes each stdout line with 01 01 01 and each stderr line with 02 02 02; an echo of a request the client
-	 * wrote is dropped. Writes go to the command's input, whole lines, one call after another. Its exit code is read from
-	 * the session; once it has one, the log stream is read to its end (it closes as the command ends) and the session
-	 * removed. kill closes the stream and removes the session, which ends the command.
+	 * A session command of its own (#commands), on framedExec: argv as one shell line, run async with no input echo, as
+	 * the toolbox's user (root, or one with passwordless sudo, which the adapter's scripts use).
 	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
-		const toolbox = await this.#toolbox(id, ctx.signal);
+		return framedExec(this.#commands(await this.#toolbox(id, ctx.signal)), argv, ctx);
+	}
+
+	/**
+	 * Daytona's session commands in the toolbox as exec's pieces (./hosted/framed-exec.ts). start makes a session, runs
+	 * the command in it and opens its log stream, where Daytona prefixes each stdout line with 01 01 01 and each stderr
+	 * line with 02 02 02; an echo of a request the client wrote is dropped. The stream ends once the command's exit code
+	 * is written (the toolbox reads the log until its exit code file holds one, daytonaio/daytona@b5a5d9e7
+	 * apps/daemon/internal/util/log_reader.go), so the events read the exit code from the session then, never while it
+	 * runs, within a grace for a read that lags; then the session is removed. write sends whole lines, since Daytona's
+	 * input call ends what it is given with a newline (apps/daemon/pkg/session/input.go): the rest of a line waits for its
+	 * end, or end(). kill closes the stream and removes the session, which ends the command.
+	 */
+	#commands(toolbox: string): ExecPieces<Command> {
+		return {
+			start: (argv, ctx) => this.#startCommand(toolbox, argv, ctx),
+			events: (command) => this.#events(command),
+			write: async (command, text) => {
+				command.held += text;
+				const at = command.held.lastIndexOf("\n");
+				if (at < 0) return;
+				const data = command.held.slice(0, at + 1);
+				command.held = command.held.slice(at + 1);
+				await this.#input(command, data);
+			},
+			end: async (command) => {
+				const data = command.held;
+				command.held = "";
+				if (data !== "") await this.#input(command, data);
+			},
+			kill: async (command) => {
+				command.killed = true;
+				await this.#letGo(command);
+			},
+		};
+	}
+
+	async #startCommand(toolbox: string, argv: readonly string[], ctx: HostCall): Promise<Command> {
 		const sessionId = `agentrun-${randomBytes(8).toString("hex")}`;
 		const session = `${toolbox}/process/session/${sessionId}`;
 		orThrow(await this.#rest.call("POST", `${toolbox}/process/session`, { json: { sessionId }, timeoutMs: ctx.timeoutMs }, ctx.signal));
-		let removed: Promise<void> | undefined;
-		const removeSession = () => (removed ??= this.#rest.call("DELETE", session, {}).then(() => {}));
 		const ran = await this.#rest.json("POST", `${session}/exec`, { json: { command: shellLine(argv), runAsync: true, suppressInputEcho: true }, timeoutMs: ctx.timeoutMs }, ctx.signal);
 		const commandId = ran.ok ? (ran.value as { cmdId?: unknown } | null)?.cmdId : undefined;
 		if (!ran.ok || typeof commandId !== "string") {
-			await removeSession();
+			await this.#rest.call("DELETE", session, {});
 			throw ran.ok ? new Error("POST exec: no command id in the answer") : new HostError(ran.error.code, ran.error.message);
 		}
-		const command = `${session}/command/${encodeURIComponent(commandId)}`;
 		let socket: WebSocketLike;
 		try {
-			socket = this.#webSocket(`${command.replace(/^https:/, "wss:")}/logs?follow=true`, { headers: this.#headers, protocols: [] });
+			socket = this.#webSocket(`${session.replace(/^https:/, "wss:")}/command/${encodeURIComponent(commandId)}/logs?follow=true`, { headers: this.#headers, protocols: [] });
 		} catch (error) {
-			await removeSession();
+			await this.#rest.call("DELETE", session, {});
 			throw new Error(`opening the log stream: ${(error as Error).message}`);
 		}
-		const out = channel();
-		const err = channel();
+		const command: Command = { session, commandId, socket, output: [], ended: false, wake: () => {}, held: "", killed: false };
+		const ended = (failure?: Error) => {
+			command.failure ??= failure;
+			command.ended = true;
+			command.wake();
+		};
 		let rest: Buffer = Buffer.alloc(0);
 		const lines = (bytes: Buffer, last: boolean) => {
 			rest = rest.length === 0 ? bytes : Buffer.concat([rest, bytes]);
@@ -413,21 +442,18 @@ class DaytonaHost implements MachineHost {
 				const end = at >= 0 ? at + 1 : rest.length;
 				const line = rest.subarray(0, end);
 				rest = rest.subarray(end);
-				if (line.subarray(0, 3).equals(ERR)) push(err, line.subarray(3));
+				if (line.subarray(0, 3).equals(ERR)) command.output.push({ stream: "stderr", text: line.subarray(3).toString("utf8") });
 				else {
-					const text = line.subarray(0, 3).equals(OUT) ? line.subarray(3) : line;
-					if (!ECHO.test(text.subarray(0, 64).toString("utf8"))) push(out, text);
+					const text = (line.subarray(0, 3).equals(OUT) ? line.subarray(3) : line).toString("utf8");
+					if (!ECHO.test(text.slice(0, 64))) command.output.push({ stream: "stdout", text });
 				}
 			}
+			command.wake();
 			if (rest.length > MAX_LINE_BYTES + 8) {
-				const over = new Error("the process sent a line over the 1 MiB limit");
-				finish(out, over);
-				finish(err, over);
+				ended(new Error("the process sent a line over the 1 MiB limit"));
 				socket.close(1000);
 			}
 		};
-		let closed!: () => void;
-		const streamEnded = new Promise<void>((done) => (closed = done));
 		let opened!: (failure?: string) => void;
 		const open = new Promise<string | undefined>((done) => (opened = done));
 		socket.binaryType = "arraybuffer";
@@ -439,90 +465,89 @@ class DaytonaHost implements MachineHost {
 		});
 		socket.addEventListener("error", (event) => {
 			opened(`the log stream failed: ${event.message ?? "no reason given"}`);
-			const failed = new Error(`the log stream failed${event.message ? `: ${event.message}` : ""}`);
-			finish(out, failed);
-			finish(err, failed);
-			closed();
+			ended(new Error(`the log stream failed${event.message ? `: ${event.message}` : ""}`));
 		});
 		socket.addEventListener("close", ({ code }) => {
 			opened(`the log stream closed before it opened (code ${code ?? "none"})`);
 			lines(Buffer.alloc(0), true);
-			finish(out);
-			finish(err);
-			closed();
+			ended();
 		});
 		// The stream opens within the call's bound, or the command is let go of: its output would be lost.
 		const bound = boundOf(ctx.timeoutMs, ctx.signal, "opening the log stream");
-		const kill = async () => {
-			socket.close(1000);
-			finish(out);
-			finish(err);
-			await removeSession();
-		};
 		try {
 			const failed = await Promise.race([open, bound.promise]);
 			if (failed !== undefined) throw new Error(failed);
 		} catch (error) {
-			await kill();
+			await this.#letGo(command);
 			throw error;
 		} finally {
 			bound.clear();
 		}
-		// Input: whole lines, one call after another; the rest of a line waits for its end (or end()).
-		// ignoreBOM: a U+FEFF that starts stdin is text, never a mark to drop.
-		const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
-		let queued = "";
-		let sending: Promise<void> = Promise.resolve();
-		const send = (data: string) => {
-			sending = sending.then(async () => {
-				// Daytona's own 500 alone is sent again: the line reached no reader (internalRefusal), so it is never read
-				// twice; a line read twice would be a JSON-RPC request run twice.
-				const sent = await this.#rest.call("POST", `${command}/input`, { json: { data }, retry: internalRefusal });
-				// Its words never hold what was written: it may be a disk's token.
-				if (!sent.ok) throw new Error(`writing to the command failed (${sent.error.code}): ${sent.error.message}`);
-			});
-			return sending;
-		};
-		let exited: Promise<number> | undefined;
-		const exitCode = async (): Promise<number> => {
+		return command;
+	}
+
+	/** The command's output as its log stream gives it, then its exit code; the session is removed once they end. */
+	async *#events(command: Command): AsyncGenerator<FramedEvent> {
+		try {
 			for (;;) {
-				const read = await this.#rest.json("GET", session, { retry: true });
-				if (!read.ok) {
-					// The command may run on, its stream open: let go of both, and fail with the read's own words.
-					await kill();
-					throw new Error(`reading the command's exit code failed (${read.error.code}): ${read.error.message}`);
-				}
-				const found = ((read.value as { commands?: Array<{ id?: unknown; exitCode?: unknown }> } | null)?.commands ?? []).find((one) => one.id === commandId);
+				const next = command.output.shift();
+				if (next !== undefined) yield next;
+				else if (command.ended) break;
+				else await new Promise<void>((done) => (command.wake = done));
+			}
+			if (command.failure) throw command.failure;
+			if (command.killed) return;
+			const until = Date.now() + LOG_GRACE_MS;
+			for (;;) {
+				const read = await this.#rest.json("GET", command.session, { retry: true });
+				if (!read.ok) throw new Error(`reading the command's exit code failed (${read.error.code}): ${read.error.message}`);
+				const found = ((read.value as { commands?: Array<{ id?: unknown; exitCode?: unknown }> } | null)?.commands ?? []).find((one) => one.id === command.commandId);
 				if (typeof found?.exitCode === "number") {
-					// The stream closes as the command ends; one that trails is let go of after a grace.
-					await Promise.race([streamEnded, sleep(LOG_GRACE_MS)]);
-					await kill();
-					return found.exitCode;
+					yield { exit: found.exitCode };
+					return;
 				}
+				// A stream that closed with the command still running (none written within the grace) is an exit never read.
+				if (Date.now() >= until) return;
 				await sleep(this.#pollMs);
 			}
-		};
-		return {
-			stdout: out,
-			stderr: err,
-			write: (bytes) => {
-				queued += utf8.decode(bytes, { stream: true });
-				const at = queued.lastIndexOf("\n");
-				if (at < 0) return sending;
-				const data = queued.slice(0, at + 1);
-				queued = queued.slice(at + 1);
-				return send(data);
-			},
-			end: () => {
-				queued += utf8.decode();
-				const data = queued;
-				queued = "";
-				return data === "" ? sending : send(data);
-			},
-			wait: () => (exited ??= exitCode()),
-			kill,
-		};
+		} finally {
+			await this.#letGo(command);
+		}
 	}
+
+	/**
+	 * Text to the command's input, one call. Daytona's own 500 alone is sent again: the line reached no reader
+	 * (internalRefusal), so it is never read twice; a line read twice would be a JSON-RPC request run twice.
+	 */
+	async #input(command: Command, data: string): Promise<void> {
+		const sent = await this.#rest.call("POST", `${command.session}/command/${encodeURIComponent(command.commandId)}/input`, { json: { data }, retry: internalRefusal });
+		// Its words never hold what was written: it may be a disk's token.
+		if (!sent.ok) throw new Error(`writing to the command failed (${sent.error.code}): ${sent.error.message}`);
+	}
+
+	/** Closes the command's log stream and removes its session, once. */
+	#letGo(command: Command): Promise<void> {
+		command.socket.close(1000);
+		return (command.removed ??= this.#rest.call("DELETE", command.session, {}).then(() => {}));
+	}
+}
+
+/** One session command (DaytonaHost.#commands): its session, its log stream, and what the stream has given. */
+interface Command {
+	session: string;
+	commandId: string;
+	socket: WebSocketLike;
+	/** The stream's output not read yet. */
+	output: FramedEvent[];
+	/** The stream closed, or failed (failure). */
+	ended: boolean;
+	failure?: Error;
+	/** Wakes the events waiting for more. */
+	wake: () => void;
+	/** Input not sent yet: the start of a line. */
+	held: string;
+	killed: boolean;
+	removed?: Promise<void>;
 }
 
 /**

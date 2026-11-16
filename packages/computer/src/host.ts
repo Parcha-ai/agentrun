@@ -1,10 +1,11 @@
 // The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
 // and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
 // errorCode, extend, check). A host whose machines dial the server (facts.connect "dial") has no exec and no upload.
-// HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels (packed
-// where the host declares it), list and attach, the deadline and extend, the wait after a delete, the sweep of a lost
-// create, the Archil mount, and the words of every refusal. These doc comments are the contract a new vendor reads
-// (PROVIDERS.md, "The eleven members").
+// HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the spec's check, the daemon's
+// upload, install and start, the stdio bridge, the read-back and the probe, labels (packed where the host declares it),
+// list and attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and
+// the words of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven
+// members").
 import type { ProviderDescriptor } from "./descriptor.js";
 import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -70,7 +71,10 @@ export interface MachineHost {
 	 *   the process writes them, while it runs. Not request and response, never held until the process exits.
 	 * - Text intact. UTF-8 text both ways, every code point as it was: long lines, \r and \r\n kept (no terminal, no
 	 *   newline translation), nothing added or dropped. Everything the adapter sends or reads is text (the bridge's JSON
-	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this.
+	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this. A
+	 *   vendor whose input call ends what it is given with a newline (Daytona's) holds a write's last partial line until
+	 *   its newline or end(), so the process reads its stdin as written: the bridge's lines end in one, and what is
+	 *   read by length is followed by end().
 	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
 	 *   on the stream, are off.
 	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
@@ -78,7 +82,7 @@ export interface MachineHost {
 	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
 	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload and its label file's write read a
 	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
-	 * this from them with framedExec (./hosted/framed-exec.ts). The exec pre-check (conformance --exec-stream,
+	 * this from them with framedExec (./hosted/framed-exec.ts), as Daytona's does. The exec pre-check (conformance --exec-stream,
 	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
 	 *
 	 * Every host has it but one whose facts.connect is "dial", which has none (and no upload): its machine's computerd

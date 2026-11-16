@@ -2,7 +2,7 @@
 // call through the host's own Modal JS SDK client, whose types it imports as types only (erased at build: nothing loads at
 // import). A Modal sandbox's command is its main process, so computerd is pid1: the sandbox's command is the
 // shared entrypoint, which waits for the daemon and becomes init, and Modal finishes the sandbox when init exits. Modal
-// has no file API, so the daemon goes in through exec's stdin; it has no kill for an exec (closing stdin ends one), and
+// has no file API, so the daemon goes in through exec's stdin; it has no kill for an exec (one is killed by its pid), and
 // reads no network back, so the probe from inside stands for network none. The rest of the computer is the shared
 // machine-host adapter's (./hosted/provider.ts). Every SDK fact below is cited in the README's Modal section, from
 // modal-client@64880502 (js/src) and Modal's docs.
@@ -12,6 +12,7 @@ import { MODAL } from "./descriptors/modal.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
+import { PID_WRAPPER, pidKill, pidStderr } from "./hosted/scripts.js";
 import { isWhole } from "./hosted/values.js";
 import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
@@ -335,21 +336,31 @@ class ModalHost implements MachineHost {
 	}
 
 	/**
-	 * exec in binary mode, as root (Modal containers always run as root), outside computerd. Modal has no kill for an
-	 * exec: kill closes its stdin, which ends the stdio bridge and anything else that reads it.
+	 * exec in binary mode, as root (Modal containers always run as root), outside computerd, under PID_WRAPPER
+	 * (./hosted/scripts.ts): Modal has no kill for an exec, so kill runs pidKill in an exec of its own, which ends the
+	 * process and every process under it, then closes its stdin. Not once wait() read its exit: its pid may be another's.
 	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
-		void ctx;
 		const sandbox = await this.#sandbox(id);
-		const program = await sandbox.exec([...argv], { mode: "binary" });
-		const close = () => program.stdin.close().catch(() => {});
+		const program = await sandbox.exec([...PID_WRAPPER, ...argv], { mode: "binary" });
+		const { stderr, pid } = pidStderr(program.stderr);
+		let exited = false;
+		let waited: Promise<number> | undefined;
 		return {
 			stdout: program.stdout,
-			stderr: program.stderr,
+			stderr,
 			write: (bytes) => program.stdin.writeBytes(bytes),
 			end: () => program.stdin.close(),
-			wait: () => program.wait(),
-			kill: async () => void (await close()),
+			wait: () => (waited ??= program.wait().then((code) => ((exited = true), code))),
+			kill: async () => {
+				try {
+					const target = exited ? undefined : await pid(ctx.timeoutMs);
+					if (target !== undefined && !exited) await (await sandbox.exec(pidKill(target), { mode: "binary" })).wait();
+				} catch {
+					// Best effort: kill never throws.
+				}
+				await program.stdin.close().catch(() => {});
+			},
 		};
 	}
 }

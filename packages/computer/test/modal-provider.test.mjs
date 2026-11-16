@@ -5,9 +5,10 @@
 // (test/modal). The SDK slice here only records what it is given and answers nothing that makes a sandbox: no sandbox
 // exists, no Modal client is constructed unless a test says so, and nothing reaches the network.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -738,6 +739,60 @@ test("the drifted provider uploads a daemon built as <version>-drift", async () 
 	const drifted = await createDriftedProvider({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, ModalClient: fakeClient().ModalClient, ...MODULE_TEST });
 	assert.deepEqual(builds, [`${VERSION}-drift`]);
 	assert.equal(drifted.id, "modal");
+});
+
+/** A sandbox whose exec runs argv as a process on this machine, handed over as Modal's binary-mode ContainerProcess is. */
+function processSandbox(execs) {
+	return {
+		sandboxId: "sb-here",
+		exec: async (argv, params) => {
+			execs.push({ argv, params });
+			const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+			child.stdin.on("error", () => {});
+			await once(child, "spawn");
+			const code = new Promise((done) => child.on("close", (exit, signal) => done(exit ?? (signal ? 137 : -1))));
+			return {
+				stdout: child.stdout,
+				stderr: child.stderr,
+				stdin: { writeBytes: async (bytes) => void child.stdin.write(bytes), close: async () => void child.stdin.end() },
+				wait: () => code,
+			};
+		},
+	};
+}
+
+test("kill ends an exec and every process under it by its pid, as Modal has no kill for an exec, and its stderr is the process's own", async (t) => {
+	if (!existsSync("/proc/self/stat")) return t.skip("no /proc here: the pid wrapper and its kill read /proc/<pid>/stat");
+	const { PID_KILL, PID_WRAPPER } = await import("../dist/hosted/scripts.js");
+	const execs = [];
+	const rec = recorder();
+	rec.sdk.sandboxes.fromId = async () => processSandbox(execs);
+	const provider = new ModalProvider({ sdk: rec.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	// A child that left the process group too: a kill of the group alone misses it.
+	const proc = await provider.host.exec("sb-here", ["sh", "-c", "echo its own words >&2; setsid sleep 600 & echo $!; cat"], { timeoutMs: 2_000 });
+	const err = [];
+	const errRead = (async () => {
+		for await (const chunk of proc.stderr) err.push(Buffer.from(chunk));
+	})();
+	const out = proc.stdout[Symbol.asyncIterator]();
+	const sleeper = Number(Buffer.from((await out.next()).value).toString().trim());
+	const dead = (pid) => {
+		try {
+			return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].startsWith("Z");
+		} catch {
+			return true;
+		}
+	};
+	t.after(() => spawnSync("kill", ["-KILL", String(sleeper)]));
+	assert.equal(dead(sleeper), false);
+	await proc.kill();
+	assert.deepEqual(execs[0].argv, [...PID_WRAPPER, "sh", "-c", "echo its own words >&2; setsid sleep 600 & echo $!; cat"], "the process starts under the pid wrapper");
+	assert.deepEqual(execs[1].argv.slice(0, 4), ["sh", "-c", PID_KILL, "sh"], "kill is an exec of the kill script");
+	assert.equal(await proc.wait(), 137, "killed, while its stdin was still open");
+	for (let at = 0; at < 100 && !dead(sleeper); at++) await new Promise((done) => setTimeout(done, 20));
+	assert.equal(dead(sleeper), true, "the process under it is killed too");
+	await errRead;
+	assert.equal(Buffer.concat(err).toString(), "its own words\n", "the wrapper's line is taken off stderr");
 });
 
 // The loopback block: whatever Modal runs inside a sandbox, the daemon's programs get a network of their own (init
