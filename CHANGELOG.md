@@ -4,6 +4,16 @@
 
 ## 0.1.0-beta.39 (2026-11-16)
 
+**Known issues:**
+
+- Mode 2 (the run folder on your Archil disk):
+  - Works: sandboxes on Agent37, Modal and E2B, and desktops on Agent37 and E2B, in any account. The first computer in an account starts from AgentRun's public box image: Agent37 registers it once ("pulling" for about 15 s), Modal pulls it once (about 35 s), E2B starts from a public template in about 5-10 s. Shell commands start in /workspace, the run folder.
+  - Not yet: Modal sandboxes with GPUs (the Archil mount isn't proven on Modal's GPU runtime), and Daytona (no Archil mount yet).
+  - What to do: for those two, use another provider for Mode 2, or set the computer to none.
+- Spend caps: a cap below what the model needs for one step and an answer wraps up early; saving such an agent now warns.
+
+**Changes:**
+
 - Agent37 starts from our public box image in any account. Its provider's `prepareImage()` reads the workspace template `agentrun-box-<recipe hash>` and, when the workspace has none, registers `ghcr.io/parcha-ai/agentrun-box:<recipe hash>` under that name (`POST /v1/templates`, no build). The wait is reported to `onWait` as a pull, so a run's first claim says it is pulling, once per workspace. A refusal is the run's error in Agent37's words.
   - In Mode 2, an Agent37 sandbox and an Agent37 desktop are ready once the keys work: they mount the run's folder from the owner's Archil disk, on the image they register. A Modal or E2B sandbox and an E2B desktop are still refused.
   - A desktop that mounts the run's folder starts the `shell` group's commands and the programs `processes.start` opens in `/workspace`, as `bash` does.
