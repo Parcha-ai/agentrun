@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { isBoxImage } from "../box-image.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
@@ -133,6 +134,12 @@ export interface HostedOptions {
 	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
 	 */
 	archilEgress?: string;
+	/**
+	 * The image this provider's computers start from, where its setting names one, exactly as the vendor reads it back
+	 * (Machine.image). With facts.labels "machine", list reads labels only in a machine of this image or a box image
+	 * (isBoxImage, ../box-image.ts), and check refuses a spec of any other.
+	 */
+	image?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
@@ -289,8 +296,8 @@ export class HostedProvider implements ComputerProvider {
 	readonly #uid: string;
 	readonly #gid: string;
 	readonly #timeouts: HostedTimeouts;
-	/** What foundBy reads with: the timeouts, and onNote, which hears of a machine a listing leaves out. */
-	readonly #finding: HostedTimeouts & { onNote: ProviderNote | undefined };
+	/** What foundBy reads with: the timeouts, onNote, which hears of a machine a listing leaves out, and the image option. */
+	readonly #finding: Finding;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
 	readonly #archilEgress: ArchilEgress | undefined;
@@ -311,6 +318,7 @@ export class HostedProvider implements ComputerProvider {
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
 			archilEgress,
+			image,
 		} = options;
 		const { id, label, capabilities } = host.descriptor;
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
@@ -359,7 +367,8 @@ export class HostedProvider implements ComputerProvider {
 		this.#maxLifetimeMs = maxLifetimeMs;
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#timeouts = merged;
-		this.#finding = { ...merged, onNote };
+		if (image !== undefined && (typeof image !== "string" || image === "")) throw new Error(`image names the image this provider's computers start from, not ${JSON.stringify(image)}`);
+		this.#finding = { ...merged, onNote, image };
 		this.#probeTargets = [...probeTargets];
 		// Extend only where the end can follow it: the host moves its timer or its deadline label.
 		if (host.extend) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
@@ -422,6 +431,10 @@ export class HostedProvider implements ComputerProvider {
 			);
 		}
 		if (typeof image !== "string" || image === "" || image.includes("\0")) refuse("image", `an image is required: the name of ${a(label)} image`);
+		else if (this.#keeps && !ourImage({ image } as Machine, this.#finding.image)) {
+			// list reads labels only in a machine of our image, so a computer of another would never be found again.
+			refuse("image", `${a(label)} computer keeps its labels inside the machine, and list reads them only in one of this provider's image option or a box image, so ${image} is refused: ${this.#finding.image === undefined ? "ask for a box image" : `ask for ${this.#finding.image} or a box image`}`);
+		}
 		refusals.push(...checkTenure(given, capabilities, label));
 		// Only the forms the descriptor declares, each one this computer enforces; any other is refused, never widened.
 		const networkProblem = networkRefusal(label, capabilities.network, network);
@@ -1266,8 +1279,9 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
 		const listed = await listedBy(this.host, "the listing", { [COMPUTER_LABEL]: "1" }, this.#timeouts.listMs, signal);
-		// A host that keeps no labels lists them by their name alone.
-		const counted = (machine: Machine) => (this.#keeps ? NAME.test(machine.name ?? "") : ours(machine.labels)) && alive(machine.state);
+		// A host that keeps no labels lists them by their image, and by their name where the vendor keeps one.
+		const keptOurs = (machine: Machine) => ourImage(machine, this.#finding.image) && (machine.name === undefined || NAME.test(machine.name));
+		const counted = (machine: Machine) => (this.#keeps ? keptOurs(machine) : ours(machine.labels)) && alive(machine.state);
 		return countTested(this.#label, listed.ok ? ok({ count: listed.value.filter(counted).length }) : listed);
 	}
 
@@ -1483,6 +1497,12 @@ export async function listedBy(host: MachineHost, what: string, labels: Record<s
 	return listed.ok ? ok(listed.value.map((machine) => unpacked(host, machine)).filter(keeps)) : listed;
 }
 
+/** What foundBy reads with: the timeouts, who hears of a machine a listing leaves out, and the provider's image option. */
+type Finding = Pick<HostedTimeouts, "listMs" | "requestMs"> & { onNote?: ProviderNote | undefined; image?: string | undefined };
+
+/** Whether a machine's image is ours: the provider's image option, or a box image by its name rule (isBoxImage). */
+const ourImage = (machine: Machine, image: string | undefined): boolean => machine.image !== undefined && (machine.image === image || isBoxImage(machine.image));
+
 /** With labels kept in the machine: each machine's label map as its file was last read, by host and machine id. */
 const filed = new WeakMap<MachineHost, Map<string, Record<string, string>>>();
 function filedOf(host: MachineHost): Map<string, Record<string, string>> {
@@ -1533,20 +1553,27 @@ const carries = (machine: Machine, labels: Record<string, string>) => Object.ent
  * labels are not written yet. A label file's read that fails or does not end within requestMs leaves its machine out of
  * this listing alone, told through onNote by its id: one wedged machine never holds up the rest. A listing by a
  * request's name is the exception: what is left of it may be the request's own, so such a read fails it, as a get that
- * fails fails the whole.
+ * fails fails the whole. The label file is read only in a machine whose listed image is ours (ourImage): another's is
+ * left out unread, and one that shows no image is left out in words.
  */
 export async function foundBy(
 	host: MachineHost,
 	what: string,
 	labels: Record<string, string>,
-	{ listMs, requestMs, onNote }: Pick<HostedTimeouts, "listMs" | "requestMs"> & { onNote?: ProviderNote | undefined },
+	{ listMs, requestMs, onNote, image }: Finding,
 	signal?: AbortSignal,
 ): Promise<Result<Machine[]>> {
 	const listed = await listedBy(host, what, labels, listMs, signal);
 	if (!listed.ok) return listed;
 	const name = labels[NAME_LABEL];
+	// With labels in the machine, the label read runs only in a machine of our image: never in another's.
+	const readable = (machine: Machine) => {
+		if (host.facts.labels !== "machine") return true;
+		if (machine.image === undefined) onNote?.({ computer: machine.id, note: "its vendor record shows no image, so its labels are not read: this listing leaves it out" });
+		return ourImage(machine, image);
+	};
 	const reads = await Promise.all(
-		listed.value.map(async ({ id }) => {
+		listed.value.filter(readable).map(async ({ id }) => {
 			const read = await readMachine(host, id, requestMs, signal);
 			if (!read.ok) return read;
 			const inside = await labelled(host, read.value, requestMs, signal, true);

@@ -50,9 +50,9 @@ export interface MachineHost {
 	 * none): the adapter keeps those whose get does. A listing may lag a create: two creates of one request on two
 	 * provider instances can then both make a machine, and the adapter deletes every one but the oldest (createdAt), so
 	 * a vendor may see a second create deleted. With facts.labels "machine" it lists by req.name where the vendor lists by
-	 * name, else every machine: the adapter keeps those of the name, then reads each one's labels from inside it; one
-	 * whose read fails or does not end is left out of that listing, in words, except from a listing by a request's name,
-	 * which that read fails.
+	 * name, else every machine: the adapter keeps those of the name and of our image (Machine.image), then reads each
+	 * one's labels from inside it; one whose read fails or does not end is left out of that listing, in words, except
+	 * from a listing by a request's name, which that read fails.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
 	/**
@@ -179,6 +179,12 @@ export interface Machine {
 	 */
 	name?: string;
 	/**
+	 * The image the vendor reads back for this machine. Required in practice with facts.labels "machine": list runs the
+	 * label read only in a machine of the provider's image option or a box image (isBoxImage), and leaves one with none
+	 * out, in words.
+	 */
+	image?: string;
+	/**
 	 * starting: not yet running; stopped: there, not running, and not being deleted (paused, asleep): listed, so the
 	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
 	 */
@@ -247,7 +253,8 @@ export interface HostFacts {
 	 * the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in the machine (LABEL_FILE,
 	 * ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as JSON, what a run's output
 	 * keeps (OUTPUT_MAX, ./hosted/process.ts). Only with lifetime "vendor", since a machine whose labels were never
-	 * written is ended by the vendor's timer alone, and no extend.
+	 * written is ended by the vendor's timer alone, and no extend. get and list answer each machine's image
+	 * (Machine.image): the labels are read only in one of ours.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
 	/**

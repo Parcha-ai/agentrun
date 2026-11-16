@@ -222,6 +222,7 @@ export function fakeHost({
 		id: m.id,
 		labels: keeps() ? {} : { ...m.labels },
 		...(m.name === undefined ? {} : { name: m.name }),
+		...(m.image === undefined ? {} : { image: m.image }),
 		state: m.deleted || m.why !== undefined ? "gone" : m.state,
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
 		endsAt: new Date(m.endsAt),

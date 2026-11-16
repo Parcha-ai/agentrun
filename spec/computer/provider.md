@@ -87,7 +87,11 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
   file reads as no labels. A read that fails, or doesn't end within its own bound, leaves that machine out of that
   listing, said in words with its id; the next listing reads it again, and the vendor's timer ends it either way. A
   listing by the request's name is the exception: what it finds, of that name or of none, may be the request's own, so
-  a read that fails fails the listing, and a retry never makes a second. The Core case `isolation.label-file` checks that the computer's user cannot read the file.
+  a read that fails fails the listing, and a retry never makes a second. The file is read only in a machine whose
+  vendor record shows our image: the provider's `image` option, or a box image by its name (`isBoxImage`, any recipe
+  hash, so an older release's machines are still found). Another image's machine is never run in, and one that shows
+  no image is left out, in words; a spec of another image is refused. The Core case `isolation.label-file` checks that
+  the computer's user cannot read the file.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one

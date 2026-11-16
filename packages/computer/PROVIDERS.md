@@ -199,7 +199,9 @@ AgentRun polls `get`. The exception is a vendor that applies a machine's setting
 its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
 machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
 finds machines by them. With `labels: "machine"` there is nowhere to store them: give the machine `req.name` as its
-own name where your API takes one, and answer it as `Machine.name` from `get` and `list`. AgentRun writes the labels
+own name where your API takes one, and answer it as `Machine.name` from `get` and `list`, and answer each machine's
+image as your API reads it back as `Machine.image`: AgentRun reads labels only in a machine of your provider's `image`
+option or a box image. AgentRun writes the labels
 into the machine once it runs. Without a name, a machine whose create was cut off before that write can't be traced to
 its request, so it ends only at your timer. Where your API keeps fewer or shorter labels than AgentRun writes, declare
 `labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
@@ -226,7 +228,7 @@ vendor whose size is its image's refuses them in its own `check`.
 ```
 
 **`get(id, ctx)`** reads one machine as your API sees it now, as a `Machine`:
-`{ id, labels, state, endsAt?, createdAt?, why? }`.
+`{ id, labels, state, name?, image?, endsAt?, createdAt?, why? }`.
 
 - `state` is `starting`, `running`, `stopped` (there but not running, such as paused) or `gone` (being deleted,
   ended, or failed).
@@ -265,7 +267,8 @@ each one by `get` for its state, labels and end, and drops one `get` reads as no
 as E2B's is (it can still show a deleted machine, or an end from before a timer moved). You may return machines that
 don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. With
 `labels: "machine"`, list by `labels["agentrun.computer.name"]` where it is asked and your API lists by name, or list
-everything. AgentRun keeps the machines of that name and reads each running one's labels from its file; one whose
+everything. AgentRun keeps the machines of that name whose `image` is ours, and reads each running one's labels from
+its file; one whose
 read fails or doesn't end is left out of that listing, in words, and read again at the next (a create's listing by its
 name fails instead, since the machine may be its own). A stopped
 machine can't be read: it has the labels this process last read from it, or none after a restart, so the janitor

@@ -13,6 +13,7 @@ import { deferred, fakeHost, LABEL_FILE } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 const SCRIPTS = await import("../dist/hosted/scripts.js");
+const { boxImageRef, isBoxImage } = await import("../dist/box-image.js");
 const { conformanceCases, runConformance } = await import("../dist/index.js");
 
 const COMPUTER = "agentrun.computer";
@@ -31,7 +32,7 @@ const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 2_000, execMs: 2
 /** What a machine with no label file must be older than before a sweep takes it, with TIMEOUTS: 2 createMs, listMs, requestMs, execMs and the 300 s margin. */
 const UNFILED_MS = 2 * 2_000 + 2_000 + 2_000 + 2_000 + 300_000;
 
-const provider = (host, options = {}) => new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
+const provider = (host, options = {}) => new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, image: "img", ...options });
 let requests = 0;
 const made = (result) => {
 	assert.equal(result.ok, true, result.ok ? "" : `${result.error.code}: ${result.error.message}`);
@@ -86,16 +87,47 @@ test("a host that keeps no labels has them written to a root-only file once the 
 	assert.equal(m.deleted, true);
 });
 
-test("a machine of the account that is not the adapter's (another name, no file) is never listed, attached or counted as a computer", async () => {
+test("a machine of the account that is not the adapter's (another name, or another image) is never listed, attached or counted as a computer", async () => {
 	const fake = fakeHost(KEEPS);
 	const stranger = fake.add({ name: "someone-elses" });
-	const nameless = fake.add({});
+	const nameless = fake.add({ image: "ubuntu:24.04" });
 	const hosted = provider(fake.host);
 	const ref = made(await hosted.create(SPEC, { requestId: `keeps-${++requests}` }));
 	assert.deepEqual(made(await hosted.list({})).map((info) => info.ref.id), [ref.id]);
 	for (const m of [stranger, nameless]) assert.equal((await hosted.attach({ id: m.id })).error?.code, "not_found", `attach ${m.id}`);
-	assert.match(made(await hosted.testConnection()).detail, /answered: 1 computer of this provider/, "the test counts the one computer, by its name");
+	assert.match(made(await hosted.testConnection()).detail, /answered: 1 computer of this provider/, "the test counts the one computer, by its name and image");
+	assert.deepEqual(
+		hosted.check({ ...SPEC, image: "ubuntu:24.04" }).map((refusal) => refusal.field),
+		["image"],
+		"a spec of an image list would never read is refused",
+	);
+	assert.deepEqual(hosted.check({ ...SPEC, image: "agentrun-box-0123456789ab" }), [], "a box image is taken");
 	assert.equal(stranger.deleted || nameless.deleted, false);
+});
+
+test("list runs the label read only in a machine whose vendor record shows our image: the provider's image option, or a box image by its name rule; a foreign one is never exec'd into, and one with no image is left out in words", async () => {
+	const fake = fakeHost(KEEPS);
+	const notes = [];
+	const hosted = provider(fake.host, { image: "img", onNote: (note) => notes.push(note) });
+	const ref = made(await hosted.create(SPEC, { requestId: `image-${++requests}` }));
+	const byOption = fake.machines.get(ref.id);
+	const filed = { file: fileOf(byOption) };
+	const byRule = fake.add({ ...filed, image: "ghcr.io/parcha-ai/agentrun-box:0123456789ab" });
+	const foreign = fake.add({ ...filed, image: "ubuntu:24.04" });
+	const imageless = fake.add(filed);
+	imageless.image = undefined;
+	fake.labelRuns = [];
+	made(await hosted.list({}));
+	const read = new Set(fake.labelRuns.filter((run) => !run.write).map((run) => run.machine));
+	assert.deepEqual([...read].sort(), [byOption.id, byRule.id].sort(), `only the machines of our image are exec'd into, never ${foreign.id} or ${imageless.id}`);
+	assert.deepEqual(notes.map((note) => note.computer), [imageless.id], "the machine with no image is told, by its id");
+	assert.match(notes[0].note, /shows no image/);
+});
+
+test("the box image's name rule: the names prepareImage gives, of any recipe hash, and nothing else", () => {
+	for (const image of ["ghcr.io/parcha-ai/agentrun-box:0123456789ab", "agentrun-box-0123456789ab", "agentrun-archil-0123456789ab", "agentrun-oss/agentrun-archil-0123456789ab", "agentrun-archil-gpu-h100-0123456789ab"]) assert.equal(isBoxImage(image), true, image);
+	for (const image of ["ubuntu:24.04", "ghcr.io/parcha-ai/agentrun-box:latest", "agentrun-box-0123456789", "agentrun-box-0123456789abc", "evil/agentrun-archil-0123456789ab", "ghcr.io/parcha-ai/agentrun-box:0123456789AB", ""]) assert.equal(isBoxImage(image), false, image);
+	assert.equal(isBoxImage(boxImageRef()), true, "this release's own");
 });
 
 test("the label script, run by sh: write replaces the file from stdin, 0600 in a 0700 directory, and prints it; a read prints it, or exits 3 when there is none, and two writers never share a file", async () => {
