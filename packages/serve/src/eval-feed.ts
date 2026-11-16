@@ -5,6 +5,7 @@
 // words keep the package's URLs. The trigger's first poll, at the apply, takes its start on the fixture's items; the
 // fixture's `item` is then added (or, when one there has its id, put in its place: an incident updated) and the trigger's
 // next poll fires on it.
+import { pointed } from "./feed/pointer.js";
 import { FEED_FORMATS, type FauxItem, type FeedFaux, type FeedFormat, startFeedFaux } from "./feed/feed-faux.js";
 import { isObject } from "./validate.js";
 
@@ -39,8 +40,8 @@ export function feedFixtureOf(value: unknown, at: string, bad: (message: string)
 export type CaseFeeds = { route(url: string): string | undefined; deliver(): void; close(): Promise<void> };
 
 /** The fake feeds of one run of a case on `fixture`, for a trigger that reads `urls` (its first the fixture's) and, for a
- *  JSON list, its items at `under`. */
-export async function caseFeeds(fixture: FeedFixture, urls: readonly string[], under?: string): Promise<CaseFeeds> {
+ *  JSON list, its items at `under` and each item's id at `idAt` (the trigger's own id pointer: /id when it names none). */
+export async function caseFeeds(fixture: FeedFixture, urls: readonly string[], under?: string, idAt = "/id"): Promise<CaseFeeds> {
   const fakes = new Map<string, FeedFaux>();
   try {
     for (const [i, url] of urls.entries()) {
@@ -54,8 +55,11 @@ export async function caseFeeds(fixture: FeedFixture, urls: readonly string[], u
   return {
     route: (url) => fakes.get(url)?.url,
     deliver() {
-      const id = (fixture.item as { id?: unknown }).id;
-      if (id !== undefined && first.items().some((one) => (one as { id?: unknown }).id === id)) first.update(fixture.item);
+      // The item's id as the trigger reads it: at its id pointer in a JSON list, its `id` in any other format.
+      const idOf = (one: unknown) => (fixture.format === "json-list" ? pointed(one, idAt) : (one as { id?: unknown }).id);
+      const id = idOf(fixture.item);
+      const has = (one: unknown) => id !== undefined && id !== null && typeof id !== "object" && idOf(one) === id;
+      if (first.items().some(has)) first.set(first.items().map((one) => (has(one) ? fixture.item : one)));
       else first.add(fixture.item);
     },
     async close() {
