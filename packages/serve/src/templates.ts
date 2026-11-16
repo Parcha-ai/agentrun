@@ -559,7 +559,7 @@ function fieldsSchema(value: unknown, of: "inputs" | "parameters", bad: (message
 
 /** Reads the package at `from` (its folder, or its files: PackageFiles) checked whole: a valid package, or PackageError
  *  with every problem found. */
-export function readPackage(from: string | PackageFiles): Package {
+export function readPackage(from: string | PackageFiles, { evalFixtures = true }: { evalFixtures?: boolean } = {}): Package {
   const src = typeof from === "string" ? folderFiles(from) : from;
   const dir = src.where;
   const problems: string[] = [];
@@ -873,7 +873,7 @@ export function readPackage(from: string | PackageFiles): Package {
     if (!own.includes("prompt.md")) bad(at, "has no prompt.md");
     else if (!triggeredCase && !front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
     // A case's web fixture is checked as eval-template checks it, in the same words (web-fake.ts).
-    if (caseJs !== undefined && typeof caseJs.web === "string" && caseJs.web !== "unavailable" && own.includes(caseJs.web) && caseJs.web.startsWith("fixtures/")) {
+    if (evalFixtures && caseJs !== undefined && typeof caseJs.web === "string" && caseJs.web !== "unavailable" && own.includes(caseJs.web) && caseJs.web.startsWith("fixtures/")) {
       let parsed: unknown;
       try {
         parsed = JSON.parse(text(`${at}/${caseJs.web}`));

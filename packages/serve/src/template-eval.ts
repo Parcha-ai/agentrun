@@ -303,7 +303,8 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
  *  fixture, each learned note as the learning API checks one, and each grader's fields. Nothing runs. PackageError or
  *  CaseError with every problem found. */
 export function readCases(dir: string, names?: readonly string[]): { pkg: Package; cases: EvalCase[] } {
-  const pkg = readPackage(dir);
+  // The cases are read below, each fixture checked there in the case's own words (a CaseError), not by the package read.
+  const pkg = readPackage(dir, { evalFixtures: false });
   const problems: string[] = [];
   const missing = (names ?? []).filter((name) => !pkg.evals.includes(name));
   if (missing.length) throw new CaseError(dir, missing.map((name) => `evals/${name}: no such case (the package's are ${pkg.evals.join(", ") || "none"})`));
