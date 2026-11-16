@@ -310,7 +310,8 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
  *  fixture, each learned note as the learning API checks one, and each grader's fields. Nothing runs. PackageError or
  *  CaseError with every problem found. */
 export function readCases(dir: string, names?: readonly string[]): { pkg: Package; cases: EvalCase[] } {
-  const pkg = readPackage(dir);
+  // The cases are read below, each fixture checked there in the case's own words (a CaseError), not by the package read.
+  const pkg = readPackage(dir, { evalFixtures: false });
   const problems: string[] = [];
   const missing = (names ?? []).filter((name) => !pkg.evals.includes(name));
   if (missing.length) throw new CaseError(dir, missing.map((name) => `evals/${name}: no such case (the package's are ${pkg.evals.join(", ") || "none"})`));
@@ -1324,7 +1325,7 @@ async function feedRun(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const source = filledSource(ctx.pkg, fixture.trigger, one.parameters);
   const urls = Array.isArray(source?.urls) ? source.urls.filter((url): url is string => typeof url === "string") : [];
   if (!urls.length) throw new ApiFailure(`the package's trigger ${fixture.trigger} names no feed URL with the case's parameters`);
-  const feeds = await caseFeeds(fixture, urls, typeof source?.items === "string" ? source.items : undefined);
+  const feeds = await caseFeeds(fixture, urls, typeof source?.items === "string" ? source.items : undefined, typeof source?.id === "string" ? source.id : undefined);
   ctx.feedRoutes!.route = feeds.route;
   try {
     return await runOnce(ctx, one, n, fakes, undefined, feeds);
