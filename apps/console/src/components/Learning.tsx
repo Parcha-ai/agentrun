@@ -21,7 +21,7 @@ import { type Agent, editBody, noteSaveError, runsWhere } from "@/lib/agentForm"
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
-  type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
+  type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactBase, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
   APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, restores, type Retired, UNREADABLE_RETIRED, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, PROMOTE_SIGN_IN, PROMOTES, statusFile, supersedesOf,
 } from "@/lib/learning";
@@ -397,7 +397,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
       <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-4 py-3">
         <div className="flex items-baseline gap-2.5">
           <span className="caps text-small font-semibold">Since it learned</span>
-          <span className="font-mono text-label text-muted-foreground" title={basis}>on {runsWord(a.runs)}</span>
+          <span className="font-mono text-label text-muted-foreground" title={basis}>{impactBase(impact)}</span>
         </div>
         <dl className="flex flex-1 flex-wrap items-baseline gap-x-10 gap-y-3" aria-hidden>
           {stats.map((s) => (

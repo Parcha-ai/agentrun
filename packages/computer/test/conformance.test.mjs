@@ -309,7 +309,8 @@ test("a module's conformanceImage() is the run's image unless --image names one,
 	const text = sink();
 	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
 	const lines = text.text().trimEnd().split("\n");
-	assert.equal(lines.at(-2), "note: a stop deletes on this configuration: the provider declares stopDeletes");
+	assert.equal(lines.at(-3), "note: a stop deletes on this configuration: the provider declares stopDeletes");
+	assert.equal(lines.at(-2), "computers alive at once: 1 at most");
 	assert.match(lines.at(-1), /^core PASS 1\/1/);
 	const plain = sink();
 	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--json"], { stdout: plain, cwd: HERE, cases: [pass("health.ping")] }), 0);
@@ -339,7 +340,8 @@ test("the CLI's --json prints the report object; a Core failure exits 1", async 
 	const code = await main(["--provider", "./fixtures/fake-provider.mjs", "--json", "--image", "alpine:3.20"], { stdout: out, cwd: HERE, cases });
 	assert.equal(code, 1);
 	const report = JSON.parse(out.text());
-	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "core", "daemonMode", "daemons", "image", "kind", "provider", "providerVersion", "results", "undeclared"]);
+	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "computers", "core", "daemonMode", "daemons", "image", "kind", "provider", "providerVersion", "results", "undeclared"]);
+	assert.deepEqual(report.computers, { peak: 1 }, "the run's one computer, and no cap");
 	assert.deepEqual([report.kind, report.daemonMode, report.daemons], ["linux", "pid1", [{ computer: report.daemons[0]?.computer, role: "shared", version: "1.0.0", os: "linux", arch: "amd64" }]]);
 	assert.match(report.daemons[0].computer, /./);
 	assert.equal(report.provider, "fake-module");
@@ -357,6 +359,8 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 		[["--provider", "./fixtures/no-factory.mjs"], /does not export createProvider\(\)/],
 		[["--provider", "Docker"], /unknown computer provider "Docker": the registry holds docker/],
 		[["--provider", "./fixtures/fake-provider.mjs", "--only", "exec,network"], /--only: network is neither a group .* nor a case id/],
+		[["--provider", "./fixtures/fake-provider.mjs", "--concurrency", "0"], /--concurrency: "0" is not a whole number of computers, 1 or more/],
+		[["--provider", "./fixtures/fake-provider.mjs", "--concurrency", "two"], /--concurrency: "two" is not a whole number of computers, 1 or more/],
 	]) {
 		const err = sink();
 		const code = await main(argv, { stdout: sink(), stderr: err, cwd: HERE, cases: [pass("exec.argv")] });
@@ -364,6 +368,77 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 		assert.match(err.text(), words, argv.join(" "));
 		assert.match(err.text(), /usage: npm run conformance/);
 	}
+});
+
+test("--concurrency N caps the computers alive at once: a vendor that keeps two passes at 2 and fails at the default, and the report says the peak", async () => {
+	// The run's computer, then a case that makes two of its own at once, then the run's computer again.
+	const cases = [pass("health.ping"), pass("provider.two", { computer: "none", run: async (t) => void (await Promise.all([t.create(), t.create()])) }), pass("exec.after")];
+	const run = async (...argv) => {
+		const out = sink();
+		const code = await main(["--provider", "./fixtures/capped-provider.mjs", ...argv], { stdout: out, cwd: HERE, cases });
+		return { code, text: out.text() };
+	};
+	const open = await run();
+	assert.equal(open.code, 1, open.text);
+	assert.match(open.text, /✗ provider\.two: create failed \(limit\): the plan keeps two computers at once/);
+	assert.match(open.text, /^computers alive at once: 3 at most$/m, "the run's computer and the case's two");
+	// At 2 the run's computer, idle while the case runs, is deleted to make room, and made again for the case after.
+	const two = await run("--concurrency", "2");
+	assert.equal(two.code, 0, two.text);
+	assert.match(two.text, /^computers alive at once: 2 at most \(--concurrency 2\)$/m);
+	// At 1 every case runs alone, and a case that needs two at once fails in words, with no create past the cap.
+	const one = await run("--concurrency=1");
+	assert.equal(one.code, 1, one.text);
+	assert.match(one.text, /✗ provider\.two: this case needs more than 1 computer alive at once, and --concurrency 1 caps them/);
+	assert.match(one.text, /^computers alive at once: 1 at most \(--concurrency 1\)$/m);
+	assert.match(one.text, /core FAIL 2\/3/);
+});
+
+test("--concurrency 1: retries of one request share its computer's room, and a computer whose delete failed is never counted gone", async () => {
+	const cases = [
+		pass("health.ping"),
+		pass("provider.retried", {
+			computer: "none",
+			run: async (t) => {
+				const spec = t.spec();
+				const [first, early] = await Promise.all([t.attempt(spec, t.provider, "retried"), t.attempt(spec, t.provider, "retried")]);
+				const late = await t.attempt(spec, t.provider, "retried");
+				assert.deepEqual([first, early, late].map((created) => created.ok && created.value.name), Array(3).fill(first.ok && first.value.name));
+			},
+		}),
+		pass("provider.stuck", { computer: "none", run: async (t) => void (await t.create({ labels: { stuck: "1" } })) }),
+		pass("provider.after", { computer: "none", run: async (t) => void (await t.create()) }),
+		pass("exec.after"),
+	];
+	const out = sink();
+	const code = await main(["--provider", "./fixtures/retried-provider.mjs", "--concurrency", "1"], { stdout: out, cwd: HERE, cases });
+	const text = out.text();
+	assert.equal(code, 1, text);
+	assert.doesNotMatch(text, /✗ provider\.(retried|stuck)/);
+	assert.match(text, /core FAIL 3\/5/);
+	// The stuck computer may still be there: no case makes another past it.
+	assert.match(text, /✗ provider\.after: --concurrency 1 is full: 1 of the run's computers could not be deleted, so no other is made/);
+	assert.match(text, /✗ exec\.after: .*--concurrency 1 is full: 1 of the run's computers could not be deleted, so no other is made/);
+	assert.match(text, /^computers alive at once: 1 at most \(--concurrency 1\)$/m);
+});
+
+test("--concurrency 1: health.no-key-in-errors still asks create with the planted key, which uses no room, and fails on a leak", async () => {
+	const secret = "agentrun-planted-0123456789abcdef01234567";
+	const fake = fakeComputers();
+	const leaky = fakeComputers();
+	let asked = 0;
+	leaky.provider.create = async () => (asked++, { ok: false, error: { code: "auth", message: `bad key ${secret}` } });
+	const report = await runConformance(fake.provider, {
+		image: IMAGE,
+		cases: conformanceCases.filter((c) => c.id === "health.no-key-in-errors"),
+		planted: async () => ({ provider: leaky.provider, secrets: [secret] }),
+		concurrency: 1,
+	});
+	const result = report.results.find((one) => one.id === "health.no-key-in-errors");
+	assert.equal(asked, 1, "the planted create reached the provider");
+	assert.equal(result.status, "fail", JSON.stringify(result));
+	assert.match(result.reason, /create: what the provider answered holds none of a planted secret/);
+	assert.equal(report.computers.peak, 1);
 });
 
 test("the CLI as a process: a usage error exits 2; a provider that cannot make a computer fails Core and exits 1", async () => {

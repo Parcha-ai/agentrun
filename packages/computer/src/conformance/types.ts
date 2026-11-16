@@ -251,6 +251,11 @@ export interface ConformanceReport {
 	 * live sweep of the run's label at its end (conformance/sweep.ts): nothing left behind is stillThere empty.
 	 */
 	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[]; sweep?: { swept: number; gone: number; stillThere: string[]; leftAlone: number } };
+	/**
+	 * The most computers the run had alive at once, each counted from its create's call until it was released or its
+	 * create made none, and the cap the run was given (concurrency), when it was.
+	 */
+	computers: { peak: number; cap?: number };
 	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
 	notes?: string[];
 	/**
@@ -340,6 +345,12 @@ export interface ConformanceOptions {
 	patience?: number;
 	/** The longest each cleanup call (release, the sweep, list) may take; default 60 s. */
 	cleanupTimeoutMs?: number;
+	/**
+	 * The most computers alive at once, for a vendor plan or rate limit that keeps fewer: a create waits for one to be
+	 * released, the run's computer is deleted while a case that doesn't use it needs room (and made again for the next
+	 * case that does), and a case that needs more at once than this fails in words. Default no cap.
+	 */
+	concurrency?: number;
 	/**
 	 * The fixture on this machine, for the cases that check what input did: computerd-fixture for a desktop, the
 	 * fixture APK for an Android phone. Without it those cases skip, and Core cannot pass where kind requires them.

@@ -73,7 +73,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     } : {}),
     // The cost per run chart's read (CostPerRun.test.tsx draws it): no run yet.
     learnedWorkflowRevisions: async (_id: string, name: string) => ({ name, revisions: [], total: 0, truncated: false }),
-    learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] })))(),
+    learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] })))(),
     // The loop's reads: none yet unless a test gives them; a failed one leaves its part out.
     learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [], serving: [] })))(),
     learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, compiles: [], guards: [] })))(),
@@ -504,10 +504,10 @@ describe("the before and after", () => {
   it("shows run time and cost before and after it learned, on the after side's runs", async () => {
     const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03, cost_runs: 4, median_learning_usd: null } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.getAttribute("aria-label")).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
+    expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
     expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
     expect(card.textContent).toContain("A run costs$0.03 est.instead of $0.11 est.−73%");
-    expect(card.textContent).toContain("on 4 runs");
+    expect(card.textContent).toContain("medians of 4 runs started from what it learned");
     expect(card.textContent).not.toContain("Learning itself");
   });
   it("says what learning itself costs a run when the server does, and a costlier after as it is, in the warning colour", async () => {
@@ -1753,7 +1753,7 @@ describe("the before and after of an agent that learned only skills or workflows
       const t = await open(agent(true), { learning: async () => only(kind) });
       const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
       expect(card).not.toBeNull();
-      expect(card.textContent).toContain("on 3 runs");
+      expect(card.textContent).toContain("medians of 3 runs started from what it learned");
       const basis = card.querySelector('[title^="Medians of"]')!.getAttribute("title")!;
       expect(basis).toContain("Medians of 2 runs before it first learned and 3 runs that started from what it learned (a note, a skill or a workflow).");
       expect(basis).not.toContain("first note");
@@ -1783,13 +1783,13 @@ describe("the loop on the Learning tab", () => {
   });
   it("counts only completed runs toward a compile, as the server does: failed and cancelled runs are in the cost series, not the count", async () => {
     const runs = [runOf("run-ok", "kith.com", null), ...["run-f1", "run-f2", "run-f3"].map((id) => ({ ...runOf(id, id, null), status: "failed" as const })), { ...runOf("run-s", "run-s", null), status: "cancelled" as const }];
-    const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 5, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] });
+    const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 5, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] });
     const t = await open(agent(true), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }), runs, cost });
     const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
     expect(stage.textContent).toContain("1 of 5 runs");
   });
   it("the cheaper stage: 'about N times cheaper at the same accuracy' over the replay's line when the serving replay cleared the bar; the reason in its place when a run's cost isn't all known", async () => {
-    const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
+    const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };
     const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true }, ...over }, workflows: [] });
     const t = await open(agent(true), { cost: costOf({}) });
     const stage = t.host.querySelector('[data-testid="stage-cheaper"]')!;

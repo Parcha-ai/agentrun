@@ -131,7 +131,7 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `id` | Its id in the provider registry and in Settings: lowercase letters, digits and hyphens. Errors with code `vendor` name it. |
 | `label` | Its name in words, as Settings shows it. |
 | `keys` | The keys Settings takes for it: each a `name` (what Settings stores and shows, such as `DAYTONA_API_KEY`; never a value), the `create()` `option` it fills, and whether it is `required`. `[]` for none. |
-| `settings?` | Values that are not keys but fill a `create()` option (Modal's app): `name`, `option`, and a `default` used when the server names none. |
+| `settings?` | Values that are not keys but fill a `create()` option (Modal's app): `name`, `option`, and a `default` used when the server names none. Settings has no field for one, so a value with no default that works for everyone (a server URL, a team, project or workspace id) is a key with `required: true`, secret or not. |
 | `metered` | The vendor bills by time. Prices are the vendor's page, not ours. |
 | `mounts` | The mount kinds its computers take (`bind`, `archil`), as its providers' `capabilities().mount` declare; `[]` for none. |
 | `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its sandboxes). |

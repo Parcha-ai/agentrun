@@ -382,8 +382,11 @@ an image that has its client. A vendor whose stock image will do names it in `de
 
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 
-A credential of several parts is several `keys`, and a value that isn't secret (a region, a project, an app) is a
-`setting`, with a default where one makes sense. Modal's descriptor (`src/descriptors/modal.ts`) is the worked example:
+A credential of several parts is several `keys`. A value that isn't secret but has a default that works for everyone
+(an app name) is a `setting`: the server passes its `default`, and Settings has no field for it. A value with no such
+default (a server URL, a team, project or workspace id) is a key with `required: true`, so Settings asks for it and
+names it while it's missing, as it names a missing secret. Modal's descriptor (`src/descriptors/modal.ts`) is the
+worked example:
 
 ```ts
 	keys: [
@@ -393,13 +396,21 @@ A credential of several parts is several `keys`, and a value that isn't secret (
 	settings: [{ name: "modalApp", option: "app", default: "agentrun" }],
 ```
 
-Settings stores each key under its `name` and passes it to your `create(options)` as its `option`, and each setting
-likewise, its `default` when the server names none. The conformance module reads the same values from
-`COMPUTER_<VENDOR>_*` names instead (Modal's `MODAL_ENV`: `COMPUTER_MODAL_TOKEN_ID`, `COMPUTER_MODAL_TOKEN_SECRET`,
-`COMPUTER_MODAL_APP`), so a test run never picks up a key your shell already holds for something else, and it creates
-nothing unless `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`. Settings makes nothing on your vendor: a cluster, a resource group
-or a project the machines live in is the user's to make first. Take it as a setting, and when it's missing, say in
-your error what to make.
+A vendor whose machines live in a project the user makes first takes the project's id as one more key:
+
+```ts
+	keys: [
+		{ name: "<VENDOR>_API_KEY", option: "apiKey", required: true },
+		{ name: "<VENDOR>_PROJECT_ID", option: "projectId", required: true },
+	],
+```
+
+Settings stores each key under its `name` and passes it to your `create(options)` as its `option`, and each setting's
+`default` likewise. The conformance module reads the same values from `COMPUTER_<VENDOR>_*` names instead (Modal's
+`MODAL_ENV`: `COMPUTER_MODAL_TOKEN_ID`, `COMPUTER_MODAL_TOKEN_SECRET`, `COMPUTER_MODAL_APP`), so a test run never picks
+up a key your shell already holds for something else, and it creates nothing unless `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`.
+Settings makes nothing on your vendor: a cluster, a resource group or a project the machines live in is the user's to
+make first. Take its id as a required key, and when your vendor says it doesn't exist, say in your error what to make.
 Rename E2B's and keep its exports: `createProvider`, `createDriftedProvider` (its daemon reports another version, and
 the suite checks AgentRun refuses it), `createHost` for the exec pre-check and the sweep, `conformanceImage` and
 `conformanceNotes`.
@@ -427,6 +438,13 @@ node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tm
 
 The first sweep records what your account already holds. The second deletes anything the run left behind and prints
 what is still there. `--kind sandbox` or `--kind desktop` runs one kind's cases, and `-- --help` lists every flag.
+
+The report's last lines say the most computers the run had alive at once. If your plan keeps fewer (a free tier's few
+machines), add `--concurrency <n>`: a create waits for a computer to go, and the run's own computer is deleted while a
+case that doesn't use it needs room. A case that needs more at once than `n` fails in words. Put the number your run
+printed in your pull request. If your API limits requests an hour, your provider passes `HostedProvider` a larger
+`timeouts.pollMs` (default 1 s): create's wait for the listing to show a new machine starts at 150 ms between
+listings and backs off to it.
 
 A desktop also needs the fixture its input cases check against, built for your machines' arch (`GOARCH=amd64` or
 `arm64`). Without it those cases skip and the run fails. Build it, then add `--fixture /tmp/computerd-fixture`:
