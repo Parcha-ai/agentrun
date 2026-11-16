@@ -28,7 +28,10 @@
 // (that one's record says skipped, naming it: it never replays, never serves). The replay at work is never cancelled:
 // a claim of the queued revision decides it once its runs ended (settleRival: its text read at its record's commit,
 // its verdict standing, no refit written over the newer revision on the folder's main), then starts the queued
-// revision's replay. The queue is the records alone, in the store as a replay's are: a server restart keeps it. The
+// revision's replay. A queue change (queued, the skips it makes, a start) is one guarded write over the queue its claim
+// read before its newest check (sameQueue): a claim that read an older main changes nothing once a claim that read a
+// newer one acted, so the newest revision is never left skipped. The records trim (PROMOTIONS_KEPT) keeps the replaying
+// and the queued records whatever their age. The queue is the records alone, in the store as a replay's are: a server restart keeps it. The
 // newer revision is compiled on the folder's main, the challenger's own text, so it already carries that change. A
 // replay run's claim refuses it unless its revision still replays (replayClaimed), so a cancel lost to a crash or a
 // failed write never leaves one running. The challenger is reserved before any
@@ -286,15 +289,18 @@ async function decide(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
     if (!decided) log(`workflow-first: ${workflow.name} at ${digest} is replaying on ${plural(record.runs?.length ?? 0, "graded input")}; it does not serve this run`);
     return;
   }
-  // A new revision, or a queued one. One replay at a time, and a running replay finishes: with another revision replaying
-  // or queued, the laid one moves only when it is the newest revision (the one the learning folder's main holds now); a
-  // run pinned to an older commit lays an older text and starts nothing, whenever it was launched (a queued one it lays
-  // is skipped for the newest).
-  let records = await promotionsOf(store.settings, agentId);
+  // A new revision, or a queued one. One replay at a time, and a running replay finishes: the laid one moves only when it
+  // is the newest revision (the one the learning folder's main holds now); a run pinned to an older commit lays an older
+  // text and starts nothing, whenever it was launched (a queued one it lays is skipped for the newest), nor does one whose
+  // record the trim dropped (a skipped or held revision is never the newest). `seen`, the queue as read before the newest
+  // check: every queue change below (queued, skips, a start) is one guarded write kept only while the queue is still that
+  // (sameQueue), so a claim that read an older main never skips a newer revision a later claim queued meanwhile.
+  const seen = await promotionsOf(store.settings, agentId);
+  let records = seen;
   const ahead = [...replayingOf(records, workflow.name, digest), ...replayingOf(records, workflow.name, digest, "queued")];
-  if (ahead.length || record) {
+  if (ahead.length || record || deps.newest) {
     const newest = deps.newest ? await deps.newest(workflow.name) : undefined;
-    if (newest !== digest) {
+    if (newest !== digest && (ahead.length || record || newest !== undefined)) {
       if (record && newest !== undefined) await skip(deps, record, newest);
       else log(`workflow-first: ${workflow.name} at ${digest} is not the learning folder's newest revision of it (${newest ?? "unknown"})${ahead[0] ? `, and ${ahead[0].digest} ${ahead[0].decided === "replaying" ? "replays" : "is queued"}` : ""}; it does not serve this run`);
       return;
@@ -304,54 +310,88 @@ async function decide(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
     for (const rival of replayingOf(records, workflow.name, digest)) await settleRival(deps, workflow.name, rival);
     records = await promotionsOf(store.settings, agentId);
     const running = replayingOf(records, workflow.name, digest)[0];
-    if (running) return enqueue(deps, workflow, digest, record, running);
-    // Only the newest queued revision replays next: any queued before it is skipped, and says so.
-    for (const older of replayingOf(records, workflow.name, digest, "queued")) await skip(deps, older, digest);
+    if (running) return enqueue(deps, workflow, digest, record, running, seen);
   }
-  // Its replay starts now: kept while its record is still none, or still the queued one read here.
-  const fresh = (was: PromotionRecord | undefined) => (record ? was?.decided === "queued" && was.at === record.at : was === undefined);
+  // Its replay starts now, and only the newest queued revision replays next: any queued before it is skipped in the same
+  // write, and says so. Kept while its record is still none (or still the queued one read here) and the queue is still seen.
+  const older = replayingOf(seen, workflow.name, digest, "queued");
+  const skips = older.map((one) => skippedFor(deps, one, digest));
+  const fresh = (was: PromotionRecord | undefined, items: readonly PromotionRecord[]) => ownStill(record)(was) && sameQueue(items, seen, workflow.name, digest);
   const after = record ? `, queued since ${record.at} behind another revision's replay` : "";
+  const skipped = () => { for (const one of older) log(`workflow-first: ${one.workflow} at ${one.digest} skipped: ${skips[0]!.reason}`); };
   // No replay of it yet, nothing owed, so the agent's newest REPLAY_INPUTS (the one picker, inputsFor).
   const { graded } = await inputsFor(deps, workflow, digest, records, "held");
   if (graded.length < REPLAY_MIN) {
     const reason = graded.length ? `${plural(graded.length, "graded input")} it fits, fewer than ${REPLAY_MIN}: promoted on its passing dry run` : `no graded input it fits: promoted on its passing dry run`;
-    const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "promote", source: "dry_run", reason, ...seedOf(deps) }, fresh);
-    if (kept.won) log(`workflow-first: ${workflow.name} at ${digest}: ${reason}`);
+    const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "promote", source: "dry_run", reason, ...seedOf(deps) }, fresh, skips);
+    if (kept.won) {
+      skipped();
+      log(`workflow-first: ${workflow.name} at ${digest}: ${reason}`);
+    }
     return;
   }
-  const reserved = await reserve(deps, workflow, digest, graded, `replaying on the agent's last ${plural(graded.length, "graded input")} it fits${after}`, fresh);
+  const reserved = await reserve(deps, workflow, digest, graded, `replaying on the agent's last ${plural(graded.length, "graded input")} it fits${after}`, fresh, [], skips);
   if (!reserved.won) {
     const rival = replayingOf(await promotionsOf(store.settings, agentId), workflow.name, digest)[0];
-    if (rival) log(`workflow-first: ${workflow.name} at ${digest}: ${rival.digest} began replaying first; it does not serve this run`);
+    log(`workflow-first: ${workflow.name} at ${digest}: ${rival ? `${rival.digest} began replaying first` : "the queue moved since this claim read it (a claim that read a newer revision acted first)"}; it does not serve this run`);
     return;
   }
+  skipped();
   log(`workflow-first: ${workflow.name} at ${digest} is ${record ? "next" : "new"}: replaying it on the agent's last ${plural(graded.length, "graded input")} before it serves`);
 }
 
+/** Whether `was`, the laid revision's newest record now, is still `record`, the one its claim read: none, or the same
+ *  queued record. */
+const ownStill = (record: PromotionRecord | undefined) => (was: PromotionRecord | undefined): boolean => (record ? was?.decided === "queued" && was.at === record.at : was === undefined);
+
+/** The revisions of `name` other than `digest` queued in `records`, each by digest and when it was queued. */
+const queueOf = (records: readonly PromotionRecord[], name: string, digest: string): string =>
+  replayingOf(records, name, digest, "queued").map((one) => `${one.digest}@${one.at}`).sort().join(",");
+
+/** Whether the queue in `items` (now, in the guarded write) is still the one in `seen` (read before the claim's newest
+ *  check). Main only moves on, so a claim whose newest check read an older main read the records before any claim that
+ *  read the newer main acted: when one did (queued its revision, skipped or started the one queued), the queue moved,
+ *  and the stale claim's write is refused. A refused claim that was the newest after all (two read the same queue)
+ *  changes nothing either; the next claim of the newest revision, which every new run lays, makes the change. */
+const sameQueue = (items: readonly PromotionRecord[], seen: readonly PromotionRecord[], name: string, digest: string): boolean => queueOf(items, name, digest) === queueOf(seen, name, digest);
+
 /** Queues `workflow` at `digest`, the newest revision, behind `running`, the replay at work (a record of it already
- *  queued is left as it is), then skips each revision queued before it: only the newest queued one replays next. */
-async function enqueue(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord | undefined, running: PromotionRecord): Promise<void> {
+ *  queued is left as it is), and skips each revision queued before it (only the newest queued one replays next), in one
+ *  guarded write: kept only while its own record is still the one read and the queue is still `seen` (sameQueue). */
+async function enqueue(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord | undefined, running: PromotionRecord, seen: readonly PromotionRecord[]): Promise<void> {
   const { store, agentId, log } = deps;
   const now = deps.now ?? Date.now;
   const behind = `${running.digest}'s replay on ${plural(running.runs?.length ?? 0, "graded input")}`;
-  if (!record) {
-    const reason = `queued behind ${behind}: a running replay finishes; the newest revision queued meanwhile replays next`;
-    const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "queued", source: "replay", reason, ...seedOf(deps) }, (was) => was === undefined);
-    if (kept.won) log(`workflow-first: ${workflow.name} at ${digest} is new: queued behind ${behind}; it replays once that one is decided`);
-  } else log(`workflow-first: ${workflow.name} at ${digest} is queued behind ${behind}; it does not serve this run`);
-  for (const older of replayingOf(await promotionsOf(store.settings, agentId), workflow.name, digest, "queued")) await skip(deps, older, digest);
+  const reason = `queued behind ${behind}: a running replay finishes; the newest revision queued meanwhile replays next`;
+  const older = replayingOf(seen, workflow.name, digest, "queued");
+  const writes: PromotionRecord[] = [...(record ? [] : [{ workflow: workflow.name, digest, at: iso(now()), decided: "queued" as const, source: "replay" as const, reason, ...seedOf(deps) }]), ...older.map((one) => skippedFor(deps, one, digest))];
+  if (!writes.length) {
+    log(`workflow-first: ${workflow.name} at ${digest} is queued behind ${behind}; it does not serve this run`);
+    return;
+  }
+  const kept = await recordPromotion(store.settings, agentId, writes[0]!, (_, items) => ownStill(record)(promotionOf(items, workflow.name, digest)) && sameQueue(items, seen, workflow.name, digest), writes.slice(1));
+  if (!kept.won) {
+    log(`workflow-first: ${workflow.name} at ${digest}: the queue moved since this claim read it (a claim that read a newer revision acted first); this claim changes nothing, and it does not serve this run`);
+    return;
+  }
+  log(`workflow-first: ${workflow.name} at ${digest} is ${record ? "queued" : "new: queued"} behind ${behind}; it replays once that one is decided`);
+  for (const one of older) log(`workflow-first: ${one.workflow} at ${one.digest} skipped: ${writes.at(-1)!.reason}`);
 }
 
-/** Skips `record`, a revision queued behind another's replay, for `by`, a newer revision that came before its replay could
- *  start: its record says skipped (kept only while it is still that queued record), it never replays and never serves.
- *  Never silent: the record names `by` and says why. */
-async function skip(deps: PromotionDeps, record: PromotionRecord, by: string): Promise<void> {
+/** `record`, a revision queued behind another's replay, skipped for `by`, a newer revision that came before its replay
+ *  could start: it never replays and never serves. Never silent: the record names `by` and says why. */
+function skippedFor(deps: PromotionDeps, record: PromotionRecord, by: string): PromotionRecord {
   const now = deps.now ?? Date.now;
   const reason = `a newer draft ${by} arrived before its replay could start: only the newest queued revision replays next`;
-  const kept = await recordPromotion(deps.store.settings, deps.agentId, {
-    workflow: record.workflow, digest: record.digest, at: iso(now()), decided: "skipped", source: "replay", reason, skipped_by: by, ...(record.commit ? { commit: record.commit } : {}),
-  }, (was) => was?.decided === "queued" && was.at === record.at);
-  if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} skipped: ${reason}`);
+  return { workflow: record.workflow, digest: record.digest, at: iso(now()), decided: "skipped", source: "replay", reason, skipped_by: by, ...(record.commit ? { commit: record.commit } : {}) };
+}
+
+/** Skips the laid revision's own queued `record` for `by`, the newest revision (its claim laid an older text): kept only
+ *  while it is still that queued record. */
+async function skip(deps: PromotionDeps, record: PromotionRecord, by: string): Promise<void> {
+  const one = skippedFor(deps, record, by);
+  const kept = await recordPromotion(deps.store.settings, deps.agentId, one, (was) => was?.decided === "queued" && was.at === record.at);
+  if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} skipped: ${one.reason}`);
 }
 
 /** Decides `running`, the replay at work ahead of the laid (newest) revision, as a claim laying it would (relaunch, then
@@ -375,13 +415,14 @@ async function settleRival(deps: PromotionDeps, name: string, running: Promotion
  *  runs it will start (their ids, and the replay's own, minted here), kept only when `still` holds of the digest's record
  *  now and no other revision of the workflow replays, in the one guarded write. Only the writer that kept it starts them:
  *  a claim of the same digest, or of another revision, or a person's ask, at once, starts none. A claim's (decide) and a
- *  person's (askReplay) are this one reservation. `owed`: the held runs among `graded` it must answer on (heldOn). */
-async function reserve(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, graded: readonly GradedInput[], reason: string, still: (was: PromotionRecord | undefined) => boolean, owed: readonly string[] = []) {
+ *  person's (askReplay) are this one reservation. `owed`: the held runs among `graded` it must answer on (heldOn). `also`:
+ *  records kept in the same write (a claim's skips of the revisions queued before it). */
+async function reserve(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, graded: readonly GradedInput[], reason: string, still: (was: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, owed: readonly string[] = [], also: readonly PromotionRecord[] = []) {
   const now = deps.now ?? Date.now;
   const ids = graded.map(() => uuidv7());
   const launch = replayLaunchOf(deps);
   const reserved = await recordPromotion(deps.store.settings, deps.agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason, runs: ids, inputs: graded.map((one) => one.grade.run), replay_id: uuidv7(), launch, ...seedOf(deps), ...(owed.length ? { held_on: owed } : {}) },
-    (was, items) => still(was) && replayingOf(items, workflow.name, digest).length === 0);
+    (was, items) => still(was, items) && replayingOf(items, workflow.name, digest).length === 0, also);
   if (reserved.won) for (const [i, one] of graded.entries()) await startReplay(deps, workflow, digest, one.grade.run, one.launch, ids[i]!, launch);
   return reserved;
 }

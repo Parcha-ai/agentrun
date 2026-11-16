@@ -313,8 +313,9 @@ export type Recorded = { readonly record: PromotionRecord | undefined; readonly 
 
 /** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined)
  *  and of every record kept (`items`: a check across revisions, one challenger at a time, in the same guarded write): so
- *  of two claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). */
-export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
+ *  of two claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). `also`:
+ *  records kept after it in the same write, all or none (a queue change and the skips it makes, runner/promotion.ts). */
+export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, also: readonly PromotionRecord[] = []): Promise<Recorded> {
   let out: Recorded = { record, won: true };
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => {
     const now = promotionOf(items, record.workflow, record.digest);
@@ -323,7 +324,7 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
       return items;
     }
     out = { record, won: true };
-    return trimPromotions([...items, record]);
+    return trimPromotions([...items, record, ...also]);
   });
   return out;
 }
@@ -334,13 +335,17 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
  *  never reads as a newer promotion), and the digest promoted last, its latest win and its newest record (so a held last
  *  revision is never trimmed into handing the champion back). The kept records are a run of the newest plus those wins,
  *  and a win's own run reaches no further back than it: a record that ended an older run of the same digest is newer
- *  than every record of that run, so a run is never joined to an older one by the trim. */
+ *  than every record of that run, so a run is never joined to an older one by the trim. The queue's state is kept too,
+ *  whatever its age: a replaying revision's newest record (what its settle, its runs' claims and the one-replay-at-a-time
+ *  check read: dropped, a newer revision would start a second replay while its runs run, and its verdict would never
+ *  land) and a queued one's (what replays next). Neither is a promote record, so championOf reads the same. */
 export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
   const wins = winsOf(items);
   const placeOf = (i: number): number | undefined => wins.get(i);
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
+    for (const one of [...replayingOf(items, workflow, null), ...replayingOf(items, workflow, null, "queued")]) keep.add(items.lastIndexOf(one));
     const last = lastPromotedOf(items, workflow);
     if (last === undefined) continue;
     const newest = items.findLastIndex((one) => one.workflow === workflow && one.digest === last);
