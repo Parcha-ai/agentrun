@@ -122,12 +122,18 @@ export interface MachineHost {
  */
 export const BACKSTOP_MARGIN_MS = 300_000;
 
-/** A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words. */
+/**
+ * A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words.
+ * transient marks the vendor's own trouble (a 429 or 5xx, no answer in time, no answer at all), never a refusal of the
+ * call: the adapter keeps it on the failure (ComputerError.transient), so a caller may try another vendor.
+ */
 export class HostError extends Error {
 	readonly code: ComputerErrorCode;
-	constructor(code: ComputerErrorCode, message: string) {
+	readonly transient?: true;
+	constructor(code: ComputerErrorCode, message: string, { transient }: { transient?: boolean } = {}) {
 		super(message);
 		this.code = code;
+		if (transient === true) this.transient = true;
 	}
 }
 

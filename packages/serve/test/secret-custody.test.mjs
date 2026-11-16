@@ -260,9 +260,12 @@ test("started by its launcher, no process of its user holds a secret in its envi
   noSecretAnywhere(root, canary);
 });
 
+/** A Kubernetes kubeconfig: no key by its name, but it holds the cluster's token or client key, so it is an account key. */
+const KUBECONFIG = "KUBERNETES_KUBECONFIG";
 /** The account keys serve reads for its computer providers and for Archil, by the modules that name them: each key a
- *  computer descriptor declares that is named like a key (not DAYTONA_API_URL or ORGO_WORKSPACE_ID), and Archil's. */
-const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)).filter(keyShaped), ARCHIL_API_KEY_ENV])];
+ *  computer descriptor declares that is named like a key (not DAYTONA_API_URL or ORGO_WORKSPACE_ID), Archil's, and a
+ *  kubeconfig. */
+const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)).filter(keyShaped), ARCHIL_API_KEY_ENV, KUBECONFIG])];
 
 // A key the launcher does not name stays in the server's environment, where any process of its user reads it and any
 // child spawned with process.env inherits it: every account key serve reads is on the list, and only the server's and the

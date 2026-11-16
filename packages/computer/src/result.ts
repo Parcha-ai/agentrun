@@ -26,6 +26,12 @@ export interface ComputerError {
 	message: string;
 	/** With code vendor: the provider whose vendor failed (docker, daytona, ...), its descriptor's id. */
 	vendor?: string;
+	/**
+	 * The vendor's API failed in a way the same call may not fail in a moment: it answered 429 or 5xx, did not answer in
+	 * time, or could not be reached. Never set for a refusal of the call itself (a 4xx: a key, a quota, a spec), so a
+	 * caller may try another vendor on a transient failure and must not on any other (serve's computer failover).
+	 */
+	transient?: true;
 }
 
 export const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
@@ -41,5 +47,5 @@ export const failFor =
 /** `error` passed up in new words: its code kept (or `code`), and while the code is vendor, its vendor with it. */
 export const failAs = (error: ComputerError, message: string, code: ComputerErrorCode = error.code): Result<never> => ({
 	ok: false,
-	error: code === "vendor" && error.vendor !== undefined ? { code, vendor: error.vendor, message } : { code, message },
+	error: { ...(code === "vendor" && error.vendor !== undefined ? { code, vendor: error.vendor, message } : { code, message }), ...(error.transient === true && code === error.code ? { transient: true as const } : {}) },
 });

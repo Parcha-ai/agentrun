@@ -14,7 +14,7 @@ import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
-import { orThrow } from "./hosted/process.js";
+import { marked, orThrow } from "./hosted/process.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
@@ -518,7 +518,8 @@ export class Agent37Provider extends HostedProvider {
 			return ok(name);
 		} catch (error) {
 			const said = error instanceof Error ? error.message : String(error);
-			return fail(codeOf(error), registering ? `registering ${ref} as the Agent37 template ${name}: ${said}` : `reading the Agent37 template ${name}: ${said}`);
+			// An outage (a 429 or 5xx, no answer) keeps its transient mark: serve may start the run on another provider.
+			return marked(fail(codeOf(error), registering ? `registering ${ref} as the Agent37 template ${name}: ${said}` : `reading the Agent37 template ${name}: ${said}`), (error ?? {}) as { transient?: unknown });
 		}
 	}
 

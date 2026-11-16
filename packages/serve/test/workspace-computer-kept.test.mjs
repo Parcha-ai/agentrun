@@ -441,3 +441,29 @@ function socketPair() {
   });
   return [side(ends[0], ends[1]), side(ends[1], ends[0])];
 }
+
+test("a run whose sandbox failed over and was kept at its park gets that sandbox back on resume while the first provider is still down: no create, nothing deleted", async () => {
+  // The run's setting is E2B; an earlier claim failed over to Modal and parked there, its Modal sandbox kept (here, a
+  // claim on Modal parks it). E2B is still down at the resume (its list before the create answers 504), so the claim
+  // fails over to Modal again, which attaches the kept sandbox rather than deleting it as an older claim's.
+  const root = scratch();
+  const store = memoryStore();
+  const sealKey = randomBytes(32);
+  for (const [name, value] of Object.entries({ E2B_API_KEY: "fake-test-key", MODAL_TOKEN_ID: "fake-id", MODAL_TOKEN_SECRET: "fake-secret" })) await putSealedKey(store, sealKey, name, value);
+  const groups = ["exec", "files", "processes"];
+  const e2b = vendor(root, groups);
+  e2b.provider.list = async () => ({ ok: false, error: { code: "vendor", vendor: "e2b", message: "GET /sandboxes: 504", transient: true } });
+  const modal = vendor(root, groups);
+  const deps = { mode: 2, kinds: KINDS, sealKey, providers: { e2b: () => e2b.provider, modal: () => modal.provider }, spec: SPEC, workspace: localWorkspace(root), now: () => T0 + 60_000, failover: ["e2b", "modal"], failoverCleanup: { pauseMs: 1, maxPauseMs: 1, attempts: 1 } };
+  const parked = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "modal" } }, store, { ...deps, now: () => T0, check: { readBackOf, epoch: 3 } });
+  assert.equal(await parked.park("approval"), true, "the Modal sandbox kept");
+  const moves = [];
+  const resumed = await computerForClaim({ runId: "run-1", epoch: 5, computer: { kind: "sandbox", provider: "e2b" } }, store, { ...deps, check: { readBackOf, epoch: 5 }, onFailover: (said) => void moves.push(said) });
+  assert.equal(moves[0]?.to, "Modal", "the claim failed over to Modal");
+  assert.deepEqual(creates(e2b), [], "nothing made on E2B");
+  assert.deepEqual(creates(modal), ["c1"], "no second Modal sandbox: the kept one is attached");
+  assert.deepEqual(deletes(modal), [], "the kept sandbox is not deleted as an older claim's");
+  assert.ok(modal.calls.some(([verb, id]) => verb === "attach" && id === "c1"), "the kept one attached again");
+  assert.equal(await readKept(store.settings, "run-1"), undefined, "its row taken by the resume");
+  await resumed.release();
+});

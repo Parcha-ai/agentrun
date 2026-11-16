@@ -322,7 +322,7 @@ class DaytonaHost implements MachineHost {
 			if (attempt === DELETE_ATTEMPTS - 1) await this.#rest.call("POST", sandboxUrl(this.#rest, id, "/stop?force=true"), { timeoutMs: ctx.timeoutMs });
 			if (attempt < DELETE_ATTEMPTS) await sleep(DEFAULT_RETRY_MS);
 		}
-		throw new HostError(failure?.code ?? "vendor", failure?.message ?? `could not delete ${id}`);
+		throw new HostError(failure?.code ?? "vendor", failure?.message ?? `could not delete ${id}`, { transient: failure?.transient === true });
 	}
 
 	/** The sandbox's toolbox, as an https URL: never another scheme, so the key is never sent in the clear. */
@@ -366,7 +366,7 @@ class DaytonaHost implements MachineHost {
 		if (current.status !== 404) return;
 		const missing = `POST ${new URL(`${toolbox}/files/upload-v2`).pathname}: 404 ${decoder.decode(current.bytes).replace(/\s+/g, " ").trim().slice(0, 300)}`;
 		const older = await send("files/upload");
-		if (!older.ok) throw new HostError(older.error.code, `${missing}, then ${older.error.message}`);
+		if (!older.ok) throw new HostError(older.error.code, `${missing}, then ${older.error.message}`, { transient: older.error.transient === true });
 	}
 
 	/**
@@ -419,7 +419,7 @@ class DaytonaHost implements MachineHost {
 		const commandId = ran.ok ? (ran.value as { cmdId?: unknown } | null)?.cmdId : undefined;
 		if (!ran.ok || typeof commandId !== "string") {
 			await this.#rest.call("DELETE", session, {});
-			throw ran.ok ? new Error("POST exec: no command id in the answer") : new HostError(ran.error.code, ran.error.message);
+			throw ran.ok ? new Error("POST exec: no command id in the answer") : new HostError(ran.error.code, ran.error.message, { transient: ran.error.transient === true });
 		}
 		let socket: WebSocketLike;
 		try {

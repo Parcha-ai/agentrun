@@ -90,8 +90,12 @@ export function codeOfError(host: Pick<MachineHost, "errorCode">, error: unknown
 /** A Result's value, or a HostError in its words: for a host whose own client answers Results (hosted/rest.ts). */
 export function orThrow<T>(result: Result<T>): T {
 	if (result.ok) return result.value;
-	throw new HostError(result.error.code, result.error.message);
+	throw new HostError(result.error.code, result.error.message, result.error.transient === true ? { transient: true } : {});
 }
+
+/** A failure in new words that keeps its cause's transient mark: an outage stays one a caller may fail over on. */
+export const marked = (failed: Result<never>, cause: { transient?: unknown }): Result<never> =>
+	cause.transient === true && !failed.ok ? { ok: false, error: { ...failed.error, transient: true } } : failed;
 
 /**
  * Settles with the promise's value, or a timeout or abort in words once ms pass or signal aborts. A host call that
@@ -104,7 +108,8 @@ export function race<T>(host: Pick<MachineHost, "descriptor" | "errorCode">, pro
 		return Promise.resolve(fail("aborted", `${what} was aborted`));
 	}
 	return new Promise((settle) => {
-		const timer = setTimeout(() => done(fail("timeout", `${what} did not answer within ${seconds(ms)}`)), ms);
+		// A call that does not answer in time is the vendor's trouble, not the call's: transient.
+		const timer = setTimeout(() => done(marked(fail("timeout", `${what} did not answer within ${seconds(ms)}`), { transient: true })), ms);
 		const onAbort = () => done(fail("aborted", `${what} was aborted`));
 		signal?.addEventListener("abort", onAbort, { once: true });
 		let settled = false;
@@ -117,7 +122,8 @@ export function race<T>(host: Pick<MachineHost, "descriptor" | "errorCode">, pro
 		}
 		promise.then(
 			(value) => done(ok(value)),
-			(error: unknown) => done(signal?.aborted ? fail("aborted", `${what} was aborted`) : fail(codeOfError(host, error), `${what} failed: ${words(error)}`)),
+			// An error the host marked transient (HostError's, or its client's own mark) keeps the mark.
+			(error: unknown) => done(signal?.aborted ? fail("aborted", `${what} was aborted`) : marked(fail(codeOfError(host, error), `${what} failed: ${words(error)}`), (error ?? {}) as { transient?: unknown })),
 		);
 	});
 }
@@ -206,7 +212,7 @@ export async function runToExit(host: MachineHost, id: string, argv: readonly st
 		// up the caller, which may be a create on its way to deleting the whole machine.
 		const killing = Promise.resolve().then(() => proc.kill());
 		await race(host, killing, `${what}'s kill`, Math.min(ms, CALL_SLACK_MS));
-		return result.error.code === "timeout" ? fail("timeout", `${what} did not end within ${seconds(ms)}`) : result;
+		return result.error.code === "timeout" ? marked(fail("timeout", `${what} did not end within ${seconds(ms)}`), result.error) : result;
 	}
 	return result;
 }
@@ -273,7 +279,7 @@ export async function openBridge(
 	const started = await hostCall(host, `starting the daemon's stdio bridge in ${name}`, (ctx) => execOf(host)(id, argv, { timeoutMs: ctx.timeoutMs }), requestMs, signal, (late) => late.ok && late.value.kill());
 	if (!started.ok) {
 		const { code, message } = started.error;
-		return code === "timeout" || code === "aborted" ? fail(code, `${message}; a bridge that starts after this is killed`) : started;
+		return code === "timeout" || code === "aborted" ? marked(fail(code, `${message}; a bridge that starts after this is killed`), started.error) : started;
 	}
 	const proc = started.value;
 	const readable = new PassThrough();
