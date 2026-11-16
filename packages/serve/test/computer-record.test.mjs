@@ -263,7 +263,7 @@ test("a frame of another format ends the file and goes on in the next; fitted to
     "The phone's frames changed from PNG to JPEG: the recording goes on in recordings/c1-2.mp4.",
     "The recording of the phone pauses while the run is parked: it goes on in a new file when the run resumes.",
   ]);
-  assert.deepEqual(readFileSync(join(folder, "c1.mp4")), Buffer.from([1, 2]), "the first file keeps its own frames only");
+  assert.deepEqual(readFileSync(join(folder, "c1.mp4")), Buffer.from([1, 2, 1, 2]), "the first file keeps its own frames only, its newest once more at the change, so it lasts until then");
   const resumed = recording({ ffmpeg: program(dir, COPY(argsAt)), kind: "phone", folder });
   await until(() => resumed.tv.watches.length === 1, "the resumed recorder's watch");
   resumed.tv.show(frame("jpeg", [5]));
@@ -271,6 +271,22 @@ test("a frame of another format ends the file and goes on in the next; fitted to
   assert.deepEqual(resumed.recorder.facts().files, ["recordings/c1-3.mp4"]);
   await resumed.recorder.stop("ended");
   assert.deepEqual(readdirSync(folder).sort(), ["c1-2.mp4", "c1-3.mp4", "c1.mp4"]);
+});
+
+test("a stop during a change of format returns once the file before it is finished, and opens no next file", async () => {
+  const dir = scratch();
+  // Takes 300 ms to finish its file once its input ends, then leaves a mark beside it.
+  const SLOW_END = "const fs = require(\"node:fs\"); const out = process.argv.at(-1); process.stdin.pipe(fs.createWriteStream(out)); process.stdin.on(\"end\", () => setTimeout(() => { fs.writeFileSync(`${out}.finished`, \"\"); process.exit(0); }, 300));";
+  const { tv, recorder, folder } = recording({ ffmpeg: program(dir, SLOW_END), kind: "phone" });
+  await until(() => tv.watches.length === 1, "the recorder's watch");
+  tv.show(frame("png", [1]));
+  await until(() => recorder.facts().written === 1, "the first frame written");
+  await sleep(150);
+  tv.show(frame("jpeg", [2]));
+  await recorder.stop("parked");
+  assert.equal(existsSync(join(folder, "c1.mp4.finished")), true, "the PNG file's ffmpeg finished before the stop returned");
+  assert.deepEqual(recorder.facts().files, ["recordings/c1.mp4"], "no JPEG file opened after the stop");
+  assert.deepEqual(readdirSync(folder).sort(), ["c1.mp4", "c1.mp4.finished"]);
 });
 
 test("a watch that ends is opened again; one whose computer is gone ends the recording, said in words", async () => {

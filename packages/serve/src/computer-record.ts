@@ -130,6 +130,8 @@ export function startRecording(input: RecordInput): Recording {
   const files: string[] = [];
   let watch: ScreenWatch | undefined;
   let part: Part | undefined;
+  /** The newest switch of files (switchPart): bounded, and awaited by the recording's end. */
+  let switching: Promise<void> | undefined;
   /** The newest frame not written yet, and the newest written. */
   let slot: ScreenFrame | undefined;
   let last: ScreenFrame | undefined;
@@ -227,17 +229,25 @@ export function startRecording(input: RecordInput): Recording {
     return opened;
   };
 
+  /** The file for `frame`'s format, made `part`: the one before ended (its newest frame once more, so it lasts until
+   *  the change), the next opened. The end of the recording waits on it. */
+  const switchPart = async (frame: ScreenFrame): Promise<void> => {
+    const before = part;
+    part = undefined;
+    if (before) await endPart(before, last && last.format === before.format ? last.bytes : undefined);
+    if (over !== undefined) return;
+    const opened = await openPart(frame, before);
+    if (!opened) return;
+    // Stopped while it opened: its file ends at once.
+    if (over !== undefined) return void (await endPart(opened));
+    part = opened;
+  };
+
   const put = async (frame: ScreenFrame): Promise<void> => {
     if (!part || part.format !== frame.format) {
-      const before = part;
-      part = undefined;
-      if (before) await endPart(before);
-      if (over !== undefined) return;
-      const opened = await openPart(frame, before);
-      if (!opened) return;
-      // Stopped while it opened: its file ends at once.
-      if (over !== undefined) return void (await endPart(opened));
-      part = opened;
+      switching = switchPart(frame);
+      await switching;
+      if (!part) return;
     }
     wroteAt = Date.now();
     firstAt ??= wroteAt;
@@ -317,6 +327,9 @@ export function startRecording(input: RecordInput): Recording {
     watch = undefined;
     const closing = watched?.close().catch(() => undefined);
     if (why) say(`The recording of ${what} stopped: ${why}.${files.length ? ` ${files.join(", ")} ${files.length === 1 ? "keeps" : "keep"} what was recorded until then.` : ""}`);
+    // A switch of files under way finishes first (the file before it ended, the next one not opened or ended at once),
+    // so the stop returns with every ffmpeg done.
+    await switching;
     const ending = part;
     part = undefined;
     if (ending) {
