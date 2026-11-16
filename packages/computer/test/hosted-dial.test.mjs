@@ -132,6 +132,42 @@ test("a server with no public https address refuses a dial create in words befor
 	}
 });
 
+test("the machine's addresses are built from the parsed public URL: any case of scheme, a path kept, a trailing slash dropped", async () => {
+	for (const [url, attach, daemon] of [
+		["HTTP://127.0.0.1:8080/", "ws://127.0.0.1:8080/v2/computers/attach", "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64"],
+		["http://127.0.0.1:8080/agentrun//", "ws://127.0.0.1:8080/agentrun/v2/computers/attach", "http://127.0.0.1:8080/agentrun/v2/computers/daemon?arch=amd64"],
+	]) {
+		const { fake, provider, tokens, hub } = setup({}, {});
+		const dialing = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, dial: { url, tokens, hub } });
+		const ref = made(await create(dialing));
+		const { env } = fake.calls.find(([what]) => what === "create")[1].boot;
+		assert.deepEqual([env.AGENTRUN_ATTACH_URL, env.AGENTRUN_DAEMON_URL], [attach, daemon], url);
+		made(await provider.release(ref, "delete"));
+	}
+});
+
+test("delete revokes the machine's token before it closes the socket, and closes it when the revoke fails", async () => {
+	const { fake, tokens, hub } = setup();
+	const order = [];
+	let fails = false;
+	const dial = {
+		url: PUBLIC_URL,
+		tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: async (machine) => (order.push("token"), fails ? Promise.reject(new Error("the store is down")) : tokens.revoke(machine)) },
+		hub: { online: (id) => hub.online(id), connection: (id) => hub.connection(id), revoke: (id, why) => (order.push("socket"), hub.revoke(id, why)) },
+	};
+	const notes = [];
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, dial, onNote: (note) => notes.push(note.note) });
+	for (const failing of [false, true]) {
+		fails = failing;
+		order.length = 0;
+		const ref = made(await create(provider));
+		made(await provider.release(ref, "delete"));
+		assert.deepEqual(order, ["token", "socket"], `revoke fails: ${failing}`);
+		assert.equal(hub.online(ref.name), false);
+	}
+	assert.match(notes.join("\n"), /its machine token could not be revoked \(the store is down\)/);
+});
+
 test("a dial host's provider given no dial refuses create in its own words, of the process, before the vendor is called", async () => {
 	const { fake } = fakeDialHost({ daemon: DAEMON_BYTES });
 	const refused = await create(new HostedProvider(fake.host, { daemonPath: DAEMON_PATH }));

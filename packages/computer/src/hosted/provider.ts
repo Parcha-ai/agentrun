@@ -517,18 +517,28 @@ export class HostedProvider implements ComputerProvider {
 				problem: `${this.#label} machines dial this server, and it has no public https address: set AGENTRUN_PUBLIC_URL to one the internet reaches (a tunnel such as cloudflared or tailscale funnel works), or use a provider whose host has exec`,
 			};
 		}
-		const base = (url as string).replace(/\/+$/, "");
-		return { attach: `${base.replace(/^http/, "ws")}${ATTACH_PATH}`, daemon: `${base}${DAEMON_PATH}?arch=${this.host.facts.arch}`, dial: this.#dial };
+		// From the parsed address, whose scheme and host are lowercase: "HTTPS://Example.com/" is https://example.com.
+		const path = at.pathname.replace(/\/+$/, "");
+		return {
+			attach: `${at.protocol === "https:" ? "wss:" : "ws:"}//${at.host}${path}${ATTACH_PATH}`,
+			daemon: `${at.origin}${path}${DAEMON_PATH}?arch=${this.host.facts.arch}`,
+			dial: this.#dial,
+		};
 	}
 
-	/** A dial machine's token revoked and its socket closed, best effort: a token not revoked is refused past backstopAt. */
+	/**
+	 * A dial machine's token revoked, then its socket closed, best effort: the token first, so a redial while the revoke
+	 * is written can't stay attached after the close. A token not revoked is refused past backstopAt.
+	 */
 	async #revoke(name: string): Promise<void> {
-		if (this.#dial === undefined) return;
-		this.#dial.hub.revoke(name, `${name} was deleted`);
+		const dial = this.#dial;
+		if (dial === undefined) return;
 		try {
-			await this.#dial.tokens.revoke(name);
+			await dial.tokens.revoke(name);
 		} catch (error) {
 			this.#onNote?.({ computer: name, note: `its machine token could not be revoked (${words(error)}): it is refused past the machine's backstop either way` });
+		} finally {
+			dial.hub.revoke(name, `${name} was deleted`);
 		}
 	}
 
