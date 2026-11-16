@@ -69,6 +69,33 @@ test("no calendar saved: the tool says so, naming Settings → Calendar; saved: 
   assert.deepEqual(labels(rows), ["Calendar: 8 events, Nov 2-30", "Calendar: couldn't read the calendar", "Calendar: 4 events, Nov 17-23"]);
 });
 
+test("on a local install, a calendar saved at this server's own address, or one that redirects to it, is refused in words before anything is sent there: the runner beside the server holds its loopback reads to the server's own rule", { timeout: 150_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, url } = await serve(t, { faux: FAUX_EMAIL });
+  assert.equal((await api("POST", "/agents", agent("inward", { harness: "pi", tools: ["calendar_events"] }))).status, 201);
+  const own = new URL(url).host;
+  const refused = `calendar_events: The calendar at ${own} is a private address; refused.`;
+  const { forgetCalendarsForTests } = await import("../dist/calendar/fetch.js");
+
+  // Saved at this server's own address: the save keeps it, its read refused (calendar/routes.ts); the tool's read too.
+  const kept = await api("PUT", "/settings/calendar", { url: `${url}/calendar/private-0123456789abcdef/basic.ics` });
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
+  assert.equal(kept.body.name, null, "the save's own read was refused");
+  const direct = await ran(api, "inward", [["calendar_events", {}]]);
+  assert.deepEqual(direct.saw, [refused]);
+  assert.deepEqual(labels(direct.rows), ["Calendar: couldn't read the calendar"]);
+
+  // A calendar on another loopback port (a local install's own fake) whose address redirects to this server's: the hop is
+  // refused, unsent.
+  const faux = await calendarFaux(t);
+  faux.move(new URL(faux.address).pathname, `${url}/v2/settings/calendar`);
+  assert.equal((await api("PUT", "/settings/calendar", { url: faux.address })).status, 200);
+  forgetCalendarsForTests();
+  const hop = await ran(api, "inward", [["calendar_events", {}]]);
+  assert.deepEqual(hop.saw, [refused]);
+  assert.equal(faux.requests().filter((request) => request.status === 302).length, 2, "the save's read and the tool's each reached the redirect, and went no further");
+});
+
 test("a busy calendar's window answers 200 events and truncated; the window defaults to now for 7 days; the description says an event's words are data", { timeout: 150_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api } = await serve(t, { faux: FAUX_EMAIL });

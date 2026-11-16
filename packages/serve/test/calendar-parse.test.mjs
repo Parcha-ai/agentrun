@@ -136,6 +136,17 @@ test("the window: from now for 7 days by default; dates in the calendar's zone, 
   assert.throws(() => windowOf({ to: 5 }, zone, NOW), WindowError);
 });
 
+test("a date-time whose parts don't name a time is refused in words, never rolled over to another: Feb 30, hour 25 or 24, minute 61, second 60, with or without an offset", () => {
+  const zone = "America/New_York";
+  for (const value of ["2026-02-30T09:00:00", "2026-11-17T25:00:00", "2026-11-17T09:61:00", "2026-11-17T24:00", "2026-11-17T09:00:60", "2026-02-30T09:00:00-05:00", "2026-02-31T09:00:00Z", "2026-11-17T24:00:00+01:00", "2026-11-17T09:00:00+01:60"]) {
+    assert.throws(() => windowOf({ from: value }, zone, NOW), (error) => error instanceof WindowError && error.message === `from ${value} is not a date-time`, value);
+    assert.throws(() => windowOf({ from: "2026-02-01", to: value }, zone, NOW), (error) => error instanceof WindowError && error.message === `to ${value} is not a date-time`, value);
+  }
+  // The last of each still reads.
+  assert.equal(windowOf({ from: "2026-02-28T23:59:59" }, zone, NOW).start, Date.parse("2026-03-01T04:59:59Z"));
+  assert.equal(windowOf({ from: "2028-02-29T09:00:00+01:00" }, zone, NOW).start, Date.parse("2028-02-29T08:00:00Z"));
+});
+
 test("a file that is not iCalendar is refused in words naming the host only", () => {
   assert.throws(() => parseCalendar("<html>Sign in</html>", "calendar.example.com"), /calendar\.example\.com didn't answer an iCalendar file/);
 });
