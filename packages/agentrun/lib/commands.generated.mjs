@@ -402,6 +402,12 @@ export const COMMANDS = [
         ],
         "required": false,
         "description": "Only runs with this status."
+      },
+      {
+        "name": "label",
+        "type": "string",
+        "required": false,
+        "description": "Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400."
       }
     ],
     "headers": [],
@@ -2589,6 +2595,12 @@ export const COMMANDS = [
         "type": "boolean",
         "required": false,
         "description": "true lists only archived runs; false, the default, the others."
+      },
+      {
+        "name": "label",
+        "type": "string",
+        "required": false,
+        "description": "Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400."
       }
     ],
     "headers": [],
