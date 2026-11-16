@@ -2,9 +2,7 @@
 // its stdin, and, where the vendor has them, a call that ends its stdin and one that kills it. framedExec turns those
 // pieces into the MachineProcess the adapter reads (../host.ts, exec), so a vendor writes only its own calls. It owns
 // the rest: the writes go one call after another, in order, each answered before the next starts; output becomes
-// bytes, its events read no faster than the caller reads it; and a vendor with no kill gets one by pid. A vendor with no
-// call that writes to stdin gets one from fifoStdin. PROVIDERS.md, "Exec shapes that work", has worked examples.
-import { randomBytes } from "node:crypto";
+// bytes, its events read no faster than the caller reads it; and a vendor with no kill gets one by pid. PROVIDERS.md, "Exec shapes that work", has a worked example.
 import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "../host.js";
@@ -67,64 +65,6 @@ export const PID_KILL = [
 	"kill -KILL $all 2>/dev/null",
 	"exit 0",
 ].join("\n");
-
-/**
- * The sh a process starts under when the vendor has no call that writes to its stdin, given a directory's path and
- * argv: it makes the directory, root's alone (the computer's programs share /tmp, and must never read root's input), and
- * in it the fifo `i`, which it holds open both ways (so no write's end is an end of file). It feeds the process what
- * comes into `i`, a length line and that many bytes at a time, until a line "e", which ends the process's stdin.
- */
-export const FIFO_STDIN = [
-	'd=$1; shift',
-	'umask 077 && mkdir "$d" && mkfifo "$d/i" "$d/0" || exit 1',
-	'exec 3<>"$d/i"',
-	'{ while read -r n <&3 && [ "$n" != e ]; do head -c "$n" <&3; done >"$d/0"; } &',
-	'"$@" <"$d/0" 3<&-',
-	"c=$?",
-	'printf "e\\n" >&3',
-	'rm -rf "$d"',
-	"exit $c",
-].join("\n");
-
-/** The short exec that hands the fifo one piece, given the directory, the length line and the text; it waits for the fifo. */
-export const FIFO_WRITE = 'i=0; until [ -p "$1/i" ]; do i=$((i+1)); [ $i -le 100 ] || exit 1; sleep 0.1; done; printf "%s\\n%s" "$2" "$3" >"$1/i"';
-
-/** The most UTF-8 bytes one write's exec carries in its argv, well under Linux's 128 KiB for one word. */
-const FIFO_PIECE = 64 * 1024;
-
-/**
- * Pieces for a vendor that starts a process and streams its events but has no call that writes to its stdin: the
- * process starts under FIFO_STDIN, and each write is a second, short exec of FIFO_WRITE, one after another, as text.
- * end() is one more, of the line "e". There is no kill: framedExec kills by pid.
- */
-export function fifoStdin<P>(pieces: Pick<ExecPieces<P>, "start" | "events">): ExecPieces<{ handle: P; path: string; ctx: HostCall }> {
-	const run = async (path: string, head: string, text: string, ctx: HostCall) => {
-		const handle = await pieces.start(["sh", "-c", FIFO_WRITE, "sh", path, head, text], ctx);
-		let code = -1;
-		let said = "";
-		for await (const event of pieces.events(handle)) {
-			if ("exit" in event) code = event.exit;
-			else if (event.stream === "stderr") said += "text" in event ? event.text : Buffer.from(event.base64, "base64").toString("utf8");
-		}
-		if (code !== 0) throw new Error(`the write to the process's stdin exited ${code}${said === "" ? "" : `: ${said.trim().slice(0, 200)}`}`);
-	};
-	return {
-		async start(argv, ctx) {
-			const path = `/tmp/agentrun-stdin-${randomBytes(8).toString("hex")}`;
-			return { handle: await pieces.start(["sh", "-c", FIFO_STDIN, "sh", path, ...argv], ctx), path, ctx };
-		},
-		events: ({ handle }) => pieces.events(handle),
-		async write({ path, ctx }, text) {
-			const bytes = Buffer.from(text, "utf8");
-			for (let at = 0, end = 0; at < bytes.length; at = end) {
-				end = Math.min(at + FIFO_PIECE, bytes.length);
-				while (end < bytes.length && ((bytes[end] as number) & 0xc0) === 0x80) end--;
-				await run(path, String(end - at), bytes.subarray(at, end).toString("utf8"), ctx);
-			}
-		},
-		end: ({ path, ctx }) => run(path, "e", "", ctx),
-	};
-}
 
 /** argv started through a vendor's pieces, as the MachineProcess exec answers. */
 export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {

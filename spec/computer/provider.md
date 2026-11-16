@@ -230,16 +230,10 @@ Each failure says what the exec did wrong, such as "U+000A (at byte 12) came bac
 \n into \r\n, as a terminal does". It exits 0 when every check passes and 1 when one fails.
 
 The vendor's exec may be any transport that keeps these rules: its own stream, SSH, its SDK, a relay in the image over
-any two-way stream, or one of these shapes, which `framedExec` (`packages/computer/src/hosted/framed-exec.ts`) turns
-into a `MachineProcess`:
-
-| Shape | What the host hands `framedExec` |
-| --- | --- |
-| Split calls: one starts a process, one streams its events, one per write | the three calls; `ndjson` or `sse` (`hosted/rest.ts`) reads events that come as NDJSON or as server-sent events |
-| A start whose events stream, and no call that writes to a running process | `fifoStdin(start, events)`: the process reads its stdin from a fifo, and each write is one more short exec into it |
-| One terminal (a console or PTY socket): echo on, `\n` out as `\r\n`, stdout and stderr merged | `ptyPieces(open)` (`hosted/pty-exec.ts`): the terminal set raw with no echo, the process on fifos off it, and its three streams as base64 lines |
-
-A request and response exec, which answers a command's output when it ends, can't carry the bridge.
+any two-way stream, or split calls (one starts a process, one streams its events, one per write), which
+`framedExec` (`packages/computer/src/hosted/framed-exec.ts`) turns into a `MachineProcess`; `ndjson` and `sse`
+(`hosted/rest.ts`) read events that come as NDJSON or as server-sent events. A request and response exec, which
+answers a command's output when it ends, can't carry the bridge.
 
 On a vendor whose root can make a network namespace, or one inside a user namespace, the three networks are the
 adapter's: init's fence holds `none`, and init's egress proxy holds `open` and a list

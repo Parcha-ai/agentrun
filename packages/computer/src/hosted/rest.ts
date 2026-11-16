@@ -194,7 +194,7 @@ export interface SseEvent {
  * stream says: lines end at \r\n, \n or \r; a line that starts with ":" is a comment (a vendor's keep-alive); a blank
  * line ends an event, and one with no data is none. An event the body ends inside is dropped.
  */
-export async function* sse(body: AsyncIterable<Uint8Array>): AsyncIterable<SseEvent> {
+export async function* sse(body: AsyncIterable<Uint8Array>): AsyncGenerator<SseEvent, void, undefined> {
 	// Not ignoreBOM: the standard drops a U+FEFF that starts the stream.
 	const decoder = new TextDecoder();
 	let rest = "";
