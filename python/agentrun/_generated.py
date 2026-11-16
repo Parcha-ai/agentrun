@@ -2103,6 +2103,7 @@ class GetAgentArchilResponseArchilDisk(TypedDict):
 
 class GetLearningLoopResponse(TypedDict):
     agent: str
+    completed_runs: int
     compiles: list[GetLearningLoopResponseCompilesItem]
     guards: list[GetLearningLoopResponseGuardsItem]
 

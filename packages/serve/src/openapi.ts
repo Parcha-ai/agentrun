@@ -1447,6 +1447,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [AGENT_ID],
       responses: { "200": json(closed({
         agent: { type: "string" },
+        completed_runs: { ...COUNT, description: "The agent's completed runs of its own (never one a learned workflow answered alone, a replay, an imported or an archived run) toward its first compile, at most its definition's `learning.compile_after`." },
         compiles: { type: "array", items: closed({
           run_id: { type: "string", description: "The run whose end compiled it." },
           round: { type: "integer", minimum: 1, description: "The run's round that compiled it: 1 its first end, more for an end after a follow-up opened it again." },

@@ -2561,6 +2561,7 @@ export interface operations {
     body: never;
     answer: {
       agent: string;
+      completed_runs: number;
       compiles: {
         run_id: string;
         round: number;

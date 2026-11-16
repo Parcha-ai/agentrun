@@ -1400,6 +1400,7 @@ export type GetAgentArchilResponse = {
 /** The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop). */
 export type GetLearningLoopResponse = {
   agent: string;
+  completed_runs: number;
   compiles: Array<{
     run_id: string;
     round: number;

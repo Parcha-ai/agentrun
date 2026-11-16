@@ -136,6 +136,15 @@ export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
   }));
 }
 
+/** Whether a store run ended completed (its state `ended`, a plain completion). */
+export const completedRun = (run: { readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed");
+/** Whether a store run is a completed run of the agent's own (completedRun), not one its learned workflow answered alone
+ *  nor a check's replay run: what compile_after counts. */
+export const agentRun = (run: { readonly state: string; readonly outcome: string | null; readonly metrics?: unknown }) => {
+  const path = (run.metrics as { path?: unknown } | null | undefined)?.path;
+  return completedRun(run) && path !== "workflow" && path !== "replay";
+};
+
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or
  *  waiting for its owner's OK), none of its last COMPILE_QUIET_RUNS runs compiled, and it has `compileAfter` completed
  *  agent runs (its definition's compile_after, learning-setting.ts), the ending one counted. */
