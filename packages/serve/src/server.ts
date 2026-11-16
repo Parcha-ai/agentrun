@@ -2280,8 +2280,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const chosenApprovals = approvals ?? pkg.approvals;
     const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants, ...(chosenApprovals ? { approvals: chosenApprovals } : {}), ...(pick ? { computer: pick } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
-    // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
-    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now(), pkg.inputSchema);
+    // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>). "Passed"
+    // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
+    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema);
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });

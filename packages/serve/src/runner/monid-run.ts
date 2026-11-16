@@ -32,8 +32,6 @@ import type { ClaimMcp } from "./mcp-run.js";
 export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf">;
 /** A template eval case's monid fake (template-eval.ts, `monid:` in its case.yaml): `unavailable`, monid unreachable. */
 export type MonidFake = "unavailable";
-/** Which monid fake, if any, a run's endpoints answer from, by the agent the run is of: the eval's own runner's alone. */
-export type MonidFakes = (agentId: string) => MonidFake | undefined;
 
 /** The fetch of a monid that can't be reached: it fails as undici's fetch does when the host refuses the connection, so
  *  monidClient says it in its own words (monid.ts failure). Nothing is sent. */
@@ -44,7 +42,7 @@ const UNREACHABLE: typeof fetch = async () => {
 /** One host tool per endpoint of `pin`, on the claim's environment `env` (its key, and the tests' fake under faux), an
  *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log;
  *  `capped`, whether the run has a spend cap now (its launch's, read at each call). `fake`: a template eval case's monid
- *  fake (AdapterSpecDeps.monidFakes), `unavailable`: each call goes as it does with monid unreachable, its price read
+ *  fake (AdapterSpecDeps.evalFakes), `unavailable`: each call goes as it does with monid unreachable, its price read
  *  first and failing, so it is never sent, and nothing is held or booked. */
 export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string, capped: () => boolean = () => false, fake?: MonidFake): ClaimMonid | undefined {
   const names = Object.keys(pin ?? {});
