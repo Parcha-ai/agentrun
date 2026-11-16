@@ -662,7 +662,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		for (const what of pending.values()) {
 			report.cleanup.errors.push(`${what} did not settle within ${cleanupTimeoutMs / 1000} s of the run's end: what it makes may be left`);
 		}
-		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs);
+		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs, image);
 	}
 	// A Core case skipped for an optional group the computer does not declare, or written for another system, is not part
 	// of Core's verdict.
@@ -683,6 +683,7 @@ async function cleanup(
 	report: ConformanceReport,
 	deleted: Set<string>,
 	ms: number,
+	image: string,
 ) {
 	try {
 		if (lifetime === "janitor") {
@@ -705,7 +706,7 @@ async function cleanup(
 		if (host !== undefined && typeof host.list === "function") {
 			const { sweepMachines } = await import("./sweep.js");
 			const said: string[] = [];
-			const swept = await within(sweepMachines(host, { labels, waitMs: ms, onWords: (words) => said.push(words) }), ms * 2, "the sweep of the run's machines");
+			const swept = await within(sweepMachines(host, { labels, waitMs: ms, image, onWords: (words) => said.push(words) }), ms * 2, "the sweep of the run's machines");
 			report.cleanup.errors.push(...said.map((words) => `sweep: ${words}`));
 			if (!swept.ok) report.cleanup.errors.push(`sweep: ${swept.error.code}: ${swept.error.message}`);
 			else {
