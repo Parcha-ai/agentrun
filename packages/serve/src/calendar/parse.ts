@@ -111,15 +111,21 @@ function iana(name: string): Zone {
   return zone;
 }
 
-/** A wall-clock time placed in a zone by its offset at that instant: the offset at the first guess, and again at the
- *  instant that gives, so a time in the hour a DST change repeats takes the first and one it skips moves on. */
+/** A wall-clock time placed in a zone, as RFC 5545 (3.3.5) reads it: the instant the zone's clock reads it at; the first,
+ *  when a fall-back reads it twice; and, when a spring-forward skips it, the instant it is at the offset from before the
+ *  change (02:30 on a day that jumps 02:00 to 03:00 is 03:30 the new time). The offsets either side are a day off `wall`,
+ *  past any change near it: no zone is more than a day off UTC, or changes twice in two days. */
 function placed(wall: number, offsetAt: (instant: number) => number): number {
-  const first = wall - offsetAt(wall) * 60_000;
-  const second = wall - offsetAt(first) * 60_000;
-  return second === first ? first : wall - offsetAt(second) * 60_000;
+  const before = offsetAt(wall - DAY);
+  const after = offsetAt(wall + DAY);
+  if (before === after) return wall - before * 60_000;
+  const read = [before, after].map((offset) => wall - offset * 60_000).filter((instant) => wall - instant === offsetAt(instant) * 60_000);
+  return read.length > 0 ? Math.min(...read) : wall - before * 60_000;
 }
 
-/** A VTIMEZONE of the file, by ical.js. */
+/** A VTIMEZONE of the file, by ical.js: an instant's offset from the file's changes (ical.js keeps each as the UTC time it
+ *  takes effect, with the offsets before and after, and adds years as later ones are asked for), and a wall-clock time
+ *  placed as an IANA zone's is. */
 function vtimezone(component: Component, tzid: string): Zone | undefined {
   let tz: InstanceType<typeof ICAL.Timezone>;
   try {
@@ -127,17 +133,32 @@ function vtimezone(component: Component, tzid: string): Zone | undefined {
   } catch {
     return undefined;
   }
-  const offsetOfWall = (wall: number): number => {
-    const d = new Date(wall);
-    const time = new ICAL.Time({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: d.getUTCHours(), minute: d.getUTCMinutes(), second: d.getUTCSeconds(), isDate: false }, ICAL.Timezone.localTimezone);
-    return Math.round(tz.utcOffset(time) / 60);
-  };
-  // An instant's offset: the offset of the wall-clock time it reads as, found as `placed` finds it.
+  // When each change takes effect, ascending, and the offset (minutes) from then on; `first`, the offset before them all.
+  let starts: number[] = [];
+  let offsets: number[] = [];
+  let first = 0;
+  let known = -1;
   const offsetAt = (instant: number): number => {
-    const first = offsetOfWall(instant);
-    return offsetOfWall(instant + first * 60_000);
+    tz._ensureCoverage(new Date(instant).getUTCFullYear() + 1);
+    const changes = tz.changes as { year: number; month: number; day: number; hour: number; minute: number; second: number; utcOffset: number; prevUtcOffset: number }[];
+    if (changes.length !== known) {
+      known = changes.length;
+      const sorted = changes.map((c) => ({ at: Date.UTC(c.year, c.month - 1, c.day, c.hour, c.minute, c.second), to: Math.round(c.utcOffset / 60), from: Math.round(c.prevUtcOffset / 60) })).sort((a, b) => a.at - b.at);
+      starts = sorted.map((c) => c.at);
+      offsets = sorted.map((c) => c.to);
+      first = sorted[0]?.from ?? 0;
+    }
+    // The last change at or before `instant`.
+    let low = 0;
+    let high = starts.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (starts[mid]! <= instant) low = mid + 1;
+      else high = mid;
+    }
+    return low === 0 ? first : offsets[low - 1]!;
   };
-  return { name: tzid, offsetAt, toInstant: (wall) => wall - offsetOfWall(wall) * 60_000 };
+  return { name: tzid, offsetAt, toInstant: (wall) => placed(wall, offsetAt) };
 }
 
 const UTC: Zone = { name: "UTC", offsetAt: () => 0, toInstant: (wall) => wall };

@@ -78,11 +78,15 @@ export function addressForms(url: string): string[] {
   return [...forms].filter((one) => one.length >= 8).sort((a, b) => b.length - a.length);
 }
 
-/** Each form of `url` cut from `text` (a fetch error, a calendar's own text): the address is never said. */
-export function scrubAddress(text: string, url: string | undefined): string {
-  if (!url) return text;
+/** Each form of `url` cut from `text` (a fetch error, a calendar's own text): the address is never said. `url` may be the
+ *  saved address and each address a read was redirected to (fetch.ts ReadCalendar followed), every one a secret: their
+ *  forms are cut together, longest first. */
+export function scrubAddress(text: string, url: string | readonly string[] | undefined): string {
+  const urls = (typeof url === "string" ? [url] : (url ?? [])).filter((one) => one);
+  if (urls.length === 0) return text;
+  const forms = urls.length === 1 ? addressForms(urls[0]!) : [...new Set(urls.flatMap((one) => addressForms(one)))].sort((a, b) => b.length - a.length);
   let out = text;
-  for (const form of addressForms(url)) out = out.split(form).join("[the calendar's address]");
+  for (const form of forms) out = out.split(form).join("[the calendar's address]");
   return out;
 }
 

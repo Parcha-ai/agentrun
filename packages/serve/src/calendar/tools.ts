@@ -74,8 +74,10 @@ function calendarTool(host: ToolHost): ToolRegistration {
       if (!host.store || !host.sealKey) return forModel(`${CALENDAR_EVENTS}: the calendar is read on the runner, which this run is not on.`, { isError: true });
       const saved = await openCalendar(host.store, host.sealKey);
       if (!saved) return forModel(`${CALENDAR_EVENTS}: ${NO_CALENDAR}`, { isError: true });
+      // The saved address, and once read every address it was redirected to: each cut from the answer and the calendar's texts.
+      let secret: string[] = [saved.url];
       const clean = (text: string) => {
-        const cut = scrubAddress(text, saved.url);
+        const cut = scrubAddress(text, secret);
         return host.redact ? host.redact(cut) : cut;
       };
       const failed = (words: string) => forModel(clean(calendarError(`${CALENDAR_EVENTS}: ${words}`)), { isError: true });
@@ -84,7 +86,7 @@ function calendarTool(host: ToolHost): ToolRegistration {
       const { CalendarError, readCalendar } = await import("./fetch.js");
       const { eventsIn, isoIn, RepeatsError, serverZone, windowOf, WindowError, zoneNamed } = await import("./parse.js");
       // Each text of the calendar's has the address cut out before it is cut short (parse.ts cut), and the answer again.
-      const scrub = (text: string) => scrubAddress(text, saved.url);
+      const scrub = (text: string) => scrubAddress(text, secret);
       try {
         // The window read first in the zone the save found, so a window refused is refused before any request.
         windowOf(given, saved.time_zone ?? serverZone(), now);
@@ -93,6 +95,7 @@ function calendarTool(host: ToolHost): ToolRegistration {
         const { privateOAuthHosts } = await import("../mcp-private-hosts.js");
         const reach = { ...(host.calendarLoopback ? { loopback: true } : {}), own: host.serverOwn ?? [], allowed: await privateOAuthHosts(host.store) };
         const calendar = await readCalendar(saved.url, reach, undefined, context?.abortSignal);
+        secret = [saved.url, ...calendar.followed];
         const window = windowOf(given, calendar.zone, now);
         let found: ReturnType<typeof eventsIn>;
         try {

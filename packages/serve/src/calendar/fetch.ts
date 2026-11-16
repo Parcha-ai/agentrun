@@ -23,7 +23,13 @@ export type CalendarReach = Reach;
 /** The network a read resolves and dials through (mcp-oauth.ts OAuthNetwork), for a test. Default the system's. */
 export type CalendarNetwork = OAuthNetwork;
 
-type Kept = { at: number; etag?: string; modified?: string; calendar: ParsedCalendar };
+/** A calendar read: parsed, with `followed`, every address a redirect took the read to (the saved one's host may send it
+ *  to another secret address), each scrubbed from what the calendar says as the saved one is (address.ts scrubAddress). */
+export type ReadCalendar = ParsedCalendar & { followed: readonly string[] };
+
+/** A read kept: `followed` is its calendar's own list, added to in place when a revalidation is redirected somewhere new, so
+ *  a 304 answers the very copy kept. */
+type Kept = { at: number; etag?: string; modified?: string; calendar: ReadCalendar; followed: string[] };
 /** Each address's last read, by address: at most KEPT_MAX, the oldest read dropped first. */
 const kept = new Map<string, Kept>();
 const KEPT_MAX = 16;
@@ -38,25 +44,28 @@ export function forgetCalendarsForTests(): void {
   kept.clear();
 }
 
-/** The calendar at `url`, parsed: the kept copy while it is fresh, else fetched (a 304 keeps the kept copy). */
-export async function readCalendar(url: string, reach: CalendarReach = {}, network?: CalendarNetwork, signal?: AbortSignal): Promise<ParsedCalendar> {
+/** The calendar at `url`, parsed: the kept copy while it is fresh, else fetched (a 304 keeps the kept copy, the addresses
+ *  this read was redirected to added to its own). */
+export async function readCalendar(url: string, reach: CalendarReach = {}, network?: CalendarNetwork, signal?: AbortSignal): Promise<ReadCalendar> {
   const held = kept.get(url);
   if (held && Date.now() - held.at < FRESH_MS) return held.calendar;
+  const followed: string[] = [];
   try {
-    const answer = await fetchCalendar(url, reach, network, held, signal);
+    const answer = await fetchCalendar(url, reach, network, held, signal, followed);
     if (answer.status === 304 && held) {
       held.at = Date.now();
+      for (const one of followed) if (!held.followed.includes(one)) held.followed.push(one);
       return held.calendar;
     }
-    const calendar = parseCalendar(answer.body ?? "", hostOf(url));
+    const calendar = { ...parseCalendar(answer.body ?? "", hostOf(url)), followed };
     kept.delete(url);
-    kept.set(url, { at: Date.now(), ...(answer.etag ? { etag: answer.etag } : {}), ...(answer.modified ? { modified: answer.modified } : {}), calendar });
+    kept.set(url, { at: Date.now(), ...(answer.etag ? { etag: answer.etag } : {}), ...(answer.modified ? { modified: answer.modified } : {}), calendar, followed });
     while (kept.size > KEPT_MAX) kept.delete(kept.keys().next().value!);
     return calendar;
   } catch (error) {
     // Words of the server's own, or the parser's, the address cut from them whatever they say.
     const said = error instanceof CalendarError ? error.message : `${hostOf(url)}'s calendar couldn't be read (${(error as Error)?.message ?? String(error)})`;
-    throw new CalendarError(scrubAddress(said, url));
+    throw new CalendarError(scrubAddress(said, [url, ...followed]));
   }
 }
 
@@ -80,8 +89,9 @@ function codeOf(error: unknown): string | undefined {
 
 type Answer = { status: 200; body: string; etag?: string; modified?: string } | { status: 304; body?: undefined; etag?: string; modified?: string };
 
-/** One fetch of `url`, following at most REDIRECTS_MAX redirects, each hop checked; conditional on `held`'s validators. */
-async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarNetwork | undefined, held: Kept | undefined, stop?: AbortSignal): Promise<Answer> {
+/** One fetch of `url`, following at most REDIRECTS_MAX redirects, each hop checked and its address added to `followed`;
+ *  conditional on `held`'s validators. */
+async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarNetwork | undefined, held: Kept | undefined, stop: AbortSignal | undefined, followed: string[]): Promise<Answer> {
   const signal = AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ...(stop ? [stop] : [])]);
   const { calendarAt, dialAt, systemNetwork } = await import("../mcp-oauth.js");
   const network = given ?? systemNetwork;
@@ -103,6 +113,7 @@ async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarN
           const next = URL.parse(location, target);
           if (!next) throw new CalendarError(`${target.host} redirected the calendar to an address that isn't one.`);
           target = next;
+          if (target.href !== url && !followed.includes(target.href)) followed.push(target.href);
           continue;
         }
         const validators = { ...(res.headers.get("etag") ? { etag: res.headers.get("etag")! } : {}), ...(res.headers.get("last-modified") ? { modified: res.headers.get("last-modified")! } : {}) };
