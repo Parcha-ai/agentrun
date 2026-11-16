@@ -278,6 +278,22 @@ test("the CLI loads a provider module by path, prints the report, and exits 0 wh
 	assert.match(out.text(), /core PASS 1\/1/);
 });
 
+test("--long runs the long cases; without it they skip in words that name the flag, and --exec-stream refuses it", async () => {
+	const long = pass("lifetime.waits", { level: "full", group: "lifetime", run: async (t) => t.long("it waits on a vendor's timer") });
+	const json = async (argv) => {
+		const out = sink();
+		await main(["--provider", "./fixtures/fake-provider.mjs", "--json", ...argv], { stdout: out, cwd: HERE, cases: [pass("health.ping"), long] });
+		return JSON.parse(out.text()).results.find((r) => r.id === "lifetime.waits");
+	};
+	assert.deepEqual(await json(["--long"]), { id: "lifetime.waits", level: "full", group: "lifetime", status: "pass" });
+	const skipped = await json([]);
+	assert.equal(skipped.status, "skip");
+	assert.equal(skipped.reason, "a long case (it waits on a vendor's timer): run with --long (or options.long), as the live sweep does");
+	const err = sink();
+	assert.equal(await main(["--provider", "e2b", "--exec-stream", "--machine", "m", "--long"], { stdout: sink(), stderr: err }), 2);
+	assert.match(err.text(), /--exec-stream runs alone: drop --long/);
+});
+
 test("a module's conformanceImage() is the run's image unless --image names one, and its conformanceNotes go in the report", async () => {
 	const out = sink();
 	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
@@ -1027,6 +1043,11 @@ test("refusal-side provider cases pass only on the refusal they test: check's wo
 	const released = await runConformance(slow.provider, { image: IMAGE, cases: byId("provider.create-release") });
 	assert.equal(statuses(released)["provider.create-release"], "fail");
 	assert.match(reasons(released)["provider.create-release"], /connect to a deleted computer: expected gone or not_found, got timeout/);
+	// A computer that a call after its delete brings back (a vendor that wakes a machine on the next request: the connect
+	// is refused, and the machine comes up behind it) fails provider.create-release.
+	const woke = await runConformance(fakeComputers({ wakesDeleted: true }).provider, { image: IMAGE, cases: byId("provider.create-release") });
+	assert.equal(statuses(woke)["provider.create-release"], "fail");
+	assert.match(reasons(woke)["provider.create-release"], /^attach to the deleted computer, after a connect to it: expected an error \(not_found\), got ok/);
 	// An attach by labels two computers match that fails for another reason fails provider.attach.
 	const flaky = fakeComputers();
 	const attach = flaky.provider.attach.bind(flaky.provider);
