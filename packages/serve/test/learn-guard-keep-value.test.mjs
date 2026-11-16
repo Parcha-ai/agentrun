@@ -1,6 +1,7 @@
 // Guards that keep their value (learn/refit.ts, learn/promote.ts inheritGuards, learn/compile.ts, runner/promotion.ts):
-// a refit lowers a guard or switches it off (or switches an escalate off) only when it caught none of at least
-// DROP_MIN_WRONG wrong answers past its step, never on rows with no wrong answers (where off always looks free); a refit
+// a refit switches a guard off (or an escalate) only when it caught none of at least DROP_MIN_WRONG wrong answers past
+// its step, never on rows with fewer (where off always looks free): on those a guard only comes down to just under the
+// lowest p a right answer read at its step (lowerFloor); a refit
 // that is written is fit on one half of its rows and must clear the bar on the other half too; and a new revision of a
 // workflow with a champion takes the champion's fitted guards, so a compile never resets them to the defaults.
 import assert from "node:assert/strict";
@@ -11,8 +12,8 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { landWorkflows } from "./learned-workflow-seed-support.mjs";
 
-const { DROP_MIN_WRONG, halvesOf, mayLower, REFIT_MIN, refitGuards, refitHeldOut } = await import("../dist/learn/refit.js");
-const { inheritGuards, putGrade, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_MIN, SOFT_ESCALATE_THRESHOLD, switchedOffOf } = await import("../dist/learn/promote.js");
+const { DROP_MIN_WRONG, halvesOf, lowerFloor, mayLower, REFIT_MIN, refitGuards, refitHeldOut, scoreRows, UNDER_RIGHT } = await import("../dist/learn/refit.js");
+const { clears, inheritGuards, putGrade, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_MIN, SOFT_ESCALATE_THRESHOLD, switchedOffOf } = await import("../dist/learn/promote.js");
 const compile = await import("../dist/learn/compile.js");
 const { parseReflection } = await import("../dist/learn/reflect.js");
 const { draftFiles } = await import("../dist/learn/skills.js");
@@ -68,21 +69,47 @@ const judged = () => JSON.stringify({ v: 2, name: "answer",
 const esc = (fired) => ({ node: "unsupported", signal: "escalate", p: fired ? 0 : 1, threshold: SOFT_ESCALATE_THRESHOLD, escalated: false });
 
 // (b) Red on main: with every answer right, the refit switched every guard off (and an escalate that fired) for free.
-test("rows with no wrong answer lower nothing and switch nothing off: guards keep their thresholds, an escalate stays", () => {
+// Amended (r2): on rows with fewer than DROP_MIN_WRONG wrong answers a guard comes down to just under the lowest p a
+// right answer read at its step (UNDER_RIGHT under it), never off.
+test("rows with no wrong answer switch nothing off: each guard comes down to just under its right answers' lowest p, an escalate stays", () => {
   const rows = Array.from({ length: 20 }, (_, i) => answered([g("facts", i % 2 ? 0.3 : 0.9), g("check", i % 3 ? 0.6 : 0.95)], true));
   const refit = refitGuards(twoSteps(0.7, 0.7), rows, NOW);
-  assert.equal(refit.text, undefined, `nothing changes: ${JSON.stringify(refit.guards)}`);
-  assert.deepEqual(refit.guards, []);
+  assert.deepEqual(refit.guards, [{ node: "facts", was: 0.7, threshold: 0.299999 }, { node: "check", was: 0.7, threshold: 0.599999 }]);
+  assert.equal(refit.handed_back, 0, "no right answer the rows saw goes back");
+  assert.equal(UNDER_RIGHT, 1e-6);
+  assert.deepEqual([lowerFloor(rows, "facts", 0.7), lowerFloor(rows, "check", 0.7), lowerFloor(rows, "check", 0.5)], [0.299999, 0.599999, 0.5], "never above its own threshold");
   const held = refitHeldOut(twoSteps(0.7, 0.7), rows, NOW);
-  assert.equal(held.text, undefined, "nor on the half it is fit on");
-  // A recorded escalate that fired on right drafts, and a guard handing back right ones: neither shows what it is worth.
+  assert.ok(held.guards.length > 0 && held.guards.every((one) => one.threshold !== null && one.threshold < 0.7), `fit on half, each comes down and none goes off: ${JSON.stringify(held.guards)}`);
+  // A recorded escalate that fired on right drafts shows nothing of what it is worth: it stays. The guard comes down.
   const escalated = Array.from({ length: 20 }, (_, i) => answered([g("draft", 0.5), esc(i < 12)], true));
   const kept = refitGuards(judged(), escalated, NOW);
-  assert.equal(kept.text, undefined, `the escalate stays and the guard keeps 0.7: ${JSON.stringify(kept.guards)}`);
+  assert.deepEqual(kept.guards, [{ node: "draft", was: 0.7, threshold: 0.499999 }], "the escalate stays");
+  assert.equal(JSON.parse(kept.text).root.steps.at(-1).node, "escalate");
+  // Fewer than DROP_MIN_WRONG wrong answers, one let through above the right answers' lowest p: still just under it.
+  const two = [...rows, answered([g("facts", 0.95), g("check", 0.95)], false), answered([g("facts", 0.95), g("check", 0.95)], false)];
+  assert.deepEqual([lowerFloor(two, "facts", 0.7), mayLower(two, "facts", 0.7)], [0.299999, false]);
+  // No right answer reached the step: it keeps its threshold.
+  assert.equal(lowerFloor([answered([g("facts", 0.9)], false)], "check", 0.7), 0.7);
   // Raising stays allowed: a guard set too low goes up past the wrong answers it let through (and facts, which let all
   // four through and caught none, goes).
   const low = Array.from({ length: 20 }, (_, i) => answered([g("facts", 0.9), g("check", i < 4 ? 0.3 : 0.9)], i >= 4));
   assert.deepEqual(refitGuards(twoSteps(0.7, 0.2), low, NOW).guards, [{ node: "facts", was: 0.7, threshold: null }, { node: "check", was: 0.2, threshold: 0.9 }]);
+});
+
+// The case that made the amendment: a first draft (no champion to inherit from) at the compiled defaults hands back every
+// input, its replay rows all right. Not lowering it on clean rows would keep it held for good; switching its guards off
+// (main) serves it with no guard left. Now it comes down to just under its right answers, serves, every guard on.
+test("a first draft whose default guards hand back every input comes down on clean rows far enough to serve, every guard kept on", () => {
+  const text = twoSteps(0.7, 0.7);
+  const rows = Array.from({ length: 20 }, (_, i) => ({ of: `graded-${i}`, ...answered([g("facts", 0.4 + (i % 5) * 0.05), g("check", 0.5 + (i % 4) * 0.1)], true) }));
+  assert.equal(clears(scoreRows(rows, new Map([["facts", 0.7], ["check", 0.7]]))), false, "at its defaults it hands back every input");
+  const all = refitGuards(text, rows, NOW);
+  assert.deepEqual(all.guards, [{ node: "facts", was: 0.7, threshold: 0.399999 }, { node: "check", was: 0.7, threshold: 0.499999 }], "down, never off");
+  const refit = refitHeldOut(text, rows, NOW);
+  assert.ok(refit.guards.length === 2 && refit.guards.every((one) => one.threshold !== null && one.threshold < 0.7), JSON.stringify(refit.guards));
+  assert.deepEqual([clears(refit.fitted), clears(refit.held_out)], [true, true], `serves: ${JSON.stringify({ fitted: refit.fitted, held_out: refit.held_out })}`);
+  const doc = JSON.parse(refit.text);
+  assert.deepEqual(doc.root.steps.map((step) => typeof step.guard?.threshold), ["number", "number"], "every guard on");
 });
 
 test("halvesOf: the same rows split the same way whatever their order, half and half, never by position", () => {

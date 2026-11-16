@@ -5,9 +5,10 @@
 // hold at least FIT_MIN_ROWS with at least FIT_MIN_WRONG wrong, else kept. A guard may also be switched off (OFF: it never
 // hands back, and the revision drops it), so a guard whose p says nothing of right and wrong goes. So may an escalate node
 // a replay recorded instead of obeying (the DSL's softEscalates): one that stops right drafts is dropped from its chain,
-// one that stops wrong ones stays. A guard comes down (a lower threshold, or off), and an escalate goes off, only on
-// evidence it is worth nothing (mayLower): at least DROP_MIN_WRONG wrong answers the workflow gave past its step, not one
-// of which it caught. Rows with fewer wrong answers can't show what a guard is worth, and on them off always looks free;
+// one that stops wrong ones stays. A guard goes off, and an escalate goes off, only on evidence it is worth nothing
+// (mayLower): at least DROP_MIN_WRONG wrong answers the workflow gave past its step, not one of which it caught. Rows with
+// fewer wrong answers can't show what a guard is worth (on them off always looks free), so on them it may only come down
+// to just under the lowest p a right answer read at its step (lowerFloor: split-conformal at alpha ~0), never off;
 // raising one stays allowed. A refit that is written (refitHeldOut) is fit on one half of its rows and must clear the bar
 // on the other half too. Pure: the rows in, the new workflow text and what changed out; runner/promotion.ts reads the
 // rows (replays and graded served runs) and writes the revision.
@@ -25,8 +26,8 @@ export const FIT_MIN_ROWS = 30;
 export const THRESHOLD_MIN = 0.001;
 export const THRESHOLD_MAX = 0.999;
 export const FIT_MIN_WRONG = 5;
-/** How many wrong answers past a step its guard must have let through, catching none, before a refit lowers it or
- *  switches it off (or switches an escalate off): mayLower. */
+/** How many wrong answers past a step its guard must have let through, catching none, before a refit switches it off
+ *  (or switches an escalate off), or lowers it past the right answers' lowest p: mayLower, lowerFloor. */
 export const DROP_MIN_WRONG = 3;
 /** The fewest rows a refit is written from: REPLAY_MIN to fit on and REPLAY_MIN held out of the fit (refitHeldOut).
  *  Fewer: no refit, and the revision stays as it is (held, or serving until its graded check). */
@@ -203,6 +204,32 @@ export function mayLower(rows: readonly RefitRow[], label: string, at: number): 
   return wrong >= DROP_MIN_WRONG;
 }
 
+/** How far under the lowest p a right answer read at a step a guard brought down on few wrong answers stops (lowerFloor). */
+export const UNDER_RIGHT = 1e-6;
+
+/** The lowest threshold a refit over `rows` may give the guard of step `label`, at `own` now (p read through `pOf`):
+ *  OFF when the rows give it leave to come down that far (mayLower). Else, on rows with fewer than DROP_MIN_WRONG wrong
+ *  answers that reached the step with a p, just under (UNDER_RIGHT) the lowest p a right answer read there, so it comes
+ *  down until it hands back no right answer the rows saw, never off; floored at THRESHOLD_MIN, the least threshold the
+ *  DSL takes (0 is off), and never above `own` (a floor, not a raise). No right answer reached the step, or at least
+ *  DROP_MIN_WRONG wrong ones did and it caught one: `own`. */
+export function lowerFloor(rows: readonly RefitRow[], label: string, own: number, pOf: (row: GuardRow) => number | null = (row) => row.p): number {
+  if (mayLower(rows, label, own)) return OFF;
+  let wrong = 0;
+  let right = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    if (!row.answered || row.wfCorrect === null) continue;
+    const at = row.guards.filter((guard) => guard.node === label);
+    if (row.wfCorrect === false) {
+      if (at.some((guard) => guard.p !== null)) wrong += 1;
+      continue;
+    }
+    for (const p of at.map(pOf)) if (p !== null) right = Math.min(right, p);
+  }
+  if (wrong >= DROP_MIN_WRONG || right === Number.POSITIVE_INFINITY) return own;
+  return Math.min(own, Math.max(THRESHOLD_MIN, round(right - UNDER_RIGHT, 6)));
+}
+
 /** `rows` cut in two for a refit (refitHeldOut): ranked by a hash of each row's run (`of`, else `run`, else its place), the
  *  even ranks to fit on and the odd ones held out of the fit. The same rows always split the same way, and never by their
  *  order, which can follow the inputs (every second question wrong, say). */
@@ -213,8 +240,8 @@ export function halvesOf<T extends Pick<RefitRow, "of" | "run">>(rows: readonly 
 }
 
 /** The workflow `text`'s guards, and the escalates its replay recorded, refit over `rows` (`now`: the fit's fitted_at). A
- *  guard whose step no row reached keeps what it has, and so does an escalate no row recorded; one the rows give no leave
- *  to come down (mayLower) keeps its threshold or goes up. Nothing changes (no `text`) when every guard keeps its
+ *  guard whose step no row reached keeps what it has, and so does an escalate no row recorded; a guard goes no lower
+ *  than its floor (lowerFloor), and an escalate the rows give no leave (mayLower) stays. Nothing changes (no `text`) when every guard keeps its
  *  threshold and fit and every escalate stays. */
 export function refitGuards(text: string, rows: readonly RefitRow[], now: string): Refit {
   const fit = fitOn(text, rows, now);
@@ -269,14 +296,15 @@ function fitOn(text: string, rows: readonly RefitRow[], now: string): { text?: s
   const meets = (at: ReadonlyMap<string, number>) => scoreAt(rows, at, pOf).wf_acc >= agentAcc - PROMOTE_BAR - 1e-9;
   // Each guard's candidates: OFF (hands back nothing), THRESHOLD_MIN (nothing but a missing p or one under it), each p its
   // rows read within the DSL's range, its own threshold, and THRESHOLD_MAX; a step no row reached keeps its own. Each
-  // recorded escalate's: off or on. A switch the rows give no leave to come down (mayLower) keeps only its own and those
-  // above it: on.
+  // recorded escalate's: off or on. A guard's candidates under its floor (lowerFloor: off only with mayLower's leave, on
+  // few wrong answers just under the right answers' lowest p, else its own) are dropped, the floor itself added; an
+  // escalate without mayLower's leave keeps only on.
   const candidatesOf = new Map<string, number[]>(escalates.map((label) => [label, mayLower(rows, label, SOFT_ESCALATE_THRESHOLD) ? [OFF, SOFT_ESCALATE_THRESHOLD] : [SOFT_ESCALATE_THRESHOLD]]));
   for (const [label, own] of was) {
     const seen = rows.flatMap((row) => row.guards.filter((g) => g.node === label).map(pOf)).filter((p): p is number => p !== null);
     const at = (p: number) => Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, round(p, 6)));
-    const floor = mayLower(rows, label, own) ? OFF : own;
-    if (seen.length) candidatesOf.set(label, [...new Set([OFF, THRESHOLD_MIN, ...seen.map(at), ...(own > 0 && own < 1 ? [own] : []), THRESHOLD_MAX])].filter((candidate) => candidate >= floor).sort((a, b) => a - b));
+    const floor = lowerFloor(rows, label, own, pOf);
+    if (seen.length) candidatesOf.set(label, [...new Set([OFF, THRESHOLD_MIN, ...seen.map(at), ...(own > 0 && own < 1 ? [own] : []), ...(floor > 0 ? [floor] : []), THRESHOLD_MAX])].filter((candidate) => candidate >= floor).sort((a, b) => a - b));
   }
   const kept = new Map(thresholds);
   // Up from the bottom: while the bar is not met, the one raise (a guard to a higher candidate) that buys the most accuracy

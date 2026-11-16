@@ -243,10 +243,11 @@ test("a refit never brings a guard down past hand-backs whose answer nobody read
   // A hand-back on a failed step (no guard escalated) says nothing of the thresholds: it never moves one either way.
   const failed = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.9, p: 0.9, threshold: 0.5, escalated: false }], answered: false, wfCorrect: null, agentCorrect: 1 }));
   assert.equal(refitGuards(text, [...handed, ...failed], "t").text, undefined);
-  // Rows that answered alone bring it down only where their answers say it caught none of the wrong ones: every answer
-  // right says nothing of what it is worth, and it stays; three wrong answers it let through, and it goes.
+  // Rows that answered alone switch it off only where their answers say it caught none of the wrong ones: every answer
+  // right says nothing of what it is worth, so it only comes down to just under their lowest p (r2 amendment: was "it
+  // keeps 0.5"); three wrong answers it let through, and it goes.
   const right = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.3, p: 0.3, threshold: 0.1, escalated: false }], answered: true, wfCorrect: true, agentCorrect: 1 }));
-  assert.equal(refitGuards(text, right, "t").text, undefined, "every answer right: it keeps 0.5");
+  assert.deepEqual(refitGuards(text, right, "t").guards, [{ node: "pick", was: 0.5, threshold: 0.299999 }], "every answer right: just under 0.3, never off");
   const missed = Array.from({ length: 3 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.9, p: 0.9, threshold: 0.1, escalated: false }], answered: true, wfCorrect: false, agentCorrect: 0 }));
   const low = refitGuards(text, [...right, ...missed], "t");
   assert.equal(low.guards.find((one) => one.node === "pick")?.threshold, null, "it caught none of three wrong answers: switched off");
