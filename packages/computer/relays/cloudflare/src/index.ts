@@ -104,12 +104,12 @@ export default {
 			const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
 			const problem = body === null ? "the body must be JSON" : createProblem(body, env);
 			if (problem || body === null) return refuse(422, problem ?? "");
-			return env.COMPUTER.getByName(body.name as string).fetch(new Request("https://computer/", { method, body: JSON.stringify(body) }));
+			return env.COMPUTER.getByName(body.name as string).fetch(new Request(`https://computer/${body.name}`, { method, body: JSON.stringify(body) }));
 		}
 		const name = /^\/v1\/computers\/([^/]+)$/.exec(url.pathname)?.[1];
 		if (name !== undefined && (method === "GET" || method === "DELETE")) {
 			if (!NAME.test(name)) return refuse(404, `${name} is no computer of this relay`);
-			return env.COMPUTER.getByName(name).fetch(new Request("https://computer/", { method }));
+			return env.COMPUTER.getByName(name).fetch(new Request(`https://computer/${name}`, { method }));
 		}
 		return refuse(404, `${method} ${url.pathname} is no route of this relay`);
 	},
@@ -133,32 +133,41 @@ export class Computer {
 	}
 
 	async fetch(request: Request): Promise<Response> {
+		const name = new URL(request.url).pathname.slice(1);
 		const row = await this.#state.storage.get<Row>("row");
 		if (request.method === "GET") return row === undefined ? refuse(404, "no such computer") : answer(200, this.#view(row));
 		if (request.method === "DELETE") {
-			if (row !== undefined) await this.#end(row.name);
-			else if (this.#state.container.running) await this.#state.container.destroy("deleted");
+			if (row !== undefined) await this.#end(name);
+			else {
+				// Nothing kept: a container a failed delete left, or an index entry whose delete threw, ends here.
+				if (this.#state.container.running) await this.#state.container.destroy("deleted");
+				await this.#index("DELETE", { name });
+			}
 			return answer(204);
 		}
-		// The name is the object: a second create of it answers the first's row, whatever its state.
-		if (row !== undefined) return answer(200, this.#view(row));
 		const body = (await request.json()) as Row & { env: Record<string, string>; instance: string };
-		const container = this.#state.container;
-		try {
-			container.start({ image: container.images.box, env: body.env, entrypoint: [DIAL], enableInternet: true, instance: body.instance });
-		} catch (error) {
-			// A: start() throws while a container runs; with no row, one a failed delete left, which a DELETE ends.
-			return refuse(500, `Cloudflare did not start the container: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		this.#ended = false;
-		// Written before any other wait, so a create that comes in meanwhile finds it.
-		const made: Row = { name: body.name, labels: body.labels, createdAt: new Date().toISOString(), backstopAt: body.backstopAt };
-		await this.#state.storage.put("row", made);
-		await container.setInactivityTimeout(IDLE_MS);
-		await this.#nextAlarm(made);
-		await this.#index("PUT", made);
-		this.#watch();
-		return answer(201, this.#view(made));
+		// One create at a time: a second of the same name waits for the first, then answers its row, whatever its state.
+		return this.#state.blockConcurrencyWhile(async () => {
+			const first = await this.#state.storage.get<Row>("row");
+			if (first !== undefined) return answer(200, this.#view(first));
+			const made: Row = { name, labels: body.labels, createdAt: new Date().toISOString(), backstopAt: body.backstopAt };
+			// The index first, so the provider's sweep by name finds whatever follows; a start that throws takes it back.
+			await this.#index("PUT", made);
+			const container = this.#state.container;
+			try {
+				container.start({ image: container.images.box, env: body.env, entrypoint: [DIAL], enableInternet: true, instance: body.instance });
+			} catch (error) {
+				// A: start() throws while a container runs; with no row, one a failed delete left, which a DELETE ends.
+				await this.#index("DELETE", made);
+				return refuse(500, `Cloudflare did not start the container: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			this.#ended = false;
+			await this.#state.storage.put("row", made);
+			await container.setInactivityTimeout(IDLE_MS);
+			await this.#nextAlarm(made);
+			this.#watch();
+			return answer(201, this.#view(made));
+		});
 	}
 
 	/** Every hour: the inactivity timeout again, so a quiet container stays (L); at backstopAt, the end. */
@@ -179,8 +188,10 @@ export class Computer {
 		return this.#state.storage.setAlarm(Math.min(Date.now() + HOUR_MS, Date.parse(row.backstopAt)));
 	}
 
-	#index(method: "PUT" | "DELETE", row: Pick<Row, "name"> & Partial<Row>): Promise<Response> {
-		return this.#env.INDEX.getByName("index").fetch(new Request(`https://index/${row.name}`, { method, ...(method === "PUT" ? { body: JSON.stringify(row) } : {}) }));
+	/** The index entry written or dropped; a call that fails throws, so the route answers 500 and the caller asks again. */
+	async #index(method: "PUT" | "DELETE", row: Pick<Row, "name"> & Partial<Row>): Promise<void> {
+		const done = await this.#env.INDEX.getByName("index").fetch(new Request(`https://index/${row.name}`, { method, ...(method === "PUT" ? { body: JSON.stringify(row) } : {}) }));
+		if (!done.ok) throw new Error(`the index answered ${done.status} to ${method} ${row.name}`);
 	}
 
 	/** The container watched until it stops (A, monitor): the row then reads gone, with why. */
@@ -191,10 +202,13 @@ export class Computer {
 		} catch {
 			stopped = Promise.reject(new Error("its container is gone"));
 		}
-		stopped.then(
-			() => this.#stopped("its main process exited"),
-			(error: unknown) => this.#stopped(`it stopped: ${error instanceof Error ? error.message : String(error)}`),
-		);
+		stopped
+			.then(
+				() => this.#stopped("its main process exited"),
+				(error: unknown) => this.#stopped(`it stopped: ${error instanceof Error ? error.message : String(error)}`),
+			)
+			// Its row reads gone already; an index entry that missed it reads running until the computer's delete drops it.
+			.catch(() => undefined);
 	}
 
 	async #stopped(why: string): Promise<void> {
@@ -205,7 +219,10 @@ export class Computer {
 		await this.#index("PUT", ended);
 	}
 
-	/** Delete and backstop: the container destroyed, then the row, its alarm and its index entry gone. */
+	/**
+	 * Delete and backstop: the container destroyed, then the row, its alarm and its index entry gone. An index call that
+	 * throws leaves the entry alone, and the next DELETE, finding no row, drops it.
+	 */
 	async #end(name: string): Promise<void> {
 		this.#ended = true;
 		if (this.#state.container.running) await this.#state.container.destroy("deleted");

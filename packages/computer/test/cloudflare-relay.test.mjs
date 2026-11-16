@@ -88,7 +88,16 @@ function namespace(Class, env) {
 		if (!places.has(name)) places.set(name, { storage: fakeStorage(), container: new FakeContainer() });
 		const one = places.get(name);
 		if (one.object === undefined) {
-			const state = { storage: one.storage, container: one.container, blockConcurrencyWhile: (run) => (one.ready = run()) };
+			// A callback that throws resets the object, as workerd does; the next call makes a new one.
+			const blockConcurrencyWhile = (run) => {
+				const done = run();
+				one.ready = done.then(
+					() => undefined,
+					() => void (one.object = undefined),
+				);
+				return done;
+			};
+			const state = { storage: one.storage, container: one.container, blockConcurrencyWhile };
 			one.object = new Class(state, env);
 		}
 		return one;
@@ -98,9 +107,8 @@ function namespace(Class, env) {
 		place,
 		getByName: (name) => ({
 			async fetch(request) {
-				const one = place(name);
-				await one.ready;
-				return one.object.fetch(request);
+				await place(name).ready;
+				return place(name).object.fetch(request);
 			},
 		}),
 		restart(name) {
@@ -114,13 +122,25 @@ function namespace(Class, env) {
 function fakeCloudflare({ token = TOKEN } = {}) {
 	const env = { BOX_IMAGE: BOX, ...(token === null ? {} : { RELAY_TOKEN: token }) };
 	env.COMPUTER = namespace(relay.Computer, env);
-	env.INDEX = namespace(relay.Index, env);
+	const index = namespace(relay.Index, env);
+	// failIndex(n): the index's next n writes answer 500, as an object that threw does.
+	let failing = 0;
+	env.INDEX = {
+		...index,
+		getByName: (name) => ({ fetch: (request) => (request.method !== "GET" && failing > 0 ? (failing--, Promise.resolve(new Response(null, { status: 500 }))) : index.getByName(name).fetch(request)) }),
+	};
 	const call = async (method, path, body, auth = `Bearer ${TOKEN}`) => {
-		const response = await relay.default.fetch(new Request(`https://agentrun-relay.example.workers.dev${path}`, { method, headers: { authorization: auth }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+		let response;
+		try {
+			response = await relay.default.fetch(new Request(`https://agentrun-relay.example.workers.dev${path}`, { method, headers: { authorization: auth }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+		} catch {
+			// workerd answers 500 for a Worker that throws.
+			return { status: 500, json: null };
+		}
 		const text = await response.text();
 		return { status: response.status, json: text === "" ? null : JSON.parse(text) };
 	};
-	return { env, call, computer: (name = NAME) => env.COMPUTER.place(name) };
+	return { env, call, computer: (name = NAME) => env.COMPUTER.place(name), failIndex: (n) => (failing = n) };
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -222,6 +242,33 @@ test("delete destroys the container and drops the row, its alarm and its index e
 	// A name deleted is a name a create may start again.
 	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 201);
 	assert.equal(container.starts.length, 2);
+});
+
+test("an index write that fails strands nothing: a create's starts nothing, and a delete's is finished by the next delete", async () => {
+	const cf = fakeCloudflare();
+	const names = async () => (await cf.call("GET", "/v1/computers")).json.computers.map(({ name }) => name);
+	// The create's index write fails first: no container, no row, so the provider's create again starts it once.
+	cf.failIndex(1);
+	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 500);
+	const { container, storage } = cf.computer();
+	assert.deepEqual([container.starts.length, storage.map.size, await names()], [0, 0, []]);
+	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 201);
+	assert.deepEqual([container.starts.length, await names()], [1, [NAME]]);
+	// A start that throws takes its index entry back: nothing listed for a sweep to chase.
+	const busy = "computer-00000000000b";
+	cf.computer(busy).container.start({});
+	assert.equal((await cf.call("POST", "/v1/computers", create({ name: busy }))).status, 500);
+	assert.deepEqual(await names(), [NAME]);
+	// The delete's index write fails after the container and the row are gone: the entry stays listed, and the next
+	// delete, with no row to end, drops it.
+	cf.failIndex(1);
+	assert.equal((await cf.call("DELETE", `/v1/computers/${NAME}`)).status, 500);
+	assert.deepEqual([container.running, storage.map.size, await names()], [false, 0, [NAME]]);
+	assert.equal((await cf.call("DELETE", `/v1/computers/${NAME}`)).status, 204);
+	assert.deepEqual(await names(), []);
+	// The busy name's stray container ends on its delete too.
+	assert.equal((await cf.call("DELETE", `/v1/computers/${busy}`)).status, 204);
+	assert.equal(cf.computer(busy).container.running, false);
 });
 
 test("the alarm sets the idle timeout again each hour, and at backstopAt destroys the container and drops its row", async (t) => {
