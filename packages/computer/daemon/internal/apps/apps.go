@@ -192,6 +192,9 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		shown := now.of(e.ID)
+		// The launch read once per pass, for both decisions below: read twice, a launcher that failed between the reads
+		// would pass the first as running and the second as a hand-off that worked.
+		runs, failed := g.status(started.ID)
 		// A hand-off opened nothing when its launch showed a dialog of its own instead (Firefox's "already running" box:
 		// its second launch passes a url to the first over a session bus only, and an app here has none), or its launcher
 		// failed. The launch is ended, so its dialog goes, and the call fails in words.
@@ -207,7 +210,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 				}
 				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url did not hand it the url: it showed a dialog of its own, %q, instead (an app that takes a url from a second launch over a session bus, as Firefox does, can't here: apps run with none). %s, and the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, title, ended, e.ID)
 			}
-			if g.failed(started.ID) {
+			if failed {
 				return nil, rpc.Errorf(rpc.KindUnsupported, "%s already runs, and the launch with the url failed (%s), so the url is not open: open it in the running app's own window (a browser's address bar), or apps.terminate %s and apps.launch it with the url", e.ID, g.ended(started.ID), e.ID)
 			}
 		}
@@ -219,7 +222,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 				pick = &shown[i]
 			}
 		}
-		if pick == nil && len(shown) > 0 && !g.running(started.ID) {
+		if pick == nil && len(shown) > 0 && !runs {
 			pick = &shown[len(shown)-1]
 		}
 		if pick != nil {
@@ -351,11 +354,15 @@ func (g *group) running(id string) bool {
 	return err == nil && waited.Running
 }
 
-// failed is whether the launch ended with a signal or an exit code other than 0.
-func (g *group) failed(id string) bool {
+// status is how the launch stands, in one read: whether it still runs its program, and whether it ended with a signal
+// or an exit code other than 0.
+func (g *group) status(id string) (runs, failed bool) {
 	zero := int64(0)
 	waited, err := g.table.Wait(context.Background(), process.WaitParams{ID: id, TimeoutMs: &zero})
-	return err == nil && !waited.Running && (waited.Signal != nil || (waited.ExitCode != nil && *waited.ExitCode != 0))
+	if err != nil {
+		return false, false
+	}
+	return waited.Running, !waited.Running && (waited.Signal != nil || (waited.ExitCode != nil && *waited.ExitCode != 0))
 }
 
 // end ends one launch whose window w is not the app's to keep, and the process that showed w (the launch's, or one it
