@@ -267,7 +267,7 @@ describe("CostChart", () => {
   });
   it("says a learned workflow that costs more than the agent by hand no longer runs first, with the two levels", () => {
     const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] });
-    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run all-in over its newest 10 priced runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
+    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run all-in over its newest 10 priced runs, at or over $0.890 a run by hand. The agent takes its runs; a new version runs first again.");
     act(() => root!.unmount()); document.body.innerHTML = "";
     expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 2 }] }))).toContain("at or over $0.890 a run by hand. 2 runs of unknown cost left out. Its next run");
     act(() => root!.unmount()); document.body.innerHTML = "";

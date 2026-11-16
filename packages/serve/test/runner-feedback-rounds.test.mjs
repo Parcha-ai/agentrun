@@ -1,14 +1,11 @@
 // A grade's feedback round (runner/feedback-round.ts) over a 20-run prequential stream: every run is graded with the
 // teacher's label once it ended (PUT /runs/{id}/grade's logic: keepGrade), as the loop proof feeds
 // labels back. The run's path is who wrote its final answer, and feedback is learning spend:
-//   - a run its learned workflow answered alone, graded right: the grade is kept, nothing more: no reopen, no request,
-//     path `workflow`, learning $0;
-//   - the same graded wrong: a revision ask for the workflow, never a re-run of the job: the run opens again, the agent is
-//     asked its end-of-run turn alone (the look-back hears the job, the workflow's answer and the label; the compile turn
-//     after it asks for the workflow again, with that answer and the label), the path stays `workflow`, and those turns'
-//     $ is the run's learning, never its job's;
+//   - a run its learned workflow answered alone, graded right or wrong: the grade is kept, nothing more: no reopen, no
+//     request, no compile ask, path `workflow`, learning $0 (one wrong answer is one sample; a hold asks the revision);
 //   - a run the agent finished, graded with a label: a look-back round on it, no turn of the job's, and the cost per run
-//     counts every round's look-back (agentCostOverStore: the job is its first round's, all after it learning).
+//     counts every round's look-back (agentCostOverStore: the job is its first round's, all after it learning). Its
+//     first round, with no feedback yet, was not looked back on.
 // Then the rule itself (servedAnswerStands): a follow-up that ends with no new answer keeps the path; one the agent
 // answered anew is `handed_back`.
 import assert from "node:assert/strict";
@@ -32,6 +29,7 @@ const { runEntries } = await import("../dist/store-reads/journal.js");
 const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 const { secretsShown } = await import("../dist/learning.js");
 const { servedAnswerStands } = await import("../dist/runner/workflow-first.js");
+const { said } = await import("../dist/learning-words.js");
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
 const { viewOverStore, answerOf } = await import("../dist/store-view.js");
 
@@ -136,7 +134,7 @@ async function world(t, { wrong = new Set(), calls = new Set(), outputSchema, re
   return { server, gw, start, ended, grade };
 }
 
-test("a 20-run labelled stream: right served runs cost $0 learning and stay workflow; the wrong one gets a revision ask; every round's look-back is counted", { timeout: 300_000 }, async (t) => {
+test("a 20-run labelled stream: served runs, right or wrong, cost $0 learning and stay workflow; the wrong one's grade is kept and asks nothing; every round's look-back is counted", { timeout: 300_000 }, async (t) => {
   const WRONG = 9;
   const { server, gw, start, grade } = await world(t, { wrong: new Set([WRONG]) });
   const agentRequests = () => gw.requests.filter((request) => !isNode(request));
@@ -152,66 +150,42 @@ test("a 20-run labelled stream: right served runs cost $0 learning and stay work
     if (n <= 3) {
       assert.equal(first.metrics?.path, "agent", `run ${n} by hand: ${JSON.stringify(first.metrics)}`);
       assert.equal(round, "look_back", "a labelled run the agent finished looks back on the label");
-    } else if (n === WRONG) {
-      assert.equal(first.metrics?.path, "workflow", `run ${n} served: ${JSON.stringify(first.metrics)}`);
-      assert.equal(round, "revise", "a wrong served answer asks for the workflow's revision");
     } else {
-      assert.ok(servedRight, `run ${n} served and right: ${JSON.stringify(first.metrics)}`);
-      assert.equal(round, null, "a right served run's grade asks for nothing more");
-      assert.equal(agentRequests().length, before, "no request after a right grade");
+      assert.equal(first.metrics?.path, "workflow", `run ${n} served: ${JSON.stringify(first.metrics)}`);
+      assert.ok(n === WRONG || servedRight, `run ${n} served and right: ${JSON.stringify(first.metrics)}`);
+      assert.equal(round, null, `a served run's grade, ${n === WRONG ? "wrong" : "right"}, asks for nothing more`);
+      assert.equal(agentRequests().length, before, "no request after the grade");
       assert.equal(row.endedAt, first.endedAt, "the run was not opened again");
       assert.equal(await server.learning.proposal(id, 2), undefined, "no second round");
     }
   }
 
-  // The wrong served run: one revision ask, no job re-run: every request after its grade is its end-of-run turn (the job,
-  // the workflow's answer, the label and the ask first, then the prompt), and the path stays the workflow's.
+  // The wrong served run: its grade is kept, wrong, naming no round; no request after it asked a compile, and its answer
+  // stands.
   const wrong = rows.get(`run-${WRONG}`);
-  assert.ok(wrong.asked.length >= 1, "the revision ask was asked");
-  for (const request of wrong.asked) assert.ok(/The task is done\. Before the run ends|was not in the format|did not pass its dry run|Answer again|One more turn: revise your learned workflow|Your workflow draft did not pass the checks/i.test(lastText(request.body)), `only the end-of-run turn ran: ${lastText(request.body).slice(0, 300)}`);
-  const ask = lastText(wrong.asked[0].body);
-  assert.match(ask, new RegExp(`Question ${WRONG}: what is six times seven`), "the job");
-  assert.match(ask, /Your learned workflow `answer` ran first on this job and answered it\. Its answer:\s+\{"answer":41,/, "what the workflow answered");
-  assert.match(ask, new RegExp(LABEL(WRONG).replace(/[.?]/g, "\\$&")), "the label");
-  assert.match(ask, /The task is done\. Before the run ends/, "then the end-of-run prompt");
-  assert.doesNotMatch(ask, /Give `answer` again whole/, "the look-back keeps notes only: it asks for no workflow");
-  // The compile turn after it asks for the revision, with the workflow's answer and the label.
-  const compile = wrong.asked.map((request) => lastText(request.body)).find((text) => text.trimStart().startsWith("One more turn: revise your learned workflow `answer`."));
-  assert.ok(compile, `the compile turn asked for the revision: ${wrong.asked.map((request) => lastText(request.body).slice(0, 80)).join(" | ")}`);
-  assert.match(compile, /Your learned workflow `answer` answered this run alone, and a reviewer graded its answer wrong\./);
-  assert.match(compile, /\{"answer":41,/, "the workflow's answer");
-  assert.match(compile, new RegExp(LABEL(WRONG).replace(/[.?]/g, "\\$&")), "the label");
-  assert.match(compile, /Give `answer` again whole under its name, changed so it answers cases like this one right or hands them back/, "the revision ask");
-  assert.equal(wrong.row.metrics?.path, "workflow", `no new answer of the agent's: the path stays the workflow's: ${JSON.stringify(wrong.row.metrics)}`);
-  // Its answer stands: the grade's words are no message of the job's, so they never cut the workflow's answer off.
+  const kept = (await gradesOf(server.settings, "agent-1")).find((one) => one.run === `run-${WRONG}`);
+  assert.deepEqual([kept?.correct, kept?.path, kept?.workflow, kept?.feedback], [false, "workflow", "answer", null], `the wrong grade is kept: ${JSON.stringify(kept)}`);
+  const compiles = agentRequests().filter((request) => /^One more turn: (revise your learned workflow|write this agent's job)/.test(lastText(request.body).trimStart()));
+  assert.deepEqual(compiles.map((request) => lastText(request.body).slice(0, 80)), [], "no run of the stream asked a compile");
+  assert.equal(wrong.row.metrics?.path, "workflow", `the path stays the workflow's: ${JSON.stringify(wrong.row.metrics)}`);
   assert.ok(wrong.result?.final_answer, `the served run had an answer: ${JSON.stringify(wrong.result)}`);
-  assert.deepEqual((await viewOverStore(server, `run-${WRONG}`, VIEW_DEPS)).result, wrong.result, "the round left the run's result as it was");
-  const two = await server.learning.proposal(`run-${WRONG}`, 2);
-  assert.equal(two?.round, 2, `the revision ask is round 2: ${JSON.stringify(two)}`);
-  assert.ok(two.turn?.asked?.some((said) => said.includes(LABEL(WRONG))), `round 2 heard the label: ${JSON.stringify(two.turn)}`);
-  assert.ok(two.proposal.look_back_usd > 0, "the ask was paid");
-  near(two.proposal.follow_up_usd, 0, "no turn of the job's in the round");
+  assert.deepEqual((await viewOverStore(server, `run-${WRONG}`, VIEW_DEPS)).result, wrong.result, "the grade left the run's result as it was");
 
-  // The cost per run: right served runs at $0 learning; the wrong one's ask is learning, its job its node's; a run by hand
-  // counts both rounds' look-backs.
+  // The cost per run: served runs, right or wrong, at $0 learning; a run by hand counts its label's look-back, and its
+  // first round, with no feedback, was not looked back on.
   const { runs, summary } = await agentCostOverStore(server, "agent-1");
   assert.equal(runs.length, 20);
   const byId = new Map(runs.map((run) => [run.run_id, run]));
   for (const [id, { n }] of rows) {
     const run = byId.get(id);
-    if (n <= 3 || n === WRONG) continue;
+    if (n <= 3) continue;
     assert.deepEqual([run.path, run.learning_usd], ["workflow", 0], `run ${n}: ${JSON.stringify(run)}`);
   }
-  const one = await server.learning.proposal(`run-${WRONG}`, 1);
-  const wrongCost = byId.get(`run-${WRONG}`);
-  assert.equal(wrongCost.path, "workflow");
-  near(wrongCost.cost_usd, one.proposal.job_cost_usd, "the wrong run's job is what its workflow cost");
-  near(wrongCost.learning_usd, two.proposal.look_back_usd, "its revision ask is its learning");
-  near(wrongCost.total_usd, wrong.row.costUsd, "its all-in is its row's");
   for (let n = 1; n <= 3; n++) {
     const id = `run-${n}`;
     const [r1, r2] = [await server.learning.proposal(id, 1), await server.learning.proposal(id, 2)];
-    assert.ok(r1.proposal.look_back_usd > 0 && r2.proposal.look_back_usd > 0, `both rounds looked back: ${JSON.stringify([r1.proposal, r2.proposal])}`);
+    assert.deepEqual([r1.turn, r1.proposal.detail, r1.proposal.look_back_usd], [null, said.noFeedback, 0], `round 1, no feedback, was not looked back on: ${JSON.stringify(r1)}`);
+    assert.ok(r2.proposal.look_back_usd > 0, `the label's round looked back: ${JSON.stringify(r2.proposal)}`);
     const run = byId.get(id);
     near(run.learning_usd, r1.proposal.look_back_usd + r2.proposal.look_back_usd + (r2.proposal.follow_up_usd ?? 0), `run ${n} counts every round's look-back`);
     near(run.cost_usd, r1.proposal.job_cost_usd, `run ${n}'s job is its first round's`);
@@ -220,9 +194,10 @@ test("a 20-run labelled stream: right served runs cost $0 learning and stay work
   assert.equal(summary.takeover?.run_id, "run-4", JSON.stringify(summary));
 });
 
-test("feedbackRoundOf: a served run graded right asks nothing, wrong a revision; a run the agent finished looks back on a label; a replay nothing", () => {
+test("feedbackRoundOf: a served run graded right or wrong asks nothing, with words or none; a run the agent finished looks back on a label; a replay nothing", () => {
   assert.equal(feedbackRoundOf({ correct: true, path: "workflow", workflow: "answer" }, "words"), undefined);
-  assert.equal(feedbackRoundOf({ correct: false, path: "workflow", workflow: "answer" }, undefined), "revise");
+  assert.equal(feedbackRoundOf({ correct: false, path: "workflow", workflow: "answer" }, undefined), undefined);
+  assert.equal(feedbackRoundOf({ correct: false, path: "workflow", workflow: "answer" }, "words"), undefined);
   assert.equal(feedbackRoundOf({ correct: true, path: "agent" }, "words"), "look_back");
   assert.equal(feedbackRoundOf({ correct: false, path: "handed_back", workflow: "answer" }, "words"), "look_back");
   assert.equal(feedbackRoundOf({ correct: false, path: "agent" }, undefined), undefined);
@@ -270,24 +245,20 @@ test("a run with rounds: its impact and its cost per run read the same split: th
   assert.equal(impact.grade_usd, 0.02);
 });
 
-test("a run whose agent called learned_workflow itself, graded wrong: its feedback round's words are no message of the job's, so the path stays workflow and the round is learning (#2648 review)", { timeout: 120_000 }, async (t) => {
+test("a run whose agent called learned_workflow itself, graded wrong, label and all: the grade is kept and opens no round; the path stays workflow (#2648 review)", { timeout: 120_000 }, async (t) => {
   const { server, gw, start, grade } = await world(t, { wrong: new Set([5]), calls: new Set([5]) });
   const first = await start("run-called", 5, { byHand: true, offered: true });
   assert.ok(gw.requests.some((request) => (request.body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_use" && block.name === "learned_workflow"))), "the agent called the workflow itself");
   assert.deepEqual([first.metrics?.path, first.metrics?.workflow], ["workflow", "answer"], `the job did only that: ${JSON.stringify(first.metrics)}`);
+  const before = gw.requests.length;
   const { round, row } = await grade(first, false, LABEL(5));
-  assert.equal(round, "revise", "a wrong answer of the workflow's asks for its revision");
+  assert.equal(round, null, "a wrong answer of the workflow's opens no round");
+  assert.equal(gw.requests.length, before, "no request after the grade");
+  assert.equal(row.endedAt, first.endedAt, "the run was not opened again");
   const read = await runLearningOverStore(server, "run-called", secretsShown([]), []);
-  assert.deepEqual([read?.graded?.feedback, read?.graded?.path, read?.graded?.workflow], ["revise", "workflow", "answer"], `the learning read keeps the round the grade opened, after it ended: ${JSON.stringify(read?.graded)}`);
-  assert.deepEqual([row.metrics?.path, row.metrics?.workflow], ["workflow", "answer"], `the round's words are not the agent answering the job again: ${JSON.stringify(row.metrics)}`);
-  const [one, two] = [await server.learning.proposal("run-called", 1), await server.learning.proposal("run-called", 2)];
-  assert.ok(two?.proposal?.look_back_usd > 0, `the round was paid: ${JSON.stringify(two?.proposal)}`);
-  const { runs } = await agentCostOverStore(server, "agent-1");
-  const cost = runs.find((run) => run.run_id === "run-called");
-  assert.equal(cost.path, "workflow", JSON.stringify(cost));
-  near(cost.cost_usd, one.proposal.job_cost_usd, "the job is its first round's");
-  near(cost.learning_usd, cost.total_usd - one.proposal.job_cost_usd, "every turn after the job is learning");
-  assert.ok(cost.learning_usd >= two.proposal.look_back_usd - 1e-9, `the round's look-back is in its learning: ${JSON.stringify([cost, two.proposal])}`);
+  assert.deepEqual([read?.graded?.correct, read?.graded?.feedback, read?.graded?.path, read?.graded?.workflow], [false, null, "workflow", "answer"], `the learning read keeps the grade, naming no round: ${JSON.stringify(read?.graded)}`);
+  assert.deepEqual([row.metrics?.path, row.metrics?.workflow], ["workflow", "answer"], JSON.stringify(row.metrics));
+  assert.equal(await server.learning.proposal("run-called", 2), undefined, "no second round");
 });
 
 test("a graded run keeps its answer: its feedback round's words are no message of the job's, so result.final_answer and result.output stand after the round (#2648 review)", { timeout: 120_000 }, async (t) => {
@@ -363,31 +334,30 @@ test("a grade of an archived run, or of a run of an archived agent, is kept and 
   assert.equal(two.row.endedAt, ofArchived.endedAt, "the run of the archived agent was never opened again");
 });
 
-// A served run graded wrong with no words opens a revision round; its steer's words (feedbackWords) are what a right
-// answer holds, else "(no words)", never the verdict again: the runner's look-back ask (feedbackAsk) and the compile turn's
-// revision ask each say it once, as the model is sent them.
-test("a no-label wrong grade's round says the verdict once in each ask: its words are what a right answer holds, else '(no words)'", { timeout: 120_000 }, async (t) => {
-  const { server, gw, start, ended } = await world(t);
+// A served run graded wrong, with words, a right answer or neither, opens no round and asks no compile, of its run or of
+// the next one; the grade is kept as given (the graded hold, replay and refit read it).
+test("a wrong grade of a served run opens no round and asks no compile; the grade is kept", { timeout: 120_000 }, async (t) => {
+  const { server, gw, start } = await world(t, { wrong: new Set([4, 5, 6]) });
   const agentRequests = () => gw.requests.filter((request) => !isNode(request));
-  const verdicts = (text) => text.match(/graded .*wrong/g) ?? [];
-  for (const [n, expected, words] of [[4, { answer: 42 }, /A right answer holds: \{"answer":42\}/], [5, undefined, /\(no words\)/]]) {
-    const first = await start(`run-no-label-${n}`, n);
+  const compiles = (requests) => requests.map((request) => lastText(request.body).trimStart()).filter((text) => text.startsWith("One more turn:"));
+  for (const [n, expected, label] of [[4, { answer: 42 }, undefined], [5, undefined, undefined], [6, { answer: 42 }, LABEL(6)]]) {
+    const first = await start(`run-wrong-${n}`, n);
     const m = first.metrics ?? {};
     assert.equal(m.path, "workflow", `run ${n} served: ${JSON.stringify(m)}`);
     const before = agentRequests().length;
-    const kept = await keepGrade(server, "agent-1", { run: first.id, correct: false, ...(expected ? { expected } : {}), source: "eval", at: new Date().toISOString(), path: m.path, workflow: m.workflow, ...(m.workflow_digest ? { digest: m.workflow_digest } : {}) }, undefined);
-    assert.equal(kept.feedback, "revise", `a wrong served run with no words asks a revision: ${JSON.stringify(kept)}`);
-    await ended(first.id, first.endedAt ?? 0);
-    const asked = agentRequests().slice(before).map((request) => lastText(request.body));
-    const look = asked.find((text) => /The task is done\. Before the run ends/.test(text));
-    assert.ok(look, `the look-back was asked: ${asked.map((text) => text.slice(0, 80)).join(" | ")}`);
-    assert.match(look, words, "the steer's words");
-    assert.equal(verdicts(look).length, 1, `the look-back ask says the verdict once: ${look}`);
-    const compile = asked.find((text) => text.trimStart().startsWith("One more turn: revise your learned workflow `answer`."));
-    assert.ok(compile, `the compile turn asked for the revision: ${asked.map((text) => text.slice(0, 80)).join(" | ")}`);
-    assert.match(compile, words, "the steer's words, as the reviewer's");
-    assert.equal(verdicts(compile).length, 1, `the compile ask says the verdict once: ${compile}`);
+    const kept = await keepGrade(server, "agent-1", { run: first.id, correct: false, ...(expected ? { expected } : {}), source: "eval", at: new Date().toISOString(), path: m.path, workflow: m.workflow, ...(m.workflow_digest ? { digest: m.workflow_digest } : {}) }, label);
+    assert.deepEqual([kept.correct, kept.feedback, kept.workflow], [false, null, "answer"], `the grade is kept, naming no round: ${JSON.stringify(kept)}`);
+    assert.deepEqual(agentRequests().slice(before).map((request) => lastText(request.body).slice(0, 80)), [], "no request after the grade");
+    const row = await server.runs.get(first.id);
+    assert.deepEqual([row.state, row.endedAt], ["ended", first.endedAt], "the run was not opened again");
+    assert.equal(await server.learning.proposal(first.id, 2), undefined, "no second round");
   }
+  assert.deepEqual((await gradesOf(server.settings, "agent-1")).map((grade) => [grade.run, grade.correct, grade.feedback]).sort(), [["run-wrong-4", false, null], ["run-wrong-5", false, null], ["run-wrong-6", false, null]]);
+  // The next served run asks no compile either: the grades are kept, and only a hold of the workflow asks its revision.
+  const before = agentRequests().length;
+  const next = await start("run-after", 7);
+  assert.equal(next.metrics?.path, "workflow", JSON.stringify(next.metrics));
+  assert.deepEqual(compiles(agentRequests().slice(before)), [], "no compile was asked");
 });
 
 // The kept grade names the round it opened only once the round opened (keepGrade: the grade first, then the reopen, then

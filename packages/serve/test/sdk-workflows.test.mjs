@@ -5,6 +5,7 @@ import { draftProblems } from "../dist/learn/skills.js";
 import { checkProposal } from "../dist/learn/check.js";
 import { reflectPrompt } from "../dist/learn/reflect.js";
 import { compilePrompt, compileReference } from "../dist/learn/compile.js";
+import { said } from "../dist/learning-words.js";
 import { serve } from "./support.mjs";
 import { landWorkflows } from "./learned-workflow-seed-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -249,8 +250,10 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
     assert.equal((await sdk("POST", `${path}/complete`, { status: "completed", answer: '{"ready":true}' })).status, 200);
     await follow(api, result.body.run_id, ["completed"]);
     learned = await waitLearning(sdk, path);
-    if (n === 0 || n === 4) assert.equal(learned.learning.state, "merged", JSON.stringify(learned));
-    else assert.equal(learned.learning.state, "dropped", JSON.stringify(learned));
+    // An SDK task carries no owner feedback, so a run of this workflow job is never asked its look-back: runs 0-3 learn
+    // nothing, and run 4 is asked the compile alone, as the cadence has it.
+    if (n === 4) assert.equal(learned.learning.state, "merged", JSON.stringify(learned));
+    else assert.deepEqual([learned.learning.state, learned.learning.detail], ["dropped", said.noFeedback], JSON.stringify(learned));
   }
   const next = await start("Check release readiness.", "next-workflow");
   assert.equal(next.status, 201, JSON.stringify(next.body));
