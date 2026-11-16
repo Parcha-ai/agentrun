@@ -14,6 +14,16 @@ import { PID_KILL, PID_WRAPPER } from "../dist/hosted/scripts.js";
 import { failAs } from "../dist/result.js";
 
 const ok = (value) => ({ ok: true, value });
+/** The transport test's throwaway certificate is made with openssl: without it, skipped in words locally, never in CI. */
+const HAS_OPENSSL = await import("node:child_process").then(({ execFileSync }) => {
+	try {
+		execFileSync("openssl", ["version"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+});
+const NO_OPENSSL = !HAS_OPENSSL && process.env.CI !== "true" ? "needs openssl, for a throwaway certificate (CI has it and runs this)" : false;
 /** A placeholder PEM block of `label` (no real key or certificate), base64 as a kubeconfig holds it. */
 const pem = (label, body) => Buffer.from(["-----BEGIN", label + "-----\n" + body + "\n-----END", label + "-----"].join(" ")).toString("base64");
 /** Fake token values, named by role. */
@@ -527,7 +537,7 @@ test("an upload whose command exits early (a full disk) is a refusal in its own 
 	assert.match(failed.message, /exited 1: head: write error: No space left on device/);
 });
 
-test("an exec whose API answers its headers and then drops the body (a proxy's 503 cut off) fails at once, transient: the cut is read, not waited out to the call's bound", async (t) => {
+test("an exec whose API answers its headers and then drops the body (a proxy's 503 cut off) fails at once, transient: the cut is read, not waited out to the call's bound", { skip: NO_OPENSSL }, async (t) => {
 	// A throwaway certificate for 127.0.0.1, made for this test alone: the transport speaks only https.
 	const { execFileSync } = await import("node:child_process");
 	const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
