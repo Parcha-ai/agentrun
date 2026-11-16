@@ -226,7 +226,7 @@ function loopbackAllowed(url: string | URL, mcpUrl: string, own: readonly string
  *  link-local, unspecified, multicast or broadcast, never this machine's (`network.local`) nor this server's own
  *  (`reach.own`). Every address its name resolves to must pass, and the one dialled is one checked. An unlisted host
  *  whose private addresses the list could allow is refused in words that name it and where to allow it. */
-async function checked(subject: string, url: string, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string }> {
+async function checked(subject: string, url: string, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}, plain = false): Promise<{ refused: string; unresolved?: true } | { address: string }> {
   let at: URL;
   try {
     at = new URL(url);
@@ -252,12 +252,25 @@ async function checked(subject: string, url: string, signal: AbortSignal, networ
   if (inside.length) {
     const own = [...(network.local ?? localAddresses)(), ...(reach.own ?? []).map((one) => URL.parse(one)?.hostname.replace(/^\[|\]$/g, "") ?? "")];
     if (!inside.every((address) => privateAllowed(address, own))) return { refused: `${subject} is a private address; refused` };
+    // Plain http is for a public address alone: a private host, allowed or not, is read over https.
+    if (plain && at.protocol === "http:") return { refused: `${subject} is a private address; refused` };
     const named = hostKey(at.hostname);
     // Allowing it helps only an https endpoint: a plain-http one keeps the private-address words.
     if (!(reach.allowed ?? []).includes(named)) return { refused: at.protocol === "https:" ? `${subject} is on a private network, refused: an owner can allow ${named} in ${PRIVATE_HOSTS_PAGE}` : `${subject} is a private address; refused` };
   }
-  if (at.protocol !== "https:") return { refused: `${subject} is not https; refused` };
+  if (at.protocol !== "https:" && !(plain && at.protocol === "http:")) return { refused: `${subject} is not https; refused` };
   return { address: addresses[0]! };
+}
+
+/** Where a feed trigger's read of `url` (feed/fetch.ts readFeed, each redirect again) may go, before anything is sent:
+ *  `checked`'s rule, an MCP server's, with plain http allowed on a public address alone (a feed is public text, and many
+ *  are served over http; a private host the owner allows, `reach.allowed`, is read over https). A URL on loopback as
+ *  written where `reach.loopback` allows it (a local install, as for an MCP server) on any port but this server's own:
+ *  `address` undefined, dialled as written. A URL that isn't http(s) is refused. */
+export async function feedAt(url: URL, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string | undefined }> {
+  if (url.protocol !== "http:" && url.protocol !== "https:") return { refused: `the feed at ${url.href.slice(0, 200)} is not http or https; refused` };
+  if (reach.loopback && loopbackAllowed(url, url.href, reach.own ?? [])) return { address: undefined };
+  return checked(`the feed at ${url.host}`, url.href, signal, network, reach, true);
 }
 
 /** Where a request to the MCP server at `url` may go, before anything is sent to it: the preview, the save, the tools'
