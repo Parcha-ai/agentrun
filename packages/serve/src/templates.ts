@@ -258,6 +258,28 @@ export function githubTriggerWords(packageName: string, source: Json): string {
 }
 const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue", release: "release" };
 
+/** The refusals of a trigger's create that mean this server can't set it up yet, by the trigger's source kind: an apply
+ *  skips that trigger, never the apply, and says so under triggers.<i> (not_set_up_here). Any other refusal (a bad event
+ *  or config, a 422, Composio's own error on the create) undoes the apply. GitHub's: no GitHub App here. Composio's: no
+ *  public URL to send to, no connected account (or several) for the saved server's user, or the project's subscription
+ *  at another address, which only the owner moves, from the console. */
+export const TRIGGER_NOT_SET_UP_YET: Readonly<Record<string, readonly string[]>> = {
+  github: ["github_not_connected"],
+  composio: ["composio_no_public_url", "composio_not_connected", "composio_account_ambiguous", "composio_subscription_elsewhere"],
+};
+
+/** Whether refusal `code` of a trigger of source kind `kind` is one TRIGGER_NOT_SET_UP_YET skips. */
+export const notSetUpYet = (kind: unknown, code: string): boolean => typeof kind === "string" && Object.hasOwn(TRIGGER_NOT_SET_UP_YET, kind) && TRIGGER_NOT_SET_UP_YET[kind]!.includes(code);
+
+/** What an apply says of a composio trigger it skipped (notSetUpYet): which trigger, and the refusal's own words. */
+export function composioTriggerSkipped(packageName: string, trigger: Json, why: string): string {
+  const source = isObject(trigger.source) ? trigger.source : {};
+  return `The ${packageName} template's trigger ${String(trigger.name)} (Composio ${String(source.event)} on ${String(source.server)}) was not made: ${why}`;
+}
+
+/** Where the owner makes a composio trigger an apply skipped, once what refused it is fixed. */
+export const COMPOSIO_TRIGGER_FIX = "Once that's fixed, make it from Triggers → New app trigger for this agent, with the same event and config.";
+
 /** What an apply says of a github trigger it skipped because GitHub is not connected here: what to do, and what the
  *  trigger would then run on, in the package's own words ("Code review runs on each pull request to acme/widgets."). */
 export const githubTriggerUnconnected = (packageName: string, source: Json): string =>
@@ -675,6 +697,14 @@ export function readPackage(from: string | PackageFiles): Package {
     const source = isObject(trigger) ? trigger.source : undefined;
     const set = isObject(source) && source.kind === "composio" ? COMPOSIO_SET.filter((field) => source[field] !== undefined) : [];
     if (set.length) bad(MANIFEST, `triggers[${i}].source holds ${set.join(" and ")}, which this server sets when it makes a composio trigger on Composio: a template can't carry ${set.length > 1 ? "them" : "it"}. Leave ${set.length > 1 ? "them" : "it"} out, or make the trigger from the console on this server (Triggers → New app trigger) once the agent is made.`);
+    // Its server is one of the package's own needs, by its toolkit, as mcp:<toolkit>/<tool> names its tools: no saved
+    // server's name, which is only the author's. The apply makes it on the saved server that need resolves to
+    // (onServers). A required need: one with no saved server refuses the apply, so the trigger is never made without one.
+    if (isObject(source) && source.kind === "composio") {
+      const need = mcp.find((one) => one.toolkit === source.server);
+      if (!need || need.source !== "composio") bad(MANIFEST, `triggers[${i}].source.server ${JSON.stringify(source.server)} names no MCP need of the package with source: composio: a template's composio trigger names that need's toolkit (server: github for the need {source: composio, toolkit: github}), and the apply makes it on the saved Composio server the need resolves to`);
+      else if (!need.required) bad(MANIFEST, `triggers[${i}].source.server ${need.toolkit}: the trigger's server is the mcp need of the toolkit ${need.toolkit}, so that need is required: true. An optional one may have no saved server here, and the trigger would have none`);
+    }
   });
   if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;
@@ -1203,7 +1233,16 @@ export function onServerNames(text: string, servers: Readonly<Record<string, str
 }
 
 /** `p` as the agent an apply makes on `servers` sees it: its instructions and each skill file with the package's tool
- *  names on the saved servers' (onServerNames). Nothing else of it names a server: its pins and allow are by tool. */
+ *  names on the saved servers' (onServerNames), and each composio trigger's server, its need's toolkit, the saved server
+ *  that need resolved to (onServerTrigger). Nothing else of it names a server: its pins and allow are by tool. */
 export function onServers(p: Package, servers: Readonly<Record<string, string>>): Package {
-  return { ...p, instructions: onServerNames(p.instructions, servers), skills: Object.fromEntries(Object.entries(p.skills).map(([path, text]) => [path, onServerNames(text, servers)])) };
+  return { ...p, instructions: onServerNames(p.instructions, servers), skills: Object.fromEntries(Object.entries(p.skills).map(([path, text]) => [path, onServerNames(text, servers)])), triggers: p.triggers.map((trigger) => onServerTrigger(trigger, servers)) };
+}
+
+/** Trigger `trigger` on the saved servers of `servers` ({toolkit: saved name}): a composio one's `source.server`, the
+ *  toolkit of the package's need (readPackage), the saved server the apply resolved that need to. Any other as it is. */
+function onServerTrigger(trigger: Json, servers: Readonly<Record<string, string>>): Json {
+  const source = trigger.source;
+  if (!isObject(source) || source.kind !== "composio" || typeof source.server !== "string" || !Object.hasOwn(servers, source.server)) return trigger;
+  return { ...trigger, source: { ...source, server: servers[source.server]! } };
 }
