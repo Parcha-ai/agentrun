@@ -66,7 +66,7 @@ import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec } from "./process.js";
+import { bounded, CALL_SLACK_MS, hostCall, type Opened, OUTPUT_MAX, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec } from "./process.js";
 import { isWhole, packLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf, LABEL_FILE, labelsCommand } from "./scripts.js";
@@ -488,13 +488,17 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	#labelsOver(spec: ComputerSpec): { bytes: boolean; why: string } | undefined {
 		const room = this.host.facts.labels ?? {};
-		if (room === "machine") return undefined;
-		const { count, bytes: max, packed } = room;
 		// Stand-ins as long as create's name and deadlines and as mixed, fixed so a spec's answer never changes (attach and a
 		// retry check the spec again): a packed map deflates them as it does create's, give or take a byte, and create packs
 		// its own before the host's call (#packedOver).
 		const name = "computer-5f3a9c1e7b2d";
 		const labels = this.#labelsOf(spec, name, "2026-11-16T04:15:29.481Z", "2026-11-17T04:05:29.481Z");
+		if (room === "machine") {
+			// The label file is read back whole only up to what a run keeps of its output.
+			const json = Buffer.byteLength(JSON.stringify(labels));
+			return json <= OUTPUT_MAX ? undefined : { bytes: true, why: `${a(this.#label)} computer keeps its labels in the machine, at most ${OUTPUT_MAX} bytes as JSON, and this computer's would come to ${json}: ${shorterWords(labels)}` };
+		}
+		const { count, bytes: max, packed } = room;
 		if (packed) {
 			const why = this.#packedOver(labels, name);
 			return why === undefined ? undefined : { bytes: true, why };

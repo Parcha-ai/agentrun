@@ -72,9 +72,15 @@ test("a host that keeps no labels has them written to a root-only file once the 
 	for (let i = 0; i < 3; i++) (await hosted.connect(ref)).value.client.close();
 	assert.equal(reads(fake), before, "a computer's connects read no file: its labels are as written");
 	assert.equal(made(await hosted.attach({ labels: { run: "r1" } })).id, ref.id);
-	// No bound on what the file holds.
+	// No bound on the labels but what a run's output keeps, the file read back whole: 64 KiB as JSON.
 	const many = Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`label-${i}`, "x".repeat(200)]));
 	assert.deepEqual(hosted.check({ ...SPEC, labels: many }), []);
+	const past = Object.fromEntries(Array.from({ length: 400 }, (_, i) => [`label-${i}`, "x".repeat(200)]));
+	const [over] = hosted.check({ ...SPEC, labels: past });
+	assert.match(over?.message ?? "", /keeps its labels in the machine, at most 65536 bytes as JSON, and this computer's would come to \d+/);
+	const refused = await hosted.create({ ...SPEC, labels: past }, { requestId: `keeps-past-${++requests}` });
+	assert.equal(refused.ok, false);
+	assert.equal(fake.machines.size, 1, "refused before the vendor makes a machine");
 	made(await hosted.release(ref, "delete"));
 	assert.equal(m.deleted, true);
 });

@@ -219,7 +219,8 @@ export interface HostFacts {
 	 * Absent: no bound. packed: the host stores the labels as packLabels packs them (./hosted/values.ts: one name to
 	 * list by, the map in parts of at most valueBytes each) and get answers unpackLabels' map; count and bytes are then
 	 * the packed labels'. "machine": the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in
-	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it; no bound. Only with
+	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as
+	 * JSON, what a run's output keeps (OUTPUT_MAX, ./hosted/process.ts). Only with
 	 * lifetime "vendor": a machine whose labels were never written is ended by the vendor's timer alone.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
