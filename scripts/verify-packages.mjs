@@ -82,10 +82,11 @@ const allowedExtraFiles = {
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
   // installer (skill.mjs) and its template package check (template.mjs).
   // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
-  // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile, and the scripts that build it
+  // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile and install.sh (the build's
+  // steps, which a vendor that builds in its own account runs), and the scripts that build it
   // as a Daytona snapshot, a Modal image or an E2B template, and the recipe's hash with its types (dist/box-image.js names
   // the published image by it, which Agent37 registers as a template).
-  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
+  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
   agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
