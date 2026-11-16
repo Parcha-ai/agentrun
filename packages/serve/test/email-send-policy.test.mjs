@@ -131,6 +131,41 @@ test("email_send on allow, a turn's sends at once past the cap: after 4 sent, of
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
 });
 
+test("email_send on allow: a subagent's 5 sends count toward the run's cap after a pause, so the root's next send on a new claim asks", { timeout: 150_000 }, async (t) => {
+  const server = await served(t);
+  const { api, decide } = server;
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  // email_draft set to ask: the pause that lets the run's claim go between the child's sends and the root's.
+  assert.equal((await api("POST", "/agents", mailAgent("delegator", { tools: [...TOOLS, "subagent"], tool_settings: { ...ALLOW, email_draft: { permission: "ask" } } }))).status, 201);
+  const send = (n) => ["email_send", { to: ["ana@example.com"], subject: `Note ${n}`, text: `Note ${n}.` }];
+  // The child's first message is its prompt: the faux model reads its own "Email calls:" line there.
+  const child = ["subagent", { prompt: calls([1, 2, 3, 4, 5].map(send)), tools: ["email_send"] }];
+  const draft = ["email_draft", { to: ["ana@example.com"], subject: "Draft", text: "Draft." }];
+  const started = await api("POST", "/agents/delegator/runs", { input: { content: calls([child, draft, send(6)]) } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+
+  const pending = async (seen) => until(async () => {
+    const one = await settled(api, runId);
+    // The run's view can read "working" a moment after an answer: only a new ask or its end settles it.
+    return (one.status === "input_required" && one.pending?.id && one.pending.id !== seen) || ["completed", "failed"].includes(one.status) ? one : undefined;
+  }, 55_000);
+  const drafted = await pending();
+  assert.deepEqual([drafted?.status, drafted?.pending?.tool], ["input_required", "email_draft"], JSON.stringify(drafted?.pending ?? drafted?.view?.status));
+  assert.equal(faux.sent().length, 5, "the child's five sent, unasked");
+  assert.equal(await decide(runId, drafted.pending.id, "allow"), 204);
+
+  // On the claim after the pause, the count is the run's record's: the child's five among it.
+  const sixth = await pending(drafted.pending.id);
+  assert.equal(sixth?.status, "input_required", `the root's send asks: ${faux.sent().length} sent, ${JSON.stringify(sixth?.pending ?? sixth?.status)}`);
+  assert.deepEqual([sixth.pending?.kind, sixth.pending?.tool], ["approval", "email_send"]);
+  assert.match(shown(sixth.pending), /this run has sent 5 emails/, `the ask says why: ${shown(sixth.pending)}`);
+  assert.equal(await decide(runId, sixth.pending.id, "deny"), 204);
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(faux.sent().length, 5);
+});
+
 test("on a thread run with email_send on allow, a send to the thread's sender goes unasked; one that also reaches someone outside the thread asks, naming them", { timeout: 150_000 }, async (t) => {
   const server = await served(t);
   const faux = await mailbox(t);
