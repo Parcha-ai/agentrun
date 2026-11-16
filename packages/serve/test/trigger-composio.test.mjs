@@ -7,10 +7,13 @@
 // takes no secret of the sender's.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import { composio } from "../dist/trigger-composio.js";
-import { serve, withEnv } from "./support.mjs";
+import { call, clientOwnerSession, serve, withEnv } from "./support.mjs";
 import { made } from "./trigger-support.mjs";
+
+const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 // A secret as Composio mints one: not whsec_, not base64 of a key; the whole string is the key.
@@ -96,6 +99,44 @@ test("the secret route takes no secret of the sender's: every webhook trigger's 
   assert.equal(route.requestBody, undefined, "the route takes no body");
   assert.doesNotMatch(JSON.stringify(route), /Composio/, "nor says a Composio secret is given there");
   assert.doesNotMatch(JSON.stringify(doc), /secret Composio gave/);
+});
+
+test("the secret route refuses any body, an empty JSON object too, in words, before it rotates: the old secret still signs", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const server = await serve(t);
+  const { api, baseUrl } = server;
+  await made(api, "triage");
+  const trigger = (await api("POST", "/triggers", hooked("triage", { kind: "webhook" }))).body;
+  const first = await api("POST", `/triggers/${trigger.id}/secret`);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const secret = first.body.signing_secret;
+  const changedAt = (await api("GET", `/triggers/${trigger.id}`)).body.secret.changed_at;
+  /** A body signed by `withSecret`, POSTed to the trigger's hook with no token: its status. */
+  const delivered = async (withSecret) => {
+    const msg = `msg_${randomBytes(8).toString("hex")}`;
+    const body = JSON.stringify({ type: "push" });
+    const at = new Date();
+    const res = await fetch(`${baseUrl}/hooks/${trigger.id}`, { method: "POST", headers: { "content-type": "application/json", "webhook-id": msg, "webhook-timestamp": String(Math.floor(at.getTime() / 1000)), "webhook-signature": new Webhook(withSecret).sign(msg, at, body) }, body });
+    await res.text();
+    return res.status;
+  };
+  const { cookie, origin } = await clientOwnerSession(server);
+  const sent = (headers) => call(server.port, { method: "POST", path: `/v2/triggers/${trigger.id}/secret`, headers: { cookie, origin, "content-type": "application/json", ...headers }, body: "{}" });
+  // `{}` with its length, as a client that always sends a JSON body does, and `{}` chunked: each a body, each refused.
+  for (const [how, headers] of [["content-length 2", { "content-length": "2" }], ["chunked", { "transfer-encoding": "chunked" }]]) {
+    const answer = await sent(headers);
+    assert.equal(answer.status, 422, `${how}: ${answer.text}`);
+    assert.equal(answer.json.error.code, "input_invalid", answer.text);
+    assert.match(answer.json.error.message, /takes no body/, answer.text);
+    assert.ok(!answer.text.includes("whsec_"), `${how}: no secret made or shown`);
+    assert.equal((await api("GET", `/triggers/${trigger.id}`)).body.secret.changed_at, changedAt, `${how}: the secret is as it was`);
+    assert.equal(await delivered(secret), 202, `${how}: the secret it would replace still signs`);
+  }
+  // With no body at all it rotates, and the old secret signs nothing from then on.
+  const next = await api("POST", `/triggers/${trigger.id}/secret`);
+  assert.equal(next.status, 200, JSON.stringify(next.body));
+  assert.notEqual(await delivered(secret), 202, "the old secret no longer signs");
+  assert.equal(await delivered(next.body.signing_secret), 202);
 });
 
 test("a webhook trigger's signatures are standard and GitHub's: the capabilities, the API document's schema and the refusal name those two", { timeout: 60_000 }, async (t) => {
