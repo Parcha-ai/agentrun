@@ -1,6 +1,7 @@
 import { Mail, TriangleAlert } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -94,13 +95,13 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
   });
 
   const header = (
-    <div>
+    <div className={settingsIntroClass}>
       <p className="caps text-label text-muted-foreground">Settings</p>
       <h1 className="mt-1 text-2xl font-semibold">Email</h1>
       <p className="mt-2 text-lead text-muted-foreground">The mail account your agents read, file and draft in, over IMAP and SMTP, and the account email triggers watch. Its password is sealed on this server and never shown again. Nothing is sent without asking you first.</p>
     </div>
   );
-  if (!writable) return <div className="h-full overflow-auto"><div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">{header}<p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p></div></div>;
+  if (!writable) return <div className="h-full overflow-auto"><div className={settingsPageClass}>{header}<p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p></div></div>;
   if (!account) return loadError
     ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}><p className="font-mono">The email account could not be read: {loadError.code}: {loadError.message}</p></Banner>
     : <p className="p-8 text-center font-mono text-body text-muted-foreground">Loading...</p>;
@@ -114,14 +115,16 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
   );
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
+      <div className={settingsPageClass}>
         {header}
+        <div className={settingsBodyClass}>
         {problem && <RunError error={problem.error} title={problem.title} />}
         {loadError && (
           <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
             <p className="font-mono">The email account could not be read: {loadError.code}: {loadError.message}. What is shown may be out of date.</p>
           </Banner>
         )}
+        <SettingsSection title="Account">
         <section className="border bg-card p-4" aria-label="Email account">
           <div className="flex flex-wrap items-center gap-2">
             <Mail className="size-4 text-muted-foreground" aria-hidden />
@@ -181,6 +184,8 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
             </div>
           )}
         </form>
+        </SettingsSection>
+        </div>
       </div>
     </div>
   );

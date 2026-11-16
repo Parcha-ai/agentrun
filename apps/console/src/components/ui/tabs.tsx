@@ -9,6 +9,12 @@ export type TabItem<T extends string> = { id: T; label: React.ReactNode };
  *  on into the panel. Render the panel yourself and spread `tabPanelProps(id, value)` on it: with the same `id` here,
  *  each tab says which panel it controls and the panel is named by its tab. A `value` that is no tab (its view went
  *  away) leaves the first tab reachable by Tab. */
+/** The row a set of tabs stands in, and one tab in it: `Tabs` below, and a row of links that reads as tabs (Settings).
+ *  The row starts at the page's gutter and the first label stands on it, so tabs line up with the page under them. A
+ *  row wider than a phone scrolls sideways on its own, never the page. */
+export const tabListClass = "flex shrink-0 gap-x-4 overflow-x-auto border-b px-5 md:px-8";
+export const tabClass = (open: boolean) => cn("caps whitespace-nowrap border-b-2 px-1 py-3 text-small -outline-offset-2 first:-ml-1 max-sm:py-2.5", open ? "border-primary text-primary-text" : "border-transparent text-muted-foreground hover:text-foreground");
+
 export function Tabs<T extends string>({ tabs, value, onChange, label, id, className }: { tabs: readonly TabItem<T>[]; value: T; onChange: (id: T) => void; label?: string; id?: string; className?: string }) {
   const stop = tabs.some((t) => t.id === value) ? value : tabs[0]?.id;
   const list = useRef<HTMLDivElement>(null);
@@ -21,10 +27,10 @@ export function Tabs<T extends string>({ tabs, value, onChange, label, id, class
     list.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[to]?.focus();
   };
   return (
-    <div ref={list} role="tablist" aria-label={label} onKeyDown={move} className={cn("flex border-b px-5 md:px-8", className)}>
+    <div ref={list} role="tablist" aria-label={label} onKeyDown={move} className={cn(tabListClass, className)}>
       {tabs.map((t) => (
         <button key={t.id} type="button" role="tab" id={id && `${id}-tab-${t.id}`} aria-controls={id && `${id}-panel-${t.id}`} aria-selected={value === t.id} tabIndex={stop === t.id ? 0 : -1} onClick={() => onChange(t.id)}
-          className={cn("caps -mb-px whitespace-nowrap border-b-2 px-3 py-3 text-small -outline-offset-2 max-sm:px-2.5 max-sm:py-2", value === t.id ? "border-primary text-primary-text" : "border-transparent text-muted-foreground hover:text-foreground")}>
+          className={tabClass(value === t.id)}>
           {t.label}
         </button>
       ))}
