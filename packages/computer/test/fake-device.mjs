@@ -83,7 +83,8 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * hello whose screen.capture is off, and screen.shot and screen.watch answered anyway).
  * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
  * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
- * finished fails it as Docker's does, timeout.
+ * finished fails it as Docker's does, timeout. `idleEndsMs`: a computer with no call for that long has ended, as a
+ * vendor's idle timer ends it.
  */
 /**
  * The clock the fake devices and the group tests' runs share: it reads the wall clock plus whatever its sleeps skipped,
@@ -129,12 +130,15 @@ export function fakeDevices({
 	chunk = 4096,
 	stockApps = [],
 	broken,
+	idleEndsMs,
 } = {}) {
 	const os = kind === "desktop" ? "linux" : kind;
 	const [width, height] = kind === "desktop" ? [320, 240] : [360, 640];
 	const computers = new Map();
 	const made = [];
 	let next = 0;
+	/** Whether a computer has ended on the clock: past its deadline, or, with idleEndsMs, that long since its last call. */
+	const ended = (c) => clock.now() > c.deadline.getTime() || (idleEndsMs !== undefined && clock.now() - c.active > idleEndsMs);
 	const capabilities = () => ({ kind, lifetime: "vendor", network, isolation: "vm", os, daemon: mode, groups, maxLifetimeMs });
 
 	/** The in-process client of one computer. */
@@ -392,7 +396,8 @@ export function fakeDevices({
 			async call(method, params, { signal } = {}) {
 				if (closed) return fail("gone", "the connection was closed");
 				if (signal?.aborted) return fail("aborted", `${method} was aborted`);
-				if (!computers.has(c.ref.name) || clock.now() > c.deadline.getTime()) return fail("gone", `${c.ref.name} has ended`);
+				if (!computers.has(c.ref.name) || ended(c)) return fail("gone", `${c.ref.name} has ended`);
+				c.active = clock.now();
 				const answer = methods[method];
 				if (answer === undefined || (method !== "hello" && method !== "ping" && !declares(method))) return fail("unsupported", `${method} is not a method of this computer`);
 				return answer(params ?? {}, signal);
@@ -431,6 +436,7 @@ export function fakeDevices({
 				labels: { ...spec.labels },
 				network: spec.network,
 				created,
+				active: created,
 				deadline: new Date(created + spec.lifetimeMs),
 				files: new Map(),
 				processes: new Map(),
@@ -456,7 +462,7 @@ export function fakeDevices({
 		},
 		async list(labels) {
 			const found = [...computers.values()].filter((c) => Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: clock.now() > c.deadline.getTime() ? "stopped" : "running", network: c.network })));
+			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: ended(c) ? "stopped" : "running", network: c.network })));
 		},
 		async network(ref) {
 			const c = computers.get(ref.name);
@@ -465,7 +471,7 @@ export function fakeDevices({
 		async connect(ref) {
 			const c = computers.get(ref.name);
 			if (c === undefined) return fail("not_found", `no computer ${ref.name}`);
-			if (clock.now() > c.deadline.getTime()) return fail("gone", `${ref.name} has ended`);
+			if (ended(c)) return fail("gone", `${ref.name} has ended`);
 			const client = clientOf(c);
 			const said = await client.call("hello", { client: "fake" });
 			return ok({ client, hello: said.value, close: async () => client.close() });
