@@ -10,7 +10,6 @@
 // (./hosted/provider.ts). Every vendor fact here is cited in the README's Agent37 section.
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
-import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./agent37-ssh.js";
 import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
@@ -18,6 +17,7 @@ import { type HostCall, HostError, type HostFacts, type Machine, type MachineHos
 import { orThrow } from "./hosted/process.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
+import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
 import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
@@ -288,7 +288,7 @@ class Agent37Host implements MachineHost {
 
 	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
 		this.#apiKey = options.apiKey;
-		this.#ssh = new SshExec({ ssh2: options.ssh2, privateKey: options.sshKey, tunnelOf: (id) => this.#tunnel(id) });
+		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: () => ({ username: "root", privateKey: options.sshKey }), tunnelOf: (id) => this.#tunnel(id) });
 		this.#client = rest({
 			base: options.apiUrl,
 			headers: () => ({ Authorization: `Bearer ${options.apiKey}`, Accept: "application/json" }),
@@ -330,7 +330,7 @@ class Agent37Host implements MachineHost {
 		return { ...tunnelOf(ws, host), host };
 	}
 
-	/** argv as root over SSH (agent37-ssh.ts): one connection per instance through its tunnel, shared by its execs. */
+	/** argv as root over SSH (hosted/ssh-exec.ts): one connection per instance through its tunnel, shared by its execs. */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		return this.#ssh.exec(instanceId(id), argv, ctx);
 	}
