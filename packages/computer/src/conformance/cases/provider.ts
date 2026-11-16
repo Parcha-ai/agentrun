@@ -4,6 +4,7 @@
 // the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
 // A create retried with its request id answers the computer the first made, and after release is refused (Full). A
 // deleted computer stays gone: no call to it brings it back. prepareImage called twice answers one image and makes it once.
+// A dial host's machine token is its machine's alone, and ends at delete and at backstopAt (Core).
 import { randomBytes } from "node:crypto";
 import { ATTACH_CLOSE } from "../../attach.js";
 import type { ProviderDescriptor } from "../../descriptor.js";

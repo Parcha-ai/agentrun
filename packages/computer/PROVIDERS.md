@@ -190,7 +190,8 @@ A host has eleven members: `descriptor`, `facts`, `create`, `get`, `list`, `dele
 `upload`, `errorCode`, `extend` and `check`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
 marks a cut. A member answers its value, or throws. AgentRun reads a thrown error's code: a `HostError(code, message)`
 (from `src/host.ts`) carries its own, and any other error goes through `errorCode`, then defaults to `"vendor"`. Each
-call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
+call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can. A vendor with no
+two-way exec leaves out `exec` and `upload`, and its machines dial in instead ([Machines that dial in](#machines-that-dial-in)).
 
 **`descriptor`** is your descriptor (below). Errors with code `vendor` name its id, refusals name its label, and the
 provider's network, mounts, and each kind's groups and GPUs are the ones it declares.
@@ -396,6 +397,36 @@ with `labels: "machine"` is refused one.
 `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields aren't
 checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
 `list` must never create anything.
+
+### Machines that dial in
+
+A vendor with no two-way exec, whose create boots an image with env, can still host computers: each machine dials the
+server, and AgentRun talks to its daemon over that socket ([`attach.md`](../../spec/computer/attach.md#hosted-machines-that-dial)).
+Declare `connect: "dial"` in `facts`, and write `descriptor`, `facts`, `create`, `get`, `list` and `delete`, with
+`errorCode`, `extend` and `check` if you need them. Leave out `exec` and `upload`. The image is the box image, which
+runs `agentrun-dial` when `AGENTRUN_ATTACH_URL` is set. Your `create` puts `req.boot.env` in the machine's env and runs nothing else. This
+sketch's `api` stands for your client; the tested host is `test/fake-dial-host.mjs`:
+
+```ts
+readonly facts: HostFacts = {
+	connect: "dial", daemon: "child", lifetime: "janitor", isolation: "microvm",
+	maxLifetimeMs: 24 * 3_600_000, arch: "amd64", vendorAgentPorts: [],
+};
+async create(req: MachineRequest, ctx: HostCall) {
+	const machine = await this.#api.createMachine({ image: req.image, env: req.boot?.env, metadata: req.labels }, ctx);
+	return { id: machine.id };
+}
+// Where the provider is built: the server's public address, its machine tokens and its AttachHub.
+new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_URL, tokens, hub } });
+```
+
+- **Your server needs a public https address** (`AGENTRUN_PUBLIC_URL`) that the vendor's machines reach. A laptop with
+  a tunnel (cloudflared, tailscale funnel) works. Run one server process: a machine's socket lands on the process it
+  dialed. Without the address, create is refused in words before your API is called.
+- **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
+  `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
+- **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
+- **Prove it** as below, with `ConformanceOptions.dial` for the Core case `provider.dial-token`.
 
 ### Wire it up
 
