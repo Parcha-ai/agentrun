@@ -408,9 +408,13 @@ async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag:
 				await vendor.upload(machine, `/tmp/agentrun-box/${file}`, await readFile(new URL(`../box/${file}`, import.meta.url)), ctx);
 			}
 			await vendor.run(machine, ["sh", "-c", "sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box"], ctx); // as root
-			await vendor.snapshot(machine, name, ctx); // the name taken already: another build of it, so wait for that one
+			await vendor.snapshot(machine, name, ctx).catch(async (error) => {
+				// refused because another server's build of the same recipe made it first: that image is this one
+				if (!(await vendor.findSnapshot(name, ctx))) throw error;
+			});
 		} finally {
-			await vendor.delete(machine, ctx);
+			// its own deadline, not the caller's signal: a cancelled build still deletes its machine
+			await vendor.delete(machine, { signal: AbortSignal.timeout(60_000) });
 		}
 		return ok(name);
 	} catch (error) {
@@ -419,8 +423,9 @@ async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag:
 }
 ```
 
-Call `onWait` only when you build or pull. `install.sh` ends the same when run twice on one machine, so a retried build
-is safe. A first build takes minutes, once per account and recipe. The Core case `provider.prepare-image` calls
+Call `onWait` only when you build or pull. `findSnapshot` here answers true for a snapshot that is ready; if your
+vendor lists one while it is still being made, wait for it, bounded by `ctx.signal`, before you answer it. `install.sh`
+ends the same when run twice on one machine, so a retried build is safe. A first build takes minutes, once per account and recipe. The Core case `provider.prepare-image` calls
 `prepareImage` twice and fails a second call that builds, pulls or answers another image.
 
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.

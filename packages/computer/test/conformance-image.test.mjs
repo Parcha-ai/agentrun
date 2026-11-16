@@ -11,6 +11,7 @@ import test from "node:test";
 import { FAKE_DESCRIPTOR, fakeHost } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
+const { codeOfError } = await import("../dist/hosted/process.js");
 const { conformanceCases, runConformance } = await import("../dist/index.js");
 const { recipeHash } = await import("../box/recipe.mjs");
 
@@ -24,16 +25,29 @@ const NAME = `agentrun-box-${recipeHash()}`;
 
 const BOX = new URL("../box/", import.meta.url);
 
-/** A vendor that builds images in the account, in memory: its snapshots by name, the machines it booted, what ran on each. */
-function vendor() {
+/**
+ * A vendor that builds images in the account, in memory: its snapshots by name, the machines it booted, what ran on each.
+ * Like a vendor's API, every call refuses once its signal is aborted, and a snapshot refuses a name the account has.
+ * `hold` makes run wait until it is resolved (or the call's signal aborts), so a test can cancel a build mid-way.
+ */
+function vendor({ hold } = {}) {
 	const account = { snapshots: new Set(), booted: [], ran: [], deleted: [] };
+	const live = (ctx) => ctx?.signal?.throwIfAborted();
 	account.client = {
-		findSnapshot: async (name) => account.snapshots.has(name),
-		boot: async (image) => `vm-${account.booted.push(image)}`,
-		upload: async (machine, path, bytes) => account.ran.push(`${machine}: upload ${path}, ${bytes.length} bytes`),
-		run: async (machine, argv) => account.ran.push(`${machine}: ${argv.join(" ")}`),
-		snapshot: async (machine, name) => account.snapshots.add(name),
-		delete: async (machine) => account.deleted.push(machine),
+		findSnapshot: async (name, ctx) => (live(ctx), account.snapshots.has(name)),
+		boot: async (image, ctx) => (live(ctx), `vm-${account.booted.push(image)}`),
+		upload: async (machine, path, bytes, ctx) => (live(ctx), account.ran.push(`${machine}: upload ${path}, ${bytes.length} bytes`)),
+		run: async (machine, argv, ctx) => {
+			live(ctx);
+			account.ran.push(`${machine}: ${argv.join(" ")}`);
+			if (hold) await new Promise((resolve, reject) => (hold.then(resolve), ctx?.signal?.addEventListener("abort", () => reject(ctx.signal.reason))));
+		},
+		snapshot: async (machine, name, ctx) => {
+			live(ctx);
+			if (account.snapshots.has(name)) throw new Error(`a snapshot named ${name} exists`);
+			account.snapshots.add(name);
+		},
+		delete: async (machine, ctx) => (live(ctx), account.deleted.push(machine)),
 	};
 	return account;
 }
@@ -49,17 +63,23 @@ function imageProvider(account, { findsByName }) {
 		async prepareImage(ctx = {}) {
 			const name = `agentrun-box-${recipeHash()}`;
 			const vendor = this.host.client;
-			if (findsByName && (await vendor.findSnapshot(name, ctx))) return { ok: true, value: name };
-			ctx.onWait?.("build", name);
-			const machine = await vendor.boot("python:3.12-slim", ctx);
 			try {
-				for (const file of ["install.sh", "agentrun-archil"]) await vendor.upload(machine, `/tmp/agentrun-box/${file}`, await readFile(new URL(file, BOX)), ctx);
-				await vendor.run(machine, ["sh", "-c", "sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box"], ctx);
-				await vendor.snapshot(machine, name, ctx);
-			} finally {
-				await vendor.delete(machine, ctx);
+				if (findsByName && (await vendor.findSnapshot(name, ctx))) return { ok: true, value: name };
+				ctx.onWait?.("build", name);
+				const machine = await vendor.boot("python:3.12-slim", ctx);
+				try {
+					for (const file of ["install.sh", "agentrun-archil"]) await vendor.upload(machine, `/tmp/agentrun-box/${file}`, await readFile(new URL(file, BOX)), ctx);
+					await vendor.run(machine, ["sh", "-c", "sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box"], ctx);
+					await vendor.snapshot(machine, name, ctx).catch(async (error) => {
+						if (!(await vendor.findSnapshot(name, ctx))) throw error;
+					});
+				} finally {
+					await vendor.delete(machine, { signal: AbortSignal.timeout(60_000) });
+				}
+				return { ok: true, value: name };
+			} catch (error) {
+				return { ok: false, error: { code: codeOfError(this.host, error), message: `building the box image ${name}: ${error instanceof Error ? error.message : String(error)}` } };
 			}
-			return { ok: true, value: name };
 		}
 	})(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 }
@@ -142,4 +162,45 @@ test("a provider with no prepareImage passes, observed; a host whose descriptor 
 	const declared = await run(new HostedProvider(fakeHost({ descriptor: { ...FAKE_DESCRIPTOR, prepareImage: true } }).host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }));
 	assert.equal(declared.results[0].status, "fail");
 	assert.equal(declared.results[0].reason, "Fakehost's descriptor declares prepareImage, but its provider has no prepareImage(): give the provider class one");
+});
+
+const until = async (done) => {
+	for (let tick = 0; !done(); tick++) {
+		assert.ok(tick < 1_000, "the builds got to their run");
+		await new Promise((resolve) => setTimeout(resolve, 1));
+	}
+};
+const runs = (account) => account.ran.filter((line) => line.endsWith("rm -rf /tmp/agentrun-box")).length;
+
+test("two servers that build the same recipe at once both answer its image: the one whose snapshot is refused finds the other's", async () => {
+	let release;
+	const account = vendor({ hold: new Promise((resolve) => (release = resolve)) });
+	const both = Promise.all([imageProvider(account, { findsByName: true }), imageProvider(account, { findsByName: true })].map((one) => one.prepareImage()));
+	await until(() => runs(account) === 2);
+	release();
+	assert.deepEqual(await both, [{ ok: true, value: NAME }, { ok: true, value: NAME }]);
+	assert.deepEqual([...account.snapshots], [NAME]);
+	assert.deepEqual(account.deleted.toSorted(), ["vm-1", "vm-2"], "each build deletes its machine");
+	// A snapshot refused for any other reason (the name is still free) is the build's failure.
+	const refusing = vendor();
+	refusing.client.snapshot = async () => {
+		throw new Error("the account is at its snapshot quota");
+	};
+	const refused = await imageProvider(refusing, { findsByName: true }).prepareImage();
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.message, `building the box image ${NAME}: the account is at its snapshot quota`);
+	assert.deepEqual(refusing.deleted, ["vm-1"]);
+});
+
+test("a build cancelled by the caller's signal still deletes its machine: the delete has its own deadline", async () => {
+	const account = vendor({ hold: new Promise(() => {}) });
+	const controller = new AbortController();
+	const answer = imageProvider(account, { findsByName: true }).prepareImage({ signal: controller.signal });
+	await until(() => runs(account) === 1);
+	controller.abort(new Error("the server is shutting down"));
+	const result = await answer;
+	assert.equal(result.ok, false);
+	assert.equal(result.error.message, `building the box image ${NAME}: the server is shutting down`);
+	assert.deepEqual(account.snapshots.size, 0);
+	assert.deepEqual(account.deleted, ["vm-1"], "the machine is deleted, though the caller's signal is aborted");
 });
