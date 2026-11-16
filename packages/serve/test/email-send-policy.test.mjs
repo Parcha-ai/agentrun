@@ -116,8 +116,10 @@ test("email_send on allow, a turn's sends at once past the cap: after 4 sent, of
   for (;;) {
     const now = await until(async () => {
       const one = await settled(api, runId);
-      return one.status !== "input_required" || !asked.some((a) => a.id === one.pending?.id) ? one : undefined;
+      // The run's view can read "working" a moment after a deny: only a new ask or its end settles it.
+      return (one.status === "input_required" && one.pending?.id && !asked.some((a) => a.id === one.pending.id)) || ["completed", "failed"].includes(one.status) ? one : undefined;
     }, 55_000);
+    assert.ok(now, `the run settles after ${asked.length} asks`);
     if (now?.status !== "input_required") break;
     asked.push(now.pending);
     assert.deepEqual([now.pending?.kind, now.pending?.tool], ["approval", "email_send"]);
