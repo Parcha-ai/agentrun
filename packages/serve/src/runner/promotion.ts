@@ -73,7 +73,7 @@ import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
 import { type RefitRow, refitGuards, refitRowsOf, scoreRows } from "../learn/refit.js";
-import { type FirstChoice, fits, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
+import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
 import { learningCommit } from "../learn/commit.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { recordOnly } from "../learn/promote.js";
@@ -175,6 +175,45 @@ export function replayLaid(launch: RunLaunch, laid: readonly LearnedWorkflow[]):
   if (!launch.replay) return [...laid];
   const { workflow, digest } = launch.replay;
   return laid.flatMap((one) => (one.name !== workflow ? [one] : workflowDigest(one) === digest ? [{ ...one, workflow: recordOnly(one.workflow) }] : []));
+}
+
+/** The learned workflows a run's learned_workflow tool runs, once its first choice is made: what serves, never a
+ *  revision its promotion has not promoted. The one its first choice served or the money rule stopped (laidFor: its
+ *  champion in place of the laid revision) as chosen; any other the records name, its champion (championOf: the laid
+ *  text when that is the champion, else its text at its record's commit), and none while nothing of it serves (none
+ *  promoted yet, or the champion held): a revision replaying, queued, held or never decided is never handed to the
+ *  agent to run in its place. One the records never named (no run's input fit it, so no claim asked) runs as laid. A
+ *  replay run's as laid (replayLaid). The records unread: only the chosen one, as the gate leaves a run to its agent. */
+export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId" | "champion" | "log">, launch: RunLaunch, laid: readonly LearnedWorkflow[], choice: FirstChoice): Promise<LearnedWorkflow[]> {
+  const chosen = laidFor(laid, choice);
+  if (launch.replay || !chosen.length) return chosen;
+  const name = choice.serve?.name ?? choice.revise?.workflow;
+  let records: PromotionRecord[];
+  try {
+    records = await promotionsOf(deps.store.settings, deps.agentId);
+  } catch (error) {
+    deps.log(`workflow-first: the promotions could not be read (${(error as Error)?.message ?? error}); the learned_workflow tool runs only the workflow chosen first`);
+    return chosen.filter((one) => one.name === name);
+  }
+  const out: LearnedWorkflow[] = [];
+  for (const one of chosen) {
+    if (one.name === name || !records.some((record) => record.workflow === one.name)) {
+      out.push(one);
+      continue;
+    }
+    const digest = workflowDigest(one);
+    const champion = championOf(records, one.name);
+    if (champion?.digest === digest) {
+      out.push(one);
+      continue;
+    }
+    const text = champion?.commit && deps.champion ? await deps.champion(one.name, champion.commit).catch(() => undefined) : undefined;
+    if (text && workflowDigest(text) === champion!.digest) {
+      deps.log(`workflow-first: the learned_workflow tool runs ${one.name}'s champion at ${champion!.digest}, not ${digest}, which is not promoted`);
+      out.push(text);
+    } else deps.log(`workflow-first: the learned_workflow tool leaves out ${one.name}: ${digest} is not promoted, and ${champion ? `its champion at ${champion.digest} could not be read from its learning commit` : "no revision of it serves"}`);
+  }
+  return out;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
