@@ -228,8 +228,8 @@ export type Window = { start: number; end: number };
 
 /** A call's `from` and `to` read as a window in `zone`, at `now`: a date is that whole day in the zone (to's day
  *  included), a date-time with an offset that instant, one without it the wall-clock time in the zone. Absent: from now,
- *  WINDOW_DAYS_DEFAULT days on from `from`. Throws, in words, on one that does not read, a `to` not after `from`, or a
- *  window over WINDOW_DAYS_MAX days. */
+ *  WINDOW_DAYS_DEFAULT days on from `from`. Throws, in words, on one that does not read (a part that names no time, Feb 30
+ *  or 25:00, included), a `to` not after `from`, or a window over WINDOW_DAYS_MAX days. */
 export function windowOf(args: { from?: unknown; to?: unknown }, zoneName: string, now: number): Window {
   const zone = zoneNamed(zoneName);
   const read = (value: unknown, field: string, end: boolean): number | undefined => {
@@ -243,12 +243,19 @@ export function windowOf(args: { from?: unknown; to?: unknown }, zoneName: strin
     }
     const time = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/i.exec(value);
     if (!time) throw new WindowError(`${field} is a date (2026-11-17) or an ISO date-time (2026-11-17T09:00:00-05:00), not ${JSON.stringify(value.slice(0, 60))}`);
+    // Each part names a time, or it is refused: Date.UTC and Date.parse would roll Feb 30 to Mar 2, and 24:00 to the next
+    // day, a window the call never asked for.
+    const [hour, minute, second] = [Number(time[4]), Number(time[5]), Number(time[6] ?? 0)];
+    const offset = /^[+-](\d{2}):?(\d{2})$/.exec(time[7] ?? "");
+    if (dateOf(Date.UTC(Number(time[1]), Number(time[2]) - 1, Number(time[3]))) !== `${time[1]}-${time[2]}-${time[3]}` || hour > 23 || minute > 59 || second > 59 || (offset && (Number(offset[1]) > 23 || Number(offset[2]) > 59))) {
+      throw new WindowError(`${field} ${value} is not a date-time`);
+    }
     if (time[7]) {
       const at = Date.parse(value.replace(" ", "T"));
       if (Number.isNaN(at)) throw new WindowError(`${field} ${value} is not a date-time`);
       return at;
     }
-    return zone.toInstant(Date.UTC(Number(time[1]), Number(time[2]) - 1, Number(time[3]), Number(time[4]), Number(time[5]), Number(time[6] ?? 0)));
+    return zone.toInstant(Date.UTC(Number(time[1]), Number(time[2]) - 1, Number(time[3]), hour, minute, second));
   };
   const from = read(args.from, "from", false) ?? now;
   const to = read(args.to, "to", true) ?? from + WINDOW_DAYS_DEFAULT * DAY;

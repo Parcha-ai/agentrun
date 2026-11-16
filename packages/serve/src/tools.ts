@@ -171,6 +171,9 @@ export type ToolHost = {
   /** The server is a local install (its operator's mcpLoopback, runner/beside.ts): calendar_events may read a calendar on
    *  loopback, as a template eval's fake calendar is. Absent: never. */
   calendarLoopback?: boolean;
+  /** That server's own addresses (Serve.own, AdapterSpecDeps.mcpOwn): calendar_events never reads on loopback at their
+   *  ports, a redirect's hop included, as the server's own read (calendar/routes.ts) never does. */
+  serverOwn?: readonly string[];
 };
 /** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
  *  description says, which a loopback account saved as `other` would otherwise read as folders. */

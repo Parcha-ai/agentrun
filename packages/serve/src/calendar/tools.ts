@@ -88,9 +88,10 @@ function calendarTool(host: ToolHost): ToolRegistration {
       try {
         // The window read first in the zone the save found, so a window refused is refused before any request.
         windowOf(given, saved.time_zone ?? serverZone(), now);
-        // As the runner reaches an MCP server (runner/mcp-run.ts): the owner's private hosts, loopback on a local install.
+        // As the runner reaches an MCP server (runner/mcp-run.ts): the owner's private hosts, loopback on a local install,
+        // never at the ports of the server beside the runner (its own addresses, as calendar/routes.ts reads with them).
         const { privateOAuthHosts } = await import("../mcp-private-hosts.js");
-        const reach = { ...(host.calendarLoopback ? { loopback: true } : {}), allowed: await privateOAuthHosts(host.store) };
+        const reach = { ...(host.calendarLoopback ? { loopback: true } : {}), own: host.serverOwn ?? [], allowed: await privateOAuthHosts(host.store) };
         const calendar = await readCalendar(saved.url, reach, undefined, context?.abortSignal);
         const window = windowOf(given, calendar.zone, now);
         let found: ReturnType<typeof eventsIn>;
