@@ -5305,7 +5305,7 @@ class _GradeRunResponseRequired(TypedDict):
     path: Literal["agent", "handed_back", "workflow", "replay"]
     workflow: str | None
     workflow_digest: str | None
-    feedback: Literal["revise", "look_back"] | None
+    feedback: Literal["look_back"] | None
 
 
 class GradeRunResponse(_GradeRunResponseRequired, total=False):
@@ -5566,7 +5566,7 @@ class GetRunLearningResponseObjectGraded(TypedDict):
     path: Literal["agent", "handed_back", "workflow", "replay"]
     workflow: str | None
     workflow_digest: str | None
-    feedback: Literal["revise", "look_back"] | None
+    feedback: Literal["look_back"] | None
     feedback_status: Literal["running", "ended", "not_run"] | None
 
 

@@ -87,9 +87,8 @@ async function open(r: Run, { graded, grade, readLearning, refreshed = true }: {
   return { host, sent, section, button, click, boxes, type, rerender, end, tab, failNext, readCount };
 }
 
-/** A grade's answer that opened a `revise` round: a learned workflow gave the answer alone. */
-const revised = (body: GradeBody): GradeAnswer => ({ ...answer(body, "revise"), path: "workflow", workflow: "sort-invoice", workflow_digest: "0123456789abcdef" });
-const WORKFLOW = { file: "workflows/sort-invoice/workflow.json", name: "sort-invoice" };
+/** A grade's answer on a run a learned workflow answered alone: it opens no round, right or wrong. */
+const served = (body: GradeBody): GradeAnswer => ({ ...answer(body, null), path: "workflow", workflow: "sort-invoice", workflow_digest: "0123456789abcdef" });
 
 describe("a run's page, the Grade control", () => {
   it("grades it right in one click, and shows the grade with a way to grade again", async () => {
@@ -327,8 +326,8 @@ describe("a run's page, the Grade control", () => {
     expect(t.button("Grade again")).toBeTruthy();
     act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
 
-    // And after a reload, a revise round the same.
-    const again = await open(refused, { graded: gradedOf({ feedback: "revise", path: "workflow", workflow: "sort-invoice", feedback_status: "not_run" }) });
+    // And after a reload, the same.
+    const again = await open(refused, { graded: gradedOf({ feedback: "look_back", feedback_status: "not_run" }) });
     text = again.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
     expect(again.section()!.querySelector('[role="status"]')?.textContent).toBe(NOT_RUN);
@@ -373,32 +372,17 @@ describe("a run's page, the Grade control", () => {
     expect(text).not.toContain("Graded wrong");
   });
 
-  it("says a finished revise round revised the workflow only when its change was kept", async () => {
-    const reopened = run({ status: "working", state: "working", ended_at: null, learning: { ...LEARNS!, state: "reflecting", reason: null } });
-    const ends = (learning: Run["learning"]) => run({ ended_at: "2026-11-14T10:06:00Z", learning });
-    const cases: [Run["learning"], string][] = [
-      [{ ...LEARNS!, state: "merged", reason: null, workflows: [WORKFLOW] }, "The learned workflow that answered was revised with your grade."],
-      [{ ...LEARNS!, state: "merged", reason: null, workflows: [{ ...WORKFLOW, pending: true }] }, "The learned workflow that answered was revised with your grade. The revision waits for your OK."],
-      // Its draft failed the checks: nothing kept.
-      [{ ...LEARNS!, state: "dropped", reason: "checker" }, "The agent looked back at your grade; nothing changed."],
-      // A note kept, the workflow's revision not.
-      [{ ...LEARNS!, state: "merged", reason: null, learned: [{ file: "vendors.md", name: "vendors", supersedes: [] }] }, "The agent looked back at your grade; nothing changed."],
-    ];
-    for (const [learning, said] of cases) {
-      const t = await open(run(), { grade: async (body) => revised(body) });
-      await t.click("Wrong");
-      await t.type(t.boxes()[0]!, "Northwind is a freight vendor.");
-      await t.click("Send grade");
-      expect(t.section()!.textContent).toContain("The learned workflow that answered is being revised with your grade.");
-      await t.rerender(reopened);
-      expect(t.section()!.textContent).toContain("Reviewing");
-      await t.end(ends(learning));
-      const text = t.section()!.textContent ?? "";
-      expect(text).not.toContain("Reviewing");
-      expect(text).toContain(said);
-      if (said.includes("nothing changed")) expect(text).not.toContain("was revised");
-      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
-    }
+  // A wrong grade of a run its learned workflow answered alone opens no round (the workflow's graded hold reads it): the
+  // grade is kept, said so at once, and nothing is reviewed.
+  it("says a wrong grade of a served run is kept, with no round", async () => {
+    const t = await open(run(), { grade: async (body) => served(body) });
+    await t.click("Wrong");
+    await t.type(t.boxes()[0]!, "Northwind is a freight vendor.");
+    await t.click("Send grade");
+    const text = t.section()!.textContent ?? "";
+    expect(text).toContain("Kept for this agent.");
+    expect(text).not.toContain("Reviewing");
+    expect(text).not.toMatch(/revis/i);
   });
 
   it("says a refused grade in the server's words and keeps the choice", async () => {

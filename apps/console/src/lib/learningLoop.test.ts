@@ -170,7 +170,7 @@ describe("notes and the story", () => {
     const took = { notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }] };
     const stopped = { ...cost({ takeover: { n: 2, run_id: "r2" } }), workflows: [{ workflow: "sort-invoice", digest: "a".repeat(16), state: "needs_revision", served: null, by_hand: null, unknown_cost_runs: 0 }] } as LearningCost;
     const stage = storyOf({ ...base, ...took, cost: stopped, promotions: [record({ replay: REPLAY })], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null }] }).find((s) => s.key === "took_over")!;
-    expect([stage.value, stage.detail, stage.state]).toEqual(["Run 2", "revision aaaaaaa no longer runs first: it cost as much as the agent by hand; its next run asks the agent for a new version", "warn"]);
+    expect([stage.value, stage.detail, stage.state]).toEqual(["Run 2", "revision aaaaaaa no longer runs first: it cost as much as the agent by hand; the agent takes its runs", "warn"]);
     const before = storyOf({ ...base, notes: 3, cost: { ...stopped, summary: cost({}).summary }, promotions: [record({ replay: REPLAY })], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null }] }).find((s) => s.key === "took_over")!;
     expect([before.value, before.state]).toEqual(["Stopped", "warn"]);
   });

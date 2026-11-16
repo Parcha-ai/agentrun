@@ -209,7 +209,7 @@ export function storyOf(input: {
   const challenger = now?.replaying ? `revision ${now.replaying.slice(0, 7)} replays on graded inputs before it serves` : newest?.decided === "hold" && newest.digest !== champion ? `revision ${newest.digest.slice(0, 7)} was held: ${replayLine(newest)}` : null;
   // The champion the money rule stopped running first (the cost read's needs_revision): no promotion record says so.
   const stopped = champion !== null && newest ? stoppedOf(cost, newest.workflow) === champion : false;
-  const stoppedLine = stopped ? `revision ${champion!.slice(0, 7)} no longer runs first: it cost as much as the agent by hand; its next run asks the agent for a new version` : null;
+  const stoppedLine = stopped ? `revision ${champion!.slice(0, 7)} no longer runs first: it cost as much as the agent by hand; the agent takes its runs` : null;
   const servingLine = stoppedLine ? (challenger ? `${stoppedLine}; ${challenger}` : stoppedLine) : champion && challenger ? `revision ${champion.slice(0, 7)} serves; ${challenger}` : null;
   const stages: Stage[] = [];
   stages.push({

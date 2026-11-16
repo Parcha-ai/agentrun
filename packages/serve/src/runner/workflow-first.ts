@@ -8,15 +8,17 @@
 // and the run's input passes it at the top level (validate.ts inputIssues, the check a run's input gets at start). Whether
 // the workflow can do the job is its own guards' call, never the engine's. Exactly one fitting active workflow serves;
 // none, or more than one (said in one log line), leaves the run to the agent. A launch's `workflowFirst: false` (RunCreate
-// `workflow_first`) forces the agent path. A handback is an escalation, never a failure: it asks the end-of-run turn for
-// the workflow's next revision, and never keeps the workflow from serving. One money rule does (costLineOf): a workflow
+// `workflow_first`) forces the agent path. A handback is an escalation, never a failure: it asks for no revision (one run
+// is one sample; a revision is asked only of a workflow its promotion holds), and never keeps the workflow from serving.
+// One money rule does (costLineOf): a workflow
 // serves while its all-in cost a run over its last COST_WINDOW served runs at its digest stays under the agent's by-hand
 // cost (its `agent` runs' mean all-in cost; with none, its runs before the workflow's first). Both sides read one all-in
 // cost a run, the cost page's (store-reads/learning.ts allInOf): its booked cost (the workflow and any handback's agent
 // work together) and every learning round booked for it (its look-backs, its grades, a follow-up's rounds). A run whose
 // all-in is unknown anywhere is left out of its side's mean and counted, never read as 0. Over that line it stops running
-// first: the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome needs_revision), its end-of-run turn asks for a revision, and the
-// agent's cost per run shows it needing one. A new revision of it (a new digest) serves again from zero. Fewer than
+// first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
+// needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
+// new digest: one its hold asked, or its owner's) serves again from zero. Fewer than
 // COST_WINDOW served runs, or no by-hand cost at all (said in the log): it serves. Every input is the run record's path
 // (metrics.path, one classifier: store-reads/learning.ts runPathOverStore). The rule catches a workflow that costs more
 // than doing the job by hand; it does not catch one that answers wrong with confidence. The spec builders
@@ -267,7 +269,7 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   if (!overLine(line)) return serve;
   const revise = { workflow: chosen.name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand.mean_usd, runs: line.served.runs, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) };
   const unknown = line.unknown_runs ? ` (${line.unknown_runs} run${line.unknown_runs === 1 ? "" : "s"} of unknown cost left out)` : "";
-  log?.(`workflow-first: ${chosen.name} cost $${revise.served_usd} a run over its last ${revise.runs} served runs, at or over $${revise.by_hand_usd} by hand, both all-in${unknown}; it does not run first until a new revision of it, and this run asks for one`);
+  log?.(`workflow-first: ${chosen.name} cost $${revise.served_usd} a run over its last ${revise.runs} served runs, at or over $${revise.by_hand_usd} by hand, both all-in${unknown}; it does not run first until a new revision of it; the agent takes this run`);
   return { ...champion, revise };
 }
 
@@ -278,14 +280,6 @@ export function servedOf(entries: readonly { readonly kind: string; readonly dat
   const served = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST && ((entry.data as { outcome?: unknown } | undefined)?.outcome === "answered" || (entry.data as { outcome?: unknown } | undefined)?.outcome === "handed_back"))?.data as { workflow?: unknown; digest?: unknown; promotion?: unknown; outcome: "answered" | "handed_back" } | undefined;
   if (!served || typeof served.workflow !== "string") return undefined;
   return { outcome: served.outcome, workflow: served.workflow, ...(typeof served.digest === "string" ? { digest: served.digest } : {}), ...(typeof served.promotion === "number" ? { promotion: served.promotion } : {}) };
-}
-
-/** Why a run's learned workflow did not run first, from its root entries: the money rule's WORKFLOW_FIRST entry
- *  (outcome needs_revision) with its two numbers; undefined when there is none. */
-export function reviseOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): Revise | undefined {
-  const kept = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST && (entry.data as { outcome?: unknown } | undefined)?.outcome === "needs_revision")?.data as Partial<Revise> | undefined;
-  if (!kept || typeof kept.workflow !== "string" || typeof kept.digest !== "string" || typeof kept.served_usd !== "number" || typeof kept.by_hand_usd !== "number" || typeof kept.runs !== "number") return undefined;
-  return { workflow: kept.workflow, digest: kept.digest, served_usd: kept.served_usd, by_hand_usd: kept.by_hand_usd, runs: kept.runs };
 }
 
 /** The run-record fields a learning run's metrics carry, from the run-end classifier's `classified` path

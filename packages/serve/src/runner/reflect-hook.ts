@@ -39,6 +39,11 @@ export interface ReflectDeps {
    *  asked its end-of-run turn (no model request, nothing spent looking back), and its learning is dropped `empty` in
    *  said.onlyWorkflow's words. Absent, or a read that throws: every run is asked. */
   readonly nothingNew?: (runId: string) => Promise<boolean>;
+  /** For a job that compiles workflows: whether the run carries its owner's feedback (learning-end.ts ownerSaid: a grade's
+   *  words, or a message after its first). A run without it is not asked its look-back (no model request, $0 looking
+   *  back), and its compile turn, when one is due, is asked alone; with nothing due its learning is dropped `empty` in
+   *  said.noFeedback's words. Absent (a notes job), or a read that throws: the run is asked its look-back. */
+  readonly ownerSaid?: (runId: string) => Promise<boolean>;
   /** The run's facts for reflectSkip: whether it learns, a person's cancel, its cap reached, its cap, its cost so far as a
    *  person is shown it (`costUsd`, kept as the job's), and under a cap its spend as the cap's gates read it (`spentUsd`,
    *  learning-end.ts capSpendOf: a request with no price of its own at its held figure; null: unknown). */
@@ -154,16 +159,22 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // its workflow, asked while its champion serves) looking back cost nothing, $0 whether or not the job's own cost is
     // known. Its words are the server's own.
     const workflowOnly = input.outcome === "completed" && deps.nothingNew !== undefined && (await deps.nothingNew(input.runId).catch(() => false));
-    const onlyWorkflow = () => ({ also: [droppedRow(null, "empty", said.onlyWorkflow, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0, ...followUp() })] });
-    if (workflowOnly && !deps.compileFacts) return onlyWorkflow();
+    // A run of a job that compiles workflows with no word from its owner is not asked its look-back either (ownerSaid):
+    // its job's trace is what a compile reads, and a look-back on every agent run cost more than the run. The same way:
+    // its compile turn, when due, asked alone, else $0 looking back.
+    const unheard = !workflowOnly && deps.ownerSaid !== undefined && !(await deps.ownerSaid(input.runId).catch(() => true));
+    const alone = workflowOnly || unheard;
+    const notAsked = workflowOnly ? said.onlyWorkflow : said.noFeedback;
+    const onlyWorkflow = () => ({ also: [droppedRow(null, "empty", notAsked, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0, ...followUp() })] });
+    if (alone && !deps.compileFacts) return onlyWorkflow();
     // What the run must never learn, read once, before it is asked anything: a run whose list can't be read learns
     // nothing, never over a shorter one.
     const read = deps.refuse ? await deps.refuse(input.runId).catch(() => "unreadable" as const) : [];
     const refuse = read === "unreadable" ? [] : read;
-    // The compile turn's facts (learn/compile.ts), read once: a workflow-only run with none due ends here, as above.
+    // The compile turn's facts (learn/compile.ts), read once: a run not looked back on with none due ends here, as above.
     const compileOf = async () => (deps.compileFacts && read !== "unreadable" ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse }).catch(() => undefined) : undefined);
-    const early = workflowOnly ? await compileOf() : undefined;
-    if (workflowOnly && !early) return onlyWorkflow();
+    const early = alone ? await compileOf() : undefined;
+    if (alone && !early) return onlyWorkflow();
     // Every end from here closes through this one function: looked's timings first, then the cut LAST, over every
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
@@ -180,11 +191,11 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         return undefined;
       }
     };
-    // The look-back: asked of every run but a workflow-only one, whose compile turn is asked alone (it has nothing new
-    // to note), from no answer of its own: nothing the look-back kept goes with its draft.
+    // The look-back: asked of every run but a workflow-only one or one its owner said nothing on, whose compile turn is
+    // asked alone, from no answer of its own: nothing the look-back kept goes with its draft.
     let turn: ReflectTurn | null = null;
     let checked: Checked = { state: "dropped", reason: "empty" };
-    if (workflowOnly) heard = await deps.asked(input.runId);
+    if (alone) heard = await deps.asked(input.runId);
     else {
       const { active } = await deps.promptFacts(input.runId, input.agentId);
       const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, ...(round > 1 && deps.before?.looked !== false ? { later: true } : {}) }), { ...ask, deadlineMs, keep: { answered_at: answeredAt, job_cost_usd: job } });
@@ -230,10 +241,10 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // The compile turn (learn/compile.ts): the job as a learned workflow, or a revision of one, checked as a draft is,
     // its refusals sent back up to COMPILE_RETRIES times. A draft that passed goes in the proposal beside the notes; one
     // that never did is never silent: its errors go with the learning, and its problems to its end.
-    const compile = workflowOnly ? early : await compileOf();
+    const compile = alone ? early : await compileOf();
     let compiled: { record: CompiledRecord; draft_errors?: string[] } | undefined;
     if (compile) {
-      // A compile turn asked alone (a workflow-only run: no look-back) is the round's first ask: it keeps the job's figures
+      // A compile turn asked alone (no look-back) is the round's first ask: it keeps the job's figures
       // with its prompt as the look-back's does, and a turn an earlier claim asked first answers with that ask's (`kept`),
       // so a restart mid compile never moves what the earlier attempt spent compiling into the job's. Each attempt keeps
       // the figures as they stand once the attempts before it answered (an earlier claim's, when it asked first).
@@ -247,10 +258,10 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       let capped = false;
       const result = await compileTurn<Checked>({
         ask: async (prompt, attempt, left) => {
-          const keep: Record<string, string | number | null> = { ...(workflowOnly ? { answered_at: answeredAt, job_cost_usd: job } : {}), ...(revised ? { compile_base: revised.base } : {}) };
+          const keep: Record<string, string | number | null> = { ...(alone ? { answered_at: answeredAt, job_cost_usd: job } : {}), ...(revised ? { compile_base: revised.base } : {}) };
           const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}`, ...(Object.keys(keep).length ? { keep } : {}) });
           if ("failed" in said_ && CAP_REFUSAL.test(said_.failed.message)) capped = true;
-          if (workflowOnly) firstAsk(said_.kept);
+          if (alone) firstAsk(said_.kept);
           const base = said_.kept?.compile_base;
           if (revised && typeof base === "string") revised = { ...revised, base };
           return "ended" in said_ ? { answer: said_.answer } : undefined;
@@ -286,7 +297,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     }
     const compiledFields = compiled ? { compiled: compiled.record, ...(compiled.draft_errors?.length ? { draft_errors: compiled.draft_errors } : {}) } : {};
     if (checked.state === "dropped") {
-      const detail = checked.reason === "empty" ? (workflowOnly ? said.onlyWorkflow : said.empty) : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);
+      const detail = checked.reason === "empty" ? (alone ? notAsked : said.empty) : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);
       return close([droppedRow(turn, checked.reason, detail, { ...checked, ...compiledFields })]);
     }
     // The learning run's cap: what the run's cap leaves now its look-back is spent, read after the checks. A spend under

@@ -82,11 +82,12 @@ async function learnedQuoting(t, plant) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: AGENT, name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  // A notes job (`learning: "notes"`): its run looks back at every end.
+  await server.agents.create({ id: AGENT, name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: "notes" } });
   const values = await plant(server, dir);
   const quoted = values.join(" and ");
   const seed = await seedOf(dir, AGENT);
-  const launch = { input: { content: `Use ${quoted} for the call.` }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 0 } };
+  const launch = { input: { content: `Use ${quoted} for the call.` }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 0, notesOnly: true } };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
 

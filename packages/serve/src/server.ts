@@ -3518,7 +3518,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
           ...(typeof m.workflow_promotion === "number" ? { promotion: m.workflow_promotion } : {}),
         };
-        // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, a revision ask, or a look-back.
+        // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
         const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
         // read (the grade is kept by then: never a shorter cut, never a refusal of a grade it kept).

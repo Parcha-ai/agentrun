@@ -2427,7 +2427,7 @@ export const COMMANDS = [
         "name": "label",
         "type": "string",
         "required": false,
-        "description": "The grade's words (a teacher's label, a reviewer's note): what the run's look-back or its workflow's revision ask reads."
+        "description": "The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads."
       }
     ],
     "hasBody": true,

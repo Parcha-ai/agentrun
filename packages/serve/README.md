@@ -3057,7 +3057,10 @@ less the active notes), that `No notes.` is a fine answer, and what not to keep.
 with no reserve, and within 5 minutes; its rows are labelled `learning`, and the run's answer stays the job's. While it
 runs, the run reads `reflecting` on every harness. A run whose only tool work was its learned workflows, each answering,
 with nothing said after its first message, is not asked: no request is sent, and its learning ends `dropped` (`empty`),
-"Nothing new: the run only ran a learned workflow."
+"Nothing new: the run only ran a learned workflow." A run of an agent with `learning: true` (one that compiles workflows)
+is not asked either unless its owner gave feedback on it: a grade's words, or a message after the run's first. It spends
+$0 looking back, its learning ends `dropped` (`empty`) saying it looks back only on feedback, and a compile turn that is
+due is still asked. A `learning: "notes"` run is asked as above.
 
 The same turn may give one skill (only when the job completed) and one workflow draft, when the work repeats. Once a
 learned skill the run was given has been given to 3 earlier runs of its agent, with no learned workflow of that name,

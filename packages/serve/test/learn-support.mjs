@@ -27,9 +27,10 @@ export const NOTHING_YET = "Nothing learned yet.";
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** An agent with learning on and no tool: its end-of-run turn answers with the notes `plan` ([file, text] pairs) holds,
- *  planned after its instructions. */
-export const learner = (id, { plan, once = false, instructions = "Answer the question.", ...extra } = {}) =>
-  agent(id, { learning: true, instructions: [instructions, ...(plan ? [`Learn${once ? " once" : ""}: ${JSON.stringify(plan)}`] : [])].join("\n"), ...extra });
+ *  planned after its instructions. Its learning is `"notes"` unless `learning` says otherwise: a notes job looks back at
+ *  every end, while a `learning: true` job's agent run looks back only on its owner's feedback. */
+export const learner = (id, { plan, once = false, instructions = "Answer the question.", learning = "notes", ...extra } = {}) =>
+  agent(id, { learning, instructions: [instructions, ...(plan ? [`Learn${once ? " once" : ""}: ${JSON.stringify(plan)}`] : [])].join("\n"), ...extra });
 
 export async function made(api, definition) {
   const res = await api("POST", "/agents", definition);
@@ -56,6 +57,17 @@ export async function ended(api, runId, until = ["completed"]) {
     await sleep(50);
   }
   return { view: (await api("GET", `/runs/${runId}`)).body, rows: (await follow(api, runId, until)).rows };
+}
+
+/** A run of `learning: true` agent `id` that its owner gave feedback on: its first round ends with no look-back (no
+ *  feedback yet), then a grade with words (`label`) opens its look-back round, followed until its learning ended (as
+ *  `ended` reads it). */
+export async function fedBack(api, id, { content = "Go.", label = "Keep what this run learned." } = {}) {
+  const runId = await started(api, id, content);
+  await ended(api, runId);
+  const graded = await api("PUT", `/runs/${runId}/grade`, { correct: true, label });
+  assert.deepEqual([graded.status, graded.body.feedback], [200, "look_back"], JSON.stringify(graded.body));
+  return ended(api, runId);
 }
 
 /** A grade as the runner's learning run makes it (runner/learning-loop.ts), on a faux grader `reply` (a faux module's

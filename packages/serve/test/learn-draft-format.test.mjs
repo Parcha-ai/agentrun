@@ -12,7 +12,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { PROPOSAL, seedOf } from "../dist/learning.js";
 import { proposeRun } from "../dist/propose.js";
 import { learningWorkspace } from "../dist/workspace/index.js";
-import { ended, git, made, repoOf, resnap, savedOf, started, learner, LEARN } from "./learn-support.mjs";
+import { ended, fedBack, git, made, repoOf, resnap, savedOf, started, learner, LEARN } from "./learn-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
 const AGENT = "agent-1";
@@ -97,9 +97,9 @@ test("end to end on the faux grader: a draft of a skill's job that drops the ski
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   for (const [id, json, kept] of [["drops", cardDraft(DROPS), false], ["keeps", cardDraft(KEEPS), true]]) {
-    await made(api, learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(`${block(json)}\n\nReflected.`)}`, "Grade: format."].join("\n") }));
+    await made(api, learner(id, { learning: true, instructions: ["Answer the question.", `Answer: ${JSON.stringify(`${block(json)}\n\nReflected.`)}`, "Grade: format."].join("\n") }));
     await folderWith(data, id, { "skills/card-report/SKILL.md": CARD_SKILL });
-    const { view } = await ended(api, await started(api, id));
+    const { view } = await fedBack(api, id);
     const saved = await savedOf(data, view.run_id);
     const item = saved.learning.verdict?.items?.find((one) => one.file === "workflows/card-report/workflow.json");
     assert.equal(item?.keep, kept, `${id}: ${JSON.stringify(saved.learning)}`);
