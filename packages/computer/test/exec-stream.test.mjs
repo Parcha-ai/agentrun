@@ -68,13 +68,13 @@ test("an exec on a terminal, whose \\n comes back as \\r\\n, fails the text chec
 	const { report, byId } = await run({ tty: true });
 	assert.equal(report.pass, false);
 	assert.deepEqual(failed(report), ["stdout-text", "stdin-text", "large", "stdin-live"]);
-	assert.match(byId["stdout-text"].words, /^U\+000A \(byte 12\) came back on stdout as 0d 0a 0b 0c: your exec turns \\n into \\r\\n, as a terminal does/);
+	assert.match(byId["stdout-text"].words, /^U\+000A \(at byte 12\) came back on stdout as 0d 0a 0b 0c: your exec turns \\n into \\r\\n, as a terminal does/);
 	assert.match(formatExecStream(report), /exec FAIL: 4 of 10 checks failed/);
 });
 
 test("an exec that decodes each piece of output as text on its own fails stdout-text on the U+FEFF it drops, and large on the U+FFFD a split character became", async () => {
 	const { byId } = await run({ decodePieces: true });
-	assert.match(byId["stdout-text"].words, /^U\+FEFF \(byte 0\) came back on stdout as 01 02 03 04: your exec drops a U\+FEFF that starts its text/);
+	assert.match(byId["stdout-text"].words, /^U\+FEFF \(at byte 0\) came back on stdout as 01 02 03 04: your exec drops a U\+FEFF that starts its text/);
 	assert.equal(byId.large.status, "fail");
 	// The split character is random, so the fourth byte shown after ef bf bd is too (none at the very end).
 	assert.match(byId.large.words, /came back through cat as ef bf bd( [0-9a-f]{2})?: U\+FFFD \(ef bf bd\), as a decoder makes of half a character/);
@@ -204,11 +204,11 @@ test("textProblem names the usual ways text changes: UTF-8 read as Latin-1, \\n 
 	const utf8 = (text) => new Uint8Array(Buffer.from(text, "utf8"));
 	const sent = utf8("Aé\nB");
 	assert.equal(textProblem(sent, sent, "back"), undefined);
-	assert.match(textProblem(sent, utf8(Buffer.from("Aé\nB", "utf8").toString("latin1")), "on stdout"), /^U\+00E9 \(byte 1\) came back on stdout as c3 83 c2 a9: your exec reads UTF-8 as Latin-1/);
-	assert.match(textProblem(utf8("A\n"), utf8("A\r\n"), "on stdout"), /^U\+000A \(byte 1\) came back on stdout as 0d 0a: your exec turns \\n into \\r\\n/);
-	assert.match(textProblem(utf8("a\rb"), utf8("ab"), "on stdout"), /^U\+000D \(byte 1\) came back on stdout as 62: your exec drops \\r/);
-	assert.match(textProblem(utf8("e\u0301"), utf8("é"), "on stdout"), /^U\+0065 \(byte 0\) came back on stdout as c3 a9: your exec changes text/);
-	assert.match(textProblem(utf8("﻿Aé"), utf8("Aé"), "on stdout"), /^U\+FEFF \(byte 0\) came back on stdout as 41 c3 a9: your exec drops a U\+FEFF that starts its text, as a TextDecoder does unless given ignoreBOM: true/);
+	assert.match(textProblem(sent, utf8(Buffer.from("Aé\nB", "utf8").toString("latin1")), "on stdout"), /^U\+00E9 \(at byte 1\) came back on stdout as c3 83 c2 a9: your exec reads UTF-8 as Latin-1/);
+	assert.match(textProblem(utf8("A\n"), utf8("A\r\n"), "on stdout"), /^U\+000A \(at byte 1\) came back on stdout as 0d 0a: your exec turns \\n into \\r\\n/);
+	assert.match(textProblem(utf8("a\rb"), utf8("ab"), "on stdout"), /^U\+000D \(at byte 1\) came back on stdout as 62: your exec drops \\r/);
+	assert.match(textProblem(utf8("e\u0301"), utf8("é"), "on stdout"), /^U\+0065 \(at byte 0\) came back on stdout as c3 a9: your exec changes text/);
+	assert.match(textProblem(utf8("﻿Aé"), utf8("Aé"), "on stdout"), /^U\+FEFF \(at byte 0\) came back on stdout as 41 c3 a9: your exec drops a U\+FEFF that starts its text, as a TextDecoder does unless given ignoreBOM: true/);
 	assert.match(textProblem(utf8("A𝄞"), utf8("A"), "on stdout"), /^only 1 of 5 bytes of text came back on stdout/);
 	assert.match(textProblem(utf8("A"), utf8("A\n"), "on stdout"), /^1 bytes came back on stdout that were never sent/);
 });
@@ -359,7 +359,7 @@ export function createHost(options) { given.push(options); return fakeExecHost(o
 		assert.ok(Date.now() - started < 60_000, "--quick does not sleep 75 s");
 		const broken = [];
 		assert.equal(await main(["--provider", module, "--exec-stream", "--machine", "box-7", "--quick"], { stdout: output(broken), stderr: output([]), providerOptions: { env: {}, broken: true } }), 1);
-		assert.match(broken.join(""), /✗ stdout-text +U\+000A \(byte 12\) came back on stdout as 0d 0a/);
+		assert.match(broken.join(""), /✗ stdout-text +U\+000A \(at byte 12\) came back on stdout as 0d 0a/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

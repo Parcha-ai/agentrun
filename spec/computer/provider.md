@@ -203,7 +203,7 @@ It builds the host with the module's `createHost(options)`, which it calls with 
 (E2B's `createHost({ env = process.env } = {})`). It sends text of every class of code point, with `\r`, `\r\n` and a
 1 MiB line, each way, and 8 MiB of random UTF-8 (compared by sha256), checks output and stdin while the process runs,
 stderr apart, `sh -c 'exit 7'`, a killed `sleep`, and a silent process of 75 s (`--quick`: 5 s). No check ends stdin.
-Each failure says what the exec did wrong, such as "U+000A (byte 12) came back on stdout as 0d 0a 0b 0c: your exec turns
+Each failure says what the exec did wrong, such as "U+000A (at byte 12) came back on stdout as 0d 0a 0b 0c: your exec turns
 \n into \r\n, as a terminal does". It exits 0 when every check passes and 1 when one fails.
 
 The vendor's exec may be any transport that keeps these rules: its own stream, SSH, its SDK, a relay in the image over
