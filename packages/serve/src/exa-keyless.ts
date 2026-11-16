@@ -37,7 +37,7 @@ const MAX_BYTES = 1 << 20;
 
 /** What a search answers when Exa's free limit holds after the one retry. Exa's own words name a fix (an API key in
  *  its MCP URL) that means nothing to a person here, so they are never passed on. */
-export const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.";
+export const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → Tool keys to search with a key.";
 /** The most of Exa's own words a failure quotes: the first sentence of its first line, cut on a word. */
 const SAID_MAX = 120;
 /** A failure Exa answered, in our words: the first sentence of its text, short and quoted. Its later lines (a fix for its
