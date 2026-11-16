@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -143,7 +144,8 @@ func handshake(nc net.Conn, u *url.URL, o Options) (*Conn, error) {
 	}
 	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 	accept, protocol := res.Header.Get("Sec-WebSocket-Accept"), res.Header.Get("Sec-WebSocket-Protocol")
-	if !strings.EqualFold(res.Header.Get("Upgrade"), "websocket") || accept != base64.StdEncoding.EncodeToString(sum[:]) || protocol != o.Subprotocol {
+	upgrades := slices.ContainsFunc(strings.Split(res.Header.Get("Connection"), ","), func(token string) bool { return strings.EqualFold(strings.TrimSpace(token), "upgrade") })
+	if !upgrades || !strings.EqualFold(res.Header.Get("Upgrade"), "websocket") || accept != base64.StdEncoding.EncodeToString(sum[:]) || protocol != o.Subprotocol {
 		return nil, fmt.Errorf("the server's 101 is not a WebSocket of the subprotocol %s (Sec-WebSocket-Protocol %q)", o.Subprotocol, protocol)
 	}
 	_ = nc.SetDeadline(time.Time{})
@@ -218,19 +220,25 @@ func (c *Conn) frame(room int) (fin bool, op byte, payload []byte, err error) {
 	if head[0]&0x70 != 0 || head[1]&0x80 != 0 {
 		return fin, op, nil, c.end(&Closed{Code: CloseProtocol, Reason: "a reserved bit set, or a masked frame from the server"}, true)
 	}
+	// An extended length is in its shortest form, and a 64-bit one has its top bit clear (RFC 6455 5.2).
+	short := false
 	switch n {
 	case 126:
 		if _, err = io.ReadFull(c.br, head[2:4]); err != nil {
 			return
 		}
 		n = uint64(binary.BigEndian.Uint16(head[2:4]))
+		short = n < 126
 	case 127:
 		if _, err = io.ReadFull(c.br, head[2:10]); err != nil {
 			return
 		}
 		n = binary.BigEndian.Uint64(head[2:10])
+		short = n <= 0xffff || n>>63 != 0
 	}
 	switch {
+	case short:
+		return fin, op, nil, c.end(&Closed{Code: CloseProtocol, Reason: "a frame length not in its shortest form"}, true)
 	case op >= opClose && (!fin || n > 125):
 		return fin, op, nil, c.end(&Closed{Code: CloseProtocol, Reason: "a control frame fragmented or over 125 bytes"}, true)
 	case op < opClose && n > uint64(max(room, 0)):
@@ -241,15 +249,23 @@ func (c *Conn) frame(room int) (fin bool, op byte, payload []byte, err error) {
 	return
 }
 
-// closeFrom answers the server's close frame with the same code and ends the socket.
+// closeFrom answers the server's close frame with the same code and ends the socket; a code a peer may not send (RFC
+// 6455 7.4) is 1002, a reason that is not UTF-8 1007.
 func (c *Conn) closeFrom(payload []byte) error {
-	switch len(payload) {
-	case 0:
+	if len(payload) == 0 {
 		return c.end(&Closed{Code: CloseNoStatus, ByServer: true}, true)
-	case 1:
-		return c.end(&Closed{Code: CloseProtocol, Reason: "a close frame of one byte"}, true)
 	}
-	return c.end(&Closed{Code: int(binary.BigEndian.Uint16(payload)), Reason: string(payload[2:]), ByServer: true}, true)
+	code := 0
+	if len(payload) >= 2 {
+		code = int(binary.BigEndian.Uint16(payload))
+	}
+	switch {
+	case code < 1000 || code > 4999 || (code < 3000 && (code == 1004 || code == 1005 || code == 1006 || code > 1014)):
+		return c.end(&Closed{Code: CloseProtocol, Reason: fmt.Sprintf("a close frame of %d bytes with the code %d", len(payload), code)}, true)
+	case !utf8.Valid(payload[2:]):
+		return c.end(&Closed{Code: CloseBadText, Reason: "a close reason that is not UTF-8"}, true)
+	}
+	return c.end(&Closed{Code: code, Reason: string(payload[2:]), ByServer: true}, true)
 }
 
 // Close ends the socket with code and reason, unless it has ended already, and gives how it ended.

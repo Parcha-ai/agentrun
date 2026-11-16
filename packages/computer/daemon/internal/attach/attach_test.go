@@ -18,6 +18,18 @@ import (
 
 // fakeInit listens where init would and answers each line with itself, as `ok <line>`, until its input ends.
 func fakeInit(t *testing.T) string {
+	socket, _ := listenInit(t, func(conn net.Conn) {
+		lines := bufio.NewScanner(conn)
+		for lines.Scan() {
+			_, _ = conn.Write([]byte("ok " + lines.Text() + "\n"))
+		}
+	})
+	return socket
+}
+
+// listenInit listens where init would and serves each connection with serve, closing it after; closing the listener
+// is init ending.
+func listenInit(t *testing.T, serve func(net.Conn)) (string, net.Listener) {
 	socket := filepath.Join(t.TempDir(), "computerd.sock")
 	l, err := net.Listen("unix", socket)
 	if err != nil {
@@ -32,14 +44,11 @@ func fakeInit(t *testing.T) string {
 			}
 			go func() {
 				defer conn.Close()
-				lines := bufio.NewScanner(conn)
-				for lines.Scan() {
-					_, _ = conn.Write([]byte("ok " + lines.Text() + "\n"))
-				}
+				serve(conn)
 			}()
 		}
 	}()
-	return socket
+	return socket, l
 }
 
 // server answers the nth upgrade (from 0) with sockets[n]: an HTTP status to refuse it, or what the server does over the
@@ -154,7 +163,7 @@ func TestADialRedialAndRefusalNeverLogTheToken(t *testing.T) {
 	if code != ExitUnauthorized || s.dials.Load() != 4 {
 		t.Fatalf("exit %d after %d dials, want %d after 4: %s", code, s.dials.Load(), ExitUnauthorized, log)
 	}
-	for _, want := range []string{"attached to ws://", "closed 1001 by the server", "refused 502", "closed 4409 by the server", "refused 401 (the server's words)", "stops dialing"} {
+	for _, want := range []string{"attached to ws://", "closed 1001 by the server", "refused the upgrade: 502", "closed 4409 by the server", "refused the upgrade: 401 the server's words", "stops dialing"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("the log says no %q: %s", want, log)
 		}
@@ -181,13 +190,39 @@ func TestTheCloseCodesThatStopIt(t *testing.T) {
 	}
 }
 
-func TestWithInitGoneItClosesWith1011AndExits1(t *testing.T) {
-	s := &server{t: t, sockets: []func(net.Conn, *bufio.Reader) int{func(conn net.Conn, r *bufio.Reader) int { return 0 }}}
+func TestWithNoInitItNeverDialsAndExits1(t *testing.T) {
+	s := &server{t: t, sockets: []func(net.Conn, *bufio.Reader) int{func(net.Conn, *bufio.Reader) int { return 0 }}}
 	code, log := run(t, s, context.Background(), filepath.Join(t.TempDir(), "none.sock"))
-	if code != ExitInitGone || !strings.Contains(log, "no daemon listens") {
+	if code != ExitInitGone || s.dials.Load() != 0 || !strings.Contains(log, "no daemon listens") {
+		t.Fatalf("exit %d after %d dials: %s", code, s.dials.Load(), log)
+	}
+}
+
+func TestWhenInitHangsUpItClosesWith1011AndExits1(t *testing.T) {
+	socket, _ := listenInit(t, func(net.Conn) {})
+	s := &server{t: t, sockets: []func(net.Conn, *bufio.Reader) int{func(net.Conn, *bufio.Reader) int { return 0 }}}
+	code, log := run(t, s, context.Background(), socket)
+	if code != ExitInitGone || !strings.Contains(log, "closed the connection") {
 		t.Fatalf("exit %d: %s", code, log)
 	}
 	closedBy(t, s, CloseInternal)
+}
+
+func TestWhenInitEndsWhileTheServerIsDownItStopsDialing(t *testing.T) {
+	socket, l := listenInit(t, func(net.Conn) {})
+	s := &server{t: t}
+	for range 3 {
+		s.sockets = append(s.sockets, refuse(http.StatusBadGateway))
+	}
+	// init reaches its deadline while the third dial is refused.
+	s.sockets[2] = func(net.Conn, *bufio.Reader) int {
+		l.Close()
+		return http.StatusBadGateway
+	}
+	code, log := run(t, s, context.Background(), socket)
+	if code != ExitInitGone || s.dials.Load() != 3 || !strings.Contains(log, "no daemon listens") {
+		t.Fatalf("exit %d after %d dials, want %d after 3: %s", code, s.dials.Load(), ExitInitGone, log)
+	}
 }
 
 func TestAStopClosesWith1001AndExits0(t *testing.T) {
@@ -231,6 +266,9 @@ func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T
 	for _, tc := range [][2]string{
 		{"", testToken},
 		{"https://agentrun.example.com/v2/computers/attach", testToken},
+		{"wss://host%zz/v2/computers/attach", testToken},
+		{"wss:///v2/computers/attach", testToken},
+		{"wss://agentrun.example.com", testToken},
 		{"wss://agentrun.example.com/v2/computers/attach", ""},
 		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("A", 64)},
 		{"wss://agentrun.example.com/v2/computers/attach", testToken + "\r\nX-Other: 1"},

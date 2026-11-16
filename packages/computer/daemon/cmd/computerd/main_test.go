@@ -661,9 +661,17 @@ func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
 	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_TOKEN") || strings.Contains(stderr, token[:len(token)-1]) {
 		t.Fatalf("with a short token: exit %d, %s", code, stderr)
 	}
+	// attach dials only while init listens: a listener stands in for it.
+	socket := filepath.Join(t.TempDir(), "computerd.sock")
+	initListener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initListener.Close()
+	t.Setenv(daemon.SocketEnv, socket)
 	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
-	code, stderr := computerd(t, 30*time.Second, "attach")
-	if code != 3 || !strings.Contains(stderr, "refused 401 (the token is unknown)") || strings.Contains(stderr, token) {
+	code, _, stderr := computerdOut(t, 30*time.Second, "attach")
+	if code != 3 || !strings.Contains(stderr, "refused the upgrade: 401 the token is unknown") || strings.Contains(stderr, token) {
 		t.Fatalf("refused: exit %d, %s", code, stderr)
 	}
 }

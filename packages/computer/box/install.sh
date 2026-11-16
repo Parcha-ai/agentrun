@@ -87,8 +87,10 @@ for v in AGENTRUN_ATTACH_URL AGENTRUN_ATTACH_TOKEN AGENTRUN_DAEMON_URL AGENTRUN_
 	eval "[ -n \"\${$v-}\" ]" || { echo "agentrun-dial: $v is not set; the provider's create sets it" >&2; exit 2; }
 done
 mkdir -p "${DAEMON%/*}" "$HOME_DIR" "$SOCKET_DIR"
-chown "$OWNER" "${DAEMON%/*}"
+chown "$OWNER" "${DAEMON%/*}" "$SOCKET_DIR"
 chmod 0755 "${DAEMON%/*}"
+# init's socket is root's alone: whoever can connect to it drives the machine.
+chmod 0700 "$SOCKET_DIR"
 rm -f "$DAEMON.part"
 # The token goes to curl on its stdin, never on a command line, which every user may read in /proc.
 printf 'Authorization: Bearer %s\n' "$AGENTRUN_ATTACH_TOKEN" |

@@ -261,7 +261,9 @@ func TestFramesTheReaderRefusesCloseTheSocket(t *testing.T) {
 		{"over the limit", serverFrame(true, opText, bytes.Repeat([]byte("x"), 65)), CloseTooBig},
 		{"over the limit in two fragments", append(serverFrame(false, opText, bytes.Repeat([]byte("x"), 40)), serverFrame(true, opContinuation, bytes.Repeat([]byte("x"), 40))...), CloseTooBig},
 		{"a 64-bit length, header only", []byte{0x81, 127, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, CloseTooBig},
-		{"a 64-bit length with its top bit", []byte{0x81, 127, 0xff, 0, 0, 0, 0, 0, 0, 1}, CloseTooBig},
+		{"a 64-bit length with its top bit", []byte{0x81, 127, 0x80, 0, 0, 0, 0, 0, 0, 1}, CloseProtocol},
+		{"a 16-bit length that fits in 7 bits", []byte{0x81, 126, 0, 1, 'x'}, CloseProtocol},
+		{"a 64-bit length that fits in 16 bits", []byte{0x81, 127, 0, 0, 0, 0, 0, 0, 0, 1, 'x'}, CloseProtocol},
 		{"a ping over 125 bytes", serverFrame(true, opPing, bytes.Repeat([]byte("x"), 126)), CloseProtocol},
 		{"a fragmented ping", serverFrame(false, opPing, nil), CloseProtocol},
 		{"a masked frame", []byte{0x81, 0x81, 1, 2, 3, 4, 'x'}, CloseProtocol},
@@ -270,6 +272,11 @@ func TestFramesTheReaderRefusesCloseTheSocket(t *testing.T) {
 		{"a continuation with nothing begun", serverFrame(true, opContinuation, []byte("x")), CloseProtocol},
 		{"a message begun inside another", append(serverFrame(false, opText, []byte("x")), text...), CloseProtocol},
 		{"a close of one byte", serverFrame(true, opClose, []byte{3}), CloseProtocol},
+		{"a close code under 1000", closeFrame(999, ""), CloseProtocol},
+		{"a close code no peer sends", closeFrame(1006, ""), CloseProtocol},
+		{"an unassigned close code", closeFrame(1015, ""), CloseProtocol},
+		{"a close code over 4999", closeFrame(5000, ""), CloseProtocol},
+		{"a close reason that is not UTF-8", closeFrame(CloseGoingAway, "\xff"), CloseBadText},
 		{"text that is not UTF-8", serverFrame(true, opText, []byte{0xff, 0xfe}), CloseBadText},
 	} {
 		c, f := reading(tc.stream, testOptions())
@@ -450,7 +457,9 @@ func TestARefusedUpgradeSaysItsStatus(t *testing.T) {
 func TestAnUpgradeThatIsNotOneFails(t *testing.T) {
 	for _, answer := range []string{
 		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: wrong\r\nSec-WebSocket-Protocol: " + subprotocol + "\r\n\r\n",
-		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n",
+		"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n",
+		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: " + subprotocol + "\r\n\r\n",
+		"HTTP/1.1 101 Switching Protocols\r\nConnection: close\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: " + subprotocol + "\r\n\r\n",
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			sum := sha1.Sum([]byte(req.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))

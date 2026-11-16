@@ -97,6 +97,7 @@ test("agentrun-dial fetches the daemon with the token, installs it, starts init 
 	assert.deepEqual(fetches, [{ url: "/v2/computers/daemon?arch=amd64", authorization: `Bearer ${TOKEN}` }]);
 	const daemon = fixed.DAEMON[1];
 	assert.equal(statSync(daemon).mode & 0o777, 0o755);
+	assert.equal(statSync(fixed.SOCKET_DIR[1]).mode & 0o777, 0o700, "init's socket directory is root's alone");
 	assert.ok(!existsSync(`${daemon}.part`));
 	const init = calls.find((call) => call.command === "init");
 	assert.ok(init, `init started: ${JSON.stringify(calls)}`);
