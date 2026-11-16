@@ -33,8 +33,10 @@ Removing the extension restores the original eve integration; it does not delete
 1. Before the first model call, admit a run with a key derived from the agent, eve session and turn.
 2. Keep its receipt and learning snapshot in eve's private, durable extension state. Repeated model
    calls and retries use the same snapshot. Instructions receive reference text, never credentials.
-3. At settlement, read eve's committed session stream, including events whose individual hooks
-   may have been missed. Upload visible assistant text, tool names/outcomes, model and reported usage.
+3. At settlement, combine eve's session stream with a bounded private buffer of its hook events.
+   eve flushes the current step after hooks finish, so the buffer supplies that step's recorded
+   facts before they appear in durable history. Normalize through the exact turn-settled event;
+   later delivery housekeeping cannot change a retry. Upload visible assistant text, tool names/outcomes, model and reported usage.
    Raw tool inputs/results, reasoning and native credentials remain with eve.
 4. Submit the original outcome once. AgentRun's ordinary runner reflects and independently checks
    proposals. A future fresh turn receives only accepted learning; submission alone is not promotion.

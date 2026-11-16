@@ -93,7 +93,7 @@ function batches(events: SdkLearningEvent[]): { batches: SdkLearningEvent[][]; c
   return { batches: result, complete };
 }
 
-/** Replay from eve's committed stream, not hook delivery or a pruned operational view. Repeated submissions have
+/** Replay from eve's recorded stream, including the current hook suffix before a step flushes. Repeated submissions have
  * identical sequence bodies and keys. A partial/failed turn is recorded but never admitted for self-improvement. */
 export async function submitTurn(config: LearningConfig, record: TurnRecord, reader: SessionReader): Promise<boolean> {
   if (record.submitted) return true;

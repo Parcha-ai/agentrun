@@ -147,8 +147,8 @@ test('conflicting duplicate positions are refused instead of silently replacing 
   assert.equal(result.reason, 'conflicting_history');
 });
 
-test('a partial settlement commit is not an authoritative terminal outcome', async () => {
-  const rows = history();
+test('a partial prefix before settlement is not an authoritative terminal outcome', async () => {
+  const rows = history().slice(0, -1);
   rows.at(-1).meta.endOfLine = false;
   const result = await collectTurn(reader(rows), turnId);
   assert.equal(result.settled, false);
@@ -156,7 +156,7 @@ test('a partial settlement commit is not an authoritative terminal outcome', asy
   assert.equal(result.reason, 'partial_history_commit');
 });
 
-test('the collector stops at the complete terminal line instead of following later turns', async () => {
+test('the collector stops at the target terminal fact instead of following later turns', async () => {
   let reads = 0;
   const source = { id: 'session-one', async *stream() {
     for (const row of history()) { reads++; yield row; }
@@ -164,6 +164,41 @@ test('the collector stops at the complete terminal line instead of following lat
   } };
   assert.equal((await collectTurn(source, turnId)).complete, true);
   assert.equal(reads, 8);
+});
+
+test('a full durable commit and its pending prefix normalize identically through target settlement', async () => {
+  const prefix = history();
+  prefix.at(-1).meta.endOfLine = false;
+  const housekeeping = record('delivery.settled', { deliveryId: 'delivery-one', outcome: 'handled', turnId }, 7);
+  housekeeping.meta.position.index = 1;
+  const full = [...prefix, housekeeping];
+  let reads = 0;
+  const durable = { id: 'session-one', async *stream() { for (const event of full) { reads++; yield event; } } };
+  const fromDurable = await collectTurn(durable, turnId);
+  const fromPending = await collectTurn(reader(prefix), turnId);
+  assert.equal(fromDurable.complete, true);
+  assert.equal(fromDurable.settled, true);
+  assert.deepEqual(fromDurable, fromPending);
+  assert.equal(reads, prefix.length, 'trailing housekeeping is not part of the retry payload');
+  assert.equal(prefix.at(-1).meta.endOfLine, false, 'normalizing the finite prefix leaves source metadata intact');
+});
+
+test('a prior partial commit remains incomplete even when the terminal fact is present', async () => {
+  const rows = history();
+  rows.at(-2).meta.endOfLine = false;
+  rows.at(-1).meta.endOfLine = false;
+  const result = await collectTurn(reader(rows), turnId);
+  assert.equal(result.complete, false);
+  assert.equal(result.reason, 'history_gap');
+});
+
+test('a gap at the terminal fact is never repaired by its finite-prefix exception', async () => {
+  const rows = history();
+  rows.at(-1).meta.position.index = 2;
+  rows.at(-1).meta.endOfLine = false;
+  const result = await collectTurn(reader(rows), turnId);
+  assert.equal(result.complete, false);
+  assert.equal(result.reason, 'history_gap');
 });
 
 test('oversized history is rejected before it is folded or uploaded', async () => {

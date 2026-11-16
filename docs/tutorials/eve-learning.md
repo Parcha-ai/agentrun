@@ -40,7 +40,7 @@ For each supported turn:
 
 1. Before the first ordinary model call, the extension registers one AgentRun run and pins its accepted notes and skills.
 2. Dynamic instructions add that pinned learning while eve continues with its original tools and execution.
-3. After eve commits the settled turn, the extension reads its durable evidence and reports the outcome to AgentRun.
+3. When eve records the settled turn, the extension combines durable history with its bounded private hook-event buffer and reports the outcome to AgentRun. This handles eve flushing a step only after its hooks finish.
 4. AgentRun reflects and independently checks the proposed lesson. Approved notes and skills become eligible for a later turn; proposals needing review stay pending.
 
 Wait for the recorded run's learning result before starting a test that must use its latest lesson. The eve answer can finish before checking does. An accepted revision on the next run proves delivery; a successful task alone does not prove the agent used it. The example also checks changed tool data and an Off control.

@@ -28,7 +28,7 @@ export async function collectTurn(reader: SessionReader, turnId: string, startIn
   void timeout.catch(() => undefined);
   const timer = setTimeout(() => controller.abort(), READ_MS);
   let iterator: AsyncIterator<ReaderEvent> | undefined;
-  let bytes = 0, readCount = 0, stopLine: number | undefined, reason: string | undefined;
+  let bytes = 0, readCount = 0, reason: string | undefined;
   let expectedLine = startIndex, lastLine = -1, lastIndex = -1;
   const incomplete = (why: string) => { reason ??= why; };
   try {
@@ -55,10 +55,12 @@ export async function collectTurn(reader: SessionReader, turnId: string, startIn
         incomplete('history_gap');
       if (line !== lastLine && records.at(-1)?.meta.endOfLine === false) incomplete('partial_history_commit');
       lastLine = line; lastIndex = index;
-      records.push(event);
+      const terminal = event.type === 'turn.settled' && event.data.turnId === turnId;
+      // Eve closes model/tool work before turn.settled; delivery housekeeping can follow on this same
+      // line. Fold that finite turn prefix without waiting for housekeeping or changing the source fact.
+      records.push(terminal ? { ...event, meta: { ...event.meta, endOfLine: true } } : event);
       expectedLine = event.meta.endOfLine === false ? line : Math.max(line + 1, event.meta.next ?? line + 1);
-      if (event.type === 'turn.settled' && event.data.turnId === turnId) stopLine = event.meta.position.line;
-      if (stopLine === event.meta.position.line && event.meta.endOfLine !== false) break;
+      if (terminal) break;
     }
   } catch {
     return unavailable(controller.signal.aborted ? 'history_timeout' : 'history_unavailable');

@@ -1,13 +1,40 @@
-import { defineHook } from 'eve/hooks';
+import { defineHook, type HookContext, type HookEvent } from 'eve/hooks';
+import { position } from 'eve/events';
 import { reconcile } from '../lib/runtime.js';
+import { learningState, pendingEvidence } from '../lib/state.js';
+import { emptyPendingEvidence, recordHookEvent } from '../lib/pending-evidence.js';
 
-export default defineHook({ events: {
-  async 'turn.settled'() {
-    try { await reconcile(); }
+async function recorded(event: HookEvent, ctx: Pick<HookContext, 'position' | 'now' | 'view'>) {
+  try {
+    pendingEvidence.update(state => recordHookEvent(state, event, ctx.position, {
+      at: ctx.now.toISOString(), committedThrough: position(ctx.view),
+    }));
+  } catch {
+    // A missing hook position cannot silently become complete evidence: the finite merge
+    // checks coverage, and a later retry can repair it from the flushed native stream.
+    console.warn('AgentRun could not retain this eve event. Completion will wait for recorded history.');
+    return;
+  }
+  if (event.type === 'turn.settled') {
+    try {
+      await reconcile();
+      if (learningState.get().turns.some(row => row.source.turnId === event.data.turnId && row.submitted)) {
+        pendingEvidence.update(emptyPendingEvidence);
+      }
+    }
     catch {
       // Never replace the user's successful native result with a telemetry failure. The pending receipt stays
       // in eve state for retry; AgentRun will not learn until complete evidence has actually been delivered.
       console.warn('AgentRun learning delivery is pending. It will retry on the next turn in this eve session; an abandoned receipt expires without learning.');
     }
-  },
+  }
+}
+
+export default defineHook({ events: {
+  '*': recorded,
+  // Wildcard subscriptions exclude progress. Keep their factual positions too, so a
+  // missing callback is distinguishable from an intentionally omitted model/tool payload.
+  'content.delta': recorded,
+  'call.input': recorded,
+  'call.progress': recorded,
 } });

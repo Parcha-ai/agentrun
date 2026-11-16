@@ -2,7 +2,8 @@ import type { DynamicContext } from 'eve';
 import { AgentRun, AgentRunRefused, AgentRunUsage } from '@parcha/agentrun-client';
 import extension from '../extension.js';
 import { beginTurn, learningInstructions, submitTurn, type TurnRecord } from './lifecycle.js';
-import { learningState } from './state.js';
+import { learningState, pendingEvidence } from './state.js';
+import { withPendingEvidence } from './pending-evidence.js';
 
 /** Retry pending completion on the next admission in this session. No model/tool call is repeated here.
  * A session that never resumes is not a background outbox: its AgentRun receipt eventually expires. */
@@ -15,7 +16,7 @@ export async function reconcile(): Promise<void> {
       continue;
     }
     try {
-      if (await submitTurn(extension.config, record, sessions.attach(record.source.sessionId))) {
+      if (await submitTurn(extension.config, record, withPendingEvidence(sessions.attach(record.source.sessionId), pendingEvidence.get()))) {
         learningState.update(state => ({ turns: state.turns.map(row => row.receipt.run_id === record.receipt.run_id ? { ...row, submitted: true } : row) }));
       }
     } catch (error) {
