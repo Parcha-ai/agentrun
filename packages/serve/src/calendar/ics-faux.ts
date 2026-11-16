@@ -184,7 +184,7 @@ export const hourlyCalendar = (name = "Busy") => icsLines([
 export type IcsRequest = { path: string; status: number; ifNoneMatch?: string; ifModifiedSince?: string };
 
 export type IcsFaux = {
-  /** Where it listens: http://127.0.0.1:<port>. */
+  /** Where it listens: on loopback, at the port it was given (else one free). */
   readonly origin: string;
   /** Its own calendar's address: a secret-looking path, as a provider's private address is. */
   readonly address: string;
@@ -241,8 +241,9 @@ export async function startIcsFaux(options: { port?: number; text?: string } = {
     return done(200, { ...headers, "content-type": "text/calendar; charset=utf-8" }, held.text);
   };
   const server = createServer(answer);
-  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(options.port ?? 0, "127.0.0.1", () => resolve())); // key-gate: loopback-rule the fake calendar listens on loopback only
-  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`; // key-gate: loopback-rule the fake calendar is reached on loopback only
+  const host = "127.0.0.1";
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(options.port ?? 0, host, () => resolve()));
+  const origin = `http://${host}:${(server.address() as AddressInfo).port}`;
   return {
     origin,
     address: `${origin}${secret}`,
