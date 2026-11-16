@@ -20,8 +20,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { fileURLToPath } from "node:url";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type HelloResult, MAX_LINE_BYTES, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
 import { type WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { peerKey } from "./owner.js";
@@ -80,12 +79,10 @@ export const newAttachToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes
 /** A new hosted machine's token: ATTACH_TOKEN_PREFIX and 32 random bytes in hex, which goes in the machine's env. */
 export const newMintedToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes(32).toString("hex")}`;
 
-/** The computerd builds a minted machine fetches (GET /v2/computers/daemon?arch=). */
-export const DAEMON_ARCHES: readonly string[] = ["amd64", "arm64"];
-
-/** This server's computerd build for `arch`: the file a hosted provider uploads by default, so the daemon route serves
- *  the bytes whose SHA-256 the provider puts in the machine's env. */
-export const daemonPathOf = (arch: string): string => fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.resolve("@parcha/agentrun-computer")));
+/** The computerd builds a minted machine fetches (GET /v2/computers/daemon?arch=), each at hostedDaemonPath: the file a
+ *  hosted provider uploads by default, so the route serves the bytes whose SHA-256 the provider puts in the machine's env. */
+const DAEMON_ARCHES = ["amd64", "arm64"] as const;
+const isDaemonArch = (arch: string | null): arch is (typeof DAEMON_ARCHES)[number] => (DAEMON_ARCHES as readonly (string | null)[]).includes(arch);
 
 /** `reason` cut to what a close frame holds (123 bytes of UTF-8), never inside a character. */
 export function closeReason(reason: string): string {
@@ -283,18 +280,12 @@ export function attachSocketOf(ws: WebSocket, timing: AttachTiming = { heartbeat
   };
 }
 
-/** What a dial provider's create mints a machine's token for (computer package MachineTokens): its kind, os and arch
- *  as its hello must say them, and when the token ends (its backstop). */
-export type MintFor = { readonly kind: string; readonly os: string; readonly arch: string; readonly expiresAt: string | number | Date };
-
 export interface AttachRoutesOptions {
   readonly store: { readonly pairedComputers: PairedComputers; readonly mintedTokens: MintedTokens };
   readonly hub: AttachHub;
   /** Told each event worth a line: a computer paired, attached, refused at its hello, removed; a machine's token minted
    *  or revoked. Never a code or a token, nor a token's hash. */
   readonly log?: (event: string, fields: Record<string, string>) => void;
-  /** This server's computerd build for an arch (daemonPathOf unless a test gives its own). */
-  readonly daemonPath?: (arch: string) => string;
   /** The socket's liveness timing: the protocol's unless a test gives its own. */
   readonly timing?: AttachTiming;
   readonly now?: () => number;
@@ -317,7 +308,7 @@ const machineGone = (machine: string): string => `${machine} was deleted: its to
 /** The pairing routes, the attach socket and the daemon route over one store and one hub, and the tokens a dial
  *  provider mints. */
 export function createAttachRoutes(options: AttachRoutesOptions) {
-  const { store, hub, log = () => {}, now = Date.now, daemonPath = daemonPathOf } = options;
+  const { store, hub, log = () => {}, now = Date.now } = options;
   const paired = store.pairedComputers;
   const minted = store.mintedTokens;
   const tries = pairTries(now);
@@ -364,16 +355,16 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   /** A dial provider's tokens (computer package MachineTokens): a new one per create, kept as its SHA-256 by the machine
    *  (its name, from its create's request id) until `expiresAt` (its backstop); a revoke (its delete) ends it and closes
    *  its socket with 4401. */
-  const machineTokens = {
-    async mint(machine: string, { kind, os, arch, expiresAt }: MintFor): Promise<string> {
-      const until = new Date(expiresAt).getTime();
+  const machineTokens: MachineTokens = {
+    async mint(machine, { kind, os, arch, expiresAt }) {
+      const until = expiresAt.getTime();
       if (!Number.isFinite(until)) throw new TypeError(`a machine token's expiresAt is a time, not ${JSON.stringify(expiresAt)}`);
       const token = newMintedToken();
       await minted.mint({ machine, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until });
       log("machine_token_minted", { machine, kind, os, arch, expires_at: new Date(until).toISOString() });
       return token;
     },
-    async revoke(machine: string): Promise<void> {
+    async revoke(machine) {
       await minted.revoke(machine);
       hub.revoke(machine, machineGone(machine));
       log("machine_token_revoked", { machine });
@@ -393,7 +384,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     seen: (hello) => paired.seen(row.id, hello as unknown as Record<string, unknown>),
   });
   const machineDialer = (row: MintedTokenRow): Dialer => ({
-    computer: { id: row.machine, name: row.machine, hello: { kind: row.kind, os: row.os, arch: row.arch } as HelloResult, labels: {} },
+    computer: mintedComputer(row.machine, { kind: row.kind as ComputerKind, os: row.os as ComputerOs, arch: row.arch }),
     field: "machine",
     event: "machine",
     gone: machineGone(row.machine),
@@ -415,8 +406,8 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     if (machine === undefined) throw new ApiError("unauthenticated", MACHINE_TOKEN_REFUSED, {}, { "www-authenticate": "Bearer" });
     const allowed = fetches.allow(machine.machine);
     if (!allowed.ok) throw limited("too many daemon fetches with this machine's token", allowed.retryAfterMs);
-    if (arch === null || !DAEMON_ARCHES.includes(arch)) throw invalid([{ field: "arch", reason: "invalid", message: `arch is the machine's, ${DAEMON_ARCHES.join(" or ")}` }]);
-    return daemonPath(arch);
+    if (!isDaemonArch(arch)) throw invalid([{ field: "arch", reason: "invalid", message: `arch is the machine's, ${DAEMON_ARCHES.join(" or ")}` }]);
+    return hostedDaemonPath(arch);
   }
 
   /** GET /v2/computers/attach's upgrade: the token's paired computer or minted machine, then the protocol, then the hub's

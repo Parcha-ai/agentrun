@@ -48,7 +48,7 @@ function dial(server, token) {
 /** GET /v2/computers/daemon with `token`. */
 const fetchDaemon = (server, token, arch = "amd64") => fetch(`${server.baseUrl}/computers/daemon?arch=${arch}`, { headers: token === undefined ? {} : { authorization: `Bearer ${token}` } });
 
-test("a minted token: kept as its SHA-256, it dials the attach socket as its machine; a hello of another kind is 4400; unknown, expired and revoked tokens are 401, and a revoke closes the live socket with 4401", async (t) => {
+test("a minted token: kept as its SHA-256, it dials the attach socket as its machine; a hello of another kind or arch is 4400; unknown, expired and revoked tokens are 401, and a revoke closes the live socket with 4401", async (t) => {
   const lines = [];
   const server = await serve(t, { runner: false, log: (line) => lines.push(line) });
   assert.equal(server.dial.hub, server.attachHub, "a dial provider's machines land in the server's hub");
@@ -77,6 +77,14 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   await until(async () => wrong.stopped, Boolean, "the mismatched machine stops dialing");
   assert.deepEqual(wrong.stopped, { code: 4400 });
   assert.equal(server.attachHub.online("computer-00000000000b"), false);
+  // Minted for another arch: the same.
+  const arm = await server.dial.tokens.mint("computer-00000000000f", { ...MINT, arch: "arm64", expiresAt: inMs(60_000) });
+  const armed = attachDriver({ address, token: arm, scale: 0.01 });
+  t.after(() => armed.stop());
+  armed.start();
+  await until(async () => armed.stopped, Boolean, "the machine of another arch stops dialing");
+  assert.deepEqual(armed.stopped, { code: 4400 });
+  assert.equal(server.attachHub.online("computer-00000000000f"), false);
 
   assert.deepEqual(await dial(server, UNKNOWN), { open: false, status: 401 }, "an unknown token");
   const expiring = await server.dial.tokens.mint("computer-00000000000c", { ...MINT, expiresAt: inMs(200) });
@@ -94,7 +102,7 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
     assert.equal((await fetchDaemon(server, refused)).status, 401, `a daemon fetch with a token ${said}`);
   }
   const logged = lines.join("\n");
-  for (const secret of [token, other, expiring]) {
+  for (const secret of [token, other, arm, expiring]) {
     assert.equal(logged.includes(secret), false, "no log line holds a token");
     assert.equal(logged.includes(sha256(secret)), false, "nor its SHA-256");
   }

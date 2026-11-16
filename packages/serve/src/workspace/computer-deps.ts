@@ -16,7 +16,7 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, type HostedDial, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 // The local container engine's provider, for its check() of the operator's size settings at the start (dockerLimitsOf).
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
@@ -132,17 +132,6 @@ export function dockerVolumeOf(paths: DockerPaths): DockerComputerOptions | unde
 /** The deps computerForClaim takes once per process: all but the claim's own. */
 export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
 
-/** What a dial provider's create takes of the server (HostedProvider's dial): the address its machines dial, the
- *  tokens it mints for them and the hub their sockets land in. */
-export interface ServerDial {
-  readonly url?: string;
-  readonly tokens: {
-    mint(machine: string, mint: { kind: string; os: string; arch: string; expiresAt: Date }): Promise<string>;
-    revoke(machine: string): Promise<void>;
-  };
-  readonly hub: AttachHub;
-}
-
 export interface ComputerDepsOptions {
   /** The server's environment: a provider key named here wins over its saved one; AGENTRUN_DOCKER_IMAGE names Docker's
    *  image. Passed in, never read here. */
@@ -156,7 +145,7 @@ export interface ComputerDepsOptions {
   /** The server's dial (Serve.dial), where this runner shares the server's process: every remote provider's create
    *  takes it, and one whose host dials the server (facts.connect "dial") mints its machine's token there. Absent: a
    *  runner of its own process, where such a provider's create refuses in words. */
-  readonly dial?: ServerDial;
+  readonly dial?: HostedDial;
   /** The server's seal key: absent, no saved key is opened (a key from the environment still is). */
   readonly sealKey: Buffer | undefined;
   /** The kind registry: the computer package's unless given (a test's fixture). */
