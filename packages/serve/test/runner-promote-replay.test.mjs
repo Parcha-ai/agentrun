@@ -11,7 +11,8 @@
 //   - a guard is read at its serving threshold (a replay reads it record-only): an input it would hand back when serving
 //     is no answer alone, and no disagreement of its answer either;
 //   - a replay whose answers differ from the agent's holds the digest: the run after it is the agent's;
-//   - no completed run of the agent's it fits: promoted on its passing dry run, and the record says the check ran on none;
+//   - no completed run of the agent's it fits: never promoted; it stops, its record naming why ("nothing to check it on");
+//   - every reserved input counts: a replay run never created by the check's deadline is a failed input;
 //   - champion/challenger: a promoted digest (the champion) keeps serving while a newer revision of it is checked, and
 //     after that revision's check holds it; the revision serves only once its check promotes it;
 //   - one check at a time, and a running check finishes: a newer revision that comes while another is checked waits,
@@ -298,14 +299,45 @@ test("a check whose answers differ from the agent's holds the digest: the next r
   assert.ok(logs.some((line) => line.includes(`answer at ${DIGEST} held:`)), logs.join("\n"));
 });
 
-test("no completed run of the agent's to check it on: promoted on its passing dry run, and its record says the check ran on none", { timeout: 120_000 }, async (t) => {
+// Review on #3032 (PRRT_kwDOUmdVMs64I-7l): a promotion with no input raced a newer revision's check. There is none now: a
+// draft with nothing to check it on is never promoted. It stops with its cause on the record, and spends no recompile.
+test("nothing to check it on (no completed run of the agent's it takes): never promoted; it stops naming the cause, and later runs check nothing", { timeout: 120_000 }, async (t) => {
   const { server, start, replays } = await world(t, { prior: 0 });
   const first = await start("run-1", "What is six times seven");
-  assert.equal(first.metrics?.path, "workflow", JSON.stringify(first.metrics));
+  assert.equal(first.metrics?.path, "agent", `never served unchecked: ${JSON.stringify(first.metrics)}`);
   assert.deepEqual(await replays(), [], "no replay run");
-  const [record] = await promotionsOf(server.settings, "agent-1");
-  assert.deepEqual({ decided: record.decided, source: record.source, digest: record.digest, n: record.check.n }, { decided: "promote", source: "check", digest: DIGEST, n: 0 });
-  assert.equal(record.reason, "none of the agent's last 20 completed runs has an input it fits, so its check had nothing to run on: promoted on its passing dry run");
+  const [record, ...more] = await promotionsOf(server.settings, "agent-1");
+  assert.deepEqual(more, []);
+  assert.deepEqual({ decided: record.decided, source: record.source, digest: record.digest, n: record.check.n, stopped: record.check.stopped, attempt: record.check.attempt }, { decided: "hold", source: "check", digest: DIGEST, n: 0, stopped: true, attempt: 1 });
+  assert.equal(record.reason, "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
+  const second = await start("run-2", "What is seven times six");
+  assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
+  assert.deepEqual(await promotionsOf(server.settings, "agent-1"), [record], "stopped: no check starts again, nothing is promoted");
+  assert.deepEqual(await replays(), []);
+});
+
+// Review on #3032 (PRRT_kwDOUmdVMs64I-7e): every reserved input counts. The server stopped after creating one of a
+// check's 20 replay runs; past the check's deadline the 19 never created are failed inputs, so the one that agreed is
+// 1 of 20, never 1 of 1.
+test("a check whose launch was interrupted after 1 of its 20 runs, decided past its deadline after a restart: the 19 never created are failed inputs, so it is held, never promoted", { timeout: 180_000 }, async (t) => {
+  const { server, start, replaysEnded, restart, logs } = await world(t);
+  await start("run-1", "What is six times seven");
+  const [made] = await replaysEnded(6);
+  const [reserved] = await promotionsOf(server.settings, "agent-1");
+  assert.equal(reserved.decided, "replaying");
+  // The record as a launch interrupted after its first create left it, an hour and more ago: 20 reserved, 1 created.
+  const at = made.metrics.replay.of;
+  const missing = Array.from({ length: 19 }, (_, i) => `never-created-${i}`);
+  const interrupted = { ...reserved, at: new Date(0).toISOString(), runs: [made.id, ...missing], inputs: [at, ...missing.map((_, i) => PRIORS[i % PRIORS.length])], replay_id: "interrupted", check: { ...reserved.check, compile_after: 20 } };
+  assert.equal((await recordPromotion(server.settings, "agent-1", interrupted, () => true)).won, true);
+  await restart();
+  const second = await start("run-2", "What is seven times six");
+  assert.equal(second.metrics?.path, "agent", `never promoted on the one input that ran: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
+  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", source: "check", n: 20, alone: 1, agreed: 1 }, JSON.stringify(decided));
+  assert.equal(decided.check.disagreements.filter((one) => one.failed).length, 19, "each one never created is a failed input");
+  assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\), and 1 of those said what the agent said \(100\.0%, the bar 80\.0%\) \(19 never started by the check's deadline/);
+  assert.equal(await server.runs.get(missing[0]), undefined, "past its deadline nothing is created for it");
 });
 
 /** One guarded agent step (its own confidence, `self`), its guard at `threshold`. */
@@ -487,7 +519,7 @@ test("a check whose workflow fails on every input (a step failed: a credential o
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
   assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, alone: decided.check.alone, failed: decided.check.outcomes.failed }, { decided: "hold", source: "check", n: 6, alone: 0, failed: 6 });
-  assert.match(decided.reason, /answered 0 alone .*\(6 failed: a step failed\): held/);
+  assert.match(decided.reason, /answered 0 alone .*\(6 failed: a step failed, or it was still at work at the check's deadline\): held/);
 });
 
 test("a replay run its claim cannot lay at its digest ends failed: the agent is never asked", { timeout: 120_000 }, async (t) => {

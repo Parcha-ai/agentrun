@@ -174,6 +174,8 @@ import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
+import { addressForms, openCalendar } from "./calendar/address.js";
+import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
@@ -577,6 +579,11 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/email$/, name: "saveEmailAccount" },
   { method: "DELETE", pattern: /^\/settings\/email$/, name: "deleteEmailAccount" },
   { method: "POST", pattern: /^\/settings\/email\/test$/, name: "testEmailAccount" },
+  // The server's calendar (calendar/routes.ts): the owner's session's alone, its address in no answer.
+  { method: "GET", pattern: /^\/settings\/calendar$/, name: "getCalendar" },
+  { method: "PUT", pattern: /^\/settings\/calendar$/, name: "saveCalendar" },
+  { method: "DELETE", pattern: /^\/settings\/calendar$/, name: "deleteCalendar" },
+  { method: "POST", pattern: /^\/settings\/calendar\/test$/, name: "testCalendar" },
   { method: "GET", pattern: /^\/settings\/chatgpt$/, name: "getChatGPTSignIn" },
   { method: "DELETE", pattern: /^\/settings\/chatgpt$/, name: "signOutChatGPT" },
   { method: "POST", pattern: /^\/settings\/chatgpt\/sign-in$/, name: "startChatGPTSignIn" },
@@ -1375,6 +1382,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   await heldEmailPassword();
   secretStores.add("email", () => [...emailPasswords]);
+  // The calendar's iCal address (calendar/address.ts), in each of its forms, and each one saved since this server started:
+  // the address reads the calendar, so it is cut from everything the server shows, as a password is.
+  const calendarAddresses = new Set<string>();
+  const heldCalendar = async () => {
+    const url = (await openCalendar(store, sealKey).catch(() => undefined))?.url;
+    if (url) for (const form of addressForms(url)) calendarAddresses.add(form);
+  };
+  await heldCalendar();
+  secretStores.add("calendar", () => [...calendarAddresses]);
   // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
@@ -3819,6 +3835,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (found.name === "saveEmailAccount" && stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the account was not saved.");
         const answer = await emailRoute({ store, sealKey }, found.name, body);
         if (found.name === "saveEmailAccount") await heldEmailPassword();
+        if (answer === undefined) return void res.writeHead(204, { "cache-control": "no-store" }).end();
+        return send(res, 200, answer, { "cache-control": "no-store" });
+      }
+      // Never through `idempotent` either: its record keeps the body, and the body holds the calendar's address. A read
+      // reaches loopback only on a local install (its fakes), and a private host only where the owner allows it.
+      case "getCalendar":
+      case "saveCalendar":
+      case "deleteCalendar":
+      case "testCalendar": {
+        const body = found.name === "saveCalendar" || found.name === "testCalendar" ? await bodyOf(req) : undefined;
+        if (found.name === "saveCalendar" && stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the calendar was not saved.");
+        // The MCP servers' network and reach (mcp-oauth.ts calendarAt is mcpServerAt's rule), and their stop with the server's.
+        const outbound = await mcpServers.outboundReach();
+        const answer = await calendarRoute({ store, sealKey, reach: async () => outbound.reach, network: outbound.network, signal: AbortSignal.any([outbound.signal, stopping.signal]) }, found.name, body);
+        if (found.name === "saveCalendar") await heldCalendar();
         if (answer === undefined) return void res.writeHead(204, { "cache-control": "no-store" }).end();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }

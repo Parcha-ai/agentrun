@@ -6,7 +6,7 @@
 // Aggregates and the checks' own words only: no input, no answer.
 import { FINAL_STATES, type Store } from "../store/store.js";
 import type { GuardRow } from "../learned-nodes.js";
-import { GRADES_KEPT, gradesOf, promotionsOf } from "../learn/promote.js";
+import { GRADES_KEPT, gradesOf, promotionOf, promotionsOf } from "../learn/promote.js";
 import { promotedOf } from "../learn/compile.js";
 import { roundsOf } from "./learning.js";
 
@@ -136,9 +136,13 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
       if (!named && !errors.length) continue;
       const attempts = Array.isArray(named?.attempts) ? named.attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
       const kept16 = typeof named?.digest === "string" && /^[0-9a-f]{16}$/.test(named.digest) ? named.digest : null;
+      // A draft its check had nothing to run on stopped (runner/promotion.ts stopUnchecked): its record's reason is one
+      // of the draft's errors, never silent.
+      const own = named && kept16 ? promotionOf(promotions, named.workflow as string, kept16) : undefined;
+      const unchecked = own?.decided === "hold" && own.source === "check" && own.check?.stopped && own.check.n === 0 ? [own.reason] : [];
       compiles.push({
         createdAt: kept.createdAt, run_id: run.id, round: kept.round, at: new Date(kept.createdAt).toISOString(), workflow: named ? (named.workflow as string) : null, from_notes: texts(named?.from_notes), attempts,
-        digest: kept16, promoted: named && kept16 ? (promotedOf(promotions, named.workflow as string, kept16) ?? null) : null, draft_errors: errors,
+        digest: kept16, promoted: named && kept16 ? (promotedOf(promotions, named.workflow as string, kept16) ?? null) : null, draft_errors: [...errors, ...unchecked],
       });
     }
   }

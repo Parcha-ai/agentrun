@@ -38,6 +38,9 @@ import "./mcp-secret-writes.js";
 // The email account's routes (email/routes.ts), each marked x-agentrun-secret whole, registered with the one gate as it
 // loads: the view among them, so the API token never reads the account.
 import "./email/routes.js";
+// The calendar's routes (calendar/routes.ts), each marked x-agentrun-secret whole, registered the same way: the view
+// among them, so the API token never reads which calendar is saved.
+import "./calendar/routes.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
@@ -247,6 +250,20 @@ const EMAIL_ACCOUNT_BODY = {
 };
 /** One half of an email account test. */
 const MAIL_CHECK = closed({ ok: { type: "boolean" }, message: { type: "string", description: "In plain words: \"Signed in to <host>.\", with INBOX's count for IMAP, or why not." } });
+/** GET and PUT /settings/calendar's answer (calendar/address.ts calendarView): the calendar, never its address. */
+const CALENDAR_VIEW = closed({
+  configured: { type: "boolean", description: "A calendar is saved and its address opens with this server's seal key: calendar_events reads it." },
+  host: { type: ["string", "null"], description: "The host its address reads from (calendar.google.com), never the address." },
+  name: { type: ["string", "null"], description: "The calendar's own name (its X-WR-CALNAME), as the save read it; null when that read failed or it has none." },
+  time_zone: { type: ["string", "null"], description: "The calendar's own time zone (its X-WR-TIMEZONE, else the server's), as the save read it; null when that read failed." },
+}, "The server's one calendar, never its iCal address.");
+/** PUT /settings/calendar's and POST /settings/calendar/test's body: the calendar's iCal address. */
+const CALENDAR_BODY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    url: { type: "string", minLength: 1, maxLength: 2048, "x-agentrun-secret": true, description: "The calendar's secret iCal address (https://… or webcal://…, read as https://): Google Calendar's \"Secret address in iCal format\", Outlook's ICS link, iCloud's public calendar link. Sealed, never answered or shown again." },
+  },
+};
 /** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
 const CHATGPT_SIGN_IN = {
   type: "object", additionalProperties: false, required: ["state"],
@@ -1349,15 +1366,15 @@ const PROMOTION = closedWith({
     alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
     attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
   }, {
-    n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none). 0 with nothing to run on: promoted on its passing dry run." },
+    n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
     agreed: { ...COUNT, description: "How many of them it answered alone with the agent's recorded answer." },
     alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min` and `agreed`/`alone` >= `agree_min`." },
     of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
     cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
     outcomes: REPLAY_OUTCOMES,
     skipped_tools: SKIPPED_TOOLS,
-    disagreements: { type: "array", items: closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline." } }), description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
-    stopped: { const: true, description: "The recompile's check held it too: nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
+    disagreements: { type: "array", items: closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." } }), description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
+    stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
   }),
   replay: { ...closedWith(REPLAY_SCORE, { of: { type: "array", items: { type: "string" }, description: "The graded runs replayed." }, cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." }, skipped_tools: SKIPPED_TOOLS, outcomes: REPLAY_OUTCOMES }), description: "The numbers it was decided on. A replay runs each read live (through a cache seeded from the graded run's recorded calls) and answers each write from that recording, never sending one." },
   runs: { type: "array", items: { type: "string" }, description: "Its replay runs (path `replay`)." },
@@ -1472,7 +1489,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
           attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" } } }), description: "Each attempt in order: whether its checks and dry run passed, and what they refused." },
           digest: { ...NULL_STRING, description: "The kept draft's digest; null when none passed." },
           promoted: { type: ["boolean", "null"], description: "Whether that revision was promoted, as its records say now: true promoted (or a refit of it was), false held or skipped, null queued, undecided or none passed. It may no longer serve: the promotions read's \`serving\` says which revision does." },
-          draft_errors: { type: "array", items: { type: "string" }, description: "A draft that never passed: its last errors. Empty when one passed." },
+          draft_errors: { type: "array", items: { type: "string" }, description: "A draft that never passed: its last errors. A draft its check had nothing to run on (its promotion `check.stopped` with `n` 0): its record's reason, starting \"nothing to check it on\". Empty otherwise." },
           withheld: { type: "boolean", description: "The run's handed values can't be read here: its error texts are left out (the counts stand)." },
         }), description: "Newest first." },
         guards: { type: "array", items: closed({
@@ -2235,6 +2252,44 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: false, content: { "application/json": { schema: EMAIL_ACCOUNT_BODY } } },
       responses: { "200": json(closed({ ok: { type: "boolean", description: "Both signed in." }, imap: MAIL_CHECK, smtp: MAIL_CHECK }), "The test's answer."), ...errors(400, 401, 403, 415, 422, 429, 500) },
       "x-agentrun-serve": "email/1",
+    },
+  },
+  "/settings/calendar": {
+    get: {
+      operationId: "getCalendar", tags: ["local"], summary: "This server's calendar: its host, name and time zone, never its address",
+      description: "The one calendar calendar_events reads. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CALENDAR_VIEW, "The calendar."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    put: {
+      operationId: "saveCalendar", tags: ["local"], summary: "Save this server's calendar, its iCal address sealed",
+      description: "Replaces the calendar. The address is https (webcal:// is read as https://; plain http, another scheme, or a user and password in it is refused in words), sealed under the server's seal key, and in no answer, event, log line or run input. The calendar is read once for its own name and time zone; a read that fails saves the address all the same (name and time_zone null): POST /settings/calendar/test says why. 422 by field for a body that does not read. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { ...CALENDAR_BODY, required: ["url"] } } } },
+      responses: { "200": json(CALENDAR_VIEW, "Saved."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    delete: {
+      operationId: "deleteCalendar", tags: ["local"], summary: "Forget this server's calendar",
+      description: "Removes the calendar and its sealed address. calendar_events then answers that no calendar is saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+  },
+  "/settings/calendar/test": {
+    post: {
+      operationId: "testCalendar", tags: ["local"], summary: "Read the calendar and say what it holds",
+      description: "Reads the saved calendar with an empty body, or the address in the body (saved nowhere), as calendar_events reads it (https only; a private address refused unless its host is allowed in Settings → MCP servers; 10 MB, 20 s, 5 redirects), and answers in words: \"Work: 214 events, time zone America/New_York, next: Standup, Mon Nov 17 09:30\" (its name, its events and series, its time zone, and its next event in the next 62 days), or why it couldn't be read, never the address. 422 for a body that does not read, or an empty body with no calendar saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: false, content: { "application/json": { schema: CALENDAR_BODY } } },
+      responses: { "200": json(closed({ ok: { type: "boolean", description: "The calendar was read." }, message: { type: "string", description: "In plain words: what it holds, or why it couldn't be read." } }), "The test's answer."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
     },
   },
   "/settings/chatgpt": {

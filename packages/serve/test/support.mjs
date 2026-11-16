@@ -64,6 +64,9 @@ export const SECRET_WRITE_PATHS = [
   // The server's email account (email/routes.ts): its read, its save and removal, and its connection test.
   { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/email$/ },
   { methods: ["POST"], path: /^\/settings\/email\/test$/ },
+  // The server's calendar (calendar/routes.ts): its read, its save and removal, and its test.
+  { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/calendar$/ },
+  { methods: ["POST"], path: /^\/settings\/calendar\/test$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });

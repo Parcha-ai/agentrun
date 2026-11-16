@@ -28,6 +28,7 @@ export const TOOL_LIST: Readonly<Record<string, ToolRow>> = Object.freeze({
   email_draft: { table: true, askable: true, replay: "never", host: true, blurb: "Save an email draft" },
   email_send: { table: true, askable: true, replay: "never", host: true, asks: true, blurb: "Send an email" },
   email_file: { table: true, askable: true, replay: "never", host: true, blurb: "File an email under a folder or label" },
+  calendar_events: { table: true, askable: true, replay: "safe", host: true, blurb: "Read the calendar's events" },
   browser: { table: true, blurb: "Browse websites in a hosted browser" },
   subagent: { table: true, blurb: "Run a task in a fresh helper conversation" },
   pdf_pages: { table: true, blurb: "Turn a PDF's pages into images" },

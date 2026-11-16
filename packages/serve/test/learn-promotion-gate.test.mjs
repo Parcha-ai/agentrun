@@ -127,7 +127,9 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
     settings,
     runs: {
       get: async (id) => rows.get(id),
-      list: async () => [...rows.values()].reverse().map((row) => ({ agentId: "a", outcome: null, importedFrom: null, ...row })),
+      // Newest first, filtered and limited as the store's list is.
+      list: async ({ state, archived, limit } = {}) => [...rows.values()].reverse().map((row) => ({ agentId: "a", outcome: null, importedFrom: null, ...row }))
+        .filter((row) => (state === undefined || row.state === state) && (archived === undefined || ((row.archivedAt ?? null) !== null) === archived)).slice(0, limit),
       launch: async (id) => (launches.has(id) ? { runId: id, body: launchBody(launches.get(id)), sealed: null } : Promise.reject(new Error(`no run ${id}`))),
       // A run id is the row's key: a second create under it is refused, as the store's primary key does. `raced`: ids
       // another claim creates at the same moment, its row written first.
@@ -282,15 +284,17 @@ test("a revision with no record that is not the folder's newest starts no check,
 });
 
 // A check's label is the agent's own recorded answer: a run a learned workflow answered alone (path workflow) has none
-// of the agent's, so it is never a check input. With only those, the check has nothing to run on: its passing dry run
-// promotes it, its record saying the check ran on none; with the agent's own runs, each is an input.
+// of the agent's, so it is never a check input. With only those, the check has nothing to run on: it is never promoted
+// unchecked (review on #3032: the no-input promotion raced a newer revision's check), it stops, its record naming why;
+// with the agent's own runs, each is an input.
 test("runs a workflow answered alone are no check input; the agent's own completed runs each get a check run", async () => {
   const text = flowOf(undefined);
   const digest = workflowDigest({ workflow: text });
   const served = await replayStoreOf({ path: "workflow" });
-  assert.equal((await served.gateOf()({ name: "answer", workflow: text }, digest))?.workflow?.workflow, text, "nothing to check it on: it serves on its dry run");
-  const promoted = (await promotionsOf(served.settings, "a")).at(-1);
-  assert.deepEqual([promoted.decided, promoted.source, promoted.check?.n, served.created], ["promote", "check", 0, []], `${JSON.stringify(promoted)}\n${served.logs.join("\n")}`);
+  assert.equal(await served.gateOf()({ name: "answer", workflow: text }, digest), undefined, "nothing to check it on: it never serves");
+  const stopped = (await promotionsOf(served.settings, "a")).at(-1);
+  assert.deepEqual([stopped.decided, stopped.source, stopped.check?.n, stopped.check?.stopped, served.created], ["hold", "check", 0, true, []], `${JSON.stringify(stopped)}\n${served.logs.join("\n")}`);
+  assert.equal(stopped.reason, "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
   const { settings, created, logs, gateOf } = await replayStoreOf({ path: "agent" });
   assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined, "it does not serve while it is checked");
   const record = (await promotionsOf(settings, "a")).at(-1);
@@ -320,6 +324,23 @@ test("a check picks the inputs of the agent's last compile_after completed runs,
   assert.equal(record.reason, "checking it on 9 inputs of the agent's last 10 completed runs against its own answers");
   assert.deepEqual(record.check, { compile_after: 10, agree_min: 0.8, alone_min: 0.7, attempt: 1 }, "the bar its definition says now");
   assert.equal(record.held_on, undefined, "a check owes nothing");
+});
+
+// Review on #3032 (PRRT_kwDOUmdVMs64I-7V): the agent's own runs are picked before anything limits the read. After more
+// served runs than one page of the agent's runs holds, the agent's answers are still the check's inputs: never pushed out
+// of the window (which would leave the check nothing to run on, though the agent's runs are there).
+test("after 250 runs its workflow served, a check still finds the agent's last compile_after runs as its inputs", async () => {
+  const text = flowOf(undefined);
+  const digest = workflowDigest({ workflow: text });
+  const { settings, logs, gateOf, rows, launches } = await replayStoreOf({ graded: 8, learning: { compile_after: 5 } });
+  for (let i = 0; i < 250; i++) {
+    rows.set(`served-${i}`, { id: `served-${i}`, state: "ended", metrics: { path: "workflow", workflow: "answer", workflow_digest: "older" }, archivedAt: null });
+    launches.set(`served-${i}`, { input: { question: `Served ${i}` }, title: `Served ${i}`, place: { mode: "runner" }, learning: LEARNING });
+  }
+  assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined, "it does not serve while it is checked");
+  const record = (await promotionsOf(settings, "a")).at(-1);
+  assert.deepEqual([record.decided, record.source], ["replaying", "check"], `${JSON.stringify(record)}\n${logs.join("\n")}`);
+  assert.deepEqual(record.inputs, ["graded-7", "graded-6", "graded-5", "graded-4", "graded-3"], "the agent's own 5 newest, newest first");
 });
 
 // Review on #2644 (expired replays): a replay decided past REPLAY_DEADLINE_MS with a run still at work cancels that run as

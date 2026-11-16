@@ -379,6 +379,9 @@ export interface components {
         permission?: "allow" | "ask" | "deny";
         scope?: "thread" | "mailbox";
       };
+      calendar_events?: {
+        permission?: "allow" | "ask" | "deny";
+      };
       browser?: {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "deny";
@@ -1964,6 +1967,10 @@ export interface operations {
       } | null;
     };
   };
+  deleteCalendar: {
+    body: never;
+    answer: never;
+  };
   deleteComposioSubscription: {
     body: never;
     answer: {
@@ -2327,6 +2334,15 @@ export interface operations {
       setup_code?: boolean;
       secrets_writable: boolean;
       secrets_reason?: "sign_in" | "no_accounts" | "token";
+    };
+  };
+  getCalendar: {
+    body: never;
+    answer: {
+      configured: boolean;
+      host: string | null;
+      name: string | null;
+      time_zone: string | null;
     };
   };
   getCapabilities: {
@@ -4625,6 +4641,9 @@ export interface operations {
       email_file?: {
         permission?: "allow" | "ask" | "deny";
       };
+      calendar_events?: {
+        permission?: "allow" | "ask" | "deny";
+      };
       browser?: {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "deny";
@@ -5070,6 +5089,17 @@ export interface operations {
       signing_secret?: string;
     };
   };
+  saveCalendar: {
+    body: {
+      url: string;
+    };
+    answer: {
+      configured: boolean;
+      host: string | null;
+      name: string | null;
+      time_zone: string | null;
+    };
+  };
   saveComposioServer: {
     body: {
       api_key: string;
@@ -5425,6 +5455,15 @@ export interface operations {
     answer: {
       hold: "agent" | "pending" | "person";
       outcome?: "done" | "cancelled" | "expired";
+    };
+  };
+  testCalendar: {
+    body: {
+      url?: string;
+    };
+    answer: {
+      ok: boolean;
+      message: string;
     };
   };
   testComputer: {
