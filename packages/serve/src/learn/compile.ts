@@ -81,7 +81,8 @@ export interface CompileTrace {
  *  `reference`: the workflow language as compileReference renders it. `notes`: the agent's active notes, whole.
  *  `traces`: its last runs. `input`: this run's input as it was launched, whose fields a workflow's input takes. `tools`:
  *  those a call node may run, with what each takes and gives (`described`); `judges`: whether the run has a decision
- *  provider (judge, pick and sift nodes are allowed); `jev`: whether one of them is Jev, not denied (guards read it).
+ *  provider (judge, pick and sift nodes are allowed); `jev`: whether one of them is Jev, not denied (no rule reads it
+ *  now that no step takes a guard).
  *  `outputSchema`: the agent's, when it has one: a run serving the workflow serves its answer shaped to it, else hands the
  *  run back (answer-json.ts answerAsServed), so the workflow's final output must be that object. */
 export type CompileAsk = {
@@ -145,22 +146,17 @@ export const compileDue = (facts: { readonly completed: boolean; readonly notes:
 const LEARNED_KINDS = ["chain", "extract", "decide", "agent", "call", "escalate", "map", "parallel", "loop"] as const;
 const JUDGING_KINDS = ["judge", "pick", "sift", "route"] as const;
 
-/** The threshold a compiled step's guard starts at (SPEC: the guard shape), until the host fits one on graded runs. */
-export const GUARD_THRESHOLD = 0.7;
-
-/** The guards a compiled step is asked for (SPEC: the guard shape; Jev by default): with Jev, a judgment step's own
- *  confidence and Jev's read together (`both`: min until a refit fits a logistic), and Jev alone on a step that reports
- *  no confidence (extract, call); without it, the step's own confidence, and no guard where there is none. */
-const guardOf = (signal: "self" | "jev" | "both") => ({ signal, threshold: GUARD_THRESHOLD });
-const guardText = (signal: "self" | "jev" | "both") => `\`"guard": {"signal": "${signal}", "threshold": ${GUARD_THRESHOLD}}\``;
-
 /** The quote check a compiled workflow's answer gets when it quotes fetched pages (check.ts quoteCheckProblems refuses a
- *  draft without it): code, never a judge. */
-const QUOTE_CHECK_RULE = "An answer that quotes pages a call step fetched is checked in code: an escalate on `{\"predicate\": \"quote_missing\", \"path\": \"<the answer's quotes, e.g. answer.evidence>\", \"field\": \"quote\", \"pages\": [<the keys the call steps write>]}`, a step of the top-level chain after the step that writes the answer, hands back an answer quoting text no fetched page holds. Its pages are what the calls fetched, never a model's summary of them. Never ask a judge, an `ask` or a guard whether quotes are verbatim. Give the answer one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `\"maxIters\": 2` and `\"until\": {\"predicate\": \"not\", \"of\": <that same quote_missing>}`, its instructions saying that a draft already in state failed the quote check (recopy each quote exactly from the page it names, or quote another line); the step in the loop has no `state` map, so it reads the whole run state and its second pass sees the failed draft (a `state` map passes only the keys it names, and naming the answer there fails the first pass, before any draft exists); and keep the escalate a step of the top-level chain: the check after the loop, never inside it (a check in its body hands back on the first miss, so the loop never re-picks); only a second miss hands back. The loop's `until` reads one check: keep the answer's quotes in one place one `quote_missing` reads (a quote, a list of quotes or a list of records each holding its quote at one field), never a quote that may be a string or records, nor quotes in two places.";
+ *  draft without it): code, never a judge, and one re-pick whose step reads its failed draft through an optional
+ *  placeholder in its `state` map, never the whole state (compactStateProblems: no page reaches a step off the fast tier). */
+const QUOTE_CHECK_RULE = "An answer that quotes pages a call step fetched is checked in code: an escalate on `{\"predicate\": \"quote_missing\", \"path\": \"<the answer's quotes, e.g. answer.evidence>\", \"field\": \"quote\", \"pages\": [<the keys the call steps write>]}`, a step of the top-level chain after the step that writes the answer, hands back an answer quoting text no fetched page holds. Its pages are what the calls fetched, never a model's summary of them. Never ask a judge or an `ask` whether quotes are verbatim. Give the answer one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `\"maxIters\": 2` and `\"until\": {\"predicate\": \"not\", \"of\": <that same quote_missing>}`; the step in the loop reads the compact facts and its own failed draft through its `state` map, e.g. `{\"facts\": \"{facts}\", \"draft\": \"{answer?}\"}`: the `?` makes the placeholder null on the first pass, before any draft exists, and the failed draft on the second (unmarked, `\"{answer}\"` fails the first pass; with no `state` map the step reads the whole state, pages included), and its instructions say that a draft there failed the quote check (recopy each quote exactly from the facts, or quote another line); keep the escalate a step of the top-level chain: the check after the loop, never inside it (a check in its body hands back on the first miss, so the loop never re-picks); only a second miss hands back. The loop's `until` reads one check: keep the answer's quotes in one place one `quote_missing` reads (a quote, a list of quotes or a list of records each holding its quote at one field), never a quote that may be a string or records, nor quotes in two places.";
+
+/** The compact-state rule (check.ts compactStateProblems): a model step off the fast tier never reads a page. */
+const COMPACT_STATE_RULE = "A model step off the fast tier (no `\"tier\": \"fast\"`: the answering step among them) never reads a page a call step fetched. Give it a `state` map naming only compact keys: the facts a fast-tier extract step wrote from the pages (the verbatim lines the answer will quote among them), the run's own small input fields, and, in a re-pick loop, its own draft as `\"{answer?}\"`. With no `state` map a step reads the whole state, every page in it. Pages reach the agent's model only through a fast-tier step's output.";
 
 /** This host's addendum to the DSL's author contract: the node kinds it runs, and its rules, each one the checks hold a
- *  draft to (learn/skills.ts draftProblems; propose.ts). `jev`: the run can call Jev (one of its decision providers,
- *  not denied), so every step is asked for a guard Jev reads. */
+ *  draft to (learn/skills.ts draftProblems; propose.ts; check.ts; guardProblems). No step takes a guard: code checks and
+ *  escalate steps hand back, so `jev` (whether the run can call Jev) changes no rule. */
 export function learnedHost(options: { readonly tools: readonly string[]; readonly judges: boolean; readonly jev?: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] }): AuthorHostAddendum {
   const { tools, judges } = options;
   if (options.workflowAdapters !== undefined) {
@@ -180,8 +176,6 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
       ],
     };
   }
-  const jev = options.jev === true;
-  const judgment = judges ? "decide, agent, judge, pick and sift" : "decide and agent";
   return {
     name: "AgentRun learned workflow",
     nodeKinds: [...LEARNED_KINDS, ...(judges ? JUDGING_KINDS : [])],
@@ -192,12 +186,11 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
       "A model node (extract, decide, agent) names no `tools`: it runs in a session of its own with none. Fetch with a call node.",
       `An agent node asks at most ${LEARNED_MAX_TURNS} \`max_turns\`, and never \`context: "fork"\`.`,
       "Give each legwork model node `\"tier\": \"fast\"`. The step that writes the answer (`output.path`) names no tier: it runs on the agent's model.",
+      COMPACT_STATE_RULE,
       "`input.schemaId` names a schema whose required fields are the run's own input fields, as a run is given them: then the workflow runs first on later runs, before the agent.",
       "`output.path` is required: the workflow's answer is the value there, the job's answer in the format the runs answered with.",
-      jev
-        ? `Give every ${judgment} step a guard ${guardText("both")}: its own confidence and one Jev check of its output against its input, read together. The step submits its confidence beside its record, so its output schema has no confidence field${judges ? "; a judge, pick or sift step reads its weakest answer" : ""}. Give every extract and call step a guard ${guardText("jev")}: it reports no confidence of its own, so Jev alone checks it. Each threshold starts at ${GUARD_THRESHOLD}; the host refits it on graded runs.`
-        : `Give every ${judgment} step a guard ${guardText("self")}: the step submits its confidence beside its record, so its output schema has no confidence field${judges ? "; a judge, pick or sift step reads its weakest answer" : ""}. This run cannot call Jev: a guard reads \`self\` alone, never \`jev\` or \`both\`, and an extract or call step takes no guard.`,
-      "An escalate step hands back a case the job's own rules send to a person, on a value a step wrote (`field_equals`, `in`); an unsure step is the guard's to hand back, not an escalate's.",
+      "Author no step guard (no `guard` field, no confidence threshold): code checks and escalate steps hand a case back.",
+      "An escalate step hands back a case the job's own rules do not cover, on a value a step wrote (`field_equals`, `in`), or a quote check's second miss.",
       QUOTE_CHECK_RULE,
     ],
   };
@@ -209,39 +202,66 @@ export const compileReference = (dsl: { readonly authorContract: (options: { hos
   dsl.authorContract({ host: learnedHost(options) });
 
 /** The worked example's input, as a run gives it. */
-export const EXAMPLE_INPUT = { content: "Refund request: order 1043, a $42 kettle that arrived broken, bought 9 days ago." } as const;
-/** The worked example: a whole job, input to answer, that the checks and the dry run pass (a test holds it to them).
- *  An extract step reads the facts on the fast tier, a judge asks one typed question of them (with a decision provider),
- *  a decide step answers on the agent's own model (no tier: answerTierProblems), and an escalate step hands back a case the policy does not cover. With Jev (`jev`) each judgment step is
- *  guarded on its own confidence and Jev's (`both`) and the extract step on Jev's; without, the judgment steps on their
- *  own confidence alone. */
-export function compileExample(judges: boolean, jev = false): Record<string, unknown> {
-  const guard = guardOf(jev ? "both" : "self");
-  const facts = jev ? { guard: guardOf("jev") } : {};
+export const EXAMPLE_INPUT = { content: "Is the parser library at https://example.org/parser under a permissive licence?" } as const;
+/** The tool the worked example's call step names: it stands for the tool the agent's runs read pages with. */
+export const EXAMPLE_TOOL = "fetch_page";
+/** The worked example's name. */
+const EXAMPLE_NAME = "licence-check";
+/** The quote check of the worked example's answer: its evidence quotes, against the page its call step fetched. */
+const EXAMPLE_QUOTE_CHECK = { predicate: "quote_missing", path: "answer.evidence", field: "quote", pages: ["page"] } as const;
+
+/** The worked example: the cascade skeleton every repeated job compiles to (H1, H5d: ~$0.08 a run booked against the
+ *  agent's ~$0.89), a whole job, input to answer, that the checks and the dry run pass (a test holds it to them). The
+ *  legwork on the fast tier: an extract step reads the target from the input, a call step fetches its page (`fetches`:
+ *  the run has a tool), an extract step copies compact facts from the page, the verbatim lines the answer will quote among
+ *  them. The answer on the agent's own model (no tier: answerTierProblems) from those facts and its own draft alone, never
+ *  the page (compactStateProblems), in a re-pick loop of 2 until its quotes are in the page (quoteCheckProblems); then the
+ *  quote check hands back a second miss, and an escalate step a case the policy does not cover. No step takes a guard.
+ *  With no tool to fetch with, the facts come from the input and the answer quotes nothing it must check. */
+export function compileExample(fetches = true): Record<string, unknown> {
+  const quote = { type: "object", properties: { url: { type: "string" }, quote: { type: "string" } }, required: ["url", "quote"] };
   const schemas: Record<string, unknown> = {
     Request: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
-    Facts: { type: "object", properties: { item: { type: "string" }, amount_usd: { type: ["number", "null"] }, days_since_purchase: { type: ["number", "null"] }, damaged: { type: "boolean" } }, required: ["item", "amount_usd", "days_since_purchase", "damaged"] },
-    Answer: { type: "object", properties: { decision: { type: "string", enum: ["refund", "replace", "decline", "needs_review"] }, reply: { type: "string" } }, required: ["decision", "reply"] },
-    ...(judges ? { Policy: { type: "object", properties: { within_policy: { type: "boolean", description: "Is this request within a 30-day refund policy for a damaged item?" } }, required: ["within_policy"] } } : {}),
+    ...(fetches ? {
+      Target: { type: "object", properties: { name: { type: "string" }, url: { type: "string" } }, required: ["name", "url"] },
+      Page: { type: "object", properties: { url: { type: "string" }, text: { type: "string" } }, required: ["text"] },
+    } : {}),
+    Facts: { type: "object", properties: { licence: { type: ["string", "null"] }, quotes: { type: "array", items: quote } }, required: ["licence", "quotes"] },
+    Answer: { type: "object", properties: { verdict: { type: "string", enum: ["permissive", "copyleft", "proprietary", "unclear"] }, reason: { type: "string" }, evidence: { type: "array", items: quote } }, required: ["verdict", "reason", "evidence"] },
   };
-  const steps: Record<string, unknown>[] = [
-    { node: "extract", label: "facts", instructions: "Read the request: the item, its price in dollars, how many days ago it was bought, and whether it arrived damaged. Null for what it does not say.", state: { content: "{content}" }, out: "Facts", as: "facts", tier: "fast", ...facts },
-    ...(judges ? [{ node: "judge", label: "policy", state: { facts: "{facts}" }, out: "Policy", as: "policy", guard }] : []),
-    { node: "decide", label: "answer", instructions: "Decide refund, replace or decline by the refund policy, and write the reply to the customer. A request the policy does not cover is needs_review.", state: judges ? { facts: "{facts}", policy: "{policy}" } : { facts: "{facts}" }, out: "Answer", as: "answer", guard },
-    { node: "escalate", label: "review", when: { predicate: "field_equals", path: "answer.decision", value: "needs_review" }, kind: "needs_review", stage: "answer", summary: "The policy does not cover this request: {answer.reply}" },
-  ];
-  return { v: 2, name: "refund-request", schemas, input: { schemaId: "Request" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps } };
+  const answer = (state: Record<string, string>) => ({ node: "decide", label: "answer", instructions: `Say whether the licence the facts name is permissive, copyleft or proprietary, with the reason in one sentence; evidence: 1-3 lines copied exactly from facts.quotes, each with its url. A licence the facts do not settle is unclear.${fetches ? " A draft that is not null failed the quote check: recopy each of its quotes exactly from facts.quotes, or quote another line." : ""}`, state, out: "Answer", as: "answer" });
+  const unclear = { node: "escalate", label: "unclear", when: { predicate: "field_equals", path: "answer.verdict", value: "unclear" }, kind: "needs_review", stage: "answer", summary: "The pages read do not settle the licence: {answer.reason}" };
+  const steps: Record<string, unknown>[] = fetches
+    ? [
+        { node: "extract", label: "target", instructions: "Copy the library's name and the URL the request gives, exactly as written.", state: { content: "{content}" }, out: "Target", as: "target", tier: "fast" },
+        { node: "call", label: "fetch", via: "tool", tool: EXAMPLE_TOOL, args: { url: "{target.url}" }, out: "Page", as: "page", deadline_s: 60 },
+        { node: "extract", label: "facts", instructions: "From the page only: the licence's name, or null; quotes: up to 4 lines naming the licence or its terms, each one unbroken run copied exactly from the page, with the page's url.", state: { target: "{target}", page: "{page}" }, out: "Facts", as: "facts", tier: "fast" },
+        { node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: EXAMPLE_QUOTE_CHECK }, body: answer({ target: "{target}", facts: "{facts}", draft: "{answer?}" }) },
+        { node: "escalate", label: "quotes", when: EXAMPLE_QUOTE_CHECK, kind: "quote_missing", stage: "answer", summary: "An evidence quote for {target.name} is in no page this run read, after one re-pick." },
+        unclear,
+      ]
+    : [
+        { node: "extract", label: "facts", instructions: "From the request only: the licence's name, or null; quotes: up to 4 lines of the request naming the licence or its terms, copied exactly.", state: { content: "{content}" }, out: "Facts", as: "facts", tier: "fast" },
+        answer({ facts: "{facts}" }),
+        unclear,
+      ];
+  return { v: 2, name: EXAMPLE_NAME, schemas, input: { schemaId: "Request" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps } };
 }
 
+/** What the prompt says of the worked example: the cascade's shape, and which of its parts are the job's to fill. */
+const exampleLine = (fetches: boolean): string => fetches
+  ? `The shape to compile to: the legwork on the fast tier (a call step fetches the page, a fast extract step copies compact facts from it, the verbatim lines the answer will quote among them), the answer decided on the agent's model from those facts and its own draft alone, never a page, its quotes checked against the fetched page in code after one re-pick, and a case the policy does not cover handed back. No step takes a guard. Fill in this job's parts from your runs: what to fetch and with which tool (\`${EXAMPLE_TOOL}\` stands for the tool your runs read with: name only the tools listed under This job, with the arguments each takes), which facts to copy, and how to decide.`
+  : "The shape to compile to: the facts read on the fast tier, the answer decided on the agent's model from those facts alone, and a case the policy does not cover handed back. No step takes a guard. Fill in this job's parts from your runs: which facts to copy, and how to decide.";
+
 /** The worked example as an answer block, whole: front matter, then the JSON. */
-const exampleBlock = (judges: boolean, jev: boolean): string => [
-  `\`\`\`\`${WORKFLOW_BLOCK} refund-request`,
+const exampleBlock = (fetches: boolean): string => [
+  `\`\`\`\`${WORKFLOW_BLOCK} ${EXAMPLE_NAME}`,
   "---",
-  "description: Decides a refund request and writes the reply; use when a customer asks for a refund",
+  "description: Says whether a library's licence is permissive, quoting its page; use when asked about a library's licence",
   `example: ${JSON.stringify(EXAMPLE_INPUT)}`,
-  "from_notes: [refund-window.md, damaged-items.md]",
+  "from_notes: [licence-names.md]",
   "---",
-  JSON.stringify(compileExample(judges, jev)),
+  JSON.stringify(compileExample(fetches)),
   "````",
 ].join("\n");
 
@@ -334,7 +354,7 @@ export function compilePrompt(ask: CompileAsk): string {
               "If no change to it would, answer `No change.` and nothing else.",
             ]
           : ask.held
-          ? [`Give \`${ask.workflow}\` again whole under its name, changed so its answers agree with the graded ones: fix the step that gets them wrong, or guard it so it hands those cases back.`]
+          ? [`Give \`${ask.workflow}\` again whole under its name, changed so its answers agree with the graded ones: fix the step that gets them wrong, or hand those cases back at an \`escalate\` step.`]
           : [
               `Give \`${ask.workflow}\` again whole under its name, changed so it finishes more cases like this one alone, or spends less on each, and still hands back what it can't be sure of.`,
               "If it was right to hand this case back and nothing would help, answer `No change.` and nothing else.",
@@ -352,9 +372,9 @@ export function compilePrompt(ask: CompileAsk): string {
     ...(ask.outputSchema !== undefined ? [SHAPE_LINE, "", "```json", JSON.stringify(ask.outputSchema, null, 2), "```", ""] : []),
     "## A worked example",
     "",
-    sdk ? "Syntax only: a delegated tool call, without an implicit model or confidence guard. Replace its arguments and schemas with the actual catalog's and the job's output format; this example grants no capability." : "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + `the answer decided, ${ask.jev ? "each step under a guard Jev reads" : "each judgment under a guard"} that hands back an unsure step, and a case the policy does not cover handed back.`,
+    sdk ? "Syntax only: a delegated tool call, without an implicit model or confidence guard. Replace its arguments and schemas with the actual catalog's and the job's output format; this example grants no capability." : exampleLine(ask.tools.length > 0),
     "",
-    sdk ? (ask.tools.length ? sdkExampleBlock(ask.tools[0]!) : "There is no tool callback to illustrate. Use only the callbacks the backend explicitly registered; if they cannot express this job, keep notes and skills and no workflow.") : exampleBlock(ask.judges, ask.jev === true),
+    sdk ? (ask.tools.length ? sdkExampleBlock(ask.tools[0]!) : "There is no tool callback to illustrate. Use only the callbacks the backend explicitly registered; if they cannot express this job, keep notes and skills and no workflow.") : exampleBlock(ask.tools.length > 0),
     "",
     "## This job",
     "",
@@ -486,12 +506,6 @@ function draftDigestOf(checked: CheckedLike, name: string): string | undefined {
   return typeof file?.text === "string" ? createHash("sha256").update(file.text).digest("hex").slice(0, 16) : undefined;
 }
 
-/** The node kinds whose own confidence a guard reads (they submit one), and those that report none (Jev alone checks
- *  them): learnedHost's rules. */
-const SELF_KINDS: ReadonlySet<string> = new Set(["decide", "agent", "judge", "pick", "sift"]);
-const UNREPORTED_KINDS: ReadonlySet<string> = new Set(["extract", "call"]);
-const guardWords = (signal: "self" | "jev" | "both") => JSON.stringify(guardOf(signal)).replace(/,/g, ", ").replace(/:/g, ": ");
-
 /** Every step of a workflow document's root, depth first (skills.ts childNodes: a chain's steps, a parallel's branches,
  *  a map's or loop's body, a route's bodies, a composed workflow's root), never a literal value (a step's `state`, a
  *  call's `args`) that holds a `node` key. */
@@ -504,32 +518,16 @@ function nodesOf(value: unknown, out: Record<string, unknown>[] = []): Record<st
   return out;
 }
 
-/** What a draft's guards leave out of the ones the compile turn asked for (learnedHost's rules), one line each: a
- *  judgment step with no guard; with Jev, an extract or call step with none, or one reading its own confidence (it
- *  reports none); without Jev, a guard that reads it (it would hand every case back). None when every one is there. */
-export function guardProblems(doc: unknown, options: { readonly jev: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] }): string[] {
-  if (options.workflowAdapters !== undefined) return nodesOf((doc as { root?: unknown } | null)?.root).filter(node => node.guard !== undefined).map(() => "the SDK bridge has no guardStep callback: omit step guards");
-  const own = options.jev ? "both" : "self";
-  const problems: string[] = [];
-  for (const node of nodesOf((doc as { root?: unknown } | null)?.root)) {
-    const kind = node.node as string;
-    if (!SELF_KINDS.has(kind) && !UNREPORTED_KINDS.has(kind)) continue;
-    const step = `the ${kind} step ${JSON.stringify(String(node.label ?? "(no label)").slice(0, 64))}`;
-    const guard = node.guard as { signal?: unknown } | undefined;
-    const signal = guard !== null && typeof guard === "object" ? guard.signal : undefined;
-    if (signal === undefined) {
-      if (SELF_KINDS.has(kind)) problems.push(`${step} has no guard: give it ${guardWords(own)}`);
-      else if (options.jev) problems.push(`${step} has no guard: give it ${guardWords("jev")}`);
-    } else if (!options.jev && (signal === "jev" || signal === "both")) {
-      problems.push(`${step} has a guard that reads ${signal}, and this run cannot call Jev: ${SELF_KINDS.has(kind) ? `give it ${guardWords("self")}` : "an extract or call step takes no guard"}`);
-    } else if (UNREPORTED_KINDS.has(kind) && signal !== "jev") {
-      problems.push(`${step} reports no confidence of its own: its guard reads jev, ${guardWords("jev")}`);
-    }
-  }
-  return problems;
+/** The guards a draft carries, one line each: none is asked for (learnedHost's rules: code checks and escalate steps
+ *  hand back; chain14b's step guards made 0 judgments live and its page and facts guards read at chance), so each is
+ *  refused, the SDK bridge's in its words (it has no guardStep callback). None when no step has one. */
+export function guardProblems(doc: unknown, options: { readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] } = {}): string[] {
+  const guarded = nodesOf((doc as { root?: unknown } | null)?.root).filter((node) => node.guard !== undefined);
+  if (options.workflowAdapters !== undefined) return guarded.map(() => "the SDK bridge has no guardStep callback: omit step guards");
+  return guarded.map((node) => `the ${String(node.node)} step ${JSON.stringify(String(node.label ?? "(no label)").slice(0, 64))} has a guard: author no step guard (drop its "guard"); code checks and escalate steps hand a case back`);
 }
 
-/** The guards draft `name` as the checks kept it (its workflow.json's text in the proposal) leaves out (guardProblems),
+/** The guards draft `name` as the checks kept it (its workflow.json's text in the proposal) carries (guardProblems),
  *  each the checks' way, `guard: ` in front; one problem when its text can't be read. */
 function draftGuardErrorsOf(checked: CheckedLike, name: string, ask: CompileAsk): string[] {
   const file = checked.state === "proposed" ? ((checked.proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).find((one) => one?.file === draftPaths(name)[0]) : undefined;
@@ -539,14 +537,14 @@ function draftGuardErrorsOf(checked: CheckedLike, name: string, ask: CompileAsk)
   } catch {
     return ["guard: its workflow.json as the checks kept it could not be read for its guards"];
   }
-  return guardProblems(doc, { jev: ask.jev === true, ...(ask.workflowAdapters !== undefined ? { workflowAdapters: ask.workflowAdapters } : {}) }).slice(0, ERRORS_MAX).map((problem) => `guard: ${problem}`.slice(0, ERROR_MAX));
+  return guardProblems(doc, ask.workflowAdapters !== undefined ? { workflowAdapters: ask.workflowAdapters } : {}).slice(0, ERRORS_MAX).map((problem) => `guard: ${problem}`.slice(0, ERROR_MAX));
 }
 
 /** The record's workflow when no attempt named one. */
 export const UNNAMED = "(unnamed)";
 
 /** The compile turn, start to end: ask, read, check (`check` over the look-back's answer with the draft in it, then the
- *  guards the turn asked for, guardProblems), and on a refusal ask again with the errors, at most 1 + COMPILE_RETRIES
+ *  guards it must not carry, guardProblems), and on a refusal ask again with the errors, at most 1 + COMPILE_RETRIES
  *  times and within `deadlineMs`. What it ends with: `kept` with the answer and what the checks made of it when an
  *  attempt passed; else none, with every attempt. Notes over NOTES_MAX ask nothing: one attempt says why. */
 export async function compileTurn<C extends CheckedLike>(input: {
@@ -592,7 +590,7 @@ export async function compileTurn<C extends CheckedLike>(input: {
       const answer = withCompiled(input.answer, read.block);
       const checked = await input.check(answer).catch(() => undefined);
       errors = draftErrorsOf(checked, read.name);
-      // The guards the turn asked for, on the draft as the checks kept it: a judgment it runs unguarded never hands back.
+      // No step guard, on the draft as the checks kept it: code checks and escalate steps hand back.
       if (!errors.length && checked) errors = draftGuardErrorsOf(checked, read.name, input.compile);
       if (!errors.length && checked) {
         attempts.push({ ok: true, errors: [] });

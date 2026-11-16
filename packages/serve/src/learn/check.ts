@@ -242,6 +242,102 @@ export function answerTierProblems(doc: unknown): string[] {
   return problems;
 }
 
+/** The state keys a value reads: the head of each `{path}` (or optional `{path?}`) in its strings, at any depth, the key
+ *  after `state.` for a `{state.…}` one (interpolateValue tries both). */
+function readHeads(value: unknown, out: string[] = [], depth = 0): string[] {
+  if (depth > 32) return out;
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\{([a-zA-Z0-9_.$]+)\??\}/g)) {
+      const [head, next] = match[1]!.split(".");
+      out.push(head === "state" && next ? next : head!);
+    }
+  } else if (Array.isArray(value)) value.forEach((one) => readHeads(one, out, depth + 1));
+  else if (isObject(value)) Object.values(value).forEach((one) => readHeads(one, out, depth + 1));
+  return out;
+}
+
+/** Why a draft's model step off the fast tier reads a page (compact state): an agent, decide or extract step with no
+ *  `"tier": "fast"` whose `state` map names a key that may hold a page a call step fetched (a call's result, a map's
+ *  collected one, a pick or sift over pages, a composed workflow's answer when it is one, the key or anything under it),
+ *  or, with no `state` map, which reads the whole state while such a key is in it. Read in run order: a key holds a page
+ *  from the step that fetched it until a model step writes over it; a loop's body is read twice, its second pass seeing
+ *  its first's writes; a map's body sees `item` as a page when its list is one; a composed workflow's child sees an input
+ *  key as a page when its value reads one. Pages reach a step on the agent's model only through a fast-tier step's
+ *  output: chain14b's drafts fed whole pages to the answering step (4.1 requests a run at ~70k cached tokens each,
+ *  $0.364 a served run), where the research shape (a fast extract's compact facts to the answering step) booked ~$0.08.
+ *  One line each, in words the compile retry acts on. */
+export function compactStateProblems(doc: unknown): string[] {
+  const problems = new Set<string>();
+  const walk = (node: unknown, pages: ReadonlySet<string>, depth: number): Set<string> => {
+    const after = new Set(pages);
+    if (!isNode(node) || depth > 32) return after;
+    const key = writeKeyOf(node);
+    const wrote = (page: boolean) => {
+      if (typeof key !== "string") return;
+      if (page) after.add(key);
+      else after.delete(key);
+    };
+    const kind = node.node as string;
+    if (kind === "chain") {
+      let state: Set<string> = after;
+      for (const step of Array.isArray(node.steps) ? node.steps : []) state = walk(step, state, depth + 1);
+      return state;
+    }
+    if (kind === "parallel" || kind === "route") {
+      const bodies = kind === "parallel" ? (Array.isArray(node.branches) ? node.branches : []) : childNodes(node);
+      if (kind === "route") wrote(false);
+      const from = new Set(after);
+      for (const body of bodies) for (const one of walk(body, from, depth + 1)) after.add(one);
+      return after;
+    }
+    if (kind === "loop") {
+      const first = walk(node.body, after, depth + 1);
+      const second = walk(node.body, new Set([...after, ...first]), depth + 1);
+      return new Set([...first, ...second]);
+    }
+    if (kind === "map") {
+      const itemsPage = typeof node.itemsPath === "string" && after.has(node.itemsPath.split(".")[0]!);
+      const inner = new Set(after);
+      if (itemsPage) inner.add("item");
+      else inner.delete("item");
+      const out = walk(node.body, inner, depth + 1);
+      const result = typeof node.resultPath === "string" && node.resultPath ? node.resultPath.split(".")[0] : isNode(node.body) && typeof node.body.as === "string" && node.body.as ? node.body.as : undefined;
+      // Each item's result, or its whole state (the state around the map too) when nothing picks one key.
+      wrote(result !== undefined ? out.has(result) : out.size > 0);
+      if (typeof node.failedAs === "string" && node.failedAs) {
+        if (itemsPage) after.add(node.failedAs);
+        else after.delete(node.failedAs);
+      }
+      return after;
+    }
+    if (kind === "workflow") {
+      const child = isObject(node.workflow) ? node.workflow : {};
+      const input = isObject(node.input) ? node.input : {};
+      const seen = new Set(Object.entries(input).filter(([, value]) => readHeads(value).some((head) => after.has(head))).map(([name]) => name));
+      const out = walk(child.root, seen, depth + 1);
+      const path = isObject(child.output) && typeof child.output.path === "string" ? child.output.path.split(".")[0]! : "";
+      wrote(!!path && out.has(path));
+      return after;
+    }
+    if (kind === "call") return wrote(true), after;
+    if (kind === "pick" || kind === "sift") return wrote(typeof node.itemsPath === "string" && after.has(node.itemsPath.split(".")[0]!)), after;
+    if (TIERED_KINDS.has(kind) && node.tier !== "fast") {
+      const label = JSON.stringify(String(node.label ?? "(no label)").slice(0, 64));
+      const read = node.state === undefined ? [...after] : [...new Set(readHeads(node.state))].filter((head) => after.has(head));
+      if (read.length) {
+        const what = node.state === undefined
+          ? `the whole run state (it has no "state" map), the page${read.length > 1 ? "s" : ""} ${read.map((one) => JSON.stringify(one.slice(0, 64))).join(", ")} included`
+          : `${read.map((one) => JSON.stringify(`{${one.slice(0, 64)}}`)).join(", ")}, ${read.length > 1 ? "pages" : "a page"} a call step fetched`;
+        problems.add(`the ${kind} step ${label} runs off the fast tier and reads ${what}: a page reaches a step on the agent's model only through a fast-tier step's output. Give it a "state" map naming only compact keys (the facts a fast-tier extract step wrote from the pages; in a re-pick loop its own draft too, as "{<its as>?}"), or, for legwork, "tier": "fast"`);
+      }
+    }
+    wrote(false);
+    return after;
+  };
+  walk((doc as { root?: unknown } | null)?.root, new Set(), 0);
+  return [...problems];
+}
+
 /** The property names that make an answer carry quotes. */
 const QUOTE_KEYS: ReadonlySet<string> = new Set(["quote", "quotes"]);
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -444,16 +540,32 @@ const repicks = (step: unknown, check: QuoteRead): boolean => {
   const of = step.until.of;
   return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
-/** The labels of the steps inside `node` (a loop's body) that write state key `key` from a `state` map. The DSL sends
- *  such a step only the keys its map names (each pass a fresh model session), so on a re-pick it never sees the failed
- *  draft, and a map naming the answer fails the first pass, which has none yet: only a step with no map reads the whole
- *  state. A map's or a composed workflow's own steps write their item's or child's state, not this one. */
-const answersFromStateMap = (node: unknown, key: string, depth = 0): string[] => {
+/** Whether a step's `state` map reads state key `key` through an optional placeholder (`"{answer?}"`, `"{answer.x?}"`,
+ *  `"{state.answer?}"`, a whole string): null on a re-pick loop's first pass, before any draft exists, and the failed
+ *  draft on its second. */
+function readsDraft(state: unknown, key: string, depth = 0): boolean {
+  if (depth > 32) return false;
+  if (typeof state === "string") {
+    const path = /^\{([a-zA-Z0-9_.$]+)\?\}$/.exec(state)?.[1]?.split(".");
+    return !!path && (path[0] === "state" && path.length > 1 ? path[1] : path[0]) === key;
+  }
+  if (Array.isArray(state)) return state.some((one) => readsDraft(one, key, depth + 1));
+  return isObject(state) && Object.values(state).some((one) => readsDraft(one, key, depth + 1));
+}
+/** The labels of the model steps inside `node` (a loop's body) that write state key `key` without reading their own
+ *  draft through their `state` map (readsDraft). The DSL sends a step with a map only the keys it names (each pass a
+ *  fresh model session), so one not naming the draft never sees it on the re-pick; naming it unmarked (`"{answer}"`)
+ *  fails the first pass, which has none yet; and a step with no map reads the whole state, the pages included, which no
+ *  step off the fast tier may (compactStateProblems). A map's or a composed workflow's own steps write their item's or
+ *  child's state, not this one. */
+const blindRepicks = (node: unknown, key: string, depth = 0): string[] => {
   if (!isNode(node) || depth > 32) return [];
-  const own = writeKeyOf(node) === key && node.state !== undefined ? [String(node.label ?? node.node).slice(0, 64)] : [];
-  const inner = node.node === "map" || node.node === "workflow" ? [] : childNodes(node).flatMap((child) => answersFromStateMap(child, key, depth + 1));
+  const own = writeKeyOf(node) === key && TIERED_KINDS.has(node.node as string) && !readsDraft(node.state, key) ? [String(node.label ?? node.node).slice(0, 64)] : [];
+  const inner = node.node === "map" || node.node === "workflow" ? [] : childNodes(node).flatMap((child) => blindRepicks(child, key, depth + 1));
   return [...own, ...inner];
 };
+/** How a re-pick step reads its failed draft, as a refusal says it. */
+const draftWords = (key: string) => `a "state" map naming the compact facts it answers from and its failed draft as an optional placeholder, "draft": "{${key}?}" (null on the first pass, before any draft exists; the failed draft on the second)`;
 /** The labels of the quote_missing escalates inside `node` (a loop's body), a composed workflow's included: each hands
  *  back on the first pass's miss, so a re-pick loop around one never re-picks. */
 const quoteEscalatesIn = (node: unknown, depth = 0): string[] => {
@@ -530,11 +642,11 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
     } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && quoteEscalatesIn(writer.body).length) {
       // A check inside the loop's body hands back on the first draft's miss: the loop never re-picks.
       problems.push(`the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} holds the quote_missing escalate ${JSON.stringify(quoteEscalatesIn(writer.body)[0])} in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`);
-    } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && repicks(writer, first) && answersFromStateMap(writer.body, answerPath.split(".")[0]).length) {
-      // The re-pick must see the failed draft: its step reads the whole state (no `state` map).
-      problems.push(`the step ${JSON.stringify(answersFromStateMap(writer.body, answerPath.split(".")[0])[0])} in the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} writes the answer from a "state" map, which passes it only the keys it names, so its second pass never sees the failed draft (and naming the answer there fails the first pass, before any draft exists): give it no "state" map, so it reads the whole run state, the failed draft included`);
+    } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && repicks(writer, first) && blindRepicks(writer.body, answerPath.split(".")[0]!).length) {
+      // The re-pick must see the failed draft, and only through a state map that names it optionally (never the pages).
+      problems.push(`the step ${JSON.stringify(blindRepicks(writer.body, answerPath.split(".")[0]!)[0])} in the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} writes the answer without reading its failed draft, so its second pass writes the same miss again: give it ${draftWords(answerPath.split(".")[0]!)}. Naming it unmarked ("{${answerPath.split(".")[0]!}}") fails the first pass, and no "state" map reads the whole state, the pages included`);
     } else if (!problems.length && first && !checks.every((check) => repicks(writer, check))) {
-      problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`);
+      problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, the step with ${draftWords(answerPath.split(".")[0]!)} and its instructions saying that a draft there failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`);
     }
   }
   // A composed workflow writing the answer that applies the rule and fails it: its own check is the one to fix.
@@ -546,7 +658,8 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
  *  regular file within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a skill's
  *  front matter (skillProblems), with no `status`, which is the host's; a draft the DSL validates against `tools` with
  *  no node that runs code (draftProblems), whose answering step runs on the agent's model (answerTierProblems), whose
- *  quotes of the pages it fetched are checked in code (quoteCheckProblems); a README that names its folder and says what
+ *  steps there read no page (compactStateProblems), whose quotes of the pages it fetched are checked in code
+ *  (quoteCheckProblems); a README that names its folder and says what
  *  the draft is for. */
 function learnedChecked(change: Change, place: LearnedPlace, refused: (text: string) => boolean, input: CheckInput, add: Add): void {
   const { path } = change;
@@ -566,10 +679,12 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
     const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.decisions, input.workflowAdapters);
-    // A draft the DSL reads parses: its answering step is held to the agent's model, and its quote check to code.
+    // A draft the DSL reads parses: its answering step is held to the agent's model, its steps there to compact state
+    // (the SDK bridge's runNode picks every model itself: it names no tier), and its quote check to code.
     if (!problems.length) {
       const doc = JSON.parse(text);
-      problems.push(...[...answerTierProblems(doc), ...quoteCheckProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail })));
+      const compact = input.workflowAdapters === undefined ? compactStateProblems(doc) : [];
+      problems.push(...[...answerTierProblems(doc), ...compact, ...quoteCheckProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail })));
     }
     for (const { rule, detail } of problems) add(rule, detail, path);
     // A draft the checks pass whose dry run failed: its wiring breaks at run time, before any node is paid for.

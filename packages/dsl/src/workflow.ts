@@ -1897,13 +1897,17 @@ function shapeFromSchema(schema: Record<string, unknown>): unknown {
   return Object.fromEntries(Object.entries(properties).map(([key, sub]) => [key, shapeFromSchema(sub as Record<string, unknown>)]));
 }
 
+/** `interpolateValue`: a whole-string placeholder keeps its value's type; one marked optional (`"{draft?}"`) is null while
+ *  its path is absent (a loop's first pass, before the step that writes it ran) instead of failing. Only a whole string
+ *  may be marked: inside a longer string `{draft?}` is literal text. */
 function interpolateValue(value: unknown, state: Record<string, unknown>, stage: string = "interpolation"): unknown {
   if (typeof value === "string") {
-    const whole = value.match(/^\{([a-zA-Z0-9_.$]+)\}$/);
+    const whole = value.match(/^\{([a-zA-Z0-9_.$]+)(\?)?\}$/);
     if (whole) {
       const p = whole[1];
       let v = getPath(state, p);
       if (v === undefined && p.startsWith("state.")) v = getPath(state, p.slice(6));
+      if (v === undefined && whole[2]) return null;
       if (v === undefined) throw new WorkflowStateError(`interpolation path "${p}" is not present in the state`, stage, p, "missing_interpolation");
       return v;
     }
