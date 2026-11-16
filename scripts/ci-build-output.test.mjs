@@ -13,9 +13,9 @@ import { outputPaths, pack, unpack } from './ci-build-output.mjs';
 
 const script = fileURLToPath(new URL('./ci-build-output.mjs', import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), 'ci-build-output-'));
-after(() => rmSync(scratch, { recursive: true, force: true }));
+after(() => rmSync(scratch, { recursive: true, force: true, maxRetries: 5 }));
 const write = (path, text) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=ci', '-c', 'user.email=ci@example.invalid', ...args], { cwd, encoding: 'utf8' });
+const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=ci', '-c', 'user.email=ci@example.invalid', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd, encoding: 'utf8' });
 
 /** A committed repository with an ignored dist and node_modules, and a clone of it: the build job's and a test job's. */
 function checkouts(name) {

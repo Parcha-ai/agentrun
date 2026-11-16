@@ -31,10 +31,12 @@ async function repo(fn) {
     await writeFile(join(root, 'changes/README.md'), 'How to add a change.\n');
     await writeFile(join(root, 'CHANGELOG.md'), rootLog);
     await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), kernelLog);
-    const git = (...args) => exec('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: root });
+    // No background maintenance: a commit's detached `git maintenance run --auto` can write in .git while the rm below
+    // empties it (ENOTEMPTY). maxRetries covers any other late writer.
+    const git = (...args) => exec('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root });
     await git('init', '-q'); await git('add', '-A'); await git('commit', '-q', '-m', 'base');
     await fn(root, git);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 5 }); }
 }
 
 test('a fragment needs front matter, a known package, a known kind and a body without a bullet', () => {
