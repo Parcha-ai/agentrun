@@ -10,13 +10,14 @@ import { feed } from "./trigger-feed.js";
 
 export const TRIGGER_ADAPTERS: readonly TriggerAdapter[] = [schedule, webhook, github, composio, email, feed];
 
-/** `value` with each trigger source in it (an object whose `kind` is a source's with a `shown`) as an answer sends it:
- *  for an answer kept before that rule (an Idempotency-Key's record), so its replay is what a read answers now. */
-export function shownSources(value: unknown, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): unknown {
-  if (Array.isArray(value)) return value.map((item) => shownSources(item, adapters));
-  if (value === null || typeof value !== "object") return value;
-  const walked = Object.fromEntries(Object.entries(value).map(([field, item]) => [field, shownSources(item, adapters)]));
-  const kind = (value as { kind?: unknown }).kind;
+/** A trigger's answer (an object whose top-level `source` is a trigger source) with that source as a read sends it now
+ *  (its adapter's `shown`): for an answer kept before that rule, an Idempotency-Key's record of a trigger create. Only
+ *  that one field of that one shape: any other value is as it is. */
+export function shownTrigger(body: unknown, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): unknown {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
+  const source = (body as { source?: unknown }).source;
+  if (source === null || typeof source !== "object" || Array.isArray(source)) return body;
+  const kind = (source as { kind?: unknown }).kind;
   const adapter = typeof kind === "string" ? adapters.find((a) => a.id === kind) : undefined;
-  return adapter?.shown ? adapter.shown(walked as Source) : walked;
+  return adapter?.shown ? { ...body, source: adapter.shown(source as Source) } : body;
 }

@@ -32,12 +32,17 @@ const text = (value: unknown): string => (typeof value === "string" ? value : ""
 const issue = (field: string, reason: string, message: string): InputIssue => ({ field, reason, message });
 
 /** A Composio call as `key`: its JSON answer, or an error in words that name `step` and never the key nor a `sealed`
- *  value (a trigger's sealed config), and end with `outcome`, what the failure left (a save's: nothing was saved). */
+ *  value (a trigger's sealed config), and end with `outcome`, what the failure left (a save's: nothing was saved). A call
+ *  with sealed values in play passes on none of Composio's words. */
 export function asking(control: ComposioControl, key: string, signal: AbortSignal | undefined, outcome = "nothing was saved", sealed: readonly string[] = []): Ask {
   const base = (control.baseUrl ?? BASE).replace(/\/+$/, "");
   const send = control.fetch ?? fetch;
-  // Composio's words may quote what it was sent: the key, and each sealed config value (`sealed`), never pass on.
-  const scrub = (said: string) => sealed.filter(Boolean).reduce((text, value) => text.split(value).join("[sealed]"), said.split(key).join("[the key]")).slice(0, 300);
+  // Composio's words may quote what it was sent, as sent, JSON-escaped or percent-encoded. With a sealed value in play
+  // (`sealed`) none of its words go on, as no match is sure to find every form of it; otherwise they go on with the key
+  // out in each of those forms.
+  const withheld = sealed.some(Boolean);
+  const forms = [...new Set([key, JSON.stringify(key).slice(1, -1), encodeURIComponent(key)])].filter(Boolean).sort((a, b) => b.length - a.length);
+  const scrub = (said: string) => forms.reduce((text, form) => text.split(form).join("[the key]"), said).slice(0, 300);
   return async (step, method, path, body, missing) => {
     let res: Response;
     let raw: string;
@@ -63,6 +68,7 @@ export function asking(control: ComposioControl, key: string, signal: AbortSigna
     const said = isObject(json) && isObject(json.error) ? text(json.error.message) : isObject(json) ? text(json.message) : "";
     if (res.status === 401 || res.status === 403) throw invalid([issue("api_key", "refused", `Composio refused the API key while ${step}: check it in Composio's dashboard.`)]);
     if (res.status === 404 && missing) throw invalid([issue("toolkit", "not_found", missing)]);
+    if (res.status >= 400 && res.status < 500 && withheld) throw invalid([issue("body", "refused", `Composio refused the request while ${step} (HTTP ${res.status}): ${outcome}. Its answer is withheld because the request carried a sealed value.`)]);
     if (res.status >= 400 && res.status < 500) throw invalid([issue("body", "refused", `Composio refused the request while ${step} (${res.status})${said ? `: ${scrub(said)}` : ""}.`)]);
     throw new ApiError("upstream_failed", `Composio failed while ${step} (${res.status}): ${outcome}.`);
   };

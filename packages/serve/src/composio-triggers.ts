@@ -77,7 +77,10 @@ const sealedOf = (source: Source): string[] => (Array.isArray(source[SEALED_FIEL
 const configFieldFor = (value: string) => (!/\s/.test(value) && Buffer.byteLength(value, "utf8") >= 8 ? CONFIG_SECRET : CONFIG_UNLISTED);
 
 /** `said` with each of `values` (sealed config values) put as the mask. */
-const hidden = (said: string, values: readonly string[]) => values.filter(Boolean).reduce((text, value) => text.split(value).join(SEALED_MASK), said);
+/** An error's words for a log line: none with sealed config values (`values`) in play, as a quote of one may be in a form
+ *  no match finds (JSON-escaped, encoded); its code alone then. */
+const told = (error: unknown, values: readonly string[]): string =>
+  values.some(Boolean) ? `${error instanceof ApiError ? error.code : "error"} (its words are withheld: the config holds a sealed value)` : String((error as Error)?.message ?? error);
 
 /** Whether two JSON values are equal, an object's fields in any order. */
 function same(a: unknown, b: unknown): boolean {
@@ -150,7 +153,7 @@ export class ComposioTriggers implements TriggerUpstream {
         const shown = sealing.length ? { config: { ...config, ...Object.fromEntries(sealing.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: sealing } : {};
         return await keep({ ...kept, ...shown, instance_id: instance, hook });
       } catch (error) {
-        for (const step of undo.splice(0).reverse()) await step().catch((undone: unknown) => this.deps.say({ condition: "composio_undo_failed", trigger: id, error: hidden(String((undone as Error)?.message ?? undone), values) }));
+        for (const step of undo.splice(0).reverse()) await step().catch((undone: unknown) => this.deps.say({ condition: "composio_undo_failed", trigger: id, error: told(undone, values) }));
         throw error;
       }
     });
@@ -184,7 +187,7 @@ export class ComposioTriggers implements TriggerUpstream {
         const holding = (await this.deps.holders()).filter((h) => h.source.instance_id === instance);
         if (!holding.length) return;
         on = holding.some((h) => h.enabled);
-        await this.ask(credential)(`turning the trigger instance ${on ? "on" : "off"}`, "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: on ? "enable" : "disable" });
+        await this.ask(credential, "nothing was changed", this.sealedValues(holding))(`turning the trigger instance ${on ? "on" : "off"}`, "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: on ? "enable" : "disable" });
       });
       return undefined;
     } catch (error) {
@@ -194,14 +197,16 @@ export class ComposioTriggers implements TriggerUpstream {
   }
 
   async removed(source: Source, id: string): Promise<Json | undefined> {
-    // Its sealed config goes with it, whatever Composio says below.
+    // Its sealed config goes with it, whatever Composio says below; read first, so Composio's words about its instance are
+    // withheld (asking).
+    const values = this.sealedValues([{ id, source }]);
     for (const name of sealedOf(source)) await this.deps.sealed.remove(configScope(id, name)).catch((error: unknown) => this.deps.say({ condition: "composio_sealed_config_not_removed", trigger: id, field: name, error: String((error as Error)?.message ?? error) }));
     const instance = instanceOf(source);
     let left = "delete" as Left;
     try {
       // Kept while another trigger holds it, and off once none of those is on, as a pause leaves it.
       const credential = await this.deps.credential(String(source.server), "field");
-      await this.serial(credential.key, async () => this.leave(this.ask(credential), instance, (left = await this.leftWith(instance, id))));
+      await this.serial(credential.key, async () => this.leave(this.ask(credential, "nothing was changed", values), instance, (left = await this.leftWith(instance, id))));
       return undefined;
     } catch (error) {
       const said = String((error as Error)?.message ?? error);
@@ -234,7 +239,7 @@ export class ComposioTriggers implements TriggerUpstream {
   async triggersOf(name: string): Promise<{ triggers: Json[]; subscription: Json | null; composio_error?: string }> {
     const credential = await this.deps.credential(name, "route");
     const mine = (await this.deps.holders()).filter((h) => h.source.server === name);
-    const ask = this.ask(credential);
+    const ask = this.ask(credential, "nothing was changed", this.sealedValues(mine));
     // What Composio answered, and whether it answered for every instance: one it didn't answer for is unknown, not missing.
     const states = new Map<string, "on" | "off">();
     let read = false;
@@ -334,7 +339,7 @@ export class ComposioTriggers implements TriggerUpstream {
         this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: names });
         done++;
       } catch (error) {
-        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: names, error: hidden(String((error as Error)?.message ?? error), clear.map((secret) => secret.value)) });
+        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: names, error: told(error, clear.map((secret) => secret.value)) });
       }
     }
     return done;
@@ -385,8 +390,13 @@ export class ComposioTriggers implements TriggerUpstream {
     });
   }
 
-  /** Composio asked with the server's key; a failure's words end with what it left (`outcome`), and never hold a value of
-   *  `sealed` (a create's sealed config). */
+  /** The sealed config values `holders` keep here: what Composio may quote back about their instance. */
+  private sealedValues(holders: readonly { id: string; source: Source }[]): string[] {
+    return holders.flatMap((h) => sealedOf(h.source).map((name) => this.deps.sealed.get(configScope(h.id, name), CONFIG_SECRET) ?? this.deps.sealed.get(configScope(h.id, name), CONFIG_UNLISTED) ?? "")).filter(Boolean);
+  }
+
+  /** Composio asked with the server's key; a failure's words end with what it left (`outcome`), and pass on none of
+   *  Composio's own with a value of `sealed` (a trigger's sealed config) in play. */
   private ask(credential: ComposioCredential, outcome = "nothing was changed", sealed: readonly string[] = []): Ask {
     return asking(this.deps.control, credential.key, this.deps.signal, outcome, sealed);
   }

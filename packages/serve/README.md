@@ -2938,9 +2938,10 @@ work is done and before the answer is sent, so a retry after a restart gets the 
 between the work and the save loses it, and a save that fails still answers. A run create's key is also kept with its
 run in the agent store, written with the run itself, so a retry after any restart, or after that day, gets that run (as
 it is now, marked `Idempotent-Replayed: true`), and another body under the key is still `409 idempotency_mismatch`.
-The file keeps no request body. A key's fingerprint is an HMAC of the body under a key derived from the seal key, and
-its answer is kept as a read answers it (a composio trigger's sealed config as `"[sealed]"`). A record an earlier server
-wrote with the body itself is rewritten at the start, and the log says how many.
+The file keeps no request body. A key's fingerprint is an HMAC of the body under a key derived from the seal key. A
+trigger create's answer is kept as a read answers it (a composio trigger's sealed config as `"[sealed]"`); every other
+answer, a run's input among them, is kept and replayed as it was. A record an earlier server wrote with the body itself
+is rewritten at the start, and the log says how many.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.

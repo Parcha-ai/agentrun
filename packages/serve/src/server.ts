@@ -143,7 +143,7 @@ import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
-import { shownSources, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
@@ -1637,13 +1637,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // is sent, so a client that retries after a restart gets the first answer back.
   // A key's fingerprint is an HMAC of its request's body (stable JSON) under a key derived from the server's seal key:
   // never the body, nor a bare digest of it, since a body can hold a credential (a composio trigger's config) and a short
-  // or guessable one could be found from a bare digest by hashing guesses. Its answer is kept as a read answers it
-  // (shownSources). Entries live IDEMPOTENCY_TTL_S (a day), so one an older server wrote (the body itself as its
+  // or guessable one could be found from a bare digest by hashing guesses. A trigger create's answer is kept as a read
+  // answers it (replayed). Entries live IDEMPOTENCY_TTL_S (a day), so one an older server wrote (the body itself as its
   // fingerprint, a composio key in its answer) can outlive an upgrade: the start rewrites each (below, after the trigger
   // engine), and says how many alone.
   const fingerprintKey = createHmac("sha256", sealKey).update("agentrun-serve idempotency fingerprint").digest();
   const fingerprintOf = (text: string) => createHmac("sha256", fingerprintKey).update(text).digest("hex");
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
+  /** A kept answer as its replay sends it, by the route its key was used on: a trigger create's (POST /triggers) with its
+   *  source as a read answers it now (shownTrigger); every other route's as it was, a run's input above all. */
+  const replayed = (path: string, body: unknown): unknown => (path === "/triggers" ? shownTrigger(body) : body);
   const keptFile = join(data, IDEMPOTENCY_FILE);
   const kept = JSON.parse(await readFile(keptFile, "utf8").catch(() => "null")) as { entries?: [string, Kept][] } | null;
   const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000));
@@ -1796,7 +1799,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     let scrubbed = 0;
     for (const [slot, v] of idempotency) {
       const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
-      const answer = v.answer && { ...v.answer, body: shownSources(v.answer.body) };
+      const answer = v.answer && { ...v.answer, body: replayed(slot.slice(0, slot.indexOf("\n")), v.answer.body) };
       if (fingerprint === v.fingerprint && JSON.stringify(answer?.body) === JSON.stringify(v.answer?.body)) continue;
       idempotency.set(slot, { ...v, fingerprint, ...(answer ? { answer } : {}) });
       scrubbed++;
@@ -2068,7 +2071,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
     // instead of doing the work twice. Only a restart before the next good save loses it, and a run's create not even
     // then: the store keeps its run under the key's origin.
-    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: shownSources(answer.body), headers: answer.headers ?? {} } });
+    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: replayed(path, answer.body), headers: answer.headers ?? {} } });
     await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
     return answer;
   }

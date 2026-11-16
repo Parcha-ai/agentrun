@@ -520,9 +520,10 @@ test("an Idempotency-Key replay of a run create gives back its input as sent, a 
   const record = JSON.parse(readFileSync(join(s.server.data, ".idempotency.json"), "utf8"));
   const [, kept] = record.entries.find(([slot]) => slot.endsWith("\nrun-nested"));
   assert.equal(kept.answer.body.input.item.config.token, "example", "the record keeps the run's input as sent");
-  const key = fakeKey();
-  const made = await s.api("POST", "/triggers", dealTrigger(key), { "idempotency-key": "deal-still" });
-  const again = await s.api("POST", "/triggers", dealTrigger(key), { "idempotency-key": "deal-still" });
+  const body = dealTrigger(fakeKey());
+  const made = await s.api("POST", "/triggers", body, { "idempotency-key": "deal-still" });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const again = await s.api("POST", "/triggers", body, { "idempotency-key": "deal-still" });
   assert.equal(again.headers.get("idempotent-replayed"), "true");
   assert.equal(again.body.source.config.developer_api_key, MASK, "the trigger create's replay is masked");
   assert.equal(again.body.id, made.body.id);
