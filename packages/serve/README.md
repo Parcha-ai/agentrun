@@ -1778,7 +1778,9 @@ every request to one) must be `https` and resolve to no private, loopback or lin
 refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
 by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
 alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
-and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does.
+and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does,
+and never at that server's own ports (where it listens, and its public address when that is on loopback), which the server
+tells it as it starts: an MCP server or a refresh's endpoint there is refused unsent, as at a save.
 An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
 the server itself, and sending the shown URL back for a saved server keeps the saved one. A loopback MCP server is a development-only exception: its
 authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never

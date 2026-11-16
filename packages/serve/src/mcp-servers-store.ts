@@ -133,12 +133,20 @@ export class McpServersOverStore {
   /** This server's address as a browser reaches it and where it listens (McpServers.attach). `local`: whether its
    *  operator said this is a local install (ServeOptions.mcpLoopback, the CLI's AGENTRUN_MCP_ALLOW_LOOPBACK=1), the one kind
    *  of server an MCP server's URL may be on loopback for. Never inferred from where it listens: a hosted container
-   *  listens on loopback behind its proxy too. Omitted, or never attached, it is not one. */
-  attach(base: string, listening: string, local?: boolean): void {
+   *  listens on loopback behind its proxy too. Omitted, or never attached, it is not one. `beside`: a runner's registry
+   *  (registryListing), attached at no address of its own, is held to the own addresses of the server beside it. */
+  attach(base: string, listening: string, local?: boolean, beside: readonly string[] = []): void {
     this.signIns.base = base.replace(/\/+$/, "");
     this.signIns.listening = listening.replace(/\/+$/, "");
+    this.signIns.beside = [...beside];
     this.loopback = local === true;
     this.signIns.loopback = this.loopback;
+  }
+
+  /** This server's own addresses (McpSignIns.own): where it listens, and its public address when that is on loopback. A
+   *  read on loopback, here or by the runner beside it (Serve.own), never goes to their ports. */
+  get own(): readonly string[] {
+    return this.signIns.own;
   }
 
   clientDocument() {

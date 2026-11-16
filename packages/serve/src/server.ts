@@ -389,6 +389,10 @@ export type ServeOptions = {
   /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
    *  can make the server POST inside its own network. The operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 turns it on. */
   webhookPrivateTargets?: boolean;
+  /** A test's seam: the addresses the outbound webhook's receiver's name resolves to, at a save's check and at each try
+   *  (webhooks.ts), in place of the system resolver's. A test's server answers its example hosts here, so no CI
+   *  runner's resolver decides what a test sees. */
+  webhookLookup?: (host: string) => Promise<string[]>;
 };
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
@@ -425,6 +429,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
   localInstall: boolean;
+  /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
+   *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
+   *  never reach this server, as its own reads never do. */
+  own: readonly string[];
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -1367,6 +1375,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
   const webhooks = new Webhooks(store, sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
     ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    ...(options.webhookLookup ? { lookup: options.webhookLookup } : {}),
     privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
   });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
@@ -4620,6 +4629,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     attachHub,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
+    own: mcpServers.own,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

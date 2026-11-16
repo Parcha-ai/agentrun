@@ -198,6 +198,10 @@ export interface AdapterSpecDeps {
    *  server (runner/beside.ts, Serve.localInstall) is told so, by that server in its own process. Absent, never: a hosted
    *  or standalone runner's loopback is its host's other services. */
   readonly mcpLoopback?: boolean;
+  /** That server's own addresses (Serve.own: where it listens, and its public address on loopback), told with
+   *  mcpLoopback: a run's loopback request (an MCP server's, its authorization server's, a pin's listing) never goes to
+   *  their ports, as the server's own requests never do. */
+  readonly mcpOwn?: readonly string[];
   /** A template eval's fakes, by the agent a run is of (template-eval.ts, from its case: EvalFakes). Only the eval's own
    *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
    *  maps onto it. Absent, or undefined for a run: none. */
@@ -490,7 +494,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
