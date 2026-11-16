@@ -8,7 +8,9 @@
 // Thread scope: a run an email trigger started reads only that email's thread (the message, and every message whose
 // Message-ID, References or In-Reply-To names it or one it names, in any mailbox, Drafts and Sent included, that the
 // email's sender took part in: their address in its From, To or Cc); a message outside it is answered "outside this run's
-// thread" and never answered or filed. The ids a sender writes grant nothing alone (Mail.allows). The agent's own tool setting `scope:
+// thread" and never answered or filed. The thread is read from the message where the trigger found it (its mailbox,
+// UIDVALIDITY and UID, in the firing's attrs), never from another that carries the same Message-ID, and the ids a sender
+// writes grant nothing alone (Mail.allows). The agent's own tool setting `scope:
 // "mailbox"` on email_read, email_search or email_file reaches the whole account; any other run reaches the whole account.
 // So an email's words can never send the agent through the rest of the inbox.
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -67,9 +69,22 @@ const messageId = (value: string) => {
   return id.startsWith("<") ? id : `<${id}>`;
 };
 
+/** The message a thread run started from: its Message-ID, and where the trigger found it (the mailbox, its UIDVALIDITY,
+ *  the UID). */
+export type ThreadRoot = { message_id: string; mailbox: string; uidvalidity: string; uid: number };
+
 /** What a run may read: the whole account, or the thread of the message that started it (`root`, null when its firing
- *  names none: then nothing). */
-type Scope = { kind: "mailbox" } | { kind: "thread"; root: string | null };
+ *  does not say which message and where it was found: then nothing). */
+type Scope = { kind: "mailbox" } | { kind: "thread"; root: ThreadRoot | null };
+
+/** The root a firing's attrs name (written by the server, never by the message's words): its Message-ID and where the
+ *  trigger found it. Null when any of them is missing or does not read, so the run reads nothing (fail closed). */
+export function threadRootOf(attrs: Readonly<Record<string, unknown>> | undefined): ThreadRoot | null {
+  const { message_id, mailbox, uidvalidity, uid } = attrs ?? {};
+  const named = (value: unknown): value is string => typeof value === "string" && value !== "";
+  if (!named(message_id) || !named(mailbox) || !named(uidvalidity) || !named(uid) || !/^[1-9]\d{0,15}$/.test(uid)) return null;
+  return { message_id, mailbox, uidvalidity, uid: Number(uid) };
+}
 
 /** The scope of `tool`'s calls in the run `host` binds for: the agent's `scope: "mailbox"` reads the whole account; a run
  *  an email trigger started reads its thread; any other run, the whole account. */
@@ -78,34 +93,60 @@ async function scopeOf(host: ToolHost, tool: string): Promise<Scope> {
   if (isObject(settings) && settings.scope === "mailbox") return { kind: "mailbox" };
   const started = host.startedBy;
   if (!started || started.source !== "email") return { kind: "mailbox" };
-  // The run's launch names the message it fired for (its firing's attrs, written by the server, never by the message's
-  // words); one that names none reads nothing (fail closed).
-  const id = started.trigger.attrs?.message_id;
-  const root = typeof id === "string" && id ? id : null;
-  return { kind: "thread", root };
+  // The run's launch names the message it fired for and where it was found (its firing's attrs); one that does not reads
+  // nothing (fail closed).
+  return { kind: "thread", root: threadRootOf(started.trigger.attrs) };
+}
+
+/** A thread as read once a run: the ids it is found by (its message's own, its In-Reply-To and References), and the
+ *  address that message came from (null: the run reads nothing). */
+type ThreadView = { ids: Set<string>; sender: string | null };
+/** Each run's thread, kept across its tools' calls (by the run's host): its message is located at the first call, so
+ *  filing it elsewhere later keeps the thread. */
+const threads = new WeakMap<ToolHost, { view?: Promise<ThreadView> }>();
+const threadOf = (host: ToolHost) => {
+  let held = threads.get(host);
+  if (!held) threads.set(host, (held = {}));
+  return held;
+};
+const nothing = (): ThreadView => ({ ids: new Set<string>(), sender: null });
+
+/** The thread of `root`, read from the message where the trigger found it: that mailbox, still at that UIDVALIDITY, that
+ *  UID, still carrying that Message-ID. Its sender and the ids it names come from that message alone, never from another
+ *  that carries the same Message-ID. When any of that is not so (the message gone or moved, the mailbox rebuilt): nothing. */
+async function located(session: ImapSession, root: ThreadRoot | null): Promise<ThreadView> {
+  if (root === null) return nothing();
+  if (root.mailbox.toUpperCase() !== "INBOX" && !(await session.mailboxes()).some((box) => box.path === root.mailbox)) return nothing();
+  const box = await session.open(root.mailbox);
+  if (box.uidValidity !== root.uidvalidity) return nothing();
+  const [head] = await session.heads(box.path, [root.uid]);
+  if (!head || head.uid !== root.uid || head.message_id !== root.message_id) return nothing();
+  return { ids: new Set(threadIds(root.message_id, head)), sender: head.from.trim().toLowerCase() || null };
 }
 
 /** A message as its scope is judged: its ids, and who it is between. */
 type Judged = Pick<MailMessage, "message_id" | "references" | "in_reply_to" | "from" | "to" | "cc">;
 
-/** One run's view of the account: the account opened, its scope, and the thread once read (its ids and its sender). */
+/** One run's view of the account: the account opened, its scope, and the thread once read (its ids and its sender), kept
+ *  in `held` for the run. */
 class Mail {
-  private view?: Promise<{ ids: Set<string>; sender: string | null }>;
   constructor(
     readonly account: OpenedAccount,
     readonly scope: Scope,
+    private readonly held: { view?: Promise<ThreadView> } = {},
   ) {}
 
-  /** The thread as read once a run (none when the run reads the whole account): the ids it is found by (its message's
-   *  own, its In-Reply-To and References), and the address that message came from. */
-  private threadView(session: ImapSession): Promise<{ ids: Set<string>; sender: string | null }> | undefined {
+  /** The thread as read once a run (none when the run reads the whole account). A failure to read it (the server out of
+   *  reach) is not kept: the next call tries again. */
+  private threadView(session: ImapSession): Promise<ThreadView> | undefined {
     if (this.scope.kind === "mailbox") return undefined;
-    const root = this.scope.root;
-    return (this.view ??= (async () => {
-      if (root === null) return { ids: new Set<string>(), sender: null };
-      const found = await findById(session, root);
-      return { ids: new Set(threadIds(root, found)), sender: found?.from.trim().toLowerCase() || null };
-    })());
+    if (this.held.view) return this.held.view;
+    const view = located(session, this.scope.root);
+    this.held.view = view;
+    view.catch(() => {
+      if (this.held.view === view) this.held.view = undefined;
+    });
+    return view;
   }
 
   /** The thread's ids, read once a run: none when the run reads the whole account. */
@@ -124,16 +165,15 @@ class Mail {
     return found.filter((uid) => inside.has(uid));
   }
 
-  /** Whether `m` is in the run's scope. On a thread: the message that started the run, or one linked to it (by its ids,
-   *  In-Reply-To or References) that its sender took part in: their address in its From, To or Cc, as on the account's own
-   *  mail to them. The ids a sender writes in their References grant nothing alone, so naming another conversation's
-   *  Message-ID reads none of it. What is left: a forged From is the receiving server's to refuse (DMARC), and even then
-   *  the run reaches only the conversations that address took part in. */
+  /** Whether `m` is in the run's scope. On a thread: a message linked to the one that started the run (by its ids,
+   *  In-Reply-To or References), that message among them, that its sender took part in: their address in its From, To or
+   *  Cc, as on the account's own mail to them. The ids a sender writes grant nothing alone: naming another conversation's
+   *  Message-ID in References, or reusing it as their own, reads none of it. What is left: a forged From is the receiving
+   *  server's to refuse (DMARC), and even then the run reaches only the conversations that address took part in. */
   async allows(session: ImapSession, m: Judged): Promise<boolean> {
     const view = await this.threadView(session);
     if (!view) return true;
-    if (this.scope.kind === "thread" && m.message_id !== null && m.message_id === this.scope.root) return true;
-    return inThread(m, view.ids) && view.sender !== null && involves(m, view.sender);
+    return view.sender !== null && inThread(m, view.ids) && involves(m, view.sender);
   }
 }
 
@@ -151,7 +191,7 @@ async function withMail<T>(mail: Mail, work: (session: ImapSession) => Promise<T
 }
 
 /** The ids a thread is read by: its message's own, then those it names, nearest first, at most THREAD_IDS. */
-function threadIds(root: string, found: MailMessage | undefined): string[] {
+function threadIds(root: string, found: Pick<MailMessage, "in_reply_to" | "references"> | undefined): string[] {
   const named = found ? [...(found.in_reply_to ? [found.in_reply_to] : []), ...[...found.references].reverse()] : [];
   return [...new Set([root, ...named])].slice(0, THREAD_IDS);
 }
@@ -419,7 +459,7 @@ function emailTool(name: string, host: ToolHost, kind?: ServerKind): ToolRegistr
         if (!host.store || !host.sealKey) return forModel(`${name}: the email tools run on the runner, which this run is not on.`, { isError: true });
         const account = await openAccount(host.store, host.sealKey);
         if (!account) return forModel(`${name}: ${NO_ACCOUNT}`, { isError: true });
-        const mail = new Mail(account, await (scope ??= scopeOf(host, name)));
+        const mail = new Mail(account, await (scope ??= scopeOf(host, name)), threadOf(host));
         const answer = await tool.run(mail, (isObject(args) ? args : {}) as Record<string, unknown>, host);
         return forModel(emailText(answer as Record<string, unknown>));
       } catch (error) {
