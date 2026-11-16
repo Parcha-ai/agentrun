@@ -54,7 +54,7 @@ function claim(root, saved = SAVED) {
 const resolve = (setting, mode, root = scratch(), saved, kinds = KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
 const KIND_REGISTRY = KINDS;
 /** Mode 2's refusal of a Daytona sandbox, with GPUs or without: it takes no Archil mount, and says why. */
-const DAYTONA_NO_FOLDER = "A Daytona sandbox can't mount the run's folder from Archil (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): pick another sandbox for this agent's computer in Settings → Computers.";
+const DAYTONA_NO_FOLDER = "A Daytona sandbox can't mount the run's folder from Archil (Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS): pick another sandbox for this agent's computer in Settings → Computers.";
 const shape = (resolved) =>("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
 
 test("no setting is the server's default: in Mode 1 Docker's sandbox where Docker answers here, else no computer; in Mode 2 no computer", async () => {
@@ -292,4 +292,23 @@ test("an image the provider does not offer for the kind is refused before anythi
   assert.deepEqual(await resolveComputer({ kind: "desktop", provider: "e2b", image: "windows" }, 1, IMAGED, side), { refused: 'E2B has no desktop image "windows". It offers no desktop image to choose: remove the image for this agent\'s computer in Settings → Computers.' });
   assert.deepEqual(side.launched, [], "nothing was launched");
   assert.equal(runShellOf({ kind: "desktop", provider: "acme-desk", image: "beos" }, 2, IMAGED), "none", "a refused setting runs nothing");
+});
+
+test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a value, names its image where AGENTRUN_DAYTONA_SNAPSHOT does, reads those names alone, and leaves every other provider as it is", async () => {
+  const { PROVIDERS: REAL, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
+  const { registryHere, runShellOf: shellOf } = await import("../dist/workspace/index.js");
+  const real = { SETTING_KINDS, PROVIDERS: REAL, servingRefusals };
+  const read = [];
+  const here = async (values) => registryHere(real, async (name) => (read.push(name), values[name]));
+  const daytona = (registry) => registry.PROVIDERS.find((one) => one.id === "daytona");
+  const hosted = await here({});
+  assert.deepEqual([daytona(hosted).mounts, daytona(hosted).imageNamed], [[], undefined]);
+  assert.deepEqual([...new Set(read)].sort(), ["AGENTRUN_DAYTONA_SNAPSHOT", "DAYTONA_ARCHIL_EGRESS"], "only the names an entry's mountsWith or imageEnv names are read");
+  assert.deepEqual(daytona(await here({ DAYTONA_ARCHIL_EGRESS: "  " })).mounts, [], "a value of whitespace alone is none");
+  const relayed = await here({ DAYTONA_ARCHIL_EGRESS: "192.0.2.40:18100:42050", AGENTRUN_DAYTONA_SNAPSHOT: "agentrun-archil-0123456789ab" });
+  assert.deepEqual([daytona(relayed).mounts, daytona(relayed).unmounted, daytona(relayed).imageNamed], [["archil"], {}, true]);
+  for (const entry of REAL.filter((one) => one.id !== "daytona")) assert.equal(relayed.PROVIDERS.find((one) => one.id === entry.id), entry, entry.id);
+  // Where a run's shell is follows: a Mode 2 Daytona sandbox has its computer's shell with the egress, none without.
+  assert.equal(shellOf({ kind: "sandbox", provider: "daytona" }, 2, relayed), "computer");
+  assert.equal(shellOf({ kind: "sandbox", provider: "daytona" }, 2, hosted), "none");
 });

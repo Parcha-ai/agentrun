@@ -711,9 +711,9 @@ computer is made with the GPUs asked.
   `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
   made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
   deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
-  run on one can be cut short. The Daytona org needs GPU credits. No Daytona sandbox takes an Archil mount, with a GPU
-  or without (Archil's client hangs on its sandboxes), so it can't hold the run's folder: Mode 2 refuses it, and in
-  Mode 1 a sandbox runs on Docker only, so a Daytona sandbox runs on neither mode's server today.
+  run on one can be cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox takes no Archil mount (its
+  GPU host gives no `/dev/fuse`), so it can't hold the run's folder: Mode 2 refuses it, and in Mode 1 a sandbox runs
+  on Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -786,7 +786,11 @@ passes the binding's conformance cases (below) needs no change here.
   work. E2B's says `prepareImage` as well, and it answers our public box template by name
   (`<publisher>/agentrun-archil-<recipe hash>`, which the release builds and makes public), with no call, so an E2B
   sandbox and desktop are ready once the key works; the desktop mounts the folder too (it has files and exec). Docker's
-  sandbox is refused, since it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
+  sandbox is refused, since it cannot mount the disk. Daytona's is refused on Daytona's hosted cloud, where Archil's
+  client hangs on its sandboxes. On a self-hosted Daytona target whose sandboxes reach Archil through an Archil egress
+  relay, save the relay's address as `DAYTONA_ARCHIL_EGRESS` (Settings → Computers, beside `DAYTONA_API_KEY`) and name
+  a snapshot of `box/Dockerfile` in `AGENTRUN_DAYTONA_SNAPSHOT` (below): the Daytona sandbox then mounts the run's
+  folder and is ready. With the relay but no snapshot named, it is refused, saying to name one.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -851,8 +855,9 @@ the computer package's `box/Dockerfile` is built in the organization of `DAYTONA
 DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints snapshot=agentrun-archil-<12 hex>
 ```
 
-A Daytona computer takes no Archil mount, so this server never holds a run's folder on one (see Mode 2 above). A
-Daytona [box](#sandbox) never reads it.
+A Daytona computer mounts the run's folder only where `DAYTONA_ARCHIL_EGRESS` names a self-hosted target's Archil
+egress relay (see Mode 2 above), and then it needs this snapshot. A changed recipe is a new name, so build again after
+an upgrade that changes `box/`. A Daytona [box](#sandbox) never reads it.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at
 `/workspace` in every computer that mounts it: a sandbox always, and a desktop whose provider mounts the mode's folder

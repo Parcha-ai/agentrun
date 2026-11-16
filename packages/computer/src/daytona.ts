@@ -1,12 +1,13 @@
 // The Daytona host: Daytona sandboxes over Daytona's v0 REST API with fetch (no SDK). Daytona's toolbox daemon is the
 // sandbox's first process, so computerd is a child: its upload goes through the toolbox's file API, and every command
-// (install, init's start, the stdio bridge) is a session command, its output read from the command's log stream and its
-// stdin sent as the command's input. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
-// Every Daytona fact used here is cited in the README's Daytona section.
+// (install, init's start, the stdio bridge, an Archil computer's root steps) is a session command, its output read from
+// the command's log stream and its stdin sent as the command's input. The rest of the computer is the shared
+// machine-host adapter's (./hosted/provider.ts). Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
-import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
+import { mountsOf } from "./descriptor.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL } from "./drift.js";
-import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { type HostCall, type HostDescriptor, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, orThrow, pause as sleep } from "./hosted/process.js";
@@ -30,7 +31,7 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /** The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions). */
-export interface DaytonaProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
+export interface DaytonaProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs" | "timeouts"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
 	/** Default https://app.daytona.io/api. */
@@ -41,6 +42,13 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "kind" | "de
 	sandboxClass?: "container" | "linux-vm";
 	/** The Daytona target (region); default the organization's. */
 	target?: string;
+	/**
+	 * The operator's Archil egress relay, `<IPv4 gateway>:<mount lane>:<data lane>` (HostedOptions.archilEgress, checked
+	 * as the adapter checks it): for a self-hosted Daytona target whose sandboxes reach Archil only through it. With it,
+	 * this provider takes an Archil mount (DAYTONA.mountsWith); without it, check() refuses one in DAYTONA_NO_ARCHIL's
+	 * words, since Archil's client hangs on Daytona's hosted cloud. Set it only for such a target.
+	 */
+	archilEgress?: string;
 	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
@@ -160,7 +168,11 @@ async function sandboxOf(api: Rest, idOrName: string, signal?: AbortSignal): Pro
 
 /** Daytona's sandboxes as a MachineHost (../host.ts). */
 class DaytonaHost implements MachineHost {
-	readonly descriptor = DAYTONA;
+	/**
+	 * Daytona's descriptor, the registry's, as the constructor gives it with the mounts of the keys this provider was made
+	 * with (mountsOf): an Archil mount with an Archil egress, none without.
+	 */
+	readonly descriptor: HostDescriptor = DAYTONA;
 	readonly facts: HostFacts;
 	/** Daytona's REST API: the control plane, and the toolbox of each sandbox. */
 	readonly #rest: Rest;
@@ -175,7 +187,8 @@ class DaytonaHost implements MachineHost {
 	/** Each sandbox's toolbox URL, by id, once read: let go of at its delete. */
 	readonly #toolboxes = new Map<string, string>();
 
-	constructor(options: { rest: Rest; headers: Record<string, string>; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
+	constructor(options: { descriptor: HostDescriptor; rest: Rest; headers: Record<string, string>; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
+		this.descriptor = options.descriptor;
 		this.#rest = options.rest;
 		this.#headers = options.headers;
 		this.#webSocket = options.webSocket;
@@ -236,8 +249,8 @@ class DaytonaHost implements MachineHost {
 
 	/**
 	 * POST /sandbox: its native name and labels, the lifetime as a TTL in whole minutes, the idle stop and auto-delete,
-	 * no public port, and network none (block-all), the one network check() takes. A GPU
-	 * computer is made from the GPU snapshot in region earth, ephemeral (its stop deletes it). Never cancelled: the adapter
+	 * no public port, and network none (block-all) unless the adapter asks egress (a network open or a list, or an Archil
+	 * computer's root, which reaches Archil through the operator's relay). A GPU computer is made from the GPU snapshot in region earth, ephemeral (its stop deletes it). Never cancelled: the adapter
 	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists,
 	 * and the adapter adopts the sandbox the name lists, as a retry does. req.backstopAt is left: the TTL is Daytona's own
 	 * timer at the deadline (lifetime "vendor"), and autoDeleteInterval counts from a stop, not from create.
@@ -573,7 +586,6 @@ export class DaytonaProvider extends HostedProvider {
 			...hosted
 		} = options ?? ({} as DaytonaProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
-		if ((hosted as { archilEgress?: unknown }).archilEgress !== undefined) throw new Error(`${DAYTONA_NO_ARCHIL}, so it takes no archilEgress`);
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
 		if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);
@@ -587,7 +599,14 @@ export class DaytonaProvider extends HostedProvider {
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
 		const { requestMs, pollMs } = timeoutsOf(hostedTimeouts);
 		const headers = headersOf(apiKey);
+		// The keys it was made with, by the options they fill: DAYTONA_ARCHIL_EGRESS's archilEgress turns its Archil mount on.
+		const given = options as unknown as Record<string, unknown>;
+		const set = (name: string) => {
+			const value = given[DAYTONA.keys.find((key) => key.name === name)?.option ?? ""];
+			return typeof value === "string" && value !== "";
+		};
 		const host = new DaytonaHost({
+			descriptor: { ...DAYTONA, ...mountsOf(DAYTONA, set) },
 			rest: rest({ base: apiUrl, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
 			headers,
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),

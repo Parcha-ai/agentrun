@@ -443,7 +443,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | none (`unmounted`: archil) | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -914,9 +914,9 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
   computer's `agentrun.epoch` label (Archil's hold on a folder carries none); an Archil mount with no epoch reads back
   as `{ other }`, in words. The token is never in a label, a read-back or an error.
-- **An Archil egress gateway (`HostedOptions.archilEgress`).** For a target whose runners reach
-  Archil only through a gateway, `<IPv4 gateway>:<mount lane>:<data lane>` (such as `10.60.0.40:18100:42050`, parcha-proxy's
-  archil-egress). The helper's mount then starts `computerd archil-relay` on the computer's loopback (127.0.0.1:3129) and
+- **An Archil egress gateway (`HostedOptions.archilEgress`; Daytona's `DAYTONA_ARCHIL_EGRESS`).** For a target whose
+  runners reach Archil only through a gateway, `<IPv4 gateway>:<mount lane>:<data lane>` (such as
+  `192.0.2.40:18100:42050`), an Archil egress relay the operator runs. The helper's mount then starts `computerd archil-relay` on the computer's loopback (127.0.0.1:3129) and
   an nftables table of its own (`inet agentrun_archil`) that redirects root's TCP to 8100 (the mount endpoint) and 32050
   (the file servers, at the raw addresses the mount endpoint returns) to the relay and resets every other TCP to those
   ports. The relay sends each connection to the gateway's lane for its port with a PROXY v2 header naming the original
@@ -1398,9 +1398,20 @@ the sandbox from its default snapshot; the provider never guesses a snapshot's n
 `default` is reached by its id.) Create records the image it was asked for in the label `agentrun.computer.image`,
 beside the deadline's in the provider's own namespace, and attach reports that as `image`.
 
-Daytona takes no mount of the run's folder: Archil's client hangs on its sandboxes (its FUSE session never answers a
-`statx` of the mountpoint), so `capabilities().mount` is `[]` and `check()` refuses an Archil mount up front, code
-`refused`, in the descriptor's `unmounted.archil` words, before anything is asked of Daytona.
+On Daytona's hosted cloud, a Daytona computer takes no mount of the run's folder: Archil's client hangs on its
+sandboxes (its FUSE session never answers a `statx` of the mountpoint), so a provider made without `archilEgress`
+declares `capabilities().mount` `[]`, and `check()` refuses an Archil mount up front, code `refused`, in the
+descriptor's `unmounted.archil` words, before anything is asked of Daytona.
+
+A self-hosted Daytona target whose sandboxes reach Archil through an Archil egress relay does mount it (a run there
+completed in Mode 2 on 11-14). Give that relay as `archilEgress` (`DAYTONA_ARCHIL_EGRESS` in Settings,
+`COMPUTER_DAYTONA_ARCHIL_EGRESS` for conformance), `<IPv4 gateway>:<mount lane>:<data lane>`, checked at construction
+as the adapter checks it. The provider then declares `capabilities().mount` `["archil"]` (the descriptor's
+`mountsWith`, through `mountsOf`), `check()` takes an Archil mount, the sandbox is made with network for the mount's
+root steps (`networkBlockAll` false), and the helper's mount and revoke go through the relay. The computer starts from a
+snapshot of `box/Dockerfile` (`box/build-daytona.py` prints its name), with the daemon user `2510:2510`. A GPU
+computer still takes no mount: Daytona's GPU host gives no `/dev/fuse`. Set `archilEgress` only for such a target: on
+the hosted cloud the mount would hang until its bound.
 
 ### Lifetimes
 
