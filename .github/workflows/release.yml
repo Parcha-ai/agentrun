@@ -276,6 +276,7 @@ jobs:
           provenance: mode=max
           sbom: true
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      # Kept as long as the publish job keeps its evidence: a re-run of a failed image-release, days later, still finds them.
       - name: Keep the build's digest for image-release
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -288,7 +289,6 @@ jobs:
           name: image-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
-          retention-days: 1
 
   # Tags the two builds as one image, ghcr.io/parcha-ai/agentrun-server:<tag> and :beta, once the approved publish job has
   # published and verified the packages. A manifest list over the two digests, each with its SBOM and max provenance: seconds.

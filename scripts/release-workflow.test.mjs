@@ -65,6 +65,8 @@ test('the server image is built natively per architecture from the start, pushed
   assert.match(buildx.with['driver-opts'], /@sha256:[0-9a-f]{64}$/, 'BuildKit by digest');
   const kept = image.steps.find(step => /^actions\/upload-artifact@/.test(step.uses ?? ''));
   assert.equal(kept.with.name, 'image-digest-${{ matrix.arch }}');
+  const evidence = publish.steps.find(step => /^actions\/upload-artifact@/.test(step.uses ?? ''));
+  assert.equal(kept.with['retention-days'], evidence.with['retention-days'], 'kept as long as the release evidence, so a re-run of image-release days later still finds the digests');
 
   assert.deepEqual(needs('image-release').sort(), ['image', 'publish'], 'tagged once the approved packages are published and verified, and both builds are pushed');
   assert.equal(release.environment, undefined, 'it runs only after the approved publish job, with this run\'s GITHUB_TOKEN');
