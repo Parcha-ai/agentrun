@@ -2,7 +2,8 @@
 // what they say, the network reads back as asked, a change to a network the provider does not declare is refused
 // (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
 // the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
-// A create retried with its request id answers the computer the first made, and after release is refused (Full).
+// A create retried with its request id answers the computer the first made, and after release is refused (Full). A
+// deleted computer stays gone: no call to it brings it back.
 import { randomBytes } from "node:crypto";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
@@ -190,6 +191,11 @@ export const providerCases: Case[] = [
 		t.ok(await t.provider.release(ref, "delete"), "a second delete of the same computer");
 		t.deepEqual(await names(t, labels), [], "listed after delete");
 		t.refused(await t.provider.connect(ref), "connect to a deleted computer", ["gone", "not_found"]);
+		// A vendor that wakes a machine on the next call (a session resumed on request, a cold start) brings a deleted
+		// computer back: after the refused connect it stays gone, to attach, a second connect, and list.
+		t.refused(await t.provider.attach({ id: ref.id }), "attach to the deleted computer, after a connect to it", ["not_found"]);
+		t.refused(await t.provider.connect(ref), "a second connect to the deleted computer", ["gone", "not_found"]);
+		t.deepEqual(await names(t, labels), [], "listed after the calls to the deleted computer: nothing came back");
 	}),
 	provider(
 		"create-retried",
