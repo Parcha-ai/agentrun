@@ -19,7 +19,7 @@ const PUBLIC = "https://agentrun.example.com";
 const TOOLS = [{ slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "Lists issues." }];
 const NEED = { source: "composio", toolkit: "github", required: "true" };
 
-const MANIFEST = (extra, { need = NEED, server = "github" } = {}) => `---
+const MANIFEST = (extra, { need = NEED, server = "github", event = "GITHUB_ISSUE_ADDED_EVENT" } = {}) => `---
 name: issues
 version: 0.1.0
 description: Triages each new issue in one repository.
@@ -34,7 +34,7 @@ triggers:
     source:
       kind: composio
       server: ${server}
-      event: GITHUB_ISSUE_ADDED_EVENT
+      event: ${event}
       config: { owner: many-drop, repo: agentrun-scratch }
 ${extra.map((line) => `      ${line}`).join("\n")}
     target: { kind: start_run, input: { content: "Triage the new issue." } }
@@ -63,13 +63,13 @@ async function problemsOf(t, options) {
   }
 }
 
-/** A server serving the package, with a fake Composio (GitHub, connected as agentrun-qa) and each saved Composio GitHub
- *  server of `names`. */
-async function withSaved(t, names) {
-  const { root } = await packageWith(t, []);
+/** A server serving the package (`manifest`, its options), with a fake Composio (GitHub, connected as agentrun-qa) and
+ *  each saved Composio GitHub server of `names`; at the public URL unless `publicUrl` says none. */
+async function withSaved(t, names, { manifest, publicUrl = PUBLIC } = {}) {
+  const { root } = await packageWith(t, [], manifest);
   const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] }, active: ["github"] });
   t.after(() => composio.close());
-  const server = await serve(t, { templates: root, publicUrl: PUBLIC, composioControl: { baseUrl: composio.baseUrl } });
+  const server = await serve(t, { templates: root, ...(publicUrl ? { publicUrl } : {}), composioControl: { baseUrl: composio.baseUrl } });
   for (const name of names) {
     const saved = await server.api("PUT", `/settings/mcp-servers/${name}/composio`, { api_key: composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "agentrun-qa" });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -104,6 +104,28 @@ test("with two saved Composio servers of the toolkit, the trigger binds to the o
   assert.deepEqual(unpicked.body.error.fields.map((f) => f.field), ["servers.github"]);
   const applied = await api("POST", "/templates/issues/apply", { parameters: {}, servers: { github: "work-github" } });
   assert.equal((await madeTrigger(api, applied)).source.server, "work-github");
+});
+
+test("an apply on a server that can't set up a composio trigger yet (no public URL) makes the agent and skips the trigger, in the refusal's words and the console's path, as a github trigger with GitHub not connected is", async (t) => {
+  const { api, composio } = await withSaved(t, ["work-github"], { publicUrl: null });
+  const applied = await api("POST", "/templates/issues/apply", { parameters: {} });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.deepEqual(applied.body.trigger_ids, [], "no trigger made");
+  assert.equal(composio.instances.size, 0, "nothing made on Composio");
+  const warning = applied.body.warnings.find((w) => w.field === "triggers.0");
+  assert.equal(warning?.reason, "not_set_up_here", JSON.stringify(applied.body.warnings));
+  assert.match(warning.message, /public URL/, "the refusal's own words");
+  assert.match(`${warning.message} ${warning.fix ?? ""}`, /Triggers → New app trigger/);
+  assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).status, 200, "the agent stands");
+  assert.deepEqual((await api("GET", "/triggers")).body.triggers, []);
+});
+
+test("any other refusal of a package's composio trigger still undoes the apply: an event Composio doesn't know", async (t) => {
+  const { api, composio } = await withSaved(t, ["work-github"], { manifest: { event: "GITHUB_NOT_AN_EVENT" } });
+  const applied = await api("POST", "/templates/issues/apply", { parameters: {} });
+  assert.ok(applied.status >= 400, `${applied.status}: ${JSON.stringify(applied.body)}`);
+  assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
+  assert.equal(composio.instances.size, 0);
 });
 
 test("a package's composio trigger whose server names no composio need of the package is refused when it is read, saying to name a need's toolkit", async (t) => {
