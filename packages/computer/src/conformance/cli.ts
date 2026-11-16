@@ -71,7 +71,7 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
   --json      print the report as JSON
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
-              by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stdin while
+              by hand. Text of every kind both ways, 8 MiB by sha256, output and stdin while the process runs, stdin while
               stdout is left unread, stderr apart, the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s)
               that is not cut off; then what the machine offers: root's network namespace, /dev/fuse, the arch, the
               kernel (gVisor) and the TCP listeners, each with what it means for your host

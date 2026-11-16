@@ -474,7 +474,8 @@ export class HostedProvider implements ComputerProvider {
 	/** Writes labels to the machine's label file, root's alone, and answers them as the file reads back. */
 	async #keep(ref: ComputerRef, labels: Record<string, string>, signal?: AbortSignal): Promise<Result<Record<string, string>>> {
 		const what = `writing ${ref.name}'s labels to ${LABEL_FILE}`;
-		const wrote = await runToExit(this.host, ref.id, labelsCommand(true), { stdin: Buffer.from(JSON.stringify(labels)), ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what });
+		const json = Buffer.from(JSON.stringify(labels));
+		const wrote = await runToExit(this.host, ref.id, labelsCommand(json.length), { stdin: [json], ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what });
 		if (!wrote.ok) return wrote;
 		const read = wrote.value.exitCode === 0 ? labelMapOf(wrote.value.stdout) : undefined;
 		if (read === undefined) return this.#fail("refused", `${what} failed (exit ${wrote.value.exitCode}): ${`${wrote.value.stdout} ${wrote.value.stderr}`.trim().slice(0, 300)}`);

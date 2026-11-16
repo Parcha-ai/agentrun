@@ -166,21 +166,22 @@ const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "
 export const LABEL_FILE = "/var/lib/agentrun/labels.json";
 
 /**
- * The label file, as root. With write, stdin replaces it: written to a file of its own beside it (two writers never
- * share one) and renamed in, 0600 in a 0700 directory, both root's. Then it prints the file; exit 3 when there is none.
+ * The label file, as root. With write <bytes>, that many bytes of stdin replace it, read by length so no end of stdin
+ * is needed: written to a file of its own beside it (two writers never share one) and renamed in, 0600 in a 0700
+ * directory, both root's. Then it prints the file; exit 3 when there is none.
  */
 const LABELS_SCRIPT = [
 	"# agentrun-computer: labels",
 	"f=$1",
 	ROOT,
 	'if [ "${2-}" = write ]; then',
-	`\t$p sh -c 'umask 077; d=\${0%/*}; mkdir -p "$d" && chown 0:0 "$d" && chmod 700 "$d" && t=$(mktemp "$0.XXXXXX") || exit 5; cat >"$t" && mv -f "$t" "$0" || { rm -f "$t"; exit 5; }' "$f" || exit 5`,
+	`\t$p sh -c 'umask 077; d=\${0%/*}; mkdir -p "$d" && chown 0:0 "$d" && chmod 700 "$d" && t=$(mktemp "$0.XXXXXX") || exit 5; head -c "$1" >"$t" && [ "$(wc -c <"$t")" -eq "$1" ] && mv -f "$t" "$0" || { rm -f "$t"; exit 5; }' "$f" "$3" || exit 5`,
 	"fi",
 	`exec $p sh -c '[ -e "$0" ] || exit 3; exec cat "$0"' "$f"`,
 ].join("\n");
 
-/** The label file's read, or with write, its write from stdin and then its read. */
-export const labelsCommand = (write = false): string[] => argvOf(LABELS_SCRIPT, [LABEL_FILE, ...(write ? ["write"] : [])]);
+/** The label file's read, or given the byte length of the JSON on stdin, its write and then its read. */
+export const labelsCommand = (bytes?: number): string[] => argvOf(LABELS_SCRIPT, [LABEL_FILE, ...(bytes === undefined ? [] : ["write", String(bytes)])]);
 
 /**
  * A pid1 machine's main process: waits, bounded, for the daemon this create installed to be moved into place executable

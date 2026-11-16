@@ -75,26 +75,42 @@ function redirected(cause: unknown): boolean {
 	return /redirect/i.test(`${(cause as Error | null)?.message ?? ""} ${(inner as Error | null)?.message ?? ""}`);
 }
 
+/** An accepted answer whose body is read as it comes: an event stream. */
+export interface RestStream {
+	status: number;
+	body: AsyncIterable<Uint8Array>;
+}
+
 export interface Rest {
 	url(path: string): string;
 	call(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<RestAnswer>>;
 	/** call, with the body read as JSON (null for none). */
 	json(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<unknown>>;
+	/**
+	 * call, with an accepted answer's body handed back unread, as it comes (a process's events). The bound covers the
+	 * answer's start alone: the body has none but the caller's signal, which ends it too.
+	 */
+	stream(method: string, url: string, init?: RestInit, signal?: AbortSignal): Promise<Result<RestStream>>;
 }
+
+const NO_BODY: AsyncIterable<Uint8Array> = { async *[Symbol.asyncIterator]() {} };
 
 export function rest(options: RestOptions): Rest {
 	const base = options.base.replace(/\/+$/, "");
 	const fetcher = options.fetch ?? fetch;
 	const wait = options.retry?.pause ?? pause;
 
-	async function call(method: string, url: string, init: RestInit = {}, signal?: AbortSignal): Promise<Result<RestAnswer>> {
+	/** One call, sent again as init.retry says; an accepted answer is what take makes of it, within the call's bound. */
+	async function exchange<T>(method: string, url: string, init: RestInit, signal: AbortSignal | undefined, take: (response: Response) => Promise<T>): Promise<Result<T>> {
 		const what = `${method} ${new URL(url).pathname}`;
 		const attempts = init.retry === undefined || init.retry === false || options.retry === undefined ? 1 : options.retry.attempts;
 		const timeoutMs = init.timeoutMs ?? options.timeoutMs;
 		const accepted = init.accept ?? ((status: number) => status >= 200 && status < 300);
 		for (let attempt = 1; ; attempt++) {
 			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
-			const timeout = AbortSignal.timeout(timeoutMs);
+			// A bound that lets go once the answer is taken, so a body read after it (a stream's) is never cut by it.
+			const timeout = new AbortController();
+			const timer = setTimeout(() => timeout.abort(), timeoutMs);
 			let failure: ComputerError;
 			let retryable: boolean;
 			try {
@@ -105,10 +121,10 @@ export function rest(options: RestOptions): Rest {
 					headers,
 					body: init.json === undefined ? init.form : JSON.stringify(init.json),
 					redirect: "error",
-					signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+					signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
 				});
+				if (accepted(response.status)) return ok(await take(response));
 				const bytes = new Uint8Array(await response.arrayBuffer());
-				if (accepted(response.status)) return ok({ status: response.status, bytes });
 				const own = typeof init.retry === "function";
 				retryable = own ? (init.retry as (status: number, bytes: Uint8Array) => boolean)(response.status, bytes) : init.retry === true && (response.status === 429 || response.status >= 500);
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
@@ -118,14 +134,19 @@ export function rest(options: RestOptions): Rest {
 				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 				// No answer: the request may have reached the vendor, so only a call that may run twice is sent again.
 				retryable = init.retry === true;
-				if (timeout.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
+				if (timeout.signal.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
 				else if (redirected(cause)) return vendorFail(options.vendor, `${what}: the API answered with a redirect, which is never followed: it would carry the key`);
 				else failure = { code: "vendor", vendor: options.vendor, message: `${what}: ${(cause as Error).message}` };
+			} finally {
+				clearTimeout(timer);
 			}
 			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
 			await wait((options.retry?.baseMs ?? 0) * 2 ** (attempt - 1), signal);
 		}
 	}
+
+	const call = (method: string, url: string, init: RestInit = {}, signal?: AbortSignal) =>
+		exchange(method, url, init, signal, async (response): Promise<RestAnswer> => ({ status: response.status, bytes: new Uint8Array(await response.arrayBuffer()) }));
 
 	return {
 		url: (path) => `${base}${path}`,
@@ -134,6 +155,7 @@ export function rest(options: RestOptions): Rest {
 			const answer = await call(method, url, init, signal);
 			return answer.ok ? ok(jsonOf(answer.value.bytes)) : answer;
 		},
+		stream: (method, url, init = {}, signal) => exchange(method, url, init, signal, async (response): Promise<RestStream> => ({ status: response.status, body: response.body ?? NO_BODY })),
 	};
 }
 

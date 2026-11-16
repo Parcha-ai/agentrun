@@ -387,7 +387,7 @@ export function fakeHost({
 	function run(m, argv) {
 		const script = scriptOfWords(argv);
 		const verb = script === undefined ? rootVerb(argv) : undefined;
-		const kind = verb ?? script?.kind ?? (argv[2]?.includes("cat >") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
+		const kind = verb ?? script?.kind ?? (argv[2]?.includes("base64 -d") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
 		fake.events.push({ machine: m.id, what: `run ${kind}` });
 		const proc = processOf(m, kind);
 		if (hang !== undefined && hang === kind) return proc;
@@ -411,19 +411,44 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "labels") {
-			// The label file, root's alone: written from stdin with "write", then printed; exit 3 when there is none.
-			const [path, write] = script.args;
+			// The label file, root's alone: with "write <bytes>", that many bytes of stdin replace it, end of stdin or not,
+			// then it is printed; exit 3 when there is none, 5 when stdin ends short.
+			const [path, write, bytes] = script.args;
 			const print = () => (m.file === undefined ? proc.exit(3) : (proc.out.push(m.file), proc.exit(0)));
 			fake.labelRuns = [...(fake.labelRuns ?? []), { machine: m.id, path, write: write === "write" }];
-			if (write === "write") proc.onEnd = async () => ((m.file = Buffer.concat(proc.chunks).toString("utf8")), print());
-			else queueMicrotask(print);
+			if (write === "write") {
+				let stored = false;
+				const done = async () => {
+					const got = Buffer.concat(proc.chunks);
+					if (got.length < Number(bytes) || stored) return;
+					stored = true;
+					m.file = got.subarray(0, Number(bytes)).toString("utf8");
+					print();
+				};
+				proc.onWrite = done;
+				proc.onEnd = async () => {
+					await done();
+					proc.exit(5);
+				};
+			} else queueMicrotask(print);
 			return proc;
 		}
 		if (kind === "upload") {
-			proc.onEnd = async () => {
-				m.files.set(argv[4], Buffer.concat(proc.chunks));
+			// `head -c <length> | base64 -d > <path>`: done once the base64 text's length has come, end of stdin or not.
+			const length = Number(argv[5]);
+			let stored = false;
+			const done = async () => {
+				const text = Buffer.concat(proc.chunks).toString("latin1");
+				if (text.length < length || stored) return;
+				stored = true;
+				m.files.set(argv[4], Buffer.from(text.slice(0, length), "base64"));
 				fake.uploads.push({ machine: m.id, path: argv[4], through: "exec" });
 				proc.exit(0);
+			};
+			proc.onWrite = done;
+			proc.onEnd = async () => {
+				await done();
+				proc.exit(1, "base64: invalid input\n");
 			};
 			return proc;
 		}

@@ -34,9 +34,10 @@ Each choice below cost us something, and we say what.
   out, so nothing ever has to guess which methods a daemon has. *What it costs:* no mixed versions during a rollout.
   The one exception is a driver a person installs on their own device (a Mac, a phone), where only the protocol must
   match ([`attach.md`](attach.md)).
-- **Exec is byte-exact, two-way and live.** The whole protocol rides one exec stream for the computer's whole life:
-  every byte value both ways, stdin open, output as it's written, and no timeout on a silent process. *What it costs:*
-  a vendor whose exec runs a command and returns its output at the end (a one-shot REST exec) can't plug in today.
+- **Exec keeps text intact, two-way and live.** The whole protocol rides one exec stream for the computer's whole life:
+  UTF-8 text both ways, stdin open, output as it's written, and no timeout on a silent process. A text-only exec in
+  split calls fits through `framedExec`. *What it costs:* a vendor whose exec runs a command and returns its output at
+  the end (a one-shot REST exec) can't plug in today.
   There's a pre-check for this ([`provider.md`](provider.md#a-hosted-vendors-exec)).
 - **Isolation is read from inside, never taken on trust.** The agent's programs run as a non-root user, in a network
   namespace of their own. On hosted vendors today that namespace has loopback alone. After every create, `computerd`

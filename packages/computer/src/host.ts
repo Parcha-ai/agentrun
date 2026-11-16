@@ -59,21 +59,25 @@ export interface MachineHost {
 	 *
 	 * exec is the whole protocol: the adapter installs and starts its daemon through it, then talks to the daemon over
 	 * one exec'd process's stdin and stdout for the computer's whole life (the stdio bridge, spec/computer/stdio.md). So:
-	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr bytes come
-	 *   back as the process writes them, while it runs. Not request and response, never held until the process exits.
-	 * - Byte-exact. Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
-	 *   nothing added or dropped. A client that hands output over as text breaks this (E2B's commands.run does).
+	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr come back as
+	 *   the process writes them, while it runs. Not request and response, never held until the process exits.
+	 * - Text intact. UTF-8 text both ways, every code point as it was: long lines, \r and \r\n kept (no terminal, no
+	 *   newline translation), nothing added or dropped. Everything the adapter sends or reads is text (the bridge's JSON
+	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this.
 	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
 	 *   on the stream, are off.
-	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process itself.
-	 * The process reads what write() gives until end(); the adapter ends stdin at once where it gives none. The exec
-	 * pre-check (conformance --exec-stream, src/conformance/exec-stream.ts) checks each of these on a machine made by
-	 * hand, with exec alone.
+	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
+	 *   machine, not only its streams.
+	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
+	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload and its label file's write read a
+	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
+	 * this from them with framedExec (./hosted/framed-exec.ts). The exec pre-check (conformance --exec-stream,
+	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
 	 */
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
 	/**
 	 * Puts bytes at path in the machine, as root. Optional: a vendor with no file API leaves it out, and the adapter
-	 * streams the file through exec's stdin.
+	 * streams the file through exec's stdin as base64 text, which root decodes (`base64 -d`, in coreutils and busybox).
 	 */
 	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void>;
 	/**
@@ -193,9 +197,9 @@ export interface Machine {
 export interface MachineProcess {
 	stdout: AsyncIterable<Uint8Array>;
 	stderr: AsyncIterable<Uint8Array>;
-	/** Writes to its stdin, in order; rejects once the process has ended. */
+	/** Writes UTF-8 text to its stdin, in order, whole characters each; rejects once the process has ended. */
 	write(bytes: Uint8Array): Promise<void>;
-	/** Ends its stdin, so it reads end of file. */
+	/** Ends its stdin, so it reads end of file, where the vendor can; else nothing (exec's doc). */
 	end(): Promise<void>;
 	/** Its exit code once it has ended. */
 	wait(): Promise<number>;
