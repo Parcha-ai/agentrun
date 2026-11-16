@@ -154,6 +154,17 @@ test("a save that fails, whose removal Composio refuses too, says in its error w
   assert.ok(!JSON.stringify(res.body).includes(s.composio.apiKey) && !s.log.text().includes(s.composio.apiKey), "the key is in no answer or log line");
 });
 
+test("a save refused on a field (422: Composio serves none of the picked actions) whose removal Composio refuses too says what is left in its error's details as well as its message, for a page that shows the fields", async (t) => {
+  const s = await setup(t, { noTools: true, fail: { method: "DELETE", path: "/api/v3/auth_configs/ac_made_1", status: 500 } });
+  const res = await s.put("gh");
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  const note = "Left in Composio: the auth config ac_made_1. Remove what is left of gh in Composio yourself: https://platform.composio.dev";
+  assert.deepEqual(res.body.error.fields.map((field) => field.field), ["tools"]);
+  assert.ok(res.body.error.message.endsWith(` ${note}`), res.body.error.message);
+  assert.deepEqual(res.body.error.details, { composio: note });
+  await gone(s, "gh");
+});
+
 test("a delete that starts while a save reusing its auth config and account is still at Composio waits for it: both are kept, the save's server's now", async (t) => {
   const s = await setup(t);
   await s.save("gh1");

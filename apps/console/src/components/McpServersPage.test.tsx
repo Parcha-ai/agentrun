@@ -755,6 +755,22 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(said?.className).toContain("text-success-text");
   });
 
+  it("a save refused on a field (422 with fields) shows the field's words and, under them, what it left at Composio", async () => {
+    const words = "Composio's github server doesn't serve GITHUB_LIST_ISSUES: pick another action.";
+    const note = "Left in Composio: the auth config ac_made_1. Remove what is left of gh in Composio yourself: https://platform.composio.dev";
+    const s = server([[]], (c) => (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio" ? refusal(422, "input_invalid", `${words} ${note}`, { fields: [{ field: "tools", reason: "not_served", message: words }], details: { composio: note } }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    const alert = p.host.querySelector('[role="alert"]');
+    expect([...(alert?.querySelectorAll("p") ?? [])].map((e) => e.textContent)).toEqual([words, note]);
+  });
+
   it("drops an action list asked for a toolkit no longer in the field, and keeps Cancel off while a save is out", async () => {
     let late: (r: Response) => void = () => undefined;
     let first = true;
