@@ -146,8 +146,13 @@ promoted (source `check`) when agreement is at least `learning.agree_min` (0.8) 
 as data (each one's input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked
 the same way. Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or
 its owner acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that
-stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades, a refit or a queued revision. With no input it fits, it
-is promoted on its passing dry run (`n` 0).
+stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades, a refit or a queued revision. The
+inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
+Every reserved input counts in `n`: one whose replay run was never created, or never ended, by the check's deadline is a
+failed input, never left out. A draft with nothing to check it on (none of those runs has an input it takes, or every
+input was skipped at a write, such as an MCP tool listed with no `readOnlyHint`) is never promoted: it stops
+(`check.stopped`, `n` 0) with a reason starting "nothing to check it on", which the loop read shows as the compile's
+draft error, and it asks no recompile (a revision would have nothing to be checked on either).
 
 When a run ends, its end-of-run turn answers with the notes it would keep, one ` ```note <file>.md ` block each
 (`reflectPrompt`, `parseReflection`), and, only when the work repeats, one skill in a ` ````skill <name> ` block (four
