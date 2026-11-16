@@ -71,6 +71,11 @@ test("a begin that waits out its busy timeout names the transaction open in this
 /** This process held up for `ms` (a synchronous call, a long collection, the machine holding the process): its event loop
  *  runs nothing meanwhile, the store's workers run on. */
 const heldUp = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** The waiter's busy wait, and the hold-up past it, in the cases below. What is left of the wait after the hold-up (the
+ *  hold-up's first look, TICK_MS, is never given back) carries the holder's round trips to its commit on a loaded
+ *  machine, whose small delays count as time this process ran: at 100 ms it ran out under load. */
+const WAITER_BUSY_MS = 1_000;
+const HELD_UP_MS = 2_500;
 
 // The server and its runner in one process, two connections on one store: a write of one waited on a transaction of the
 // other while the process was held up. That holder's statements wait for the same event loop, and its deadline never
@@ -83,7 +88,7 @@ for (const [name, write] of [
   test(`${name} whose busy wait ran out on a transaction of this process while the process was held up waits on for it, never StoreBusy, and lands once it commits`, async (t) => {
     const path = await file(t);
     const holder = await Connection.open(path);
-    const waiter = await Connection.open(path, { busyTimeoutMs: 100 });
+    const waiter = await Connection.open(path, { busyTimeoutMs: WAITER_BUSY_MS });
     let go;
     const going = new Promise((resolve) => { go = resolve; });
     t.after(() => go());
@@ -101,8 +106,8 @@ for (const [name, write] of [
     const waited = write(waiter);
     // Its request is with its worker (every microtask run), waiting on the holder's lock.
     await new Promise((resolve) => setImmediate(resolve));
-    // Held up ten times the waiter's busy wait: its worker's wait runs out meanwhile, the holder's next statement waits.
-    heldUp(1_000);
+    // Held up past the waiter's busy wait: its worker's wait runs out meanwhile, the holder's next statement waits.
+    heldUp(HELD_UP_MS);
     go();
     await holding;
     await waited;
@@ -170,7 +175,7 @@ for (const [name, op, write] of [
   test(`${name} posted in the same turn as a begin of this process that took the lock, both answers unread while the process was held up past the busy wait (${order}), waits on for it, never StoreBusy`, async (t) => {
     const path = await file(t);
     const holder = await Connection.open(path);
-    const waiter = await Connection.open(path, { busyTimeoutMs: 300 });
+    const waiter = await Connection.open(path, { busyTimeoutMs: WAITER_BUSY_MS });
     t.after(async () => { await waiter.close(); await holder.close(); });
     await holder.exec("CREATE TABLE notes (text TEXT)");
     if (beginReadAfter) answeredAfter(holder, "begin", waiter);
@@ -190,8 +195,8 @@ for (const [name, op, write] of [
     onPost(waiter, op, () => { waiterPosted = true; });
     const waited = write(waiter);
     await microtasksUntil(() => waiterPosted, "the waiter's request is posted in the same turn");
-    // Held up five times the waiter's busy wait: its worker's wait runs out meanwhile, the holder's begin answer unread.
-    heldUp(1_500);
+    // Held up past the waiter's busy wait: its worker's wait runs out meanwhile, the holder's begin answer unread.
+    heldUp(HELD_UP_MS);
     await holding;
     await waited;
     assert.deepEqual((await holder.all("SELECT text FROM notes ORDER BY rowid")).map((row) => row.text), ["held", "after the hold-up", "waited"]);
