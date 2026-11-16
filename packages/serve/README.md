@@ -2299,8 +2299,8 @@ both servers and sends nothing; `DELETE` forgets the account.
 **The trigger.** `{kind: "email", mailbox?: "INBOX", every_s?: 60, accept?}` reads the mailbox every `every_s` seconds
 and starts a run for each new message its `accept` takes (a rule's `where` reads `/from`, `/to`, `/subject`, `/text`).
 It watches from when it is made or turned on: the messages already there, and any that came while it was off, start no
-runs, and its note says so ("Watching INBOX from now: the 3 messages already there won't start runs."). Its first check
-runs at once; its result is `last_check` (null until it lands). When the first checks fail, the first that signs in says
+runs, and its note says so ("Watching INBOX from now: the 3 messages already there won't start runs."). A create or a
+turn-on waits for its first check (10 seconds at most), so the answer carries `last_check`. When the first checks fail, the first that signs in says
 "Couldn't check INBOX until now; watching from now: ...". An edit of its filter or `every_s` keeps its place. Mail this
 server sent starts none. A mail server out of reach is said in `last_check` and tried at the next time; one that refuses the
 sign-in 3 times in a row (its first check's among them) turns the trigger off (`sign_in_refused`) until the account is

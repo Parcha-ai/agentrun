@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, serve } from "./support.mjs";
-import { fakeClock, firings, keyOf, made } from "./trigger-support.mjs";
+import { fakeClock, firings, keyOf, made, until } from "./trigger-support.mjs";
 import { ADDRESS, checked, emailTrigger, firedInput, launchText, mailbox, saved } from "./email-support.mjs";
 
 const T0 = "2026-06-01T00:00:30Z";
@@ -300,4 +300,29 @@ test("a run an email started is handed no other run's answer: bob's run never re
   assert.ok(!content.includes("The result of this trigger's last completed run"), `bob's run is handed nothing of alice's: ${content}`);
   assert.equal(content.split("refund of $120").length - 1, 1, "alice's answer is in bob's input only as the trigger's own words");
   await follow(api, second.run_id, ["completed"]);
+});
+
+test("a poll slower than every_s: a time that comes while a time's poll runs is skipped, never polled after it", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api } = await serve(t, { triggerClock: clock, runner: false });
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  await made(api, "mail");
+  const created = await trigger(api, emailTrigger("mail", { every_s: 60 }));
+  await checked(api, created.id, T0);
+  const examines = () => faux.commands().filter((c) => /^EXAMINE "?INBOX"?/i.test(c)).length;
+  const before = examines();
+
+  // Minute 1's poll held at the mail server across minute 2.
+  const release = faux.hold(/^EXAMINE "?INBOX"?/i);
+  clock.to(minute(1));
+  assert.ok(await until(async () => examines() === before + 1, 10_000), "minute 1's poll reached the server");
+  clock.to(minute(2));
+  assert.ok(await until(async () => (await api("GET", `/triggers/${created.id}`)).body.next_at === "2026-06-01T00:03:00.000Z", 10_000), "minute 2 came and went");
+  release();
+  const view = await checked(api, created.id, minute(1));
+  assert.equal(view.last_check.ok, true);
+  await new Promise((done) => setTimeout(done, 1_000));
+  assert.equal(examines(), before + 1, "one poll for the two times: minute 2's was skipped, not run after it");
+  assert.equal((await api("GET", `/triggers/${created.id}`)).body.last_check.at, view.last_check.at);
 });

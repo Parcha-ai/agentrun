@@ -75,6 +75,9 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 export const LAST_CHECK = "last_check";
 /** The sign-ins a polled source's server refuses in a row that turn its trigger off. */
 export const REFUSALS_TO_STOP = 3;
+/** How long a create or a turn-on of a polled source waits for its first poll (where it starts watching) before it
+ *  answers: past it, the answer goes out and the poll carries on. */
+export const FIRST_POLL_WAIT_MS = 10_000;
 /** Whether `adapter`'s firings are events from outside (pushed, or found by a poll), each its own, never a time. */
 const eventful = (adapter: TriggerAdapter | undefined) => adapter?.delivery === "push" || adapter?.poll !== undefined;
 /** A polled trigger's last check as kept (LAST_CHECK), when it reads. */
@@ -288,10 +291,15 @@ export class Triggers {
   private waiting = false;
   /** The triggers whose day-kept keys are at their cap, said once until they are under it again. */
   private readonly seenFull = new Set<string>();
-  /** The polled triggers whose poll is running: one at a time each. */
-  private readonly polling = new Set<string>();
-  /** The polled triggers kicked (kick) while their poll ran: polled again once it is done. */
-  private readonly pollAgain = new Set<string>();
+  /** The polled triggers whose poll is running, one at a time each: true when it is a kick's (kick), which a time come
+   *  meanwhile waits for (the first poll, the watching start, is never the reason a time is lost); false for a time's own,
+   *  which a time come meanwhile skips (a server slower than every_s is never polled back to back). */
+  private readonly polling = new Map<string, boolean>();
+  /** The polled triggers kicked (kick), or whose time came during a kick's poll, while their poll ran: polled again once
+   *  it is done, as a kick's poll (true) when a kick asked for it, else as a time's. */
+  private readonly pollAgain = new Map<string, boolean>();
+  /** Who waits on the poll after the one running (a kick made while it ran): told when that one is done. */
+  private readonly pollWaiters = new Map<string, (() => void)[]>();
   /** Each polled trigger's count of turn-ons: a poll that sees it changed keeps nothing, its cursor read before. */
   private readonly restarts = new Map<string, number>();
   private closed = false;
@@ -367,8 +375,9 @@ export class Triggers {
     const { row, minted } = upstream ? await upstream.make(source, id, enabled, keep) : await keep(source);
     // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
     await this.arm();
-    // A polled source polls at once: its first poll, with no cursor, is where it starts watching.
-    if (enabled) this.kick(asTrigger(row));
+    // A polled source polls at once, and is answered once it has (FIRST_POLL_WAIT_MS at most): its first poll, with no
+    // cursor, is where it starts watching, so mail after the answer starts runs, and the answer says the check.
+    if (enabled) await this.firstPoll(asTrigger(row));
     // What it minted, shown this once, by field: a webhook's `secret`.
     return { ...(await this.view(asTrigger(row))), ...(minted as { secret?: string }) };
   }
@@ -553,12 +562,13 @@ export class Triggers {
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
-    // Turned on again, a polled source forgets its cursor and last check, so its first poll watches from now; an edit of its
-    // source keeps the cursor (a poll whose cursor was read on another mailbox or account starts over itself). Either way
-    // it polls at once.
+    // Turned on again, a polled source forgets its cursor and last check, so its first poll watches from now, and is
+    // answered once it has (as a create is); an edit of its source keeps the cursor (a poll whose cursor was read on
+    // another mailbox or account starts over itself) and polls at once, unawaited: that poll may start runs.
     if (polls && !trigger.enabled) await this.deps.settings(adapter.id)?.remove(id);
     await this.arm();
-    if (polls) this.kick(asTrigger(row));
+    if (polls && !trigger.enabled) await this.firstPoll(asTrigger(row));
+    else if (polls) void this.kick(asTrigger(row));
     // Turned on or off by the owner: the same at its sender, once it holds here; what could not be done there is said.
     const said = upstream && enabled !== trigger.enabled ? await upstream.turned(row.source as Source, id, enabled) : undefined;
     return { ...(await this.view(asTrigger(row))), ...said };
@@ -687,35 +697,56 @@ export class Triggers {
 
   /** A polled source's time come: its next time moved on from the latest that has come (a time it was not there for is no
    *  `missed` row: what came meanwhile is still there to read), then its poll, off the timer, so a slow server never
-   *  holds the other triggers; with one still running for it, once that one is done (pollDone). */
+   *  holds the other triggers. With one still running for it: once that one is done when it is a kick's (pollDone),
+   *  else skipped. */
   private async pollDue(trigger: Trigger, adapter: TriggerAdapter, clock: Clock, now: number): Promise<void> {
     const last = clock.latest(trigger.nextAt!, now);
     const next = clock.next(last);
     await this.store.triggers.update(trigger.id, { nextAt: next !== null && Number.isFinite(next) && Math.abs(next) <= DATE_MAX_MS ? next : null });
-    if (this.polling.has(trigger.id)) return void this.pollAgain.add(trigger.id);
-    this.polling.add(trigger.id);
+    const running = this.polling.get(trigger.id);
+    if (running !== undefined) return void (running && !this.pollAgain.has(trigger.id) && this.pollAgain.set(trigger.id, false));
+    this.polling.set(trigger.id, false);
     void this.polled(trigger, adapter, last, now).finally(() => this.pollDone(trigger.id));
   }
 
   /** `trigger`'s poll now, off the timer (made, turned on again, or its source edited), after the one running for it when
    *  one is. */
-  private kick(trigger: Trigger): void {
+  private kick(trigger: Trigger, waitedFor = true): Promise<void> {
     const adapter = this.adapter(trigger.source);
-    if (!adapter.poll || this.closed) return;
-    if (this.polling.has(trigger.id)) return void this.pollAgain.add(trigger.id);
+    if (!adapter.poll || this.closed) return Promise.resolve();
+    if (this.polling.has(trigger.id)) {
+      this.pollAgain.set(trigger.id, true);
+      return new Promise<void>((done) => this.pollWaiters.set(trigger.id, [...(this.pollWaiters.get(trigger.id) ?? []), done]));
+    }
     const now = this.clock.now();
-    this.polling.add(trigger.id);
-    void this.polled(trigger, adapter, now, now).finally(() => this.pollDone(trigger.id));
+    this.polling.set(trigger.id, waitedFor);
+    return this.polled(trigger, adapter, now, now).catch((error: unknown) => this.deps.say({ condition: "trigger_poll_unrecorded", trigger: trigger.id, error: String((error as Error)?.message ?? error) })).finally(() => this.pollDone(trigger.id));
   }
 
-  /** `id`'s poll done: a kick or a time come while it ran polls now, once however many came, the trigger read again (on,
-   *  and as it is now). */
+  /** `trigger`'s first poll (made, or turned on again) kicked and waited on, FIRST_POLL_WAIT_MS at most. */
+  private async firstPoll(trigger: Trigger): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const bound = new Promise<void>((done) => {
+      timer = setTimeout(done, FIRST_POLL_WAIT_MS);
+      timer.unref?.();
+    });
+    await Promise.race([this.kick(trigger), bound]).finally(() => clearTimeout(timer));
+  }
+
+  /** `id`'s poll done: a kick, or a time come during a kick's poll, polls now, once however many came, the trigger read
+   *  again (on, and as it is now). A time come during this one skips, as during a time's own. */
   private pollDone(id: string): void {
     this.polling.delete(id);
-    if (!this.pollAgain.delete(id) || this.closed) return;
-    void this.find(id).then((trigger) => {
-      if (trigger?.enabled) this.kick(trigger);
-    }, (error: unknown) => this.deps.say({ condition: "trigger_poll_unrecorded", trigger: id, error: String((error as Error)?.message ?? error) }));
+    const again = this.pollAgain.get(id);
+    this.pollAgain.delete(id);
+    const waiters = this.pollWaiters.get(id) ?? [];
+    this.pollWaiters.delete(id);
+    const told = () => waiters.forEach((done) => done());
+    if (again === undefined || this.closed) return told();
+    void this.find(id).then((trigger) => (trigger?.enabled ? this.kick(trigger, again) : undefined)).then(told, (error: unknown) => {
+      this.deps.say({ condition: "trigger_poll_unrecorded", trigger: id, error: String((error as Error)?.message ?? error) });
+      told();
+    });
   }
 
   /** One poll of `trigger`'s source for its time `nominalAt`: each event it found recorded in order (its note a skipped
