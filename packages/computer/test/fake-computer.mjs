@@ -232,6 +232,7 @@ function fakeDaemon(hello, computer) {
  *   writes them (default none; "no list": a daemon that lists none); `listenerSearchIncomplete`: the tables it could not
  *   read.
  * - `rootRunsWritable`: the paths isolation.root-runs' check reads as writable by the computer's user (default none).
+ * - `readable`: files the computer's user reads, by path, with their text (default none).
  * - `persistence`: capabilities().persistence ({ keepsState: true, resume }), left out unless given. With it, check()
  *   takes spec.owner with no lifetime, create labels the computer with its owner, release "detach" stops an agent's
  *   computer with its files kept (and, with resume, its processes), and attach with a claim brings it back under the
@@ -294,6 +295,7 @@ export function fakeComputers({
 	listeners = [],
 	listenerSearchIncomplete = [],
 	rootRunsWritable = [],
+	readable = {},
 	display,
 	persistence,
 	brokenPersistence,
@@ -397,7 +399,7 @@ export function fakeComputers({
 					processes: [],
 					listPage,
 					tree: new Map(),
-					contents: new Map(),
+					contents: new Map(Object.entries(readable).map(([path, text]) => [path, Buffer.from(text)])),
 					filesPage,
 					bound: folderOf(spec.mount),
 					toolCannotWrite,

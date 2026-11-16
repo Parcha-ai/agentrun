@@ -1,3 +1,4 @@
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { pasteFromClipboard } from "@/lib/paste";
 import { HardDrive } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -108,13 +109,15 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Workspace</h1>
           <p className="mt-2 text-lead text-muted-foreground">{COPY}</p>
         </div>
+        <div className={settingsBodyClass}>
         {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
+        <SettingsSection title="Disk">
         <section aria-label="Archil" className="border p-4">
           <div className="flex flex-wrap items-center gap-3">
             <HardDrive className="size-4 text-muted-foreground" aria-hidden />
@@ -169,6 +172,8 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
             <Button type="submit" size="sm" variant="solid" disabled={busy}>{busy ? "Saving" : view.on ? "Save" : "Turn on"}</Button>
           </form>
         </section>
+        </SettingsSection>
+        </div>
       </div>
     </div>
   );

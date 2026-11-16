@@ -440,7 +440,7 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
   async function screen(read: () => Promise<RunComputer>, run: Run, extra: Extra = {}) {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    const show = (r: Run) => act(async () => { root!.render(createElement(RunDetail, { run: r, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: read, computerEvery: 20, ...extra } as never)); });
+    const show = (r: Run, more: Extra = {}) => act(async () => { root!.render(createElement(RunDetail, { run: r, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: read, computerEvery: 20, ...extra, ...more } as never)); });
     await show(run);
     await settle();
     const panel = () => host.querySelector('section[aria-label="Screen"]') as HTMLElement | null;
@@ -523,6 +523,49 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     await settle(100);
     expect(p.panel()!.textContent).toContain("The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on.");
     expect(p.panel()!.textContent).not.toContain("released");
+  });
+
+  it("a desktop kept at a park and answered in time is waited for until the resume's screen is up, never 'released'; let go after that, it is", async () => {
+    const PARKED = "2026-11-05T09:10:00Z";
+    const at = new Date("2026-11-05T09:20:00Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const phase = (seq: number, summary: string, timestamp: string) => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    const rows = [phase(1, "The desktop is ready: Linux (amd64), from E2B.", "2026-11-05T09:00:00Z"), phase(2, "The desktop is kept for 10 minutes while you decide.", PARKED)];
+    const resumed = [...rows, phase(3, "The desktop is ready: Linux (amd64), from E2B. It's the same desktop, as the wait left it.", "2026-11-05T09:11:10Z")];
+    // GET /computer for a desktop with no viewer up while its run is not over: opening (computer-view.ts sessionIn).
+    const opening: RunComputer = { state: "none", kind: "desktop", hold: "agent", session: "opening" };
+    const waiting = { ...desktop, status: "input_required", state: "waiting", pending: { kind: "approval" } } as unknown as Run;
+    let read: RunComputer = DESKTOP_LIVE();
+    const p = await screen(async () => read, desktop, { tab: "screen", rows });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Parked: the viewer goes with the park's process, the desktop kept.
+    read = opening;
+    await p.show(waiting);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain(`Waiting for your approval. The desktop is kept until ${at}.`);
+    // Allowed: the run goes on, and its resume opens the same desktop's screen again.
+    await p.show(desktop);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+    expect(p.panel()!.textContent).not.toContain("released");
+    await p.show(desktop, { rows: resumed });
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+    read = DESKTOP_LIVE();
+    await settle(100);
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Let go at the run's end, before the run reads ended: released.
+    read = opening;
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("This desktop has been released.");
+  });
+
+  it("a page opened on a parked run with its desktop kept says what the run waits for and until when, though it never saw the desktop live", async () => {
+    const phase = (seq: number, summary: string, timestamp: string) => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    const rows = [phase(1, "The desktop is kept for 10 minutes while you decide.", "2026-11-05T09:10:00Z")];
+    const at = new Date("2026-11-05T09:20:00Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const waiting = { ...desktop, status: "input_required", state: "waiting", pending: { kind: "approval" } } as unknown as Run;
+    const p = await screen(async () => ({ state: "none", kind: "desktop", hold: "agent", session: "opening" }), waiting, { tab: "screen", rows });
+    expect(p.panel()!.textContent).toContain(`Waiting for your approval. The desktop is kept until ${at}.`);
   });
 
   it("keptUntilOf reads the newest park's row of the kind, and nothing once that computer is ready again or for another kind", () => {

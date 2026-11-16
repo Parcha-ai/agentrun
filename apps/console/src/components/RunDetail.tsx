@@ -173,9 +173,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // a paused workflow (a pause blocks new work; its session can stay open). It is read until the run is over (completed,
   // failed, cancelled): an ended run has nothing to watch.
   const screenOpens = view.live || (run.status === "input_required" && run.state === "waiting") || run.status === "paused";
-  // A queued run's claim is starting its turn (and its desktop or phone): a screen seen live before is not this one.
-  const { view: screen, held } = useRunScreen(readComputer, !view.final, computerEvery, undefined, run.status === "queued");
   const machine = run.computer;
+  // A queued run's claim is starting its turn (and its desktop or phone), and a desktop or phone kept at a park (its
+  // park's row the newest of its kind) is opened again by the resume: a screen seen live before is not this one.
+  const keptUntil = machine ? keptUntilOf(rows, machine.kind) : undefined;
+  const { view: screen, held } = useRunScreen(readComputer, !view.final, computerEvery, undefined, run.status === "queued" || keptUntil !== undefined);
   // An ask names its computer, so the tab is there for it before the first read answers.
   const hasScreen = !!screen || !!machine || !!ask;
   // The Screen tab, selected, goes away (a read says off, or the route refuses): the run's default tab is selected, not
@@ -262,7 +264,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
-          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" && run.pending?.kind !== "stopped" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" && machine ? keptUntilOf(rows, machine.kind) : undefined}
+          {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" && run.pending?.kind !== "stopped" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" ? keptUntil : undefined}
             onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}
         </div>
       </div>}

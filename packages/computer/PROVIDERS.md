@@ -32,6 +32,10 @@ AgentRun needs two things from your API:
 - **A streaming, two-way exec.** You start a process in a machine as root, write to its stdin and read its stdout and
   stderr while it runs. AgentRun talks to its daemon over one such process for the machine's whole life.
 - **A list by label.** You can list your machines by a label, tag or metadata pair that AgentRun sets at create.
+  If your API keeps no labels, declare `labels: "machine"` in your facts. AgentRun then writes them to a file in the
+  machine that only root can read, and you list by the name create gives the machine, or list every machine where your
+  API takes no name. Your timer must end machines (`lifetime: "vendor"`): a machine whose create stopped before the
+  file was written carries no label the janitor can find.
 
 ### Exec shapes that work
 
@@ -156,7 +160,8 @@ over a unix socket or a virtio device, or nothing of the vendor runs in the mach
 socket but the computer's own. To find the listeners, run `ss -ltnp` as root on the pre-check's machine.
 If your image leaves system paths that root runs or reads with permissions wider than root's, list them in `rootOnly`:
 create makes them root's alone (root the owner, no write by group or other users) before anything else, and the Core case `isolation.root-runs` checks
-that the computer's user can write nothing root runs. `HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
+that the computer's user can write nothing root runs. With `labels: "machine"`, the Core case `isolation.label-file`
+checks that the computer's user can't read the file the labels are kept in. `HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
 
 `maxLifetimeMs` in `facts` is the longest any of your plans keeps a machine. For E2B that's Pro's 24 hours
 (`PRO_MAX_MS`). Your provider's `maxLifetimeMs` option is the cap a user gets, and it may only lower the fact. Default
@@ -186,7 +191,10 @@ set it a margin past the deadline, so a machine still ends if AgentRun's server 
 AgentRun polls `get`. The exception is a vendor that applies a machine's settings only once it is ready, as boxd does
 its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
 machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
-finds machines by them. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
+finds machines by them. With `labels: "machine"` there is nowhere to store them: give the machine `req.name` as its
+own name where your API takes one, and answer it as `Machine.name` from `get` and `list`. AgentRun writes the labels
+into the machine once it runs. Without a name, a machine whose create was cut off before that write can't be traced to
+its request, so it ends only at your timer. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
 `true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's
 programs reach it alone. `req.cpus` and `req.memoryMb` come whenever the spec gives them: a
@@ -241,7 +249,11 @@ Some vendors have states beyond these four:
 in the same shape as `get`. The listing finds; `get` answers: AgentRun takes only the ids from your listing and reads
 each one by `get` for its state, labels and end, and drops one `get` reads as not found. So your listing may be stale,
 as E2B's is (it can still show a deleted machine, or an end from before a timer moved). You may return machines that
-don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does.
+don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. With
+`labels: "machine"`, list by `labels["agentrun.computer.name"]` where it is asked and your API lists by name, or list
+everything. AgentRun keeps the machines of that name and reads each running one's labels from its file. A stopped
+machine can't be read: it has the labels this process last read from it, or none after a restart, so the janitor
+leaves it, and only your timer or a person ends it.
 
 ```ts
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {

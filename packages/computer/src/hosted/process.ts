@@ -164,7 +164,7 @@ export interface RunResult {
 	stderr: string;
 }
 
-const OUTPUT_MAX = 64 * 1024;
+export const OUTPUT_MAX = 64 * 1024;
 
 /**
  * argv run in the machine as root through exec, stdin (when given: one write per piece, each whole UTF-8 text) written

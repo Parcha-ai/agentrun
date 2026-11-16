@@ -34,10 +34,14 @@ export interface PostgresStoreOptions {
   readonly busyTimeoutMs?: number;
   /** Most connections the store holds at once (10 by default). */
   readonly poolSize?: number;
-  /** How long getting a connection may take, in ms: a new one's connect and startup, or a wait for one of the pool's to
-   *  come free (STORE_CONNECT_TIMEOUT_MS, 4 s, by default). Past it the call, or the open, is refused (StoreDeadline,
-   *  naming the database's host, database and schema, never the URL), never left hanging. */
+  /** How long a new connection's connect and startup may take, in ms (STORE_CONNECT_TIMEOUT_MS, 4 s, by default). Past it
+   *  the call, or the open, is refused (StoreDeadline, naming the database's host, database and schema, never the URL:
+   *  it does not answer), never left hanging. */
   readonly connectTimeoutMs?: number;
+  /** How long a call may wait for one of the pool's connections to come free while every one is in use, in ms
+   *  (STORE_WRITE_DEADLINE_MS, 10 s, by default; never less than connectTimeoutMs). Past it the call is refused
+   *  (StoreDeadline: every connection stayed in use), nothing of it sent. */
+  readonly poolWaitMs?: number;
   /** Told, at a runner's open, when its clock is more than CLOCK_WARN_MS from the database's; at a server's, when it waits
    *  for another server to let the schema go. */
   readonly warn?: (message: string) => void;
@@ -65,6 +69,7 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }),
     ...(options.poolSize === undefined ? {} : { poolSize: options.poolSize }),
     ...(options.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: options.connectTimeoutMs }),
+    ...(options.poolWaitMs === undefined ? {} : { poolWaitMs: options.poolWaitMs }),
     ...(options.ownerWaitMs === undefined ? {} : { ownerWaitMs: options.ownerWaitMs }),
     ...(options.warn ? { onOwnerWait: options.warn } : {}),
     ...(options.onOwnerLost ? { onOwnerLost: options.onOwnerLost } : {}),
