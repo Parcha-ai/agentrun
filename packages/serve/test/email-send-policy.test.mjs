@@ -56,14 +56,14 @@ function thread(faux) {
 }
 const ANSWER = { from: "Ana Díaz <ana@example.com>", to: [ADDRESS], cc: ["Bo <bo@example.com>"], subject: "Re: Plan", text: "Tuesday works.", messageId: "<m3@example.com>", inReplyTo: "<m2@faux.example>", references: ["<m1@example.com>", "<m2@faux.example>"] };
 
-test("email_send on allow: a run's first 5 sends go unasked; the 6th asks, saying this run has sent 5 emails, and so does the 7th after that pause", { timeout: 150_000 }, async (t) => {
+test("email_send on allow: a run's first 5 sends go unasked; the 6th asks, saying this run has sent 5 emails, and so does the 7th after that pause; a denied 7th isn't counted", { timeout: 150_000 }, async (t) => {
   const server = await served(t);
   const { api, decide } = server;
   const faux = await mailbox(t);
   await saved(api, faux);
   assert.equal((await api("POST", "/agents", mailAgent("chatty", { tool_settings: ALLOW }))).status, 201);
   const send = (n) => ["email_send", { to: ["ana@example.com"], subject: `Note ${n}`, text: `Note ${n}.` }];
-  const started = await api("POST", "/agents/chatty/runs", { input: { content: calls([1, 2, 3, 4, 5, 6, 7].map(send)) } });
+  const started = await api("POST", "/agents/chatty/runs", { input: { content: calls([1, 2, 3, 4, 5, 6, 7, 8].map(send)) } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
 
@@ -84,8 +84,18 @@ test("email_send on allow: a run's first 5 sends go unasked; the 6th asks, sayin
   assert.equal(seventh?.status, "input_required", `the 7th asks too: ${JSON.stringify(seventh?.pending)}`);
   assert.match(shown(seventh.pending), /this run has sent 6 emails/);
   assert.equal(await decide(runId, seventh.pending.id, "deny"), 204);
-  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+
+  // The cap counts sends that went out: the denied 7th is not one, so the 8th still says 6.
+  const eighth = await until(async () => {
+    const now = await settled(api, runId);
+    return (now.status === "input_required" && now.pending?.id !== seventh.pending.id) || ["completed", "failed"].includes(now.status) ? now : undefined;
+  }, 55_000);
   assert.equal(faux.sent().length, 6, "a deny sends nothing");
+  assert.equal(eighth?.status, "input_required", `the 8th asks: ${JSON.stringify(eighth?.pending)}`);
+  assert.match(shown(eighth.pending), /this run has sent 6 emails/, "a denied send is not counted");
+  assert.equal(await decide(runId, eighth.pending.id, "deny"), 204);
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(faux.sent().length, 6);
 });
 
 test("on a thread run with email_send on allow, a send to the thread's sender goes unasked; one that also reaches someone outside the thread asks, naming them", { timeout: 150_000 }, async (t) => {

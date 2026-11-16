@@ -308,19 +308,23 @@ export interface AnswerData {
 }
 
 /** How many calls of `tool` `entries` show run to a good end: a CLI's (agentrun.call.start and its end, done) and pi's
- *  (a pi.tool-result of it that is no error). What a tool's own ask counts (tools.ts AskContext.ran). */
+ *  (a pi.tool-result of it that is no error), each call id once, however many records say it. A call refused, denied,
+ *  failed or not ended is not counted. What a tool's own ask counts (tools.ts AskContext.ran). */
 export function ranCalls(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], tool: string): number {
   const started = new Set<string>();
-  let ran = 0;
+  const ran = new Set<string>();
+  let unnamed = 0;
   for (const entry of entries) {
     if (entry.kind === KINDS.callStart && (entry.data as CallStartData).tool === tool) started.add((entry.data as CallStartData).callId);
-    else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId) && (entry.data as CallEndData).status === "done") ran++;
+    else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId) && (entry.data as CallEndData).status === "done") ran.add((entry.data as CallEndData).callId);
     else if (entry.kind === "pi.tool-result") {
-      const result = (entry.model as { toolName?: unknown; isError?: unknown }[] | undefined)?.[0];
-      if (result?.toolName === tool && result.isError !== true) ran++;
+      const result = (entry.model as { toolName?: unknown; toolCallId?: unknown; isError?: unknown }[] | undefined)?.[0];
+      if (result?.toolName !== tool || result.isError === true) continue;
+      if (typeof result.toolCallId === "string" && result.toolCallId) ran.add(result.toolCallId);
+      else unnamed++;
     }
   }
-  return ran;
+  return ran.size + unnamed;
 }
 
 /** Whether `entries` hold a call's finished result: an agentrun.call.end not cut (a CLI's call), or a pi.tool-result
