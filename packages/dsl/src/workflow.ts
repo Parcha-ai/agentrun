@@ -1611,8 +1611,20 @@ export function placeholderValue(state: Record<string, unknown>, path: string): 
   return v === undefined && path.startsWith("state.") ? getPath(state, path.slice(6)) : v;
 }
 
+/** A whole-string placeholder, marked optional or not (interpolateValue keeps its value's type). */
+const WHOLE_PLACEHOLDER = /^\{([a-zA-Z0-9_.$]+)(\?)?\}$/;
+/** A placeholder inside a longer string: never marked (`{x?}` there is literal text). */
+const INNER_PLACEHOLDER = /\{([a-zA-Z0-9_.$]+)\}/g;
+/** The placeholders a state value's string holds, as interpolateValue fills them: a whole string is one, marked optional
+ *  (`"{draft?}"`) or not; inside a longer string only unmarked ones are. For a host check of what a step reads. */
+export function placeholdersOf(text: string): { path: string; optional: boolean }[] {
+  const whole = WHOLE_PLACEHOLDER.exec(text);
+  if (whole) return [{ path: whole[1]!, optional: !!whole[2] }];
+  return [...text.matchAll(INNER_PLACEHOLDER)].map((match) => ({ path: match[1]!, optional: false }));
+}
+
 function interpolate(template: string, state: Record<string, unknown>): string {
-  return template.replace(/\{([a-zA-Z0-9_.$]+)\}/g, (_, p) => {
+  return template.replace(INNER_PLACEHOLDER, (_, p) => {
     const v = placeholderValue(state, p);
     return v === undefined || v === null ? `(${p} unset)` : typeof v === "string" ? v : JSON.stringify(v);
   });
@@ -1909,7 +1921,7 @@ function shapeFromSchema(schema: Record<string, unknown>): unknown {
  *  may be marked: inside a longer string `{draft?}` is literal text. */
 function interpolateValue(value: unknown, state: Record<string, unknown>, stage: string = "interpolation"): unknown {
   if (typeof value === "string") {
-    const whole = value.match(/^\{([a-zA-Z0-9_.$]+)(\?)?\}$/);
+    const whole = WHOLE_PLACEHOLDER.exec(value);
     if (whole) {
       const p = whole[1];
       const v = placeholderValue(state, p);
@@ -1917,7 +1929,7 @@ function interpolateValue(value: unknown, state: Record<string, unknown>, stage:
       if (v === undefined) throw new WorkflowStateError(`interpolation path "${p}" is not present in the state`, stage, p, "missing_interpolation");
       return v;
     }
-    return value.replace(/\{([a-zA-Z0-9_.$]+)\}/g, (_, p) => {
+    return value.replace(INNER_PLACEHOLDER, (_, p) => {
       const v = placeholderValue(state, p);
       if (v === undefined) throw new WorkflowStateError(`interpolation path "${p}" is not present in the state`, stage, p, "missing_interpolation");
       return typeof v === "string" ? v : JSON.stringify(v);

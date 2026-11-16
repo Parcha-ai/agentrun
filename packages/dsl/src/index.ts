@@ -53,8 +53,8 @@ export {
   childSteps, declaredWrites, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
   // The host-side normalization the interpreter itself uses.
   normalizeStringNullsForSchema,
-  // Interpolation's lookup order for a `{path}` placeholder, for a host check of what a step reads.
-  placeholderValue,
+  // Interpolation's placeholders in a string and its lookup order for one, for a host check of what a step reads.
+  placeholderValue, placeholdersOf,
 } from "./workflow.js";
 export { compileTransform, compileTransformSyntax, deniedGlobalReferences } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
