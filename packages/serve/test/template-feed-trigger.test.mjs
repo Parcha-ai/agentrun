@@ -21,7 +21,7 @@ const REPO_PARAMETERS = ({ optional = [], defaults = {} } = {}) => ["owner", "re
 /** vendor-outage-watch's status feeds as one parameter: required, unless `fallback` gives it a default. */
 const FEEDS_PARAMETER = (fallback) => `status_feeds: { type: array, items: { type: string }${fallback ? `, required: false, default: ${JSON.stringify(fallback)}` : ""}, description: "each vendor's Statuspage history.atom" }`;
 
-const MANIFEST = ({ urls = `["${PULLS}"]`, every = "14400", extra = [], parameters = REPO_PARAMETERS() } = {}) => `---
+const MANIFEST = ({ urls = `["${PULLS}"]`, every = "14400", extra = [], parameters = REPO_PARAMETERS(), input = '{ content: "Say who opened it." }' } = {}) => `---
 name: pulls
 version: 0.1.0
 description: Says who opened each new pull request in one repository.
@@ -33,7 +33,7 @@ ${parameters.length ? `parameters:\n${parameters.map((line) => `  ${line}`).join
       urls: ${urls}
       every_s: ${every}
 ${extra.map((line) => `      ${line}`).join("\n")}
-    target: { kind: start_run, input: { content: "Say who opened it." } }
+    target: { kind: start_run, input: ${input} }
 ---
 Say who opened the pull request, and what it is about.
 `;
@@ -173,4 +173,21 @@ test("vendor-outage-watch applied with its feeds left empty: the feed trigger is
     assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).status, 200);
     assert.deepEqual((await api("GET", "/triggers")).body.triggers, []);
   }
+});
+
+test("a feed's urls as one array parameter whose default is []: the package reads, and its apply skips the trigger as not set up here, so validate and apply agree", { timeout: 60_000 }, async (t) => {
+  const status = await feed(t, { format: "atom", title: "Faux Status - Incident History", items: [incident(1, "Old outage", "2026-05-10T10:00:00Z")] });
+  const options = { urls: '"${parameters.status_feeds}"', parameters: [FEEDS_PARAMETER([])] };
+  assert.deepEqual(await problemsOf(t, options), [], "the empty default reads");
+  const { api } = await served(t, options, status);
+  const applied = await api("POST", "/templates/pulls/apply", { parameters: {} });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.deepEqual(applied.body.trigger_ids, []);
+  assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0").map((w) => w.reason), ["not_set_up_here"]);
+});
+
+test("a feed left empty by its parameter's default skips only its urls: a wrong target input in the same trigger still refuses the package, under its own field", async (t) => {
+  const problems = await problemsOf(t, { urls: '"${parameters.status_feeds}"', parameters: [FEEDS_PARAMETER([])], input: "plain text" });
+  assert.ok(problems.some((one) => /triggers\[0\]\.target\.input/.test(one)), JSON.stringify(problems));
+  assert.ok(!problems.some((one) => /source\.urls/.test(one)), JSON.stringify(problems));
 });
