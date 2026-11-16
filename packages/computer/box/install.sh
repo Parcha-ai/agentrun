@@ -28,8 +28,8 @@ here=$(dirname "$0")
 # The base is Debian, read from its os-release file: apt is how every package comes in, and Debian's names them (Ubuntu
 # has apt, but no firefox-esr). Another base is refused here, before anything is installed.
 debian() {
-	grep -Eqs '^ID="?debian"?$' "$1" && return 0
-	name="$(sed -n 's/^PRETTY_NAME="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$1" 2>/dev/null || :)"
+	grep -Eqs "^ID=[\"']?debian[\"']?\$" "$1" && return 0
+	name="$(sed -n "s/^PRETTY_NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}\$/\1/p" "$1" 2>/dev/null || :)"
 	echo "install.sh builds on Debian (its packages are Debian's, through apt), and this base is ${name:-unnamed} by $1: start FROM python:3.12-slim, debian:bookworm-slim or a vendor's base built on Debian" >&2
 	exit 1
 }

@@ -429,10 +429,11 @@ test("vendorDockerfile puts the box image on a vendor's base: as root, the vendo
   for (const line of INSTRUCTIONS.filter((line) => /^(COPY|RUN) /.test(line))) assert.ok(dockerfile.includes(`${line}\n`), line);
 });
 
-test("vendorDockerfile with no start lines ends in the box Dockerfile's CMD, and with start [] keeps what the base starts", async () => {
+test("vendorDockerfile with no start lines clears a base's entrypoint and ends in the box Dockerfile's CMD, and with start [] keeps what the base starts", async () => {
   const { vendorDockerfile } = await import("../box/recipe.mjs");
   const ours = vendorDockerfile("debian:bookworm-slim").dockerfile.split("\n");
-  assert.deepEqual(ours, ["FROM debian:bookworm-slim", "USER root", `COPY install.sh ${STAGE}/install.sh`, `COPY agentrun-archil ${STAGE}/agentrun-archil`, `RUN sh ${STAGE}/install.sh && rm -rf ${STAGE}`, 'CMD ["sleep", "infinity"]', ""]);
+  // A base's ENTRYPOINT would take the CMD as its arguments: an agent that refuses them ends the computer's first process.
+  assert.deepEqual(ours, ["FROM debian:bookworm-slim", "USER root", `COPY install.sh ${STAGE}/install.sh`, `COPY agentrun-archil ${STAGE}/agentrun-archil`, `RUN sh ${STAGE}/install.sh && rm -rf ${STAGE}`, "ENTRYPOINT []", 'CMD ["sleep", "infinity"]', ""]);
   // Docker keeps a base's ENTRYPOINT and CMD when the file names neither: a base whose own agent is its entrypoint.
   const kept = vendorDockerfile("vendor.example/sandbox:1.4", { start: [] }).dockerfile;
   assert.ok(!/^(CMD|ENTRYPOINT) /m.test(kept), "nothing replaces the base's entrypoint");
@@ -467,6 +468,7 @@ test("install.sh builds on Debian alone: it reads /etc/os-release first and refu
   for (const [name, text] of [
     ["bookworm", 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\nID=debian\n'],
     ["quoted", 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID="debian"\n'],
+    ["single-quoted", "PRETTY_NAME='Debian GNU/Linux 12 (bookworm)'\nID='debian'\n"],
   ]) {
     const ok = run(name, text);
     assert.equal(ok.status, 0, `${name}: ${ok.stderr}`);
@@ -477,6 +479,9 @@ test("install.sh builds on Debian alone: it reads /etc/os-release first and refu
   const ubuntu = run("ubuntu", 'PRETTY_NAME="Ubuntu 24.04.1 LTS"\nID=ubuntu\nID_LIKE=debian\n');
   assert.equal(ubuntu.status, 1, "Ubuntu has apt but not Debian's packages (firefox-esr)");
   assert.match(ubuntu.stderr, /this base is Ubuntu 24\.04\.1 LTS by \S+: start FROM /);
+  const single = run("single-alpine", "ID='alpine'\nPRETTY_NAME='Alpine Linux v3.20'\n");
+  assert.equal(single.status, 1);
+  assert.match(single.stderr, /this base is Alpine Linux v3\.20 by \S+: start FROM /, "a single-quoted name is read too");
   const none = run("none", "");
   assert.equal(none.status, 1);
   assert.match(none.stderr, /this base is unnamed by \S+: start FROM /);

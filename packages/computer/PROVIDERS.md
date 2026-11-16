@@ -444,8 +444,8 @@ ends the same when run twice on one machine, so a retried build is safe. A first
 If your vendor pulls a registry image (AWS AgentCore's ECR, by tag or digest), or needs its own agent in the image
 (Blaxel's and Baseten's sandbox API as the entrypoint), build a Dockerfile instead: `vendorDockerfile(base, { agent,
 start })` in `box/recipe.mjs` writes it. It starts `FROM` your vendor's base, as root, adds your `agent` lines, then
-runs `install.sh` once, after them, so its checked step comes last; `start` is your `ENTRYPOINT` (`[]` keeps the base's,
-none is the box's `CMD`). The base must be Debian: `install.sh` refuses another in words. Push the build to the
+runs `install.sh` once, after them, so its checked step comes last; `start` is your `ENTRYPOINT` (`[]` keeps the base's;
+none clears the base's and is the box's `CMD`). The base must be Debian: `install.sh` refuses another in words. Push the build to the
 account's registry under the `hash` it answers, the recipe's with that file in it, and look that tag up first. The
 registry provider in `test/conformance-image.test.mjs` runs this on the fake host:
 

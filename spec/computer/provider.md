@@ -184,7 +184,7 @@ Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only
   root, then the vendor's agent's instructions, then the box Dockerfile's `COPY` and `RUN` lines: the agent goes in
   before `install.sh`, so its checked step (sudo taken away, every check) runs last. Then the start lines: the vendor's
   `ENTRYPOINT` where its agent must be the first process, none to keep the base's own, or by default the box
-  Dockerfile's `CMD`. The build's context is that file, `install.sh` and `agentrun-archil`.
+  Dockerfile's `CMD` with the base's `ENTRYPOINT` cleared (it would take the `CMD` as its arguments). The build's context is that file, `install.sh` and `agentrun-archil`.
 - Any base is Debian: `install.sh` installs Debian's packages through apt, and its first step reads `/etc/os-release`
   and refuses another base in words, before it installs anything (Ubuntu has apt, but not Debian's `firefox-esr`).
 - It is idempotent by name. The name carries the box recipe's hash (`boxRecipeHash()`, which covers `install.sh`), so
